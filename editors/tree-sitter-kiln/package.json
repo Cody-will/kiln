@@ -1,0 +1,26 @@
+{
+  "name": "tree-sitter-kiln",
+  "version": "0.1.0",
+  "description": "Kiln grammar for tree-sitter",
+  "license": "MIT OR Apache-2.0",
+  "repository": "https://github.com/Cody-will/kiln",
+  "main": "bindings/node",
+  "keywords": [
+    "tree-sitter",
+    "kiln",
+    "parser"
+  ],
+  "files": [
+    "grammar.js",
+    "src/**",
+    "queries/*"
+  ],
+  "devDependencies": {
+    "tree-sitter-cli": "^0.24.7"
+  },
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "parse-examples": "tree-sitter parse --quiet ../../examples/*.kn"
+  }
+}

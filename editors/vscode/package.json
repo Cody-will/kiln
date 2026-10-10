@@ -1,0 +1,57 @@
+{
+  "name": "kiln",
+  "displayName": "Kiln",
+  "description": "Syntax highlighting and editing support for the Kiln programming language",
+  "version": "0.1.0",
+  "publisher": "kiln-lang",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cody-will/kiln"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "kiln",
+        "aliases": [
+          "Kiln",
+          "kiln"
+        ],
+        "extensions": [
+          ".kn"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "kiln",
+        "scopeName": "source.kiln",
+        "path": "./syntaxes/kiln.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.interpolation.kiln": "kiln"
+        }
+      }
+    ],
+    "configurationDefaults": {
+      "[kiln]": {
+        "editor.insertSpaces": false,
+        "editor.tabSize": 4,
+        "editor.detectIndentation": false
+      }
+    }
+  },
+  "scripts": {
+    "test": "node test/grammar.test.js"
+  },
+  "devDependencies": {
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.1.0"
+  }
+}

@@ -1,2 +1,3 @@
 * text=auto eol=lf
 *.kn linguist-language=Rust
+editors/tree-sitter-kiln/src/** linguist-generated

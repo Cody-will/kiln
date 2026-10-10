@@ -42,3 +42,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
+
+  editors:
+    name: editor grammars
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: VS Code TextMate grammar
+        working-directory: editors/vscode
+        run: npm ci && npm test
+      - name: Tree-sitter grammar
+        working-directory: editors/tree-sitter-kiln
+        run: |
+          npm ci
+          npx tree-sitter generate
+          git diff --exit-code src/ || (echo "src/ is stale: run tree-sitter generate" && exit 1)
+          npx tree-sitter test
+          npx tree-sitter parse --quiet ../../examples/*.kn

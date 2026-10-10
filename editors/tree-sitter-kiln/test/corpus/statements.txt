@@ -1,0 +1,161 @@
+================================================================================
+Short declarations and assignment
+================================================================================
+
+fn main() {
+	x := 5
+	count mut := 0
+	(a, b mut) := pair()
+	let y: u8 = 1
+	count += x
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_item
+    (identifier)
+    (parameters)
+    (block
+      (short_var_declaration
+        (short_name
+          (identifier))
+        (integer_literal))
+      (short_var_declaration
+        (short_name
+          (identifier)
+          (mutable_specifier))
+        (integer_literal))
+      (short_var_declaration
+        (short_name
+          (identifier))
+        (short_name
+          (identifier)
+          (mutable_specifier))
+        (call_expression
+          (identifier)
+          (arguments)))
+      (let_declaration
+        (identifier)
+        (primitive_type)
+        (integer_literal))
+      (assignment_statement
+        (identifier)
+        (identifier)))))
+
+================================================================================
+Concurrency
+================================================================================
+
+fn worker(jobs: <-chan Job, out: chan<- u32) {
+	go run(1)
+	go move {
+		out <- 1
+	}
+	select {
+		v := <-jobs => use_it(v),
+		<-done => {},
+		_ => {},
+	}
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_item
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (receive_channel_type
+          (type_identifier)))
+      (parameter
+        (identifier)
+        (send_channel_type
+          (primitive_type))))
+    (block
+      (go_statement
+        (call_expression
+          (identifier)
+          (arguments
+            (integer_literal))))
+      (go_statement
+        (block
+          (send_statement
+            (identifier)
+            (integer_literal))))
+      (expression_statement
+        (select_expression
+          (select_arm
+            (short_name
+              (identifier))
+            (identifier)
+            (call_expression
+              (identifier)
+              (arguments
+                (identifier))))
+          (select_arm
+            (identifier)
+            (block))
+          (select_arm
+            (block)))))))
+
+================================================================================
+Control flow
+================================================================================
+
+fn f(s: &Shape) -> f64 {
+	for p in points {
+		if p.x > 0 {
+			continue
+		}
+	}
+	return match s {
+		Shape::Circle(r) => 3.0 * r,
+		_ => 0.0,
+	}
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_item
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (reference_type
+          (type_identifier))))
+    (primitive_type)
+    (block
+      (expression_statement
+        (for_expression
+          (identifier)
+          (identifier)
+          (block
+            (expression_statement
+              (if_expression
+                (binary_expression
+                  (field_expression
+                    (identifier)
+                    (field_identifier))
+                  (integer_literal))
+                (block
+                  (expression_statement
+                    (continue_expression))))))))
+      (expression_statement
+        (return_expression
+          (match_expression
+            (identifier)
+            (match_block
+              (match_arm
+                (tuple_struct_pattern
+                  (scoped_identifier
+                    (identifier)
+                    (identifier))
+                  (identifier))
+                (binary_expression
+                  (float_literal)
+                  (identifier)))
+              (match_arm
+                (float_literal)))))))))

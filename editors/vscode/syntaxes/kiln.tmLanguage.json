@@ -1,0 +1,356 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Kiln",
+  "scopeName": "source.kiln",
+  "fileTypes": [
+    "kn"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#attributes"
+    },
+    {
+      "include": "#items"
+    },
+    {
+      "include": "#expressions"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.documentation.kiln",
+          "match": "///(?!/).*$"
+        },
+        {
+          "name": "comment.line.double-slash.kiln",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.kiln",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "patterns": [
+            {
+              "include": "#block-comment-nested"
+            }
+          ]
+        }
+      ]
+    },
+    "block-comment-nested": {
+      "name": "comment.block.kiln",
+      "begin": "/\\*",
+      "end": "\\*/",
+      "patterns": [
+        {
+          "include": "#block-comment-nested"
+        }
+      ]
+    },
+    "attributes": {
+      "name": "meta.attribute.kiln",
+      "begin": "#\\[",
+      "end": "\\]",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.attribute.kiln"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.attribute.kiln"
+        }
+      },
+      "patterns": [
+        {
+          "match": "\\b[A-Za-z_]\\w*\\b",
+          "name": "entity.name.function.attribute.kiln"
+        },
+        {
+          "include": "#strings"
+        }
+      ]
+    },
+    "items": {
+      "patterns": [
+        {
+          "match": "\\b(fn)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.function.kiln"
+            },
+            "2": {
+              "name": "entity.name.function.kiln"
+            }
+          }
+        },
+        {
+          "match": "\\b(struct|enum|trait|type)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.type.kiln"
+            },
+            "2": {
+              "name": "entity.name.type.kiln"
+            }
+          }
+        },
+        {
+          "match": "\\b(mod)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.module.kiln"
+            },
+            "2": {
+              "name": "entity.name.namespace.kiln"
+            }
+          }
+        },
+        {
+          "match": "\\b(import)\\b",
+          "name": "keyword.control.import.kiln"
+        }
+      ]
+    },
+    "expressions": {
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#strings"
+        },
+        {
+          "include": "#chars"
+        },
+        {
+          "include": "#lifetimes"
+        },
+        {
+          "include": "#numbers"
+        },
+        {
+          "include": "#keywords"
+        },
+        {
+          "include": "#types"
+        },
+        {
+          "include": "#functions"
+        },
+        {
+          "include": "#operators"
+        },
+        {
+          "include": "#punctuation"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.raw.kiln",
+          "begin": "r(#*)\"",
+          "end": "\"\\1"
+        },
+        {
+          "name": "string.quoted.double.kiln",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.kiln",
+              "match": "\\\\(?:[nrt0\\\\\"'{}]|x[0-7][0-9A-Fa-f]|u\\{[0-9A-Fa-f_]{1,6}\\})"
+            },
+            {
+              "name": "invalid.illegal.escape.kiln",
+              "match": "\\\\."
+            },
+            {
+              "name": "constant.character.escape.brace.kiln",
+              "match": "\\{\\{|\\}\\}"
+            },
+            {
+              "name": "meta.interpolation.kiln",
+              "begin": "\\{",
+              "end": "\\}",
+              "beginCaptures": {
+                "0": {
+                  "name": "punctuation.section.interpolation.begin.kiln"
+                }
+              },
+              "endCaptures": {
+                "0": {
+                  "name": "punctuation.section.interpolation.end.kiln"
+                }
+              },
+              "contentName": "source.kiln",
+              "patterns": [
+                {
+                  "include": "#expressions"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "chars": {
+      "name": "string.quoted.single.kiln",
+      "match": "'(?:[^'\\\\]|\\\\(?:[nrt0\\\\\"'{}]|x[0-7][0-9A-Fa-f]|u\\{[0-9A-Fa-f_]{1,6}\\}))'"
+    },
+    "lifetimes": {
+      "match": "'([A-Za-z_]\\w*)\\b(?!')",
+      "name": "storage.modifier.lifetime.kiln"
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.kiln",
+          "match": "\\b\\d[\\d_]*(?:\\.\\d[\\d_]*)?(?:[eE][+-]?\\d[\\d_]*)?(?:f32|f64)\\b"
+        },
+        {
+          "name": "constant.numeric.float.kiln",
+          "match": "\\b\\d[\\d_]*\\.\\d[\\d_]*(?:[eE][+-]?\\d[\\d_]*)?\\b"
+        },
+        {
+          "name": "constant.numeric.float.kiln",
+          "match": "\\b\\d[\\d_]*[eE][+-]?\\d[\\d_]*\\b"
+        },
+        {
+          "name": "constant.numeric.integer.kiln",
+          "match": "\\b(?:0x[0-9A-Fa-f_]+|0o[0-7_]+|0b[01_]+|\\d[\\d_]*)(?:[iu](?:8|16|32|64|128|size))?\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.kiln",
+          "match": "\\b(if|else|match|select|for|in|while|loop|break|continue|return|go|defer)\\b"
+        },
+        {
+          "name": "keyword.other.kiln",
+          "match": "\\b(fn|struct|enum|trait|impl|type|mod|import|where|as|chan|dyn|extern|unsafe|move)\\b"
+        },
+        {
+          "name": "storage.modifier.kiln",
+          "match": "\\b(pub|mut|const|static|let)\\b"
+        },
+        {
+          "name": "constant.language.boolean.kiln",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "variable.language.self.kiln",
+          "match": "\\bself\\b"
+        },
+        {
+          "name": "entity.name.type.self.kiln",
+          "match": "\\bSelf\\b"
+        },
+        {
+          "name": "invalid.deprecated.reserved.kiln",
+          "match": "\\b(async|await|macro|yield|try|use)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.kiln",
+          "match": "\\b(i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize|f32|f64|bool|char|str)\\b"
+        },
+        {
+          "name": "support.type.core.kiln",
+          "match": "\\b(String|Vec|Option|Result|Box|Rc|Arc)\\b"
+        },
+        {
+          "name": "support.constant.core.kiln",
+          "match": "\\b(Some|None|Ok|Err)\\b"
+        },
+        {
+          "name": "entity.name.type.kiln",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(?=(?:::<.*?>)?\\()",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.call.kiln"
+            }
+          }
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.channel.kiln",
+          "match": "<-"
+        },
+        {
+          "name": "keyword.operator.declaration.kiln",
+          "match": ":="
+        },
+        {
+          "name": "keyword.operator.arrow.kiln",
+          "match": "->|=>"
+        },
+        {
+          "name": "keyword.operator.namespace.kiln",
+          "match": "::"
+        },
+        {
+          "name": "keyword.operator.range.kiln",
+          "match": "\\.\\.=?"
+        },
+        {
+          "name": "keyword.operator.question.kiln",
+          "match": "\\?"
+        },
+        {
+          "name": "keyword.operator.assignment.kiln",
+          "match": "(?:<<|>>|[+\\-*/%^&|])=|=(?!=)"
+        },
+        {
+          "name": "keyword.operator.comparison.kiln",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.logical.kiln",
+          "match": "&&|\\|\\||!"
+        },
+        {
+          "name": "keyword.operator.arithmetic.kiln",
+          "match": "<<|>>|[+\\-*/%^&|]"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.comma.kiln",
+          "match": ","
+        },
+        {
+          "name": "punctuation.terminator.kiln",
+          "match": ";"
+        },
+        {
+          "name": "punctuation.accessor.kiln",
+          "match": "\\."
+        }
+      ]
+    }
+  }
+}

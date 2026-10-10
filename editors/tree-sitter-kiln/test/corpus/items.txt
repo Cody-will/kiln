@@ -1,0 +1,139 @@
+================================================================================
+Function with generics and where clause
+================================================================================
+
+pub fn largest<T>(xs: &[T]) -> Option<&T> where T: Ord {
+	return None
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_item
+    (visibility_modifier)
+    (identifier)
+    (type_parameters
+      (type_parameter
+        (type_identifier)))
+    (parameters
+      (parameter
+        (identifier)
+        (reference_type
+          (slice_type
+            (type_identifier)))))
+    (generic_type
+      (type_identifier)
+      (type_arguments
+        (reference_type
+          (type_identifier))))
+    (where_clause
+      (where_predicate
+        (type_identifier)
+        (trait_bounds
+          (type_identifier))))
+    (block
+      (expression_statement
+        (return_expression
+          (identifier))))))
+
+================================================================================
+Struct, enum, and impl
+================================================================================
+
+#[derive(Debug)]
+struct Point {
+	pub x: f64,
+	y: f64,
+}
+
+enum Shape {
+	Circle(f64),
+	Rect { w: f64, h: f64 },
+}
+
+impl Describe for Point {
+	fn describe(&self) -> String {
+		return "({self.x})"
+	}
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (struct_item
+    (attribute
+      (identifier)
+      (token_tree))
+    (type_identifier)
+    (field_list
+      (field_declaration
+        (visibility_modifier)
+        (field_identifier)
+        (primitive_type))
+      (field_declaration
+        (field_identifier)
+        (primitive_type))))
+  (enum_item
+    (type_identifier)
+    (variant_list
+      (enum_variant
+        (identifier)
+        (ordered_field_list
+          (primitive_type)))
+      (enum_variant
+        (identifier)
+        (field_list
+          (field_declaration
+            (field_identifier)
+            (primitive_type))
+          (field_declaration
+            (field_identifier)
+            (primitive_type))))))
+  (impl_item
+    (type_identifier)
+    (type_identifier)
+    (declaration_list
+      (function_item
+        (identifier)
+        (parameters
+          (self_parameter))
+        (type_identifier)
+        (block
+          (expression_statement
+            (return_expression
+              (string_literal
+                (string_content)
+                (interpolation
+                  (field_expression
+                    (self)
+                    (field_identifier)))
+                (string_content)))))))))
+
+================================================================================
+Imports
+================================================================================
+
+import std::net::{TcpListener, io::{self, BufReader as Reader}}
+import std::fs
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_declaration
+    (import_tree
+      (identifier)
+      (identifier)
+      (import_group
+        (import_tree
+          (identifier))
+        (import_tree
+          (identifier)
+          (import_group
+            (import_tree)
+            (import_tree
+              (identifier)
+              (identifier)))))))
+  (import_declaration
+    (import_tree
+      (identifier)
+      (identifier))))
