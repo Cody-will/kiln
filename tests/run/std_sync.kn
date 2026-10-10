@@ -4,6 +4,13 @@ fn init() {
 	println("init runs once")
 }
 
+fn work(c: Arc<Mutex<i32>>) {
+	for _ in 0..1000 {
+		g mut := c.lock()
+		*g += 1
+	}
+}
+
 fn main() {
 	// A shared counter behind a mutex.
 	counter := Arc::new(Mutex::new(0))
@@ -13,10 +20,8 @@ fn main() {
 		w := wg.clone()
 		w.add(1)
 		go move {
-			for _ in 0..1000 {
-				g mut := c.lock()
-				*g += 1
-			}
+			// `work` takes `c`, so the clone is dropped before `done`.
+			work(c)
 			w.done()
 		}
 	}
