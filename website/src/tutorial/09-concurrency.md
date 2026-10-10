@@ -215,4 +215,33 @@ When several arms are ready, `select` picks one at random, so no channel can sta
 
 ## Sharing state
 
-Prefer channels. When tasks really must share data, use `Arc<Mutex<T>>` from `std::sync` (🚧 the standard library is not implemented yet).
+Prefer channels. When tasks really must share data, use `Arc<Mutex<T>>` from `std::sync`:
+
+```kiln
+import std::sync::{Arc, Mutex, WaitGroup}
+
+fn main() {
+	counter := Arc::new(Mutex::new(0))
+	wg := Arc::new(WaitGroup::new())
+	for _ in 0..8 {
+		c := counter.clone()
+		w := wg.clone()
+		w.add(1)
+		go move {
+			for _ in 0..1000 {
+				g mut := c.lock()
+				*g += 1
+			}
+			w.done()
+		}
+	}
+	wg.wait()
+	println("total: {*counter.lock()}")
+}
+```
+
+`c.lock()` returns a guard that dereferences to the value and unlocks when dropped. A task waiting for a lock parks; it does not block its thread. `RwLock`, `Once`, and atomics (`AtomicI64`, `AtomicBool`) are there too. See the [standard library reference](../stdlib.md#stdsync).
+
+## Long-running loops
+
+Tasks switch at channel operations, `select`, `join`, locks, timers, and I/O. A loop that does none of these still yields: compiled loops check how long the task has run, and after 10 ms they let other waiting tasks go first. One busy task cannot starve the others.

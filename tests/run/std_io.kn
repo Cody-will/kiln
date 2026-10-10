@@ -1,0 +1,30 @@
+import std::io
+import std::io::{BufReader, BufWriter, Cursor, Read, Write}
+
+fn main() -> Result<(), io::Error> {
+	c mut := Cursor::from_str("alpha\nbeta\r\ngamma")
+	r mut := BufReader::new(c)
+	while let Some(line) = r.next_line()? {
+		println("line: [{line}]")
+	}
+	out mut := Vec::new()
+	{
+		w mut := BufWriter::new(&mut out)
+		w.write_str("hello ")?
+		w.write_str("world")?
+	}
+	println("{String::from_utf8(out).unwrap()}")
+	src mut := Cursor::from_str("copy me")
+	dst mut := Cursor::new(Vec::new())
+	n := io::copy(&mut src, &mut dst)?
+	println("copied {n}")
+	s mut := String::new()
+	Cursor::from_str("all of it").read_to_string(&mut s)?
+	println("{s}")
+	e := io::Error::new(io::ErrorKind::NotFound, "no such thing").context("open x")
+	println("{e} {e.kind() == io::ErrorKind::NotFound}")
+	so mut := io::stdout()
+	so.write_str("direct to stdout\n")?
+	println("after")
+	return Ok(())
+}

@@ -1,0 +1,190 @@
+// File paths as strings, in the style of Go's path/filepath.
+//
+// `/` separates path elements everywhere; on Windows `\` does too, and
+// `join` uses `\`.
+//
+//	path::join("logs", "app.txt")   // "logs/app.txt"
+//	path::base("/a/b/c.txt")        // "c.txt"
+//	path::ext("c.tar.gz")           // ".gz"
+
+fn kn_os_kind() -> i64
+
+fn windows() -> bool {
+	return kn_os_kind() == 2
+}
+
+fn is_sep(b: u8) -> bool {
+	return b == 47 || (b == 92 && windows())
+}
+
+// The preferred separator: `\` on Windows, `/` elsewhere.
+pub fn separator() -> &'static str {
+	if windows() {
+		return "\\"
+	}
+	return "/"
+}
+
+// Length of a Windows volume prefix like `C:` (0 elsewhere).
+fn volume_len(p: &str) -> usize {
+	b := p.as_bytes()
+	if windows() && b.len() >= 2 && b[1] == 58 {
+		c := b[0]
+		if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) {
+			return 2
+		}
+	}
+	return 0
+}
+
+// Whether the path is absolute.
+pub fn is_absolute(p: &str) -> bool {
+	b := p.as_bytes()
+	v := volume_len(p)
+	if windows() {
+		return (v == 2 && b.len() > 2 && is_sep(b[2])) || (b.len() >= 2 && is_sep(b[0]) && is_sep(b[1]))
+	}
+	return b.len() > 0 && b[0] == 47
+}
+
+// `a` and `b` joined with a separator. If `b` is absolute it is returned as is.
+pub fn join(a: &str, b: &str) -> String {
+	if a.is_empty() || is_absolute(b) {
+		return b.to_string()
+	}
+	if b.is_empty() {
+		return a.to_string()
+	}
+	out mut := a.to_string()
+	if !is_sep(a.as_bytes()[a.len() - 1]) {
+		out.push(separator())
+	}
+	out.push(b)
+	return out
+}
+
+// All `parts` joined with separators.
+pub fn join_all(parts: &[&str]) -> String {
+	out mut := String::new()
+	for p in parts {
+		out = join(&out, *p)
+	}
+	return out
+}
+
+// The last element, without trailing separators: `base("a/b/")` is "b".
+// The base of "" is "." and of "/" is "/".
+pub fn base(p: &str) -> &str {
+	if p.is_empty() {
+		return "."
+	}
+	b := p.as_bytes()
+	end mut := b.len()
+	while end > 0 && is_sep(b[end - 1]) {
+		end -= 1
+	}
+	if end == 0 {
+		return &p[0..1]
+	}
+	start mut := end
+	while start > volume_len(p) && !is_sep(b[start - 1]) {
+		start -= 1
+	}
+	return &p[start..end]
+}
+
+// Everything but the last element: `dir("a/b/c")` is "a/b", `dir("c")` is ".".
+pub fn dir(p: &str) -> &str {
+	b := p.as_bytes()
+	end mut := b.len()
+	while end > 0 && is_sep(b[end - 1]) {
+		end -= 1
+	}
+	while end > 0 && !is_sep(b[end - 1]) {
+		end -= 1
+	}
+	while end > 1 && is_sep(b[end - 1]) {
+		end -= 1
+	}
+	if end == 0 {
+		return "."
+	}
+	return &p[0..end]
+}
+
+// The extension of the last element, with its dot (`".txt"`), or "".
+pub fn ext(p: &str) -> &str {
+	name := base(p)
+	b := name.as_bytes()
+	i mut := b.len()
+	while i > 0 {
+		i -= 1
+		if b[i] == 46 {
+			if i == 0 {
+				return ""
+			}
+			return &name[i..]
+		}
+	}
+	return ""
+}
+
+// The last element without its extension: `stem("a/b.tar.gz")` is "b.tar".
+pub fn stem(p: &str) -> &str {
+	name := base(p)
+	e := ext(name)
+	return &name[0..name.len() - e.len()]
+}
+
+// The shortest equivalent path: removes `.` elements, resolves `..` against
+// the element before it, and collapses repeated separators.
+pub fn clean(p: &str) -> String {
+	if p.is_empty() {
+		return ".".to_string()
+	}
+	v := volume_len(p)
+	rooted := p.len() > v && is_sep(p.as_bytes()[v])
+	parts mut := Vec::new()
+	b := p.as_bytes()
+	i mut := v
+	while i < b.len() {
+		while i < b.len() && is_sep(b[i]) {
+			i += 1
+		}
+		start := i
+		while i < b.len() && !is_sep(b[i]) {
+			i += 1
+		}
+		if start == i {
+			continue
+		}
+		part := &p[start..i]
+		if part == "." {
+			continue
+		}
+		if part == ".." {
+			if parts.len() > 0 && parts[parts.len() - 1] != ".." {
+				parts.pop()
+				continue
+			}
+			if rooted {
+				continue
+			}
+		}
+		parts.push(part)
+	}
+	out mut := p[0..v].to_string()
+	if rooted {
+		out.push(separator())
+	}
+	for k in 0..parts.len() {
+		if k > 0 {
+			out.push(separator())
+		}
+		out.push(parts[k])
+	}
+	if out.is_empty() {
+		return ".".to_string()
+	}
+	return out
+}

@@ -1,0 +1,270 @@
+// TCP and UDP networking.
+//
+// Sockets are non-blocking underneath: a task that waits to accept, read, or
+// write parks until the socket is ready, and the worker runs other tasks.
+// Addresses are "host:port" strings: "127.0.0.1:8080", "localhost:80",
+// "[::1]:443", or ":8080" (all interfaces, IPv4).
+//
+//	listener := TcpListener::bind(":8080")?
+//	for conn in listener.incoming() {
+//		conn := conn?
+//		go move {
+//			conn.write_str("hello\n")
+//		}
+//	}
+
+import std::io
+import std::io::{Read, Write}
+
+fn kn_net_listen(host: &str, port: i64) -> i64
+fn kn_net_accept(h: i64) -> i64
+fn kn_net_connect(host: &str, port: i64) -> i64
+fn kn_net_read(h: i64, buf: &mut [u8]) -> i64
+fn kn_net_write(h: i64, buf: &[u8]) -> i64
+fn kn_net_shutdown(h: i64, how: i64) -> i64
+fn kn_net_close(h: i64)
+fn kn_net_addr(h: i64, peer: i64, out: &mut String) -> i64
+fn kn_net_udp_bind(host: &str, port: i64) -> i64
+fn kn_net_send_to(h: i64, buf: &[u8], host: &str, port: i64) -> i64
+fn kn_net_recv_from(h: i64, buf: &mut [u8], from: &mut String) -> i64
+
+// Splits "host:port" into its parts ("" host means any address).
+pub fn split_host_port(addr: &str) -> Result<(&str, u16), io::Error> {
+	b := addr.as_bytes()
+	i mut := b.len()
+	while i > 0 && b[i - 1] != 58 {
+		i -= 1
+	}
+	if i == 0 {
+		return Err(bad_addr(addr, "missing port"))
+	}
+	host := &addr[0..i - 1]
+	port := &addr[i..]
+	if port.is_empty() || port.len() > 5 {
+		return Err(bad_addr(addr, "invalid port"))
+	}
+	n mut := 0
+	for c in port.as_bytes() {
+		if *c < 48 || *c > 57 {
+			return Err(bad_addr(addr, "invalid port"))
+		}
+		n = n * 10 + (*c - 48) as i64
+	}
+	if n > 65535 {
+		return Err(bad_addr(addr, "invalid port"))
+	}
+	return Ok((host, n as u16))
+}
+
+fn bad_addr(addr: &str, why: &str) -> io::Error {
+	return io::Error::new(io::ErrorKind::InvalidInput, "address {addr}: {why}")
+}
+
+fn with_ctx<T>(r: Result<T, io::Error>, op: &str, addr: &str) -> Result<T, io::Error> {
+	match r {
+		Ok(v) => return Ok(v),
+		Err(e) => return Err(e.context("{op} {addr}")),
+	}
+}
+
+// ----- TCP --------------------------------------------------------------------
+
+// A TCP socket listening for connections. Closed when dropped.
+pub struct TcpListener {
+	h: i64,
+}
+
+impl TcpListener {
+	// Listens on `addr` ("host:port"; port 0 picks a free port).
+	pub fn bind(addr: &str) -> Result<TcpListener, io::Error> {
+		(host, port) := split_host_port(addr)?
+		h := with_ctx(io::check(kn_net_listen(host, port as i64)), "listen tcp", addr)?
+		return Ok(TcpListener { h: h })
+	}
+
+	// Waits for the next connection.
+	pub fn accept(&self) -> Result<TcpStream, io::Error> {
+		h := io::check(kn_net_accept(self.h))?
+		return Ok(TcpStream { h: h })
+	}
+
+	// The address the listener is bound to, like "127.0.0.1:41234".
+	pub fn local_addr(&self) -> Result<String, io::Error> {
+		s mut := String::new()
+		io::check(kn_net_addr(self.h, 0, &mut s))?
+		return Ok(s)
+	}
+
+	// The port the listener is bound to.
+	pub fn port(&self) -> Result<u16, io::Error> {
+		a := self.local_addr()?
+		(_, p) := split_host_port(&a)?
+		return Ok(p)
+	}
+
+	// Accepted connections as a channel, for `for conn in listener.incoming()`.
+	// A task accepts in the background; it stops after an accept error.
+	pub fn incoming(self) -> <-chan Result<TcpStream, io::Error> {
+		(tx, rx) := chan::<Result<TcpStream, io::Error>>(0)
+		go move {
+			loop {
+				r := self.accept()
+				failed := r.is_err()
+				tx <- r
+				if failed {
+					return
+				}
+			}
+		}
+		return rx
+	}
+}
+
+impl Drop for TcpListener {
+	fn drop(&mut self) {
+		kn_net_close(self.h)
+	}
+}
+
+// Which halves of a connection `shutdown` closes.
+pub enum Shutdown {
+	Read,
+	Write,
+	Both,
+}
+
+// A TCP connection. Reading and writing work through a shared reference
+// (`&TcpStream`), so one task can read while another writes. Closed when dropped.
+pub struct TcpStream {
+	h: i64,
+}
+
+impl TcpStream {
+	// Connects to `addr` ("host:port"), trying each address the host resolves to.
+	pub fn connect(addr: &str) -> Result<TcpStream, io::Error> {
+		(host, port) := split_host_port(addr)?
+		h := with_ctx(io::check(kn_net_connect(host, port as i64)), "dial tcp", addr)?
+		return Ok(TcpStream { h: h })
+	}
+
+	// Reads up to `buf.len()` bytes; 0 means the peer closed the connection.
+	pub fn read(&self, buf: &mut [u8]) -> Result<usize, io::Error> {
+		return Ok(io::check(kn_net_read(self.h, buf))? as usize)
+	}
+
+	// Writes some of `buf`; returns how many bytes were sent.
+	pub fn write(&self, buf: &[u8]) -> Result<usize, io::Error> {
+		return Ok(io::check(kn_net_write(self.h, buf))? as usize)
+	}
+
+	// Writes all of `buf`.
+	pub fn write_all(&self, buf: &[u8]) -> Result<(), io::Error> {
+		done mut := 0
+		while done < buf.len() {
+			done += self.write(&buf[done..])?
+		}
+		return Ok(())
+	}
+
+	// Writes all of `s`.
+	pub fn write_str(&self, s: &str) -> Result<(), io::Error> {
+		return self.write_all(s.as_bytes())
+	}
+
+	// Closes the reading half, the writing half, or both.
+	pub fn shutdown(&self, how: Shutdown) -> Result<(), io::Error> {
+		n := match how {
+			Shutdown::Read => 0,
+			Shutdown::Write => 1,
+			Shutdown::Both => 2,
+		}
+		io::check(kn_net_shutdown(self.h, n))?
+		return Ok(())
+	}
+
+	// This end's address.
+	pub fn local_addr(&self) -> Result<String, io::Error> {
+		s mut := String::new()
+		io::check(kn_net_addr(self.h, 0, &mut s))?
+		return Ok(s)
+	}
+
+	// The other end's address.
+	pub fn peer_addr(&self) -> Result<String, io::Error> {
+		s mut := String::new()
+		io::check(kn_net_addr(self.h, 1, &mut s))?
+		return Ok(s)
+	}
+}
+
+impl Read for TcpStream {
+	fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+		return Ok(io::check(kn_net_read(self.h, buf))? as usize)
+	}
+}
+
+impl Write for TcpStream {
+	fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
+		return Ok(io::check(kn_net_write(self.h, buf))? as usize)
+	}
+}
+
+impl Read for &TcpStream {
+	fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+		return Ok(io::check(kn_net_read(self.h, buf))? as usize)
+	}
+}
+
+impl Write for &TcpStream {
+	fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
+		return Ok(io::check(kn_net_write(self.h, buf))? as usize)
+	}
+}
+
+impl Drop for TcpStream {
+	fn drop(&mut self) {
+		kn_net_close(self.h)
+	}
+}
+
+// ----- UDP ----------------------------------------------------------------------
+
+// A UDP socket. Closed when dropped.
+pub struct UdpSocket {
+	h: i64,
+}
+
+impl UdpSocket {
+	// Binds to `addr` ("host:port"; port 0 picks a free port).
+	pub fn bind(addr: &str) -> Result<UdpSocket, io::Error> {
+		(host, port) := split_host_port(addr)?
+		h := with_ctx(io::check(kn_net_udp_bind(host, port as i64)), "listen udp", addr)?
+		return Ok(UdpSocket { h: h })
+	}
+
+	// Sends one datagram to `addr`; returns the bytes sent.
+	pub fn send_to(&self, buf: &[u8], addr: &str) -> Result<usize, io::Error> {
+		(host, port) := split_host_port(addr)?
+		return Ok(io::check(kn_net_send_to(self.h, buf, host, port as i64))? as usize)
+	}
+
+	// Waits for one datagram; returns its length and the sender's address.
+	pub fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, String), io::Error> {
+		from mut := String::new()
+		n := io::check(kn_net_recv_from(self.h, buf, &mut from))?
+		return Ok((n as usize, from))
+	}
+
+	// The address the socket is bound to.
+	pub fn local_addr(&self) -> Result<String, io::Error> {
+		s mut := String::new()
+		io::check(kn_net_addr(self.h, 0, &mut s))?
+		return Ok(s)
+	}
+}
+
+impl Drop for UdpSocket {
+	fn drop(&mut self) {
+		kn_net_close(self.h)
+	}
+}

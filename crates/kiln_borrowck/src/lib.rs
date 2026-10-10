@@ -18,10 +18,27 @@ use kiln_typeck::Typed;
 
 /// Borrow-checks every user function. Assumes type checking succeeded.
 pub fn check(typed: &mut Typed<'_, '_>) -> Vec<Diagnostic> {
+    check_impl(typed, false)
+}
+
+/// Borrow-checks the user's functions and the standard library's (used by
+/// the standard library's own tests).
+pub fn check_std(typed: &mut Typed<'_, '_>) -> Vec<Diagnostic> {
+    check_impl(typed, true)
+}
+
+fn check_impl(typed: &mut Typed<'_, '_>, with_std: bool) -> Vec<Diagnostic> {
     let r = typed.resolved();
     let mut errors = vec![];
     sigcheck::check_items(r, &mut errors);
-    for f in r.fns.iter().filter(|f| !f.is_prelude) {
+    for (i, f) in r.fns.iter().enumerate() {
+        if if with_std {
+            r.fn_is_core(i)
+        } else {
+            f.is_prelude
+        } {
+            continue;
+        }
         let (outer, outer_types) = match (f.impl_idx, f.trait_def) {
             (Some(idx), _) => (
                 r.impls[idx].decl.generics.clone(),
@@ -34,7 +51,12 @@ pub fn check(typed: &mut Typed<'_, '_>) -> Vec<Diagnostic> {
     if !errors.is_empty() {
         return errors;
     }
-    for (i, bodies) in kiln_mir::lower_all(typed) {
+    let lowered = if with_std {
+        kiln_mir::lower_with_std(typed)
+    } else {
+        kiln_mir::lower_all(typed)
+    };
+    for (i, bodies) in lowered {
         let bounds = typed
             .fn_results(i)
             .map(|res| res.bounds.clone())
@@ -56,14 +78,29 @@ pub fn check_source(src: &str) -> Vec<Diagnostic> {
     if !parsed.errors.is_empty() {
         return parsed.errors;
     }
+    let timing = std::env::var_os("KILN_TIMING").is_some();
+    let t0 = std::time::Instant::now();
     let prelude = kiln_resolve::parse_prelude();
+    let t1 = std::time::Instant::now();
     let resolved = kiln_resolve::resolve(&parsed.file, &prelude);
     if !resolved.errors.is_empty() {
         return resolved.errors;
     }
+    let t2 = std::time::Instant::now();
     let mut typed = kiln_typeck::typeck(&resolved);
     if !typed.errors().is_empty() {
         return typed.errors().to_vec();
     }
-    check(&mut typed)
+    let t3 = std::time::Instant::now();
+    let r = check(&mut typed);
+    if timing {
+        eprintln!(
+            "parse {:?} resolve {:?} typeck {:?} borrowck {:?}",
+            t1 - t0,
+            t2 - t1,
+            t3 - t2,
+            t3.elapsed()
+        );
+    }
+    r
 }

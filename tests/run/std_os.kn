@@ -1,0 +1,39 @@
+import std::io
+import std::os
+
+fn main() -> Result<(), io::Error> {
+	args := os::args()
+	if args.len() > 1 && args[1] == "child" {
+		// Run by the parent below.
+		println("child says {args[2]}")
+		eprintln("child error output")
+		os::exit(3)
+	}
+	println("args: {args.len()}")
+	os::setenv("KILN_TEST_VAR", "forty two")?
+	println("var: {os::getenv("KILN_TEST_VAR").unwrap()}")
+	found mut := false
+	for (k, v) in os::environ() {
+		if k == "KILN_TEST_VAR" {
+			found = v == "forty two"
+		}
+	}
+	println("in environ: {found}")
+	os::unsetenv("KILN_TEST_VAR")?
+	println("after unset: {os::getenv("KILN_TEST_VAR").is_none()}")
+	println("pid positive: {os::pid() > 0}")
+	println("cwd absolute: {os::current_dir()?.len() > 1}")
+	println("hostname: {!os::hostname()?.is_empty()}")
+
+	// Run this program again as a child process.
+	exe := os::executable()?
+	out := os::Command::new(&exe).arg("child").arg("hi there").output()?
+	print(out.stdout_text().replace("\r", ""))
+	print(out.stderr_text().replace("\r", ""))
+	println("status {out.status} success {out.success()}")
+	match os::Command::new("kiln-no-such-program-xyz").output() {
+		Ok(_) => println("unexpected"),
+		Err(e) => println("missing program: {e.kind() == io::ErrorKind::NotFound}"),
+	}
+	os::exit(7)
+}

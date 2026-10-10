@@ -1,0 +1,6 @@
+a/b a/b b x/y/z.txt
+c.txt b . / c
+/a/b . / a
+[.gz] [] [] [x.tar]
+a/c/d /x ../../a . .
+true false

@@ -173,3 +173,37 @@ fn borrow_errors_stop_the_build() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("moved"));
 }
+
+/// Every program in `examples/` builds; `workers.kn` also runs to completion.
+#[test]
+fn examples_build() {
+    let dir = scratch("examples");
+    for entry in std::fs::read_dir(root().join("examples")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "kn") {
+            continue;
+        }
+        let stem = path.file_stem().unwrap().to_str().unwrap().to_string();
+        let exe = dir.join(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
+        let b = Command::new(kiln())
+            .arg("build")
+            .arg(&path)
+            .arg("-o")
+            .arg(&exe)
+            .output()
+            .unwrap();
+        assert!(
+            b.status.success(),
+            "`kiln build {}` failed:\n{}",
+            path.display(),
+            String::from_utf8_lossy(&b.stderr)
+        );
+        if stem == "workers" {
+            let r = Command::new(&exe).output().unwrap();
+            let out = String::from_utf8_lossy(&r.stdout);
+            assert!(r.status.success());
+            assert_eq!(out.lines().count(), 10, "{out}");
+            assert!(out.contains("finished job 9 (5 bytes)"), "{out}");
+        }
+    }
+}

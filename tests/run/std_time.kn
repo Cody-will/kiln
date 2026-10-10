@@ -1,0 +1,58 @@
+import std::time
+
+fn main() {
+	d := time::millis(1500)
+	println("{d} {time::secs(90)} {time::micros(42)} {time::nanos(7)} {time::hours(2).add(time::minutes(3))}")
+	println("{d.as_millis()} {d.as_secs()} {d.as_secs_f64()} {time::secs(1).sub(time::millis(1))} {d.mul(2)} {d.div(3)}")
+	println("{time::Duration::zero().is_zero()} {time::secs_f64(0.25)}")
+
+	// sleep parks only this task, and the clock moves forward.
+	start := time::Instant::now()
+	time::sleep(time::millis(30))
+	// (Allow a millisecond of timer rounding.)
+	println("slept: {start.elapsed().as_millis() >= 29}")
+
+	// Many sleeping tasks finish in about the time of one.
+	(tx, rx) := chan::<i64>(100)
+	t0 := time::Instant::now()
+	for i in 0..100 {
+		t := tx.clone()
+		go move {
+			time::sleep(time::millis(50))
+			t <- i
+		}
+	}
+	sum mut := 0
+	for _ in 0..100 {
+		sum += <-rx
+	}
+	println("100 sleepers: sum {sum}, concurrent: {t0.elapsed().as_millis() < 2000}")
+
+	// after and tick work with select.
+	timeout := time::after(time::secs(5))
+	ticks := time::tick(time::millis(20))
+	n mut := 0
+	loop {
+		select {
+			<-ticks => {
+				n += 1
+				if n == 3 {
+					break
+				}
+			},
+			<-timeout => {
+				println("timed out")
+				break
+			},
+		}
+	}
+	println("ticks {n}")
+	late := time::after(time::millis(10))
+	<-late
+	println("after fired")
+
+	// Wall-clock time renders as RFC 3339 in UTC.
+	s := time::SystemTime::from_unix_nanos(1700000000123000000)
+	println("{s} {s.unix()} {s.unix_millis()}")
+	println("now is after 2024: {time::SystemTime::now().unix() > 1704067200}")
+}

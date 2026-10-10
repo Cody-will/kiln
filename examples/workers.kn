@@ -41,9 +41,13 @@ fn main() {
 	drop(jobs_tx)
 
 	timeout := time::after(time::secs(5))
-	loop {
+	done mut := 0
+	while done < 10 {
 		select {
-			r := <-res_rx => println("worker {r.worker} finished job {r.job} ({r.bytes} bytes)"),
+			r := <-res_rx => {
+				println("worker {r.worker} finished job {r.job} ({r.bytes} bytes)")
+				done += 1
+			},
 			<-timeout => {
 				eprintln("timed out")
 				break

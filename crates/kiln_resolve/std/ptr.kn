@@ -29,7 +29,7 @@ pub fn slice_ptr<T>(s: &[T]) -> *mut T
 pub fn str_ptr(s: &str) -> *mut u8
 
 // The slice of `n` elements starting at `p`.
-pub unsafe fn slice_from_raw<T>(p: *mut T, n: usize) -> &mut [T]
+pub unsafe fn slice_from_raw<'a, T>(p: *mut T, n: usize) -> &'a mut [T]
 
 // The string of `n` bytes starting at `p` (which must be valid UTF-8).
-pub unsafe fn str_from_raw(p: *mut u8, n: usize) -> &str
+pub unsafe fn str_from_raw<'a>(p: *mut u8, n: usize) -> &'a str

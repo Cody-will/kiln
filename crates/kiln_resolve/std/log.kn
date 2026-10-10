@@ -1,0 +1,107 @@
+// Simple leveled logging to standard error, in the style of Go's log package:
+//
+//	2026-10-10T15:24:05Z INFO listening on :8080
+//
+// Messages below the current level are dropped. The default level is Info;
+// set it with `log::set_level(log::Level::Debug)` or the KILN_LOG
+// environment variable (debug, info, warn, error).
+
+import std::os
+import std::time
+
+fn kn_log_level_get() -> i64
+fn kn_log_level_set(l: i64)
+
+// How important a message is.
+#[derive(Copy, Clone, Eq, Debug)]
+pub enum Level {
+	Debug,
+	Info,
+	Warn,
+	Error,
+}
+
+fn rank(l: Level) -> i64 {
+	match l {
+		Level::Debug => return 0,
+		Level::Info => return 1,
+		Level::Warn => return 2,
+		Level::Error => return 3,
+	}
+}
+
+fn label(l: Level) -> &'static str {
+	match l {
+		Level::Debug => return "DEBUG",
+		Level::Info => return "INFO",
+		Level::Warn => return "WARN",
+		Level::Error => return "ERROR",
+	}
+}
+
+fn current() -> i64 {
+	cur := kn_log_level_get()
+	if cur >= 0 {
+		return cur
+	}
+	l := match os::getenv("KILN_LOG") {
+		Some(v) => {
+			lv := v.to_lower()
+			if lv == "debug" {
+				0
+			} else if lv == "warn" {
+				2
+			} else if lv == "error" {
+				3
+			} else {
+				1
+			}
+		},
+		None => 1,
+	}
+	kn_log_level_set(l)
+	return l
+}
+
+// Sets the lowest level that is printed.
+pub fn set_level(l: Level) {
+	kn_log_level_set(rank(l))
+}
+
+// Whether messages at `l` are printed.
+pub fn enabled(l: Level) -> bool {
+	return rank(l) >= current()
+}
+
+// Prints `msg` at level `l`.
+pub fn log(l: Level, msg: &str) {
+	if enabled(l) {
+		eprintln("{time::SystemTime::now()} {label(l)} {msg}")
+	}
+}
+
+// Logs at Debug level.
+pub fn debug(msg: &str) {
+	log(Level::Debug, msg)
+}
+
+// Logs at Info level.
+pub fn info(msg: &str) {
+	log(Level::Info, msg)
+}
+
+// Logs at Warn level.
+pub fn warn(msg: &str) {
+	log(Level::Warn, msg)
+}
+
+// Logs at Error level.
+pub fn error(msg: &str) {
+	log(Level::Error, msg)
+}
+
+// Logs at Error level and ends the program with status 1.
+pub fn fatal(msg: &str) -> ! {
+	log(Level::Error, msg)
+	os::exit(1)
+}

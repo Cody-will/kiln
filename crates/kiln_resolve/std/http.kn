@@ -1,0 +1,699 @@
+// HTTP/1.1 servers and clients (plain HTTP; TLS is not supported yet).
+//
+//	fn hello(req: http::Request) -> http::Response {
+//		return http::Response::text(200, "hello from {req.path()}\n")
+//	}
+//
+//	fn main() -> Result<(), io::Error> {
+//		router mut := http::Router::new()
+//		router.get("/hello", hello)
+//		return router.listen(":8080")
+//	}
+//
+// Each connection is served by its own task. Handlers are plain functions
+// from a Request to a Response.
+
+import std::io
+import std::io::{BufReader, Read, Write}
+import std::net::{TcpListener, TcpStream}
+import std::sync::Arc
+
+// A request handler.
+pub type Handler = fn(Request) -> Response
+
+// Request and response bodies larger than this are refused (64 MiB).
+const MAX_BODY: usize = 67108864
+
+// ----- headers -------------------------------------------------------------------
+
+// HTTP header fields: names compare case-insensitively; order is kept.
+#[derive(Clone, Debug)]
+pub struct Headers {
+	list: Vec<(String, String)>,
+}
+
+impl Headers {
+	// No headers.
+	pub fn new() -> Headers {
+		return Headers { list: Vec::new() }
+	}
+
+	// The first value of header `name`.
+	pub fn get(&self, name: &str) -> Option<&str> {
+		for i in 0..self.list.len() {
+			if self.list[i].0.eq_ignore_ascii_case(name) {
+				return Some(self.list[i].1.as_str())
+			}
+		}
+		return None
+	}
+
+	// Sets header `name`, replacing any values it had.
+	pub fn set(&mut self, name: &str, value: &str) {
+		self.remove(name)
+		self.add(name, value)
+	}
+
+	// Adds a value for header `name`, keeping existing ones.
+	pub fn add(&mut self, name: &str, value: &str) {
+		self.list.push((name.to_string(), value.to_string()))
+	}
+
+	// Removes every value of header `name`.
+	pub fn remove(&mut self, name: &str) {
+		i mut := 0
+		while i < self.list.len() {
+			if self.list[i].0.eq_ignore_ascii_case(name) {
+				self.list.remove(i)
+			} else {
+				i += 1
+			}
+		}
+	}
+
+	// Whether header `name` is present.
+	pub fn has(&self, name: &str) -> bool {
+		return self.get(name).is_some()
+	}
+
+	// The number of header fields.
+	pub fn len(&self) -> usize {
+		return self.list.len()
+	}
+
+	// All fields as (name, value) pairs, in order.
+	pub fn entries(&self) -> &[(String, String)] {
+		return self.list.as_slice()
+	}
+}
+
+// ----- requests and responses ----------------------------------------------------------
+
+// An HTTP request. On a server, `target` is the path and query
+// ("/search?q=kiln"); for the client, it is the full URL.
+#[derive(Clone, Debug)]
+pub struct Request {
+	pub method: String,
+	pub target: String,
+	pub headers: Headers,
+	pub body: Vec<u8>,
+	// The client's address (servers only).
+	pub remote_addr: String,
+}
+
+impl Request {
+	// A request with no headers and no body.
+	pub fn new(method: &str, target: &str) -> Request {
+		return Request {
+			method: method.to_string(),
+			target: target.to_string(),
+			headers: Headers::new(),
+			body: Vec::new(),
+			remote_addr: String::new(),
+		}
+	}
+
+	// The request with header `name` set.
+	pub fn with_header(self, name: &str, value: &str) -> Request {
+		r mut := self
+		r.headers.set(name, value)
+		return r
+	}
+
+	// The request with `body`.
+	pub fn with_body(self, body: &[u8]) -> Request {
+		r mut := self
+		r.body.clear()
+		r.body.extend_from_slice(body)
+		return r
+	}
+
+	// The path, without the query: "/search".
+	pub fn path(&self) -> &str {
+		match self.target.find("?") {
+			Some(i) => return &self.target[0..i],
+			None => return self.target.as_str(),
+		}
+	}
+
+	// The raw query string after `?`, or "".
+	pub fn query(&self) -> &str {
+		match self.target.find("?") {
+			Some(i) => return &self.target[i + 1..],
+			None => return "",
+		}
+	}
+
+	// The decoded value of query parameter `name`.
+	pub fn query_param(&self, name: &str) -> Option<String> {
+		for pair in self.query().split("&") {
+			(k, v) := match pair.split_once("=") {
+				Some(kv) => kv,
+				None => (pair, ""),
+			}
+			if unescape(k) == name {
+				return Some(unescape(v))
+			}
+		}
+		return None
+	}
+
+	// The first value of header `name`.
+	pub fn header(&self, name: &str) -> Option<&str> {
+		return self.headers.get(name)
+	}
+
+	// The body as text (invalid UTF-8 is replaced).
+	pub fn body_text(&self) -> String {
+		return String::from_utf8_lossy(self.body.as_slice())
+	}
+}
+
+// An HTTP response.
+#[derive(Clone, Debug)]
+pub struct Response {
+	pub status: u16,
+	pub headers: Headers,
+	pub body: Vec<u8>,
+}
+
+impl Response {
+	// An empty response with `status`.
+	pub fn new(status: u16) -> Response {
+		return Response { status: status, headers: Headers::new(), body: Vec::new() }
+	}
+
+	// A response with `body` and Content-Type `content_type`.
+	pub fn bytes(status: u16, content_type: &str, body: &[u8]) -> Response {
+		r mut := Response::new(status)
+		r.headers.set("Content-Type", content_type)
+		r.body.extend_from_slice(body)
+		return r
+	}
+
+	// A plain-text response.
+	pub fn text(status: u16, body: &str) -> Response {
+		return Response::bytes(status, "text/plain; charset=utf-8", body.as_bytes())
+	}
+
+	// An HTML response.
+	pub fn html(status: u16, body: &str) -> Response {
+		return Response::bytes(status, "text/html; charset=utf-8", body.as_bytes())
+	}
+
+	// A JSON response (`body` is already JSON).
+	pub fn json(status: u16, body: &str) -> Response {
+		return Response::bytes(status, "application/json", body.as_bytes())
+	}
+
+	// 404 Not Found.
+	pub fn not_found() -> Response {
+		return Response::text(404, "404 page not found\n")
+	}
+
+	// A redirect (302 Found) to `location`.
+	pub fn redirect(location: &str) -> Response {
+		r mut := Response::new(302)
+		r.headers.set("Location", location)
+		return r
+	}
+
+	// The response with header `name` set.
+	pub fn with_header(self, name: &str, value: &str) -> Response {
+		r mut := self
+		r.headers.set(name, value)
+		return r
+	}
+
+	// The first value of header `name`.
+	pub fn header(&self, name: &str) -> Option<&str> {
+		return self.headers.get(name)
+	}
+
+	// The body as text (invalid UTF-8 is replaced).
+	pub fn body_text(&self) -> String {
+		return String::from_utf8_lossy(self.body.as_slice())
+	}
+}
+
+// The standard reason phrase for a status code ("Not Found").
+pub fn status_text(code: u16) -> &'static str {
+	match code {
+		100 => return "Continue",
+		101 => return "Switching Protocols",
+		200 => return "OK",
+		201 => return "Created",
+		202 => return "Accepted",
+		204 => return "No Content",
+		206 => return "Partial Content",
+		301 => return "Moved Permanently",
+		302 => return "Found",
+		303 => return "See Other",
+		304 => return "Not Modified",
+		307 => return "Temporary Redirect",
+		308 => return "Permanent Redirect",
+		400 => return "Bad Request",
+		401 => return "Unauthorized",
+		403 => return "Forbidden",
+		404 => return "Not Found",
+		405 => return "Method Not Allowed",
+		408 => return "Request Timeout",
+		409 => return "Conflict",
+		410 => return "Gone",
+		411 => return "Length Required",
+		413 => return "Content Too Large",
+		415 => return "Unsupported Media Type",
+		429 => return "Too Many Requests",
+		500 => return "Internal Server Error",
+		501 => return "Not Implemented",
+		502 => return "Bad Gateway",
+		503 => return "Service Unavailable",
+		504 => return "Gateway Timeout",
+		_ => return "Unknown",
+	}
+}
+
+// ----- routing ----------------------------------------------------------------------
+
+struct Route {
+	method: String,
+	pattern: String,
+	handler: Handler,
+}
+
+// Sends each request to the handler registered for its path, like Go's
+// ServeMux. A pattern ending in `/` matches every path under it
+// ("/static/"); other patterns match exactly. The longest match wins.
+// Unmatched paths get 404; a path registered only for other methods gets 405.
+pub struct Router {
+	routes: Vec<Route>,
+}
+
+impl Router {
+	// A router with no routes.
+	pub fn new() -> Router {
+		return Router { routes: Vec::new() }
+	}
+
+	// Routes requests with any method for `pattern` to `h`.
+	pub fn handle(&mut self, pattern: &str, h: Handler) {
+		self.routes.push(Route { method: String::new(), pattern: pattern.to_string(), handler: h })
+	}
+
+	// Routes `method` requests for `pattern` to `h`.
+	pub fn handle_method(&mut self, method: &str, pattern: &str, h: Handler) {
+		self.routes.push(Route { method: method.to_string(), pattern: pattern.to_string(), handler: h })
+	}
+
+	// Routes GET (and HEAD) requests for `pattern` to `h`.
+	pub fn get(&mut self, pattern: &str, h: Handler) {
+		self.handle_method("GET", pattern, h)
+	}
+
+	// Routes POST requests for `pattern` to `h`.
+	pub fn post(&mut self, pattern: &str, h: Handler) {
+		self.handle_method("POST", pattern, h)
+	}
+
+	// Routes PUT requests for `pattern` to `h`.
+	pub fn put(&mut self, pattern: &str, h: Handler) {
+		self.handle_method("PUT", pattern, h)
+	}
+
+	// Routes DELETE requests for `pattern` to `h`.
+	pub fn delete(&mut self, pattern: &str, h: Handler) {
+		self.handle_method("DELETE", pattern, h)
+	}
+
+	// Handles one request.
+	pub fn route(&self, req: Request) -> Response {
+		best mut := self.routes.len()
+		best_len mut := 0
+		path_matched mut := false
+		for i in 0..self.routes.len() {
+			r := &self.routes[i]
+			p := r.pattern.as_str()
+			hit := if p.ends_with("/") { req.path().starts_with(p) } else { req.path() == p }
+			if !hit {
+				continue
+			}
+			path_matched = true
+			method_ok := r.method.is_empty() || r.method == req.method || (r.method == "GET" && req.method == "HEAD")
+			if method_ok && (best == self.routes.len() || p.len() > best_len) {
+				best = i
+				best_len = p.len()
+			}
+		}
+		if best < self.routes.len() {
+			h := self.routes[best].handler
+			return h(req)
+		}
+		if path_matched {
+			return Response::text(405, "405 method not allowed\n")
+		}
+		return Response::not_found()
+	}
+
+	// Serves HTTP on `addr` ("host:port" or ":port") until an error.
+	pub fn listen(self, addr: &str) -> Result<(), io::Error> {
+		return self.serve(TcpListener::bind(addr)?)
+	}
+
+	// Serves HTTP on connections from `listener` until an error.
+	pub fn serve(self, listener: TcpListener) -> Result<(), io::Error> {
+		router := Arc::new(self)
+		loop {
+			conn := listener.accept()?
+			r := router.clone()
+			go move {
+				serve_conn(conn, r)
+			}
+		}
+	}
+}
+
+// Serves HTTP on `addr`, sending every request to `handler`.
+pub fn serve(addr: &str, handler: Handler) -> Result<(), io::Error> {
+	r mut := Router::new()
+	r.handle("/", handler)
+	return r.listen(addr)
+}
+
+// Serves one connection: requests in a loop while it is kept alive.
+fn serve_conn(conn: TcpStream, router: Arc<Router>) {
+	remote := conn.peer_addr().unwrap_or(String::new())
+	reader mut := BufReader::new(&conn)
+	loop {
+		req mut := match read_request(&mut reader) {
+			Ok(Some(r)) => r,
+			Ok(None) => return,
+			Err(e) => {
+				write_response(&conn, &Response::text(400, "400 bad request: {e}\n"), false, false)
+				return
+			},
+		}
+		req.remote_addr = remote.clone()
+		conn_hdr := match req.header("Connection") {
+			Some(v) => v.to_lower(),
+			None => String::new(),
+		}
+		keep := !req.target.is_empty() && conn_hdr != "close"
+		head := req.method == "HEAD"
+		resp := router.route(req)
+		if write_response(&conn, &resp, keep, head).is_err() || !keep {
+			return
+		}
+	}
+}
+
+// Reads one request; None if the connection closed cleanly first.
+fn read_request<R: Read>(r: &mut BufReader<R>) -> Result<Option<Request>, io::Error> {
+	line mut := match r.next_line()? {
+		Some(l) => l,
+		None => return Ok(None),
+	}
+	// Tolerate blank lines between requests.
+	while line.is_empty() {
+		line = match r.next_line()? {
+			Some(l) => l,
+			None => return Ok(None),
+		}
+	}
+	parts := line.split(" ")
+	if parts.len() != 3 || !parts[2].starts_with("HTTP/1.") {
+		return Err(invalid("malformed request line"))
+	}
+	req mut := Request::new(parts[0], parts[1])
+	req.headers = read_headers(r)?
+	// HTTP/1.0 connections close after one request unless asked otherwise.
+	if parts[2] == "HTTP/1.0" && !req.headers.has("Connection") {
+		req.headers.set("Connection", "close")
+	}
+	req.body = read_body(r, &req.headers, true)?
+	return Ok(Some(req))
+}
+
+fn invalid(msg: &str) -> io::Error {
+	return io::Error::new(io::ErrorKind::InvalidData, msg)
+}
+
+// Reads header lines up to the blank line.
+fn read_headers<R: Read>(r: &mut BufReader<R>) -> Result<Headers, io::Error> {
+	h mut := Headers::new()
+	loop {
+		line := match r.next_line()? {
+			Some(l) => l,
+			None => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "connection closed in headers")),
+		}
+		if line.is_empty() {
+			return Ok(h)
+		}
+		match line.split_once(":") {
+			Some((k, v)) => h.add(k.trim(), v.trim()),
+			None => return Err(invalid("malformed header line")),
+		}
+		if h.len() > 200 {
+			return Err(invalid("too many headers"))
+		}
+	}
+}
+
+// Reads a body as described by the headers. Requests without a length have
+// no body; responses without one run to the end of the connection.
+fn read_body<R: Read>(r: &mut BufReader<R>, h: &Headers, request: bool) -> Result<Vec<u8>, io::Error> {
+	body mut := Vec::new()
+	te := match h.get("Transfer-Encoding") {
+		Some(v) => v.to_lower(),
+		None => String::new(),
+	}
+	if te.contains("chunked") {
+		loop {
+			line := match r.next_line()? {
+				Some(l) => l,
+				None => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "connection closed in body")),
+			}
+			size_part := match line.split_once(";") {
+				Some((a, _)) => a,
+				None => line.as_str(),
+			}
+			n := match parse_hex(size_part.trim()) {
+				Some(n) => n,
+				None => return Err(invalid("malformed chunk size")),
+			}
+			if n == 0 {
+				// Trailers, then the blank line.
+				read_headers(r)?
+				return Ok(body)
+			}
+			if body.len() + n > MAX_BODY {
+				return Err(invalid("body too large"))
+			}
+			start := body.len()
+			for _ in 0..n {
+				body.push(0 as u8)
+			}
+			r.read_exact(&mut body.as_mut_slice()[start..])?
+			r.next_line()?
+		}
+	}
+	match h.get("Content-Length") {
+		Some(v) => {
+			n := match parse_dec(v.trim()) {
+				Some(n) => n,
+				None => return Err(invalid("malformed Content-Length")),
+			}
+			if n > MAX_BODY {
+				return Err(invalid("body too large"))
+			}
+			for _ in 0..n {
+				body.push(0 as u8)
+			}
+			r.read_exact(body.as_mut_slice())?
+		},
+		None => {
+			if !request {
+				r.read_to_end(&mut body)?
+			}
+		},
+	}
+	return Ok(body)
+}
+
+// Writes a response with Content-Length and Connection headers.
+fn write_response(conn: &TcpStream, resp: &Response, keep: bool, head: bool) -> Result<(), io::Error> {
+	out mut := String::new()
+	out.push("HTTP/1.1 {resp.status} {status_text(resp.status)}\r\n")
+	for (k, v) in resp.headers.entries() {
+		if k.eq_ignore_ascii_case("Content-Length") || k.eq_ignore_ascii_case("Connection") {
+			continue
+		}
+		out.push("{k}: {v}\r\n")
+	}
+	out.push("Content-Length: {resp.body.len()}\r\n")
+	out.push(if keep { "Connection: keep-alive\r\n" } else { "Connection: close\r\n" })
+	out.push("\r\n")
+	conn.write_all(out.as_bytes())?
+	if !head {
+		conn.write_all(resp.body.as_slice())?
+	}
+	return Ok(())
+}
+
+// ----- client --------------------------------------------------------------------------
+
+// Fetches `url` with GET.
+pub fn get(url: &str) -> Result<Response, io::Error> {
+	return send(Request::new("GET", url))
+}
+
+// Sends `body` to `url` with POST.
+pub fn post(url: &str, content_type: &str, body: &[u8]) -> Result<Response, io::Error> {
+	return send(Request::new("POST", url).with_header("Content-Type", content_type).with_body(body))
+}
+
+// Sends a request whose target is a full "http://host[:port]/path" URL and
+// reads the response. Redirects are not followed.
+pub fn send(req: Request) -> Result<Response, io::Error> {
+	url := req.target.as_str()
+	rest := match url.strip_prefix("http://") {
+		Some(r) => r,
+		None => {
+			if url.starts_with("https://") {
+				return Err(io::Error::new(io::ErrorKind::Unsupported, "https is not supported yet"))
+			}
+			return Err(io::Error::new(io::ErrorKind::InvalidInput, "url must start with http://: {url}"))
+		},
+	}
+	(hostport, path) := match rest.find("/") {
+		Some(i) => (&rest[0..i], &rest[i..]),
+		None => (rest, "/"),
+	}
+	addr := if hostport.ends_with("]") || !hostport.contains(":") { "{hostport}:80" } else { hostport.to_string() }
+	conn := TcpStream::connect(&addr)?
+	out mut := String::new()
+	out.push("{req.method} {path} HTTP/1.1\r\nHost: {hostport}\r\n")
+	for (k, v) in req.headers.entries() {
+		if k.eq_ignore_ascii_case("Host") || k.eq_ignore_ascii_case("Content-Length") || k.eq_ignore_ascii_case("Connection") {
+			continue
+		}
+		out.push("{k}: {v}\r\n")
+	}
+	if !req.headers.has("User-Agent") {
+		out.push("User-Agent: kiln-http\r\n")
+	}
+	if req.body.len() > 0 || req.method == "POST" || req.method == "PUT" {
+		out.push("Content-Length: {req.body.len()}\r\n")
+	}
+	out.push("Connection: close\r\n\r\n")
+	conn.write_all(out.as_bytes())?
+	conn.write_all(req.body.as_slice())?
+	r mut := BufReader::new(&conn)
+	line := match r.next_line()? {
+		Some(l) => l,
+		None => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "server closed the connection")),
+	}
+	parts := line.split(" ")
+	if parts.len() < 2 || !parts[0].starts_with("HTTP/") {
+		return Err(invalid("malformed status line"))
+	}
+	status := match parse_dec(parts[1]) {
+		Some(s) => s as u16,
+		None => return Err(invalid("malformed status code")),
+	}
+	resp mut := Response::new(status)
+	resp.headers = read_headers(&mut r)?
+	if req.method != "HEAD" && status != 204 && status != 304 && !(status >= 100 && status < 200) {
+		resp.body = read_body(&mut r, &resp.headers, false)?
+	}
+	return Ok(resp)
+}
+
+// ----- helpers ------------------------------------------------------------------------
+
+fn parse_dec(s: &str) -> Option<usize> {
+	if s.is_empty() || s.len() > 18 {
+		return None
+	}
+	n mut := 0
+	for c in s.as_bytes() {
+		if *c < 48 || *c > 57 {
+			return None
+		}
+		n = n * 10 + (*c - 48) as usize
+	}
+	return Some(n)
+}
+
+fn parse_hex(s: &str) -> Option<usize> {
+	if s.is_empty() || s.len() > 15 {
+		return None
+	}
+	n mut := 0
+	for c in s.as_bytes() {
+		d := if *c >= 48 && *c <= 57 {
+			*c - 48
+		} else if *c >= 97 && *c <= 102 {
+			*c - 87
+		} else if *c >= 65 && *c <= 70 {
+			*c - 55
+		} else {
+			return None
+		}
+		n = n * 16 + d as usize
+	}
+	return Some(n)
+}
+
+fn hex_val(c: u8) -> i64 {
+	if c >= 48 && c <= 57 {
+		return (c - 48) as i64
+	}
+	if c >= 97 && c <= 102 {
+		return (c - 87) as i64
+	}
+	if c >= 65 && c <= 70 {
+		return (c - 55) as i64
+	}
+	return -1
+}
+
+// Decodes `%XX` escapes and `+` (as a space) in a query component.
+pub fn unescape(s: &str) -> String {
+	b := s.as_bytes()
+	out mut := Vec::new()
+	i mut := 0
+	while i < b.len() {
+		c := b[i]
+		if c == 43 {
+			out.push(32 as u8)
+		} else if c == 37 && i + 2 < b.len() + 0 && hex_val(b[i + 1]) >= 0 && hex_val(b[i + 2]) >= 0 {
+			out.push((hex_val(b[i + 1]) * 16 + hex_val(b[i + 2])) as u8)
+			i += 2
+		} else {
+			out.push(c)
+		}
+		i += 1
+	}
+	return String::from_utf8_lossy(out.as_slice())
+}
+
+// Encodes a query component: letters, digits, and `-_.~` stay; spaces
+// become `+`; everything else becomes `%XX`.
+pub fn escape(s: &str) -> String {
+	hex := "0123456789ABCDEF".as_bytes()
+	out mut := String::new()
+	for c in s.as_bytes() {
+		ch := *c
+		keep := (ch >= 48 && ch <= 57) || (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || ch == 45 || ch == 95 || ch == 46 || ch == 126
+		if keep {
+			out.push_char(ch as char)
+		} else if ch == 32 {
+			out.push("+")
+		} else {
+			out.push("%")
+			out.push_char(hex[(ch >> 4) as usize] as char)
+			out.push_char(hex[(ch & 15) as usize] as char)
+		}
+	}
+	return out
+}

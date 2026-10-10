@@ -32,7 +32,19 @@ use kiln_typeck::Typed;
 pub fn lower_all(typed: &mut Typed<'_, '_>) -> Vec<(usize, Vec<Body>)> {
     let r = typed.resolved();
     let user: Vec<usize> = (0..r.fns.len()).filter(|i| !r.fns[*i].is_prelude).collect();
-    user.into_iter()
+    lower_fns(typed, user)
+}
+
+/// Lowers the user's functions and the standard library's (not the core
+/// prelude's built-ins), for checking the standard library itself.
+pub fn lower_with_std(typed: &mut Typed<'_, '_>) -> Vec<(usize, Vec<Body>)> {
+    let r = typed.resolved();
+    let fns: Vec<usize> = (0..r.fns.len()).filter(|i| !r.fn_is_core(*i)).collect();
+    lower_fns(typed, fns)
+}
+
+fn lower_fns(typed: &mut Typed<'_, '_>, fns: Vec<usize>) -> Vec<(usize, Vec<Body>)> {
+    fns.into_iter()
         .map(|i| (i, lower_fn(typed, i)))
         .filter(|(_, b)| !b.is_empty())
         .collect()

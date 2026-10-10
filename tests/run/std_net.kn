@@ -1,0 +1,70 @@
+import std::io
+import std::io::{BufReader, Read}
+import std::net
+import std::net::{TcpListener, TcpStream, UdpSocket}
+import std::log
+
+fn echo(conn: TcpStream) -> Result<(), io::Error> {
+	r mut := BufReader::new(&conn)
+	while let Some(line) = r.next_line()? {
+		conn.write_str("echo: {line}\n")?
+	}
+	return Ok(())
+}
+
+fn main() -> Result<(), io::Error> {
+	listener := TcpListener::bind("127.0.0.1:0")?
+	port := listener.port()?
+	log::debug("not shown")
+	go move {
+		for conn in listener.incoming() {
+			c := conn.unwrap()
+			go move {
+				echo(c).unwrap()
+			}
+		}
+	}
+	results := chan::<String>(10)
+	(tx, rx) := results
+	for i in 0..3 {
+		t := tx.clone()
+		go move {
+			c := TcpStream::connect("127.0.0.1:{port}").unwrap()
+			c.write_str("hello {i}\nbye {i}\n").unwrap()
+			r mut := BufReader::new(&c)
+			a := r.next_line().unwrap().unwrap()
+			b := r.next_line().unwrap().unwrap()
+			t <- "{a} / {b}"
+		}
+	}
+	got mut := Vec::new()
+	for _ in 0..3 {
+		got.push(<-rx)
+	}
+	// Sort for a stable output.
+	for i in 1..got.len() {
+		j mut := i
+		while j > 0 && got[j - 1] > got[j] {
+			got.swap(j - 1, j)
+			j -= 1
+		}
+	}
+	for g in got {
+		println(g)
+	}
+	u1 := UdpSocket::bind("127.0.0.1:0")?
+	u2 := UdpSocket::bind("127.0.0.1:0")?
+	u1.send_to("ping".as_bytes(), &u2.local_addr()?)?
+	buf mut := [0 as u8; 64]
+	(n, from) := u2.recv_from(&mut buf)?
+	println("udp {n} bytes from u1: {from == u1.local_addr()?}")
+	match net::split_host_port("nope") {
+		Ok(_) => println("??"),
+		Err(e) => println("{e}"),
+	}
+	match TcpStream::connect("127.0.0.1:1") {
+		Ok(_) => println("??"),
+		Err(e) => println("refused: {e.kind() == io::ErrorKind::ConnectionRefused}"),
+	}
+	return Ok(())
+}

@@ -1,0 +1,6 @@
+echo: hello 0 / echo: bye 0
+echo: hello 1 / echo: bye 1
+echo: hello 2 / echo: bye 2
+udp 4 bytes from u1: true
+address nope: missing port
+refused: true

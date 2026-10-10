@@ -1,0 +1,9 @@
+counter 8000
+arc count 1
+readers see 2 and 2
+atomic 2000 swap 2000 now 5 cas true false 6
+flag false true
+init runs once
+once done true
+try_lock while held: false (x)
+try_lock after: true

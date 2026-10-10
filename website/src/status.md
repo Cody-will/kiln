@@ -18,8 +18,11 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 | Panics | ✅ Print a message and exit with status 101; 🚧 no unwinding (destructors and `defer` don't run on panic) |
 | Concurrency: `go` and `Task<T>`, channels, `select`, `scope`/`spawn`, M:N work-stealing scheduler, deadlock detection | ✅ Implemented on Linux, macOS, and Windows |
 | A panic inside a task | 🚧 Ends the whole program (exit 101); `join` never returns `Err` yet |
-| Preemption | 🚧 Not yet: tasks switch at channel operations, `select`, and `join`, so a long loop without them keeps its thread busy |
-| Standard library (`std::fs`, `std::net`, `std::time`, ...) | 🚧 Not yet: `std` imports resolve, but their items are opaque to the type checker |
+| Preemption | ✅ Loops yield after a task has run 10 ms while others wait; tasks also switch at channels, `select`, `join`, locks, timers, and I/O |
+| Standard library phase 1: `time`, `sync`, `io`, `fs`, `path`, `os`, `net` (TCP/UDP on the netpoller), `net::http` (server and client), `log`, `fmt`, `mem`, `ptr` | ✅ Implemented on Linux, macOS, and Windows; written in Kiln on the C runtime ([reference](stdlib.md)) |
+| Standard library phase 2: `strings`, `strconv`, `collections`, `encoding`, `regexp`, `kiln test`, ... | 🚧 Next |
+| HTTPS (TLS) | 🚧 Not yet: `http::get("https://...")` returns an `Unsupported` error |
+| `static` items | 🚧 Type-checked but not yet compiled |
 | Multi-file packages, `kiln.toml`, registry | 🚧 Not yet: `kiln check` works on a single file (inline `mod` blocks are supported) |
 | `kiln build`, `kiln run` | ✅ Implemented (single file) |
 | `kiln fmt`, `kiln test`, language server | 🚧 Not yet |

@@ -690,3 +690,20 @@ fn defer_mir_shape() {
     assert!(d.contains("defer_push 0"), "{d}");
     assert!(d.contains("defer_dispatch [bb"), "{d}");
 }
+
+/// The standard library (written in Kiln) passes the borrow checker.
+#[test]
+fn standard_library_borrow_checks() {
+    let parsed = kiln_parser::parse("fn main() {}");
+    let prelude = kiln_resolve::parse_prelude();
+    let resolved = kiln_resolve::resolve(&parsed.file, &prelude);
+    assert!(resolved.errors.is_empty());
+    let mut typed = kiln_typeck::typeck(&resolved);
+    assert!(typed.errors().is_empty());
+    let errors = crate::check_std(&mut typed);
+    let shown: Vec<String> = errors
+        .iter()
+        .map(|d| d.render("x.kn", "fn main() {}"))
+        .collect();
+    assert!(errors.is_empty(), "{}", shown.join("\n"));
+}

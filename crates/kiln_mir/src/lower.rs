@@ -1060,6 +1060,24 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
     fn expr(&mut self, e: &Expr) -> Operand {
         let op = self.expr_inner(e);
         if let Some(target) = self.res.coercions.get(&e.span).cloned() {
+            // An interpolated `String` used as `&str`: keep it in a temporary
+            // and borrow that.
+            let src = self.ty(e);
+            if matches!(&src, Ty::Adt(d, _) if self.lang(*d, "String"))
+                && matches!(target, Ty::Ref(..))
+            {
+                let t = self.temp(src.clone(), e.span);
+                self.assign(Place::local(t), Rvalue::Use(op), e.span);
+                let r = self.temp_of(
+                    Ty::Ref(false, Box::new(src)),
+                    Rvalue::Ref {
+                        mutable: false,
+                        place: Place::local(t),
+                    },
+                    e.span,
+                );
+                return self.temp_of(target.clone(), Rvalue::Coerce(r, target), e.span);
+            }
             if !matches!(&op, Operand::Const(c) if c.kind == ConstKind::Unit) {
                 return self.temp_of(target.clone(), Rvalue::Coerce(op, target), e.span);
             }

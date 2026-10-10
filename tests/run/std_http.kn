@@ -1,0 +1,45 @@
+import std::io
+import std::net::TcpListener
+import std::net::http
+
+fn hello(req: http::Request) -> http::Response {
+	name := req.query_param("name").unwrap_or("world".to_string())
+	return http::Response::text(200, "hello, {name}!\n")
+}
+
+fn echo(req: http::Request) -> http::Response {
+	return http::Response::json(201, "{{\"got\": \"{req.body_text()}\", \"ua\": \"{req.header("user-agent").unwrap_or("")}\"}}")
+}
+
+fn files(req: http::Request) -> http::Response {
+	return http::Response::text(200, "file {req.path()}")
+}
+
+fn main() -> Result<(), io::Error> {
+	listener := TcpListener::bind("127.0.0.1:0")?
+	port := listener.port()?
+	router mut := http::Router::new()
+	router.get("/hello", hello)
+	router.post("/echo", echo)
+	router.get("/static/", files)
+	go move {
+		router.serve(listener).unwrap()
+	}
+	base := "http://127.0.0.1:{port}"
+	r := http::get("{base}/hello?name=Kiln%20fan")?
+	println("{r.status} {r.header("content-type").unwrap()} {r.body_text()}")
+	r2 := http::post("{base}/echo", "text/plain", "ping".as_bytes())?
+	println("{r2.status} {r2.body_text()}")
+	r3 := http::get("{base}/static/css/site.css")?
+	println("{r3.status} {r3.body_text()}")
+	r4 := http::get("{base}/nope")?
+	println("{r4.status} {r4.body_text()}")
+	r5 := http::send(http::Request::new("DELETE", "{base}/hello"))?
+	println("{r5.status}")
+	println("{http::escape("a b&c=d/é")} {http::unescape("a+b%26c")}")
+	match http::get("https://example.com") {
+		Ok(_) => println("??"),
+		Err(e) => println("{e}"),
+	}
+	return Ok(())
+}

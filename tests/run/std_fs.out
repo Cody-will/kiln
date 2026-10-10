@@ -1,0 +1,14 @@
+hello
+world
+size 12 file true dir false dir? true
+read at 4: 456
+end-2 at 8
+copied 12 bytes
+a.txt dir=false
+b.bin dir=false
+d.txt dir=false
+sub dir=true
+missing file: true
+create_new on existing: true
+non-empty dir not removed
+cleaned up: true

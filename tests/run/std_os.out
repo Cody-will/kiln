@@ -1,0 +1,12 @@
+args: 1
+var: forty two
+in environ: true
+after unset: true
+pid positive: true
+cwd absolute: true
+hostname: true
+child says hi there
+child error output
+status 3 success false
+missing program: true
+[exit 7]

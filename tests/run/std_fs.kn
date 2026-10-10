@@ -1,0 +1,54 @@
+import std::fs
+import std::io
+import std::io::{Read, Write}
+import std::os
+import std::path
+
+fn main() -> Result<(), io::Error> {
+	dir := path::join(&os::temp_dir(), "kiln_std_fs_{os::pid()}")
+	fs::create_dir_all(&path::join(&dir, "sub/deeper"))?
+	f := path::join(&dir, "a.txt")
+	fs::write_string(&f, "hello\n")?
+	fs::append_string(&f, "world\n")?
+	print(fs::read_to_string(&f)?)
+	m := fs::metadata(&f)?
+	println("size {m.len()} file {m.is_file()} dir {m.is_dir()} dir? {fs::is_dir(&dir)}")
+
+	// Files: write, seek, read.
+	{
+		file mut := fs::File::create(&path::join(&dir, "b.bin"))?
+		file.write_all("0123456789".as_bytes())?
+	}
+	{
+		// Closed at the end of this block (Windows cannot delete open files).
+		file mut := fs::File::open(&path::join(&dir, "b.bin"))?
+		file.seek(fs::SeekFrom::Start(4))?
+		buf mut := [0 as u8; 3]
+		file.read_exact(&mut buf)?
+		println("read at 4: {String::from_utf8_lossy(&buf)}")
+		pos := file.seek(fs::SeekFrom::End(-2))?
+		println("end-2 at {pos}")
+	}
+
+	n := fs::copy(&f, &path::join(&dir, "c.txt"))?
+	fs::rename(&path::join(&dir, "c.txt"), &path::join(&dir, "d.txt"))?
+	println("copied {n} bytes")
+	for e in fs::read_dir(&dir)? {
+		println("{e.name} dir={e.is_dir()}")
+	}
+	match fs::read_to_string(&path::join(&dir, "missing.txt")) {
+		Ok(_) => println("unexpected"),
+		Err(e) => println("missing file: {e.kind() == io::ErrorKind::NotFound}"),
+	}
+	match fs::OpenOptions::new().write(true).create_new(true).open(&f) {
+		Ok(_) => println("unexpected"),
+		Err(e) => println("create_new on existing: {e.kind() == io::ErrorKind::AlreadyExists}"),
+	}
+	match fs::remove_dir(&dir) {
+		Ok(_) => println("unexpected"),
+		Err(_) => println("non-empty dir not removed"),
+	}
+	fs::remove_dir_all(&dir)?
+	println("cleaned up: {!fs::exists(&dir)}")
+	return Ok(())
+}

@@ -1,0 +1,13 @@
+// Formatting. Values are formatted with string interpolation:
+// "{x}" uses Display, "{x:?}" uses Debug.
+//
+// Implement Display to give a type a user-facing form:
+//
+//	impl fmt::Display for Point {
+//		fn to_string(&self) -> String {
+//			return "({self.x}, {self.y})"
+//		}
+//	}
+
+import Display
+import Debug

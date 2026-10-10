@@ -45,6 +45,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <sys/socket.h>
@@ -1805,7 +1806,16 @@ int64_t kn_os_run(const uint8_t *argv, size_t al, int64_t capture, KnVec *out, K
 		result = errno_err();
 		goto done;
 	}
+	/* Keep the pipes out of programs other threads start concurrently
+	 * (dup2 in the child clears the flag on its stdout and stderr). */
+	fcntl(ep[0], F_SETFD, FD_CLOEXEC);
 	fcntl(ep[1], F_SETFD, FD_CLOEXEC);
+	if (capture) {
+		fcntl(po[0], F_SETFD, FD_CLOEXEC);
+		fcntl(po[1], F_SETFD, FD_CLOEXEC);
+		fcntl(pe[0], F_SETFD, FD_CLOEXEC);
+		fcntl(pe[1], F_SETFD, FD_CLOEXEC);
+	}
 	pid_t pid = fork();
 	if (pid < 0) {
 		result = errno_err();
@@ -1841,26 +1851,27 @@ int64_t kn_os_run(const uint8_t *argv, size_t al, int64_t capture, KnVec *out, K
 		int open_o = 1, open_e = 1;
 		char buf[4096];
 		while (open_o || open_e) {
-			fd_set rs;
-			FD_ZERO(&rs);
-			if (open_o)
-				FD_SET(po[0], &rs);
-			if (open_e)
-				FD_SET(pe[0], &rs);
-			int m = po[0] > pe[0] ? po[0] : pe[0];
-			if (select(m + 1, &rs, NULL, NULL, NULL) < 0) {
+			/* poll, not select: descriptors can be numbered above FD_SETSIZE. */
+			struct pollfd pf[2];
+			pf[0].fd = open_o ? po[0] : -1;
+			pf[0].events = POLLIN;
+			pf[0].revents = 0;
+			pf[1].fd = open_e ? pe[0] : -1;
+			pf[1].events = POLLIN;
+			pf[1].revents = 0;
+			if (poll(pf, 2, -1) < 0) {
 				if (errno == EINTR)
 					continue;
 				break;
 			}
-			if (open_o && FD_ISSET(po[0], &rs)) {
+			if (open_o && (pf[0].revents & (POLLIN | POLLHUP | POLLERR))) {
 				ssize_t n = read(po[0], buf, sizeof buf);
 				if (n <= 0)
 					open_o = 0;
 				else
 					kn_string_push(out, (const uint8_t *)buf, (size_t)n);
 			}
-			if (open_e && FD_ISSET(pe[0], &rs)) {
+			if (open_e && (pf[1].revents & (POLLIN | POLLHUP | POLLERR))) {
 				ssize_t n = read(pe[0], buf, sizeof buf);
 				if (n <= 0)
 					open_e = 0;
@@ -1934,3 +1945,19 @@ int64_t kn_utf8_valid_up_to(const uint8_t *p, size_t n) {
 	}
 	return (int64_t)n;
 }
+
+/* 0 = Linux (and other Unix), 1 = macOS, 2 = Windows. */
+int64_t kn_os_kind(void) {
+#if defined(_WIN32)
+	return 2;
+#elif defined(__APPLE__)
+	return 1;
+#else
+	return 0;
+#endif
+}
+
+/* The std::log level (-1 = not yet read from KILN_LOG). */
+static int64_t log_level = -1;
+int64_t kn_log_level_get(void) { return kn_atomic_load(&log_level); }
+void kn_log_level_set(int64_t l) { kn_atomic_store(&log_level, l); }

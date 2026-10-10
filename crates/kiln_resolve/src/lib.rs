@@ -34,6 +34,14 @@ pub const STD_MODULES: &[(&str, &str)] = &[
     ("ptr", include_str!("../std/ptr.kn")),
     ("time", include_str!("../std/time.kn")),
     ("sync", include_str!("../std/sync.kn")),
+    ("fmt", include_str!("../std/fmt.kn")),
+    ("io", include_str!("../std/io.kn")),
+    ("path", include_str!("../std/path.kn")),
+    ("fs", include_str!("../std/fs.kn")),
+    ("os", include_str!("../std/os.kn")),
+    ("net", include_str!("../std/net.kn")),
+    ("net::http", include_str!("../std/http.kn")),
+    ("log", include_str!("../std/log.kn")),
 ];
 
 /// The prelude and standard library as one source text, plus each file's

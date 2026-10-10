@@ -6,7 +6,7 @@ use crate::ty::{Ty, VarKind};
 use kiln_lexer::Span;
 use kiln_parser::ast::*;
 use kiln_resolve::{Builtin, DefId, DefKind, LocalId, PrimTy, Res};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Loop context for `break` typing.
 struct LoopCx {
@@ -79,6 +79,8 @@ pub struct Body<'c, 'r, 'a> {
     callees: HashMap<Span, usize>,
     callee_substs: HashMap<Span, HashMap<String, Ty>>,
     coercions: Vec<(Span, Ty, Ty)>,
+    /// Spans of interpolated string literals (which may coerce to `&str`).
+    interp_spans: HashSet<Span>,
     /// ADTs whose auto-trait impls are being computed (cycle guard).
     auto_stack: Vec<DefId>,
     /// The expected type of the closure being checked, from the call it is passed to.
@@ -105,6 +107,7 @@ impl<'c, 'r, 'a> Body<'c, 'r, 'a> {
             callees: HashMap::new(),
             callee_substs: HashMap::new(),
             coercions: vec![],
+            interp_spans: HashSet::new(),
             auto_stack: vec![],
             expected_fn: None,
             deferred_init: Default::default(),
@@ -180,6 +183,7 @@ impl Checker<'_, '_> {
             callees: HashMap::new(),
             callee_substs: HashMap::new(),
             coercions: vec![],
+            interp_spans: HashSet::new(),
             auto_stack: Vec::new(),
             expected_fn: None,
             deferred_init: Default::default(),
@@ -354,6 +358,21 @@ impl Body<'_, '_, '_> {
         if self.coerces(found, expected) {
             self.coercions.push((span, found.clone(), expected.clone()));
             return true;
+        }
+        // An interpolated string literal can be used where a `&str` is
+        // expected: `open("{dir}/{name}")`. The `String` lives until the end
+        // of the enclosing block.
+        if self.interp_spans.contains(&span) {
+            if let (Ty::Adt(sd, _), Ty::Ref(false, inner)) =
+                (self.shallow(found), self.shallow(expected))
+            {
+                if self.c.is_lang(sd, "String")
+                    && matches!(self.shallow(&inner), Ty::Prim(PrimTy::Str))
+                {
+                    self.coercions.push((span, found.clone(), expected.clone()));
+                    return true;
+                }
+            }
         }
         let (e, f) = (self.fmt(expected), self.fmt(found));
         let mut d = kiln_lexer::Diagnostic::error(
@@ -672,6 +691,11 @@ impl Body<'_, '_, '_> {
             for idx in 0..self.c.impls.len() {
                 let is_trait = self.c.impls[idx].trait_ref.is_some();
                 if is_trait != (pass == 1) {
+                    continue;
+                }
+                // `impl Trait for &mut T` serves trait bounds; method calls on a
+                // reference use the referent's impl (one autoderef step later).
+                if matches!(t, Ty::Ref(..)) && matches!(self.c.impls[idx].self_ty, Ty::Ref(..)) {
                     continue;
                 }
                 let (st, map) = self.instantiate_impl(idx);
@@ -1000,6 +1024,15 @@ impl Body<'_, '_, '_> {
                 }
             }
             ExprKind::Paren(inner) => self.check_place_mut(inner, what),
+            // A temporary (the result of a call, a literal, ...) can be
+            // borrowed mutably; it lives until the end of the statement.
+            ExprKind::Call { .. }
+            | ExprKind::MethodCall { .. }
+            | ExprKind::StructLit { .. }
+            | ExprKind::Tuple(_)
+            | ExprKind::Array(_)
+            | ExprKind::Lit(_)
+                if what == "borrow" => {}
             _ => self.error(format!("cannot {what} this expression"), e.span),
         }
     }
@@ -1037,6 +1070,7 @@ impl Body<'_, '_, '_> {
         match &e.kind {
             ExprKind::Lit(l) => self.lit_ty(l),
             ExprKind::Interp(parts) => {
+                self.interp_spans.insert(e.span);
                 for p in parts {
                     if let InterpPart::Expr(x) = p {
                         self.expr(x);
@@ -1671,11 +1705,17 @@ impl Body<'_, '_, '_> {
         match self.method_on(&base_ty, name) {
             Some(m) => self.with_self_param(m, base_ty, span),
             None => {
-                let t = self.fmt(&base_ty);
-                self.error(
-                    format!("no function or associated item named `{name}` found for `{t}`"),
-                    span,
-                );
+                let msg = match &base_ty {
+                    Ty::Adt(d, _) if self.c.adts[d].is_enum => format!(
+                        "no variant or associated function named `{name}` in enum `{}`",
+                        self.c.r.def(*d).name
+                    ),
+                    _ => {
+                        let t = self.fmt(&base_ty);
+                        format!("no function or associated item named `{name}` found for `{t}`")
+                    }
+                };
+                self.error(msg, span);
                 Ty::Unknown
             }
         }

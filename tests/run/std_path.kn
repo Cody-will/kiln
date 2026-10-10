@@ -1,0 +1,16 @@
+import std::os
+import std::path
+
+// Separators differ by OS; show them as `/`.
+fn show(s: &str) -> String {
+	return s.replace("\\", "/")
+}
+
+fn main() {
+	println("{show(&path::join("a", "b"))} {show(&path::join("a/", "b"))} {show(&path::join("", "b"))} {show(&path::join_all(&["x", "y", "z.txt"]))}")
+	println("{path::base("/a/b/c.txt")} {path::base("a/b/")} {path::base("")} {path::base("/")} {path::base("c")}")
+	println("{path::dir("/a/b/c.txt")} {path::dir("c.txt")} {path::dir("/c")} {path::dir("a/b/")}")
+	println("[{path::ext("x.tar.gz")}] [{path::ext("README")}] [{path::ext(".bashrc")}] [{path::stem("dir/x.tar.gz")}]")
+	println("{show(&path::clean("a/./b/../c//d/"))} {show(&path::clean("/../x"))} {show(&path::clean("../../a"))} {show(&path::clean(""))} {show(&path::clean("a/.."))}")
+	println("{path::is_absolute(&os::current_dir().unwrap())} {path::is_absolute("usr")}")
+}

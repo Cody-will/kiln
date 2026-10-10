@@ -686,3 +686,12 @@ fn exhaustiveness_looks_inside_patterns() {
         "non-exhaustive match: not all values of `i32` are covered",
     );
 }
+
+#[test]
+fn enum_associated_functions() {
+    ok("enum E {\n\tA,\n\tB,\n}\nimpl E {\n\tfn first() -> E {\n\t\treturn E::A\n\t}\n}\nfn f() {\n\tx := E::first()\n}");
+    assert_eq!(
+        errs("enum E {\n\tA,\n}\nfn f() {\n\tx := E::B\n}"),
+        vec!["no variant or associated function named `B` in enum `E`"]
+    );
+}

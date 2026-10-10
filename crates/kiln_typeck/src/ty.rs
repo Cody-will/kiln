@@ -111,6 +111,19 @@ pub enum VarKind {
 #[derive(Debug, Default, Clone)]
 pub struct InferTable {
     vars: Vec<(Option<Ty>, VarKind)>,
+    /// Undo log of overwritten entries, kept while a snapshot is open.
+    trail: Vec<(u32, (Option<Ty>, VarKind))>,
+    /// Number of open snapshots.
+    open: usize,
+    /// Variables below this index have had literal defaults applied.
+    defaulted: usize,
+}
+
+/// A point to roll the table back to (see [`InferTable::snapshot`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Snapshot {
+    trail: usize,
+    vars: usize,
 }
 
 impl InferTable {
@@ -190,10 +203,12 @@ impl InferTable {
         if let Ty::Var(w) = t {
             if self.kind(w) == VarKind::General && self.kind(v) != VarKind::General {
                 let k = self.kind(v);
-                self.vars[w as usize].1 = k;
+                let old = self.vars[w as usize].clone();
+                self.set(w, (old.0, k));
             }
         }
-        self.vars[v as usize].0 = Some(t);
+        let k = self.vars[v as usize].1;
+        self.set(v, (Some(t), k));
         true
     }
 
@@ -232,45 +247,84 @@ impl InferTable {
         }
     }
 
-    /// Saves the variable table (for speculative unification).
-    pub(crate) fn snapshot(&self) -> Vec<(Option<Ty>, VarKind)> {
-        self.vars.clone()
+    /// Overwrites variable `v`'s entry, logging the old one if a snapshot is open.
+    fn set(&mut self, v: u32, entry: (Option<Ty>, VarKind)) {
+        if self.open > 0 {
+            let old = std::mem::replace(&mut self.vars[v as usize], entry);
+            self.trail.push((v, old));
+        } else {
+            self.vars[v as usize] = entry;
+        }
     }
 
-    /// Restores a [`InferTable::snapshot`].
-    pub(crate) fn restore(&mut self, s: Vec<(Option<Ty>, VarKind)>) {
-        self.vars = s;
+    /// Starts recording changes so they can be undone with
+    /// [`InferTable::restore`] or kept with [`InferTable::commit`]. Snapshots
+    /// nest; each must be ended exactly once. O(1).
+    pub(crate) fn snapshot(&mut self) -> Snapshot {
+        self.open += 1;
+        Snapshot {
+            trail: self.trail.len(),
+            vars: self.vars.len(),
+        }
+    }
+
+    /// Undoes every change since `s`, including variables created since.
+    pub(crate) fn restore(&mut self, s: Snapshot) {
+        while self.trail.len() > s.trail {
+            let (v, old) = self.trail.pop().unwrap();
+            self.vars[v as usize] = old;
+        }
+        self.vars.truncate(s.vars);
+        self.end_snapshot();
+    }
+
+    /// Keeps the changes since `s`.
+    pub(crate) fn commit(&mut self, _s: Snapshot) {
+        self.end_snapshot();
+    }
+
+    fn end_snapshot(&mut self) {
+        self.open -= 1;
+        if self.open == 0 {
+            self.trail.clear();
+        }
     }
 
     /// Unifies without keeping any bindings if it fails.
     pub fn try_unify(&mut self, a: &Ty, b: &Ty) -> bool {
-        let snapshot = self.vars.clone();
+        let s = self.snapshot();
         let ok = self.unify(a, b);
-        if !ok {
-            self.vars = snapshot;
+        if ok {
+            self.commit(s);
+        } else {
+            self.restore(s);
         }
         ok
     }
 
     /// Whether `a` and `b` would unify, without changing any bindings.
     pub fn can_unify(&mut self, a: &Ty, b: &Ty) -> bool {
-        let snapshot = self.vars.clone();
+        let s = self.snapshot();
         let ok = self.unify(a, b);
-        self.vars = snapshot;
+        self.restore(s);
         ok
     }
 
     /// Binds every unbound integer variable to `i32` and float variable to `f64`.
     pub fn apply_literal_defaults(&mut self) {
-        for i in 0..self.vars.len() {
+        // Only variables created since the last call can still be unbound
+        // literals: earlier ones were defaulted then.
+        for i in self.defaulted.min(self.vars.len())..self.vars.len() {
             if self.vars[i].0.is_none() {
-                match self.vars[i].1 {
-                    VarKind::Int => self.vars[i].0 = Some(Ty::Prim(PrimTy::I32)),
-                    VarKind::Float => self.vars[i].0 = Some(Ty::Prim(PrimTy::F64)),
+                let k = self.vars[i].1;
+                match k {
+                    VarKind::Int => self.set(i as u32, (Some(Ty::Prim(PrimTy::I32)), k)),
+                    VarKind::Float => self.set(i as u32, (Some(Ty::Prim(PrimTy::F64)), k)),
                     VarKind::General => {}
                 }
             }
         }
+        self.defaulted = self.vars.len();
     }
 
     /// Whether `t` still contains an unbound general variable.

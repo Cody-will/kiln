@@ -381,16 +381,25 @@ Non-blocking and explicit operations are library methods:
 
 As an expression statement, `<-rx` in non-`select` code receives and discards the value. Sending on a closed channel panics, as in Go; use `try_send` to avoid that.
 
-### A small HTTP server sketch
+### A small HTTP server
+
+This is `examples/server.kn`: a raw TCP server, one task per connection.
 
 ```kiln
+import std::io
+import std::io::BufReader
+import std::log
 import std::net::{TcpListener, TcpStream}
-import std::io::{self, BufReader}
 
 fn handle(conn: TcpStream) -> Result<(), io::Error> {
+	defer log::debug("connection closed")
 	reader mut := BufReader::new(&conn)
-	line := reader.read_line()?
-	path := line.split(' ').nth(1).unwrap_or("/")
+	line := match reader.next_line()? {
+		Some(l) => l,
+		None => return Ok(()),
+	}
+	parts := line.split(" ")
+	path := if parts.len() > 1 { parts[1] } else { "/" }
 	body := match path {
 		"/" => "Welcome to Kiln",
 		"/health" => "ok",
@@ -402,7 +411,8 @@ fn handle(conn: TcpStream) -> Result<(), io::Error> {
 }
 
 fn respond(conn: &TcpStream, code: u16, body: &str) -> Result<(), io::Error> {
-	conn.write_all("HTTP/1.1 {code} OK\r\nContent-Length: {body.len()}\r\n\r\n{body}")?
+	reason := if code == 200 { "OK" } else { "Not Found" }
+	conn.write_str("HTTP/1.1 {code} {reason}\r\nContent-Length: {body.len()}\r\n\r\n{body}")?
 	return Ok(())
 }
 
@@ -421,7 +431,25 @@ fn main() -> Result<(), io::Error> {
 }
 ```
 
-Network I/O in a task never blocks an OS thread. The runtime parks the task on its netpoller (epoll, kqueue, or IOCP), the way Go does.
+With `std::net::http`, the same server is a router and two handlers (`examples/http_server.kn`):
+
+```kiln
+import std::io
+import std::net::http
+
+fn hello(req: http::Request) -> http::Response {
+	name := req.query_param("name").unwrap_or("world".to_string())
+	return http::Response::text(200, "hello, {name}!\n")
+}
+
+fn main() -> Result<(), io::Error> {
+	router mut := http::Router::new()
+	router.get("/hello", hello)
+	return router.listen(":8080")
+}
+```
+
+Network I/O in a task never blocks an OS thread. The runtime parks the task on its netpoller (epoll on Linux, kqueue on macOS, WSAPoll on Windows), the way Go does.
 
 ## 5. Type System
 
@@ -444,6 +472,15 @@ Network I/O in a task never blocks an OS thread. The runtime parks the task on i
 - **Inference**: local Hindley–Milner-style inference within function bodies. Function signatures are always fully annotated.
 - **No null**: `Option<T>` is used instead, and `Option<&T>` is pointer-sized.
 - **Integer overflow**: panics in debug builds and wraps in release builds. `wrapping_*`, `checked_*`, and `saturating_*` are available.
+
+### 5.1 Conveniences decided while building the standard library
+
+- **Interpolated strings as `&str`**: an interpolated string literal (which builds a `String`) can be passed where a `&str` is expected; the string lives until the end of the enclosing block. `fs::read_to_string("{dir}/config.toml")` needs no `&`. Other `String` values still need an explicit `&`.
+- **Methods on temporaries**: a `&mut self` method can be called on a temporary value, such as `Cursor::from_str("x").read_to_string(&mut s)`.
+- **Associated functions on enums**: `ErrorKind::from_number(3)` calls a function from an `impl` block of the enum. Variants take priority when names collide.
+- **Structural equality**: `==` on types that derive `Eq` compares field by field: enum variants and payloads, structs, tuples, arrays, `String`, `Vec`, and `Box`, looking through references.
+- **Re-exports**: an `import` inside a module makes the imported name reachable through that module's path (`std::fmt::Display` is the prelude's `Display`).
+- **Blanket impls for references**: `impl<W: Write> Write for &mut W` lets a `&mut` writer be passed where a writer is expected. A method call on a reference uses the referent's impl first.
 
 ## 6. Memory Model
 
@@ -503,25 +540,41 @@ json = { git = "https://github.com/kiln-lang/json", tag = "v0.3" }
   - Builds are incremental per package.
 - **Tests and benchmarks**: `#[test] fn ...` lives inline, and the `tests/` and `benches/` directories are recognized automatically.
 
-## 8. Standard Library Outline
+## 8. Standard Library
 
-| Module | Contents |
-|---|---|
-| `core` | primitives, `Option`, `Result`, core traits, iterators, `mem`, `ptr` (no allocation, `no_std`-safe) |
-| `alloc` | `Box`, `Vec`, `String`, `Rc`, `Arc`, `HashMap`, `BTreeMap`, `HashSet`, `VecDeque` |
-| `std::io` | `Read`/`Write`, buffered I/O, stdin/stdout |
-| `std::fs` | files, directories, paths |
-| `std::net` | TCP, UDP, DNS, sockets integrated with the netpoller |
-| `std::http` | HTTP/1.1 client and server (HTTP/2 planned), routing basics |
-| `std::sync` | `Mutex`, `RwLock`, `WaitGroup`, `Once`, atomics, channels |
-| `std::task` | `go`, `Task`, `scope`, cancellation `Context`, runtime config |
-| `std::time` | `Instant`, `Duration`, timers, `after`, `tick` |
-| `std::fmt`, `std::str` | formatting, interpolation support, parsing |
-| `std::encoding` | JSON, base64, hex, UTF-8/16 |
-| `std::crypto` | hashes and TLS, via vetted bindings at first |
-| `std::os`, `std::process`, `std::env` | process, signals, environment |
-| `std::testing` | assertions, benchmarks, fuzzing hooks |
-| `std::log` | structured logging |
+The standard library is modeled on Go's coverage, with Rust-style APIs: fallible operations return `Result`, resources are owned values closed by `Drop`, and sharing across tasks goes through `Arc` and the `sync` types. Each module is documented in the standard library reference on the website (`website/src/stdlib.md`).
+
+### 8.1 How it is built (decided)
+
+The standard library is **written in Kiln**, on top of a **small C runtime** (`kiln_runtime`) that does what Kiln code cannot: system calls, the scheduler, the network poller, and timers.
+
+- Each module is a Kiln source file (`crates/kiln_resolve/std/*.kn`) compiled into every program like the prelude, so the type checker and borrow checker see real signatures and bodies, and the standard library is type-checked and borrow-checked in CI like user code.
+- A function declared without a body whose name starts with `kn_` is a call into the C runtime. Scalars pass by value; `&str` and `&[T]` pass as pointer and length; `&mut String` and `&mut Vec<u8>` let the runtime append bytes. Runtime errors come back as negative numbers that `io::Error::from_runtime` turns into an `io::Error` with a kind and the OS message.
+- Blocking operations integrate with the scheduler: `time::sleep`, channel timers, locks, `WaitGroup`, and every socket operation park only the calling task. File system calls and process waits block their worker thread, as in Go, and the scheduler keeps running other tasks on the remaining workers.
+- Loops check their time slice on each back-edge (every 1024 iterations, then a 10 ms clock check), so a task in a long loop yields to other runnable tasks.
+
+### 8.2 Modules
+
+| Module | Contents | Status |
+|---|---|---|
+| `std::time` | `Duration` (`time::secs(5)`), `Instant`, `SystemTime` (RFC 3339 display), `sleep`, `after`, `tick` | ✅ |
+| `std::sync` | `Arc`, `Mutex`, `RwLock`, `WaitGroup`, `Once`, `AtomicI64`, `AtomicBool`, `AtomicUsize` | ✅ |
+| `std::io` | `Read`/`Write`, `BufReader` (`next_line`), `BufWriter`, `Cursor`, `copy`, stdin/stdout/stderr, `Error`/`ErrorKind` | ✅ |
+| `std::fs` | `File`, `OpenOptions`, `read_to_string`, `write`, `read_dir`, `metadata`, `create_dir_all`, `remove_dir_all`, ... | ✅ |
+| `std::path` | string paths: `join`, `base`, `dir`, `ext`, `stem`, `clean`, `is_absolute` | ✅ |
+| `std::os` | `args`, `getenv`/`setenv`, `exit`, working directory, `Command` (run programs, capture output) | ✅ |
+| `std::net` | `TcpListener`, `TcpStream`, `UdpSocket`, `split_host_port` (DNS through the OS resolver) | ✅ |
+| `std::net::http` | HTTP/1.1 server (`Router`, keep-alive) and client (`get`, `post`, `send`); no TLS yet | ✅ |
+| `std::log` | leveled logging to stderr (`KILN_LOG=debug`) | ✅ |
+| `std::fmt` | `Display` and `Debug` (formatting itself is string interpolation) | ✅ |
+| `std::mem`, `std::ptr` | `size_of`, `swap`, `replace`, `forget`; raw pointer operations for `unsafe` code | ✅ |
+| `std::strings`, `std::strconv`, `std::bytes`, `std::unicode` | text processing and parsing | 🚧 phase 2 |
+| `std::collections` | `HashMap`, `HashSet`, `BTreeMap`, `VecDeque` | 🚧 phase 2 |
+| `std::sort`, `std::math`, `std::rand`, `std::errors`, `std::flag`, `std::context` | | 🚧 phase 2 |
+| `std::encoding` | JSON, base64, hex, CSV | 🚧 phase 2 |
+| `std::crypto`, `std::hash` | SHA-256, MD5 | 🚧 phase 2 |
+| `std::regexp`, `std::testing` (`kiln test`) | | 🚧 phase 2 |
+| `std::compress`, `std::mime`, `std::url`, templates | | 🚧 phase 3 |
 
 ## 9. Open Questions for the User
 
@@ -610,7 +663,7 @@ kiln/
   - Each worker thread (one per CPU by default, `KILN_WORKERS` to override) has a run queue, and idle workers steal half of a random victim's queue.
   - Task stacks are fixed 1 MiB stacks (reserved address space, committed on use) with a guard page, reused through a pool. Growable stacks are planned.
   - Context switching is cooperative: tasks yield at channel operations, `select`, `join`, and scope waits. Yield points at loop back-edges (or signal-based preemption) are planned, so today a task in a long loop without channel operations keeps its worker busy.
-- Netpoller: epoll, kqueue, or IOCP.
+- Netpoller: epoll (Linux), kqueue (macOS), WSAPoll (Windows; IOCP is a later optimization).
 - Timers: a timer heap.
 - Channels: lock-free fast path with parked-task wait queues. `select` follows Go's randomized fair choice.
 
@@ -638,5 +691,5 @@ kiln/
 | M4 | Runtime: `go`, channels, `select`, scoped tasks, netpoller; `Send` and `Sync` enforcement |
 | M5 | Standard library core (io, fs, net, collections, sync, time); `kiln` build tool and package manager |
 | M6 | `kiln-ls` MVP (diagnostics, hover, go-to-definition, completion); `kiln fmt` |
-| M7 | `std::http`, JSON, testing framework; a real backend service written in Kiln as the dogfood test |
+| M7 | `std::net::http`, JSON, testing framework; a real backend service written in Kiln as the dogfood test |
 | M8 | Hardening: fuzzing the compiler, a conformance test suite, performance work, docs, 1.0 stability guarantees |

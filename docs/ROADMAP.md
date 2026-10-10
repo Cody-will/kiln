@@ -9,19 +9,20 @@ Status key: ✅ done · 🚧 in progress · ⬜ not started
 | **M2: Abstractions** | Traits, generics (monomorphization), `Result` and `?`, `Drop`, `defer` | ✅ all compile and run, including `dyn Trait` through vtables and closures |
 | **M3: Safety** | MIR, NLL borrow checker, lifetime elision, (missing-`return` is already checked in `kiln_typeck`) | ✅ `kiln_mir` and `kiln_borrowck` (moves, NLL borrows, lifetimes, `Drop` order, `defer`, closures, `go`/`Send`/`Sync`) in `kiln check`; see known gaps in ARCHITECTURE |
 | **M4: Concurrency** | Runtime: M:N scheduler, `go`, channels, `select`, scoped tasks, netpoller; `Send`/`Sync` checks | ✅ work-stealing scheduler, `go` → `Task<T>`, channels, `select`, scoped tasks, deadlock detection, `Send`/`Sync` enforced; netpoller and timers move to M5 with `std::net`/`std::time` |
-| **M5: Std and packages** | io, fs, net, collections, sync, time; `kiln build`/`run`/`test`; `kiln.toml`, lockfile, registry client | ⬜ |
+| **M5: Std and packages** | io, fs, net, collections, sync, time; `kiln build`/`run`/`test`; `kiln.toml`, lockfile, registry client | 🚧 std phase 1 done: `time`, `sync`, `io`, `fs`, `path`, `os`, `net`, `net::http`, `log` (written in Kiln on the C runtime), preemption at loop back-edges; phase 2 next |
 | **M6: Tooling** | `kiln fmt` (gofmt-style, tabs, trailing commas), `kiln-ls` MVP (diagnostics, hover, go-to-def, completion) | ⬜ |
-| **M7: Backend-ready** | `std::http`, JSON, testing framework; dogfood a real service | ⬜ |
+| **M7: Backend-ready** | `std::net::http`, JSON, testing framework; dogfood a real service | ⬜ |
 | **M8: 1.0 hardening** | Compiler fuzzing, conformance suite, performance, docs, stability guarantees | ⬜ |
 
 ## Next up
 
-1. **Standard library (M5):** typed `std` modules, starting with `std::time` (timers integrated with the scheduler, which unblocks `examples/workers.kn`), `std::sync` (`Arc`, `Mutex`, atomics), `std::io`/`std::fs`, then `std::net` with a netpoller.
-2. **Runtime refinements:** preemption (yield points at loop back-edges), growable task stacks, per-task panics that `join` reports as `Err(Panic)` instead of ending the program.
-3. **Type checker gaps:** associated types, `impl Trait` as a distinct type, deeper exhaustiveness (nested patterns, integer ranges), method resolution on integer literals before defaulting, and typed signatures for `std` instead of opaque externals.
-4. **Codegen gaps:** unwinding (or at least running `defer` on panic), debug info, slice patterns, `|` patterns with bindings, an optimizing LLVM backend for release builds.
-5. **Lossless CST decision:** choose whether to build a lossless syntax tree (in the rowan style) before the formatter and language server depend on the AST.
-6. **Borrow checker refinements:** lifetime variance, higher-ranked lifetimes.
+1. **Standard library phase 2:** `strings`, `strconv`, formatting options, `bytes`, `unicode/utf8`, `collections` (`HashMap`, `HashSet`, `BTreeMap`, `VecDeque`), `sort`, `math`, `rand`, `errors`, `flag`, `encoding` (JSON, base64, hex, CSV), SHA-256/MD5, `regexp`, `context`, and `kiln test`. This needs iterators (`for x in map`), `static` items in codegen, and integer/float parsing.
+2. **Standard library phase 3:** `compress`, `mime`, `url`, templates.
+3. **Runtime refinements:** growable task stacks, per-task panics that `join` reports as `Err(Panic)` instead of ending the program, IOCP on Windows, timeouts for connect/read/write.
+4. **Type checker gaps:** associated types, `impl Trait` as a distinct type, deeper exhaustiveness (nested patterns, integer ranges), method resolution on integer literals before defaulting, `pub import` (all imports re-export today).
+5. **Codegen gaps:** `static` items, unwinding (or at least running `defer` on panic), debug info, slice patterns, `|` patterns with bindings, an optimizing LLVM backend for release builds.
+6. **Lossless CST decision:** choose whether to build a lossless syntax tree (in the rowan style) before the formatter and language server depend on the AST.
+7. **Borrow checker refinements:** lifetime variance, higher-ranked lifetimes.
 
 ## Known parser gaps
 

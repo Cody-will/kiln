@@ -1,0 +1,621 @@
+// I/O: the Read and Write traits, buffered readers and writers, the standard
+// streams, and the error type shared by fs, net, and os.
+//
+//	r mut := io::BufReader::new(io::stdin())
+//	while let Some(line) = r.next_line()? {
+//		println("you said: {line}")
+//	}
+
+fn kn_os_error_message(kind: i64, code: i64, out: &mut String)
+fn kn_io_write(fd: i64, buf: &[u8]) -> i64
+fn kn_io_flush(fd: i64) -> i64
+fn kn_io_read_stdin(buf: &mut [u8]) -> i64
+
+// ----- errors -----------------------------------------------------------------
+
+// The category of an I/O error, for matching on.
+#[derive(Copy, Clone, Eq, Debug)]
+pub enum ErrorKind {
+	Other,
+	NotFound,
+	PermissionDenied,
+	ConnectionRefused,
+	ConnectionReset,
+	ConnectionAborted,
+	NotConnected,
+	AddrInUse,
+	AddrNotAvailable,
+	BrokenPipe,
+	AlreadyExists,
+	WouldBlock,
+	InvalidInput,
+	InvalidData,
+	TimedOut,
+	WriteZero,
+	Interrupted,
+	UnexpectedEof,
+	IsADirectory,
+	NotADirectory,
+	DirectoryNotEmpty,
+	Unsupported,
+	HostNotFound,
+}
+
+impl ErrorKind {
+	// The kind with runtime number `k` (see kiln_std.c).
+	fn from_number(k: i64) -> ErrorKind {
+		match k {
+			1 => return ErrorKind::NotFound,
+			2 => return ErrorKind::PermissionDenied,
+			3 => return ErrorKind::ConnectionRefused,
+			4 => return ErrorKind::ConnectionReset,
+			5 => return ErrorKind::ConnectionAborted,
+			6 => return ErrorKind::NotConnected,
+			7 => return ErrorKind::AddrInUse,
+			8 => return ErrorKind::AddrNotAvailable,
+			9 => return ErrorKind::BrokenPipe,
+			10 => return ErrorKind::AlreadyExists,
+			11 => return ErrorKind::WouldBlock,
+			12 => return ErrorKind::InvalidInput,
+			13 => return ErrorKind::InvalidData,
+			14 => return ErrorKind::TimedOut,
+			15 => return ErrorKind::WriteZero,
+			16 => return ErrorKind::Interrupted,
+			17 => return ErrorKind::UnexpectedEof,
+			18 => return ErrorKind::IsADirectory,
+			19 => return ErrorKind::NotADirectory,
+			20 => return ErrorKind::DirectoryNotEmpty,
+			21 => return ErrorKind::Unsupported,
+			22 => return ErrorKind::HostNotFound,
+			_ => return ErrorKind::Other,
+		}
+	}
+
+	// A short description, used when an error has no message of its own.
+	pub fn description(&self) -> &str {
+		match self {
+			ErrorKind::Other => return "other error",
+			ErrorKind::NotFound => return "not found",
+			ErrorKind::PermissionDenied => return "permission denied",
+			ErrorKind::ConnectionRefused => return "connection refused",
+			ErrorKind::ConnectionReset => return "connection reset",
+			ErrorKind::ConnectionAborted => return "connection aborted",
+			ErrorKind::NotConnected => return "not connected",
+			ErrorKind::AddrInUse => return "address in use",
+			ErrorKind::AddrNotAvailable => return "address not available",
+			ErrorKind::BrokenPipe => return "broken pipe",
+			ErrorKind::AlreadyExists => return "already exists",
+			ErrorKind::WouldBlock => return "operation would block",
+			ErrorKind::InvalidInput => return "invalid input",
+			ErrorKind::InvalidData => return "invalid data",
+			ErrorKind::TimedOut => return "timed out",
+			ErrorKind::WriteZero => return "write returned zero",
+			ErrorKind::Interrupted => return "interrupted",
+			ErrorKind::UnexpectedEof => return "unexpected end of file",
+			ErrorKind::IsADirectory => return "is a directory",
+			ErrorKind::NotADirectory => return "not a directory",
+			ErrorKind::DirectoryNotEmpty => return "directory not empty",
+			ErrorKind::Unsupported => return "unsupported",
+			ErrorKind::HostNotFound => return "host not found",
+		}
+	}
+}
+
+// An I/O error: a kind to match on and a message to show.
+#[derive(Clone, Debug)]
+pub struct Error {
+	kind: ErrorKind,
+	code: i64,
+	msg: String,
+}
+
+impl Error {
+	// An error of `kind` with message `msg`.
+	pub fn new(kind: ErrorKind, msg: &str) -> Error {
+		return Error { kind: kind, code: -1, msg: msg.to_string() }
+	}
+
+	// An error of kind `Other`.
+	pub fn other(msg: &str) -> Error {
+		return Error::new(ErrorKind::Other, msg)
+	}
+
+	// The error for a negative result `r` from the runtime (used by the
+	// standard library).
+	pub fn from_runtime(r: i64) -> Error {
+		c := 0 - r
+		kind := c >> 32
+		code := c & 4294967295
+		msg mut := String::new()
+		if code != 0 || kind == 22 {
+			kn_os_error_message(kind, code, &mut msg)
+		}
+		k := ErrorKind::from_number(kind)
+		if msg.is_empty() {
+			msg.push(k.description())
+		}
+		return Error { kind: k, code: if code == 0 { -1 } else { code & 1073741823 }, msg: msg }
+	}
+
+	// The error's kind.
+	pub fn kind(&self) -> ErrorKind {
+		return self.kind
+	}
+
+	// The operating system's error number, if the error came from the OS.
+	pub fn os_code(&self) -> Option<i64> {
+		if self.code < 0 {
+			return None
+		}
+		return Some(self.code)
+	}
+
+	// The error with `what` in front of its message, as in Go:
+	// `open config.toml: no such file or directory`.
+	pub fn context(self, what: &str) -> Error {
+		return Error { kind: self.kind, code: self.code, msg: "{what}: {self.msg}" }
+	}
+}
+
+impl Display for Error {
+	fn to_string(&self) -> String {
+		return self.msg.clone()
+	}
+}
+
+// Turns a runtime result into a Result (used by the standard library).
+pub fn check(r: i64) -> Result<i64, Error> {
+	if r < 0 {
+		return Err(Error::from_runtime(r))
+	}
+	return Ok(r)
+}
+
+// ----- Read and Write ------------------------------------------------------------
+
+// A source of bytes.
+pub trait Read {
+	// Reads up to `buf.len()` bytes into `buf`; returns how many. 0 means the
+	// end of the input (or an empty `buf`).
+	fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error>
+
+	// Reads everything until the end, appending to `out`; returns the count.
+	fn read_to_end(&mut self, out: &mut Vec<u8>) -> Result<usize, Error> {
+		buf mut := [0 as u8; 8192]
+		total mut := 0
+		loop {
+			n := self.read(&mut buf)?
+			if n == 0 {
+				return Ok(total)
+			}
+			out.extend_from_slice(&buf[0..n])
+			total += n
+		}
+	}
+
+	// Reads everything until the end as UTF-8 text, appending to `out`.
+	fn read_to_string(&mut self, out: &mut String) -> Result<usize, Error> {
+		bytes mut := Vec::new()
+		n := self.read_to_end(&mut bytes)?
+		match String::from_utf8(bytes) {
+			Ok(s) => {
+				out.push(&s)
+				return Ok(n)
+			},
+			Err(e) => return Err(Error::new(ErrorKind::InvalidData, "stream did not contain valid UTF-8")),
+		}
+	}
+
+	// Fills `buf` completely, or fails with `UnexpectedEof`.
+	fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Error> {
+		got mut := 0
+		while got < buf.len() {
+			n := self.read(&mut buf[got..])?
+			if n == 0 {
+				return Err(Error::new(ErrorKind::UnexpectedEof, "unexpected end of file"))
+			}
+			got += n
+		}
+		return Ok(())
+	}
+}
+
+// A destination for bytes.
+pub trait Write {
+	// Writes some of `buf`; returns how many bytes were taken.
+	fn write(&mut self, buf: &[u8]) -> Result<usize, Error>
+
+	// Pushes buffered data to its destination.
+	fn flush(&mut self) -> Result<(), Error> {
+		return Ok(())
+	}
+
+	// Writes all of `buf`.
+	fn write_all(&mut self, buf: &[u8]) -> Result<(), Error> {
+		done mut := 0
+		while done < buf.len() {
+			n := self.write(&buf[done..])?
+			if n == 0 {
+				return Err(Error::new(ErrorKind::WriteZero, "failed to write the whole buffer"))
+			}
+			done += n
+		}
+		return Ok(())
+	}
+
+	// Writes all of `s`.
+	fn write_str(&mut self, s: &str) -> Result<(), Error> {
+		return self.write_all(s.as_bytes())
+	}
+}
+
+// Copies everything from `r` to `w`; returns the number of bytes copied.
+pub fn copy<R: Read, W: Write>(r: &mut R, w: &mut W) -> Result<u64, Error> {
+	buf mut := [0 as u8; 8192]
+	total mut := 0 as u64
+	loop {
+		n := r.read(&mut buf)?
+		if n == 0 {
+			return Ok(total)
+		}
+		w.write_all(&buf[0..n])?
+		total += n as u64
+	}
+}
+
+// A mutable reference to a reader is a reader.
+impl<R: Read> Read for &mut R {
+	fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+		return (**self).read(buf)
+	}
+}
+
+// A mutable reference to a writer is a writer.
+impl<W: Write> Write for &mut W {
+	fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
+		return (**self).write(buf)
+	}
+
+	fn flush(&mut self) -> Result<(), Error> {
+		return (**self).flush()
+	}
+}
+
+// Appending to a byte vector.
+impl Write for Vec<u8> {
+	fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
+		self.extend_from_slice(buf)
+		return Ok(buf.len())
+	}
+}
+
+// ----- standard streams --------------------------------------------------------------
+
+// The process's standard input.
+pub struct Stdin {
+	fd: i64,
+}
+
+// The process's standard output. Output is buffered by the C library and
+// shares that buffer with `print`/`println`, so the two never reorder.
+pub struct Stdout {
+	fd: i64,
+}
+
+// The process's standard error (unbuffered).
+pub struct Stderr {
+	fd: i64,
+}
+
+// A handle to standard input. Wrap it in a `BufReader` to read lines.
+pub fn stdin() -> Stdin {
+	return Stdin { fd: 0 }
+}
+
+// A handle to standard output.
+pub fn stdout() -> Stdout {
+	return Stdout { fd: 1 }
+}
+
+// A handle to standard error.
+pub fn stderr() -> Stderr {
+	return Stderr { fd: 2 }
+}
+
+impl Read for Stdin {
+	fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+		return Ok(check(kn_io_read_stdin(buf))? as usize)
+	}
+}
+
+impl Write for Stdout {
+	fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
+		return Ok(check(kn_io_write(self.fd, buf))? as usize)
+	}
+
+	fn flush(&mut self) -> Result<(), Error> {
+		check(kn_io_flush(self.fd))?
+		return Ok(())
+	}
+}
+
+impl Write for Stderr {
+	fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
+		return Ok(check(kn_io_write(self.fd, buf))? as usize)
+	}
+
+	fn flush(&mut self) -> Result<(), Error> {
+		check(kn_io_flush(self.fd))?
+		return Ok(())
+	}
+}
+
+// Reads one line from standard input, without its line ending. Returns None
+// at the end of input.
+pub fn read_line() -> Result<Option<String>, Error> {
+	r mut := stdin()
+	line mut := Vec::new()
+	b mut := [0 as u8; 1]
+	loop {
+		n := r.read(&mut b)?
+		if n == 0 {
+			if line.is_empty() {
+				return Ok(None)
+			}
+			break
+		}
+		if b[0] == 10 {
+			break
+		}
+		line.push(b[0])
+	}
+	if line.len() > 0 && line[line.len() - 1] == 13 {
+		line.pop()
+	}
+	return Ok(Some(String::from_utf8_lossy(line.as_slice())))
+}
+
+// ----- buffering -------------------------------------------------------------------------
+
+// Adds a buffer to a reader, so many small reads become few large ones, and
+// lines can be read.
+pub struct BufReader<R> {
+	inner: R,
+	buf: Vec<u8>,
+	pos: usize,
+	end: usize,
+}
+
+impl<R: Read> BufReader<R> {
+	// A reader with an 8 KiB buffer.
+	pub fn new(inner: R) -> BufReader<R> {
+		return BufReader::with_capacity(8192, inner)
+	}
+
+	// A reader with a buffer of `n` bytes.
+	pub fn with_capacity(n: usize, inner: R) -> BufReader<R> {
+		buf mut := Vec::with_capacity(n)
+		for _ in 0..n {
+			buf.push(0 as u8)
+		}
+		return BufReader { inner: inner, buf: buf, pos: 0, end: 0 }
+	}
+
+	// Refills the buffer if it is empty; returns how many bytes are buffered.
+	fn fill(&mut self) -> Result<usize, Error> {
+		if self.pos == self.end {
+			self.pos = 0
+			self.end = self.inner.read(self.buf.as_mut_slice())?
+		}
+		return Ok(self.end - self.pos)
+	}
+
+	// Reads bytes up to and including `delim` (or the end), appending them to
+	// `out`. Returns the count; 0 means the end of input.
+	pub fn read_until(&mut self, delim: u8, out: &mut Vec<u8>) -> Result<usize, Error> {
+		total mut := 0
+		loop {
+			if self.fill()? == 0 {
+				return Ok(total)
+			}
+			i mut := self.pos
+			while i < self.end && self.buf[i] != delim {
+				i += 1
+			}
+			found := i < self.end
+			stop := if found { i + 1 } else { self.end }
+			out.extend_from_slice(&self.buf[self.pos..stop])
+			total += stop - self.pos
+			self.pos = stop
+			if found {
+				return Ok(total)
+			}
+		}
+	}
+
+	// Reads a line including its `\n`, appending it to `out`. Returns the
+	// number of bytes; 0 means the end of input.
+	pub fn read_line(&mut self, out: &mut String) -> Result<usize, Error> {
+		bytes mut := Vec::new()
+		n := self.read_until(10 as u8, &mut bytes)?
+		match String::from_utf8(bytes) {
+			Ok(s) => out.push(&s),
+			Err(_) => return Err(Error::new(ErrorKind::InvalidData, "stream did not contain valid UTF-8")),
+		}
+		return Ok(n)
+	}
+
+	// The next line without its line ending (`\n` or `\r\n`), or None at the end.
+	pub fn next_line(&mut self) -> Result<Option<String>, Error> {
+		line mut := String::new()
+		if self.read_line(&mut line)? == 0 {
+			return Ok(None)
+		}
+		if line.ends_with("\n") {
+			line.truncate(line.len() - 1)
+			if line.ends_with("\r") {
+				line.truncate(line.len() - 1)
+			}
+		}
+		return Ok(Some(line))
+	}
+
+	// The wrapped reader.
+	pub fn get_ref(&self) -> &R {
+		return &self.inner
+	}
+
+	// The wrapped reader, mutably. Reading from it directly skips buffered data.
+	pub fn get_mut(&mut self) -> &mut R {
+		return &mut self.inner
+	}
+
+	// The bytes buffered but not yet read.
+	pub fn buffered(&self) -> &[u8] {
+		return &self.buf[self.pos..self.end]
+	}
+}
+
+impl<R: Read> Read for BufReader<R> {
+	fn read(&mut self, out: &mut [u8]) -> Result<usize, Error> {
+		// Large reads with an empty buffer go straight through.
+		if self.pos == self.end && out.len() >= self.buf.len() {
+			return self.inner.read(out)
+		}
+		avail := self.fill()?
+		n := if avail < out.len() { avail } else { out.len() }
+		for i in 0..n {
+			out[i] = self.buf[self.pos + i]
+		}
+		self.pos += n
+		return Ok(n)
+	}
+}
+
+// Adds a buffer to a writer, so many small writes become few large ones.
+// Call `flush` to push the data out; dropping the writer flushes too (and
+// ignores errors).
+pub struct BufWriter<W: Write> {
+	inner: W,
+	buf: Vec<u8>,
+	cap: usize,
+}
+
+impl<W: Write> BufWriter<W> {
+	// A writer with an 8 KiB buffer.
+	pub fn new(inner: W) -> BufWriter<W> {
+		return BufWriter::with_capacity(8192, inner)
+	}
+
+	// A writer with a buffer of `n` bytes.
+	pub fn with_capacity(n: usize, inner: W) -> BufWriter<W> {
+		return BufWriter { inner: inner, buf: Vec::with_capacity(n), cap: n }
+	}
+
+	// Writes out the buffered bytes.
+	fn flush_buf(&mut self) -> Result<(), Error> {
+		if self.buf.len() > 0 {
+			self.inner.write_all(self.buf.as_slice())?
+			self.buf.clear()
+		}
+		return Ok(())
+	}
+
+	// The wrapped writer.
+	pub fn get_ref(&self) -> &W {
+		return &self.inner
+	}
+}
+
+impl<W: Write> Write for BufWriter<W> {
+	fn write(&mut self, data: &[u8]) -> Result<usize, Error> {
+		if self.buf.len() + data.len() > self.cap {
+			self.flush_buf()?
+		}
+		if data.len() >= self.cap {
+			return self.inner.write(data)
+		}
+		self.buf.extend_from_slice(data)
+		return Ok(data.len())
+	}
+
+	fn flush(&mut self) -> Result<(), Error> {
+		self.flush_buf()?
+		return self.inner.flush()
+	}
+}
+
+impl<W: Write> Drop for BufWriter<W> {
+	fn drop(&mut self) {
+		self.flush_buf()
+	}
+}
+
+// An in-memory reader and writer over a byte vector, with a position.
+pub struct Cursor {
+	data: Vec<u8>,
+	pos: usize,
+}
+
+impl Cursor {
+	// A cursor at the start of `data`.
+	pub fn new(data: Vec<u8>) -> Cursor {
+		return Cursor { data: data, pos: 0 }
+	}
+
+	// A cursor over a copy of `s`.
+	pub fn from_str(s: &str) -> Cursor {
+		v mut := Vec::new()
+		v.extend_from_slice(s.as_bytes())
+		return Cursor::new(v)
+	}
+
+	// The position of the next read or write.
+	pub fn position(&self) -> usize {
+		return self.pos
+	}
+
+	// Moves to byte `pos`.
+	pub fn set_position(&mut self, pos: usize) {
+		self.pos = pos
+	}
+
+	// The underlying bytes.
+	pub fn get_ref(&self) -> &Vec<u8> {
+		return &self.data
+	}
+
+	// Takes the underlying bytes.
+	pub fn into_inner(self) -> Vec<u8> {
+		return self.data
+	}
+}
+
+impl Read for Cursor {
+	fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+		if self.pos >= self.data.len() {
+			return Ok(0)
+		}
+		left := self.data.len() - self.pos
+		n := if left < buf.len() { left } else { buf.len() }
+		for i in 0..n {
+			buf[i] = self.data[self.pos + i]
+		}
+		self.pos += n
+		return Ok(n)
+	}
+}
+
+impl Write for Cursor {
+	fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
+		for i in 0..buf.len() {
+			if self.pos < self.data.len() {
+				self.data[self.pos] = buf[i]
+			} else {
+				self.data.push(buf[i])
+			}
+			self.pos += 1
+		}
+		return Ok(buf.len())
+	}
+}

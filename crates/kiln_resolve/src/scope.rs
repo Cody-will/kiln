@@ -358,6 +358,21 @@ impl<'a> Resolver<'a> {
             || self.r.modules[&module].values.contains_key(&path[0].name)
         {
             module
+        } else if !self.r.modules[&self.r.root]
+            .types
+            .contains_key(&path[0].name)
+            && !self.r.modules[&self.r.root]
+                .values
+                .contains_key(&path[0].name)
+            && (self.r.modules[&self.r.prelude]
+                .types
+                .contains_key(&path[0].name)
+                || self.r.modules[&self.r.prelude]
+                    .values
+                    .contains_key(&path[0].name))
+        {
+            // A prelude name (`import Display` re-exports it from a module).
+            self.r.prelude
         } else {
             self.r.root
         };
@@ -958,6 +973,11 @@ impl<'a> Resolver<'a> {
                             self.error("enum variants have no associated items", seg.ident.span);
                             return Res::Err;
                         }
+                        // `Enum::function`: an associated function from an `impl`.
+                        None if last => Res::Assoc {
+                            base: Box::new(Res::Def(id)),
+                            name: name.clone(),
+                        },
                         None => {
                             self.error(
                                 format!(

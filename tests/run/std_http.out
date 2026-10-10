@@ -1,0 +1,9 @@
+200 text/plain; charset=utf-8 hello, Kiln fan!
+
+201 {"got": "ping", "ua": "kiln-http"}
+200 file /static/css/site.css
+404 404 page not found
+
+405
+a+b%26c%3Dd%2F%C3%A9 a b&c
+https is not supported yet

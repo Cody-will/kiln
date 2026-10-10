@@ -124,8 +124,10 @@ fn duplicate_fields_variants_and_bindings() {
 #[test]
 fn enum_variants() {
     ok("enum Shape {\n\tCircle(f64),\n\tEmpty,\n}\nfn f(s: Shape) {\n\tx := Shape::Circle(1.0)\n\tmatch s {\n\t\tShape::Circle(r) => {},\n\t\tShape::Empty => {},\n\t}\n}");
+    // `E::B` may name an associated function, so the type checker reports
+    // a missing one; deeper paths through a missing variant fail here.
     assert_eq!(
-        errors("enum E {\n\tA,\n}\nfn f() {\n\tx := E::B\n}"),
+        errors("enum E {\n\tA,\n}\nfn f() {\n\tx := E::B::C\n}"),
         vec!["no variant named `B` in enum `E`"]
     );
 }

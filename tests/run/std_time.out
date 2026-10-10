@@ -1,0 +1,9 @@
+1.5s 1m30s 42µs 7ns 2h3m0s
+1500 1 1.5 999ms 3s 500ms
+true 250ms
+slept: true
+100 sleepers: sum 4950, concurrent: true
+ticks 3
+after fired
+2023-11-14T22:13:20Z 1700000000 1700000000123
+now is after 2024: true

@@ -18,7 +18,9 @@
 - [Concurrency: go, channels, select](tutorial/09-concurrency.md)
 - [Packages and modules](tutorial/10-packages.md)
 - [Tooling](tutorial/11-tooling.md)
+- [Files, processes, and the network](tutorial/12-stdlib.md)
 
 # Reference
 
 - [Language specification](spec.md)
+- [Standard library](stdlib.md)

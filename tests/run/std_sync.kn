@@ -1,0 +1,72 @@
+import std::sync::{Arc, AtomicBool, AtomicI64, Mutex, Once, RwLock, WaitGroup}
+
+fn init() {
+	println("init runs once")
+}
+
+fn main() {
+	// A shared counter behind a mutex.
+	counter := Arc::new(Mutex::new(0))
+	wg := Arc::new(WaitGroup::new())
+	for _ in 0..8 {
+		c := counter.clone()
+		w := wg.clone()
+		w.add(1)
+		go move {
+			for _ in 0..1000 {
+				g mut := c.lock()
+				*g += 1
+			}
+			w.done()
+		}
+	}
+	wg.wait()
+	println("counter {*counter.lock()}")
+	println("arc count {counter.count()}")
+
+	// Readers and writers.
+	data := Arc::new(RwLock::new(Vec::new()))
+	{
+		w mut := data.write()
+		w.push(1)
+		w.push(2)
+	}
+	{
+		r1 := data.read()
+		r2 := data.read()
+		println("readers see {r1.len()} and {r2.len()}")
+	}
+
+	// Atomics.
+	hits := Arc::new(AtomicI64::new(0))
+	done := Arc::new(WaitGroup::new())
+	for _ in 0..4 {
+		h := hits.clone()
+		d := done.clone()
+		d.add(1)
+		go move {
+			for _ in 0..500 {
+				h.add(1)
+			}
+			d.done()
+		}
+	}
+	done.wait()
+	println("atomic {hits.load()} swap {hits.swap(5)} now {hits.load()} cas {hits.compare_and_swap(5, 6)} {hits.compare_and_swap(5, 7)} {hits.load()}")
+	flag := AtomicBool::new(false)
+	println("flag {flag.swap(true)} {flag.load()}")
+
+	// Once.
+	once := Once::new()
+	once.call(init)
+	once.call(init)
+	println("once done {once.is_done()}")
+
+	// try_lock fails while the lock is held.
+	m := Mutex::new(String::from("x"))
+	{
+		g := m.lock()
+		println("try_lock while held: {m.try_lock().is_some()} ({*g})")
+	}
+	println("try_lock after: {m.try_lock().is_some()}")
+}

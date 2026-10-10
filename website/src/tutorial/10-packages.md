@@ -49,5 +49,5 @@ json = { git = "https://github.com/kiln-lang/json", tag = "v0.3" }
 The standard library is imported the same way: `import std::fs`, `import std::net::TcpListener`.
 
 <div class="status">
-🚧 <strong>Not implemented yet:</strong> multi-file modules (<code>mod.kn</code> directories), <code>kiln.toml</code>, dependencies, the lockfile, and the package registry. Today <code>kiln check</code> works on a single file, and inline <code>mod</code> blocks, <code>import</code>, and visibility are fully resolved within it. <code>std</code> paths are accepted but opaque, so the checker treats their types as unknown.
+🚧 <strong>Not implemented yet:</strong> multi-file modules (<code>mod.kn</code> directories), <code>kiln.toml</code>, dependencies, the lockfile, and the package registry. Today <code>kiln check</code> works on a single file, and inline <code>mod</code> blocks, <code>import</code>, and visibility are fully resolved within it. The standard library is fully type-checked: see the <a href="../stdlib.html">standard library reference</a>.
 </div>
