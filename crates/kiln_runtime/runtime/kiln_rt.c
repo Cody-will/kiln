@@ -15,6 +15,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#ifndef _MSC_VER
+#include <unistd.h>
+#endif
 
 #ifdef _MSC_VER
 #define KN_NORETURN __declspec(noreturn)
@@ -60,7 +63,36 @@ void kn_free(void *p, size_t size, size_t align) {
 
 /* ----- panics and printing ----------------------------------------------- */
 
+/* Frees a closure environment from kn_alloc (size 0 environments are dangling). */
+void kn_free_env(void *env) {
+	if (env && env != (void *)(uintptr_t)8)
+		free(env);
+}
+
+#ifdef _MSC_VER
+#include <windows.h>
+static volatile LONG panicking;
+static int first_panic(void) { return InterlockedExchange(&panicking, 1) == 0; }
+#define lock_file(f) _lock_file(f)
+#define unlock_file(f) _unlock_file(f)
+#else
+static volatile int panicking;
+static int first_panic(void) { return __atomic_exchange_n(&panicking, 1, __ATOMIC_SEQ_CST) == 0; }
+#define lock_file(f) flockfile(f)
+#define unlock_file(f) funlockfile(f)
+#endif
+
+/* Prints `panic: <msg>` and exits with status 101 (no unwinding). If several
+ * tasks panic at once, the first one reports and the others wait to exit. */
 KN_NORETURN void kn_panic(const uint8_t *msg, size_t len) {
+	if (!first_panic())
+		for (;;) {
+#ifdef _MSC_VER
+			Sleep(1000);
+#else
+			sleep(1);
+#endif
+		}
 	fflush(stdout);
 	fputs("panic: ", stderr);
 	fwrite(msg, 1, len, stderr);
@@ -83,9 +115,12 @@ void kn_print(const uint8_t *p, size_t len, int32_t to_stderr, int32_t newline) 
 	FILE *f = to_stderr ? stderr : stdout;
 	if (to_stderr)
 		fflush(stdout);
+	/* One line at a time, even with tasks printing on several threads. */
+	lock_file(f);
 	fwrite(p, 1, len, f);
 	if (newline)
 		fputc('\n', f);
+	unlock_file(f);
 }
 
 /* Prints `Error: <msg>` when `main` returns `Err`. */
