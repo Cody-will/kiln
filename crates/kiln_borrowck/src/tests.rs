@@ -521,6 +521,19 @@ fn scoped_tasks_check_sync() {
     has(&format!("{s}fn main() {{\n h := Handle {{ p: 0 as *const u8 }}\n scope(|s| {{\n s.spawn(|| {{\n x := &h\n }})\n }})\n}}"), "`Handle` cannot be shared between tasks safely");
 }
 
+#[test]
+fn scoped_task_borrows_last_until_the_scope_ends() {
+    // Two tasks may not mutate the same variable: both borrows last until the scope ends.
+    has("fn main() {\n hits mut := 0\n scope(|s| {\n s.spawn(|| {\n hits += 1\n })\n s.spawn(|| {\n hits += 1\n })\n })\n}", "cannot borrow `hits` as mutable more than once at a time");
+    // A task may not borrow a local of the scope body, which ends before the tasks are joined.
+    has(
+        "fn main() {\n scope(|s| {\n x := 5\n s.spawn(|| {\n println(\"{x}\")\n })\n })\n}",
+        "`x` does not live long enough",
+    );
+    // Sharing is fine.
+    ok("fn main() {\n n := 3\n scope(|s| {\n s.spawn(|| {\n println(\"{n}\")\n })\n s.spawn(|| {\n println(\"{n}\")\n })\n })\n}");
+}
+
 // ----- whole programs -----------------------------------------------------------------------------
 
 #[test]

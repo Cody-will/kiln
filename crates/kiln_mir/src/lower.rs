@@ -1826,10 +1826,18 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             // Checked by the borrow checker (captures must be `Send`/`Sync`);
             // the task itself is started by the `Scope::spawn` call.
             let captures = self.last_captures.take().unwrap_or_default();
+            // The closure (and the loans it holds) must stay alive until the
+            // scope's body returns, since the task may run until then.
+            let operands = ops
+                .get(1)
+                .and_then(|o| o.place().cloned())
+                .map(Operand::Copy)
+                .into_iter()
+                .collect();
             self.push(
                 StmtKind::Spawn {
                     kind: SpawnKind::Scoped,
-                    operands: vec![],
+                    operands,
                     captures,
                     body: e.span,
                 },

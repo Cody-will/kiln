@@ -70,6 +70,8 @@ pub(crate) struct Ck<'b, 't, 'r, 'a> {
     hin: Vec<Option<Vec<BTreeSet<usize>>>>,
     /// live_out[block][stmt] for every statement, and live-out of the terminator at index `len`.
     live: Vec<Vec<BTreeSet<Local>>>,
+    /// Closures handed to `Scope::spawn`: they keep their loans until the body returns.
+    pinned: BTreeSet<Local>,
     may_hold_cache: Vec<bool>,
     drop_cache: Vec<bool>,
 }
@@ -92,6 +94,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
             holds: vec![],
             hin: vec![],
             live: vec![],
+            pinned: BTreeSet::new(),
             may_hold_cache: vec![],
             drop_cache: vec![],
         }
@@ -113,6 +116,21 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                 let t = self.b.locals[i].ty.clone();
                 self.typed.has_drop_impl(&t)
             })
+            .collect();
+        self.pinned = self
+            .b
+            .blocks
+            .iter()
+            .flat_map(|b| &b.stmts)
+            .filter_map(|st| match &st.kind {
+                StmtKind::Spawn {
+                    kind: SpawnKind::Scoped,
+                    operands,
+                    ..
+                } => Some(operands.iter().filter_map(|o| o.place().map(|p| p.local))),
+                _ => None,
+            })
+            .flatten()
             .collect();
         self.compute_loans();
         self.compute_liveness();
@@ -302,7 +320,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                     st[root].extend(add);
                 }
             }
-            StmtKind::StorageDead(l) => st[l.0 as usize].clear(),
+            StmtKind::StorageDead(l) if !self.pinned.contains(l) => st[l.0 as usize].clear(),
             _ => {}
         }
     }
@@ -418,6 +436,9 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
         }
         if matches!(self.b.blocks[bi].term, Terminator::Return) {
             live.insert(Local(0));
+            // Closures handed to `Scope::spawn` run until the scope ends, so
+            // the loans they hold last until this body returns.
+            live.extend(self.pinned.iter().copied());
         }
         live
     }

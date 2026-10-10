@@ -2,9 +2,7 @@
 
 Kiln's concurrency model comes from Go: lightweight **tasks** that communicate over **channels**. Kiln adds compile-time safety from ownership: a value sent on a channel is *moved*, so two tasks can never race on the same data.
 
-<div class="status">
-🚧 <strong>The runtime does not exist yet.</strong> Everything in this chapter is parsed and type-checked today (channel element types, channel direction, <code>select</code> arms) and borrow-checked (what tasks may capture, <code>Send</code>/<code>Sync</code>), but programs can't run until the code generator and scheduler land (milestone M4).
-</div>
+Everything in this chapter compiles and runs. Tasks run on an M:N scheduler: many tasks share a few OS threads (one per CPU core by default; set `KILN_WORKERS` to change it), and idle threads steal work from busy ones.
 
 ## Starting tasks with `go`
 
@@ -13,16 +11,34 @@ fn say(msg: &str) {
 	println(msg)
 }
 
+fn square(x: i64) -> i64 {
+	return x * x
+}
+
 fn main() {
-	go say("from a task")
-	go move {
+	a := go say("from a task")
+	b := go move {
 		println("from a block")
 	}
 	say("from main")
+	a.join()
+	b.join()
+
+	t := go square(7)
+	match t.join() {
+		Ok(v) => println("square: {v}"),
+		Err(_) => println("the task panicked"),
+	}
 }
 ```
 
-`go f(args)` runs a call in a new task, and `go move { ... }` runs a block. Tasks are cheap; you can start thousands.
+`go f(args)` runs a call in a new task, and `go move { ... }` runs a block. Tasks are cheap (each has its own small stack); you can start thousands.
+
+`go` is an expression: it returns a `Task<T>` handle, where `T` is what the call or block returns. `t.join()` waits for the task and gives back `Result<T, Panic>`. Like Go, a program ends when `main` returns, even if other tasks are still running, so join the tasks you need to finish. Dropping a `Task` without joining detaches it.
+
+<div class="status">
+🚧 A panic in any task currently ends the whole program (exit status 101), so <code>join</code> never returns <code>Err</code> yet.
+</div>
 
 A task may keep running after the function that started it returns, so it must **own** everything it uses:
 
@@ -45,18 +61,28 @@ When tasks only need to *borrow* data, start them inside `scope`. Every task spa
 
 ```kiln
 fn main() {
-	data := Vec::<i32>::new()
+	data mut := Vec::new()
+	for i in 0..10 {
+		data.push(i)
+	}
+	hits mut := 0
 	scope(|s| {
 		s.spawn(|| {
-			println("{data.len()}")
+			sum mut := 0
+			for x in &data {
+				sum += *x
+			}
+			println("sum {sum}")
 		})
 		s.spawn(|| {
-			println("{data.len()}")
+			hits += 1           // one task may borrow mutably
 		})
 	})
-	println("{data.len()}")
+	println("hits {hits}, {data.len()} items")
 }
 ```
+
+The borrow checker treats the spawned closures like any other borrows: two tasks can share `data`, but they can't both mutate `hits`.
 
 ## Channels
 
@@ -79,7 +105,27 @@ error: cannot send on a value of type `<-chan i32`
   = help: sending requires a send-only channel `chan<- T`
 ```
 
-Both ends can be cloned, so many tasks can send to or receive from the same channel. A `for` loop receives until the channel is closed:
+Both ends can be cloned, so many tasks can send to or receive from the same channel. A `for` loop receives until the channel is closed, and the channel closes automatically when its last sender is dropped:
+
+```kiln
+fn main() {
+	(tx, rx) := chan::<i32>(0)
+	go move {
+		for i in 0..5 {
+			tx <- i
+		}
+	}                           // the task ends and drops `tx`, closing the channel
+	for v in rx {
+		println("got {v}")
+	}
+}
+```
+
+On an unbuffered channel, a send waits until another task receives (and the other way round). Receiving with `<-rx` from a closed, empty channel panics; use `rx.recv()` when closing is expected. Values still buffered in a channel when it's dropped are dropped with it.
+
+The element type must be `Send`, since its values move to another task.
+
+If every task is blocked on a channel and nothing can wake them, the program stops with `fatal error: all tasks are asleep - deadlock!` (exit status 2), like Go.
 
 ## A worker pool
 
@@ -118,8 +164,14 @@ fn main() {
 
 ```kiln
 fn main() {
-	(data_tx, data_rx) := chan::<String>(1)
+	(data_tx, data_rx) := chan::<String>(0)
 	(quit_tx, quit_rx) := chan::<bool>(1)
+	go move {
+		for i in 0..3 {
+			data_tx <- "message {i}"
+		}
+		quit_tx <- true
+	}
 	loop {
 		select {
 			msg := <-data_rx => println("got {msg}"),
@@ -132,14 +184,31 @@ fn main() {
 }
 ```
 
-Arms can receive (`v := <-rx`, or `<-rx` to discard), send (`tx <- v`), or be a `default` arm that runs when nothing is ready.
+Arms can receive (`v := <-rx`, or `<-rx` to discard), send (`tx <- v`), or be a default arm (`_ => ...`) that runs when nothing is ready:
+
+```kiln
+fn main() {
+	(tx, rx) := chan::<i32>(1)
+	select {
+		v := <-rx => println("got {v}"),
+		_ => println("nothing yet"),
+	}
+	select {
+		tx <- 42 => println("sent"),
+		_ => println("buffer full"),
+	}
+	println("{<-rx}")
+}
+```
+
+When several arms are ready, `select` picks one at random, so no channel can starve the others.
 
 ## Non-blocking operations
 
 | Method | Meaning |
 |---|---|
-| `tx.try_send(v)` | send without blocking; `Err` if the buffer is full |
-| `rx.try_recv()` | receive without blocking |
+| `tx.try_send(v)` | send without blocking; `Err(TrySendError::Full(v))` or `Err(TrySendError::Closed(v))` hands the value back |
+| `rx.try_recv()` | receive without blocking; `Err(TryRecvError::Empty)` or `Err(TryRecvError::Closed)` |
 | `rx.recv()` | blocking receive; `None` once the channel is closed |
 | `tx.close()` | close explicitly (dropping every sender also closes) |
 | `rx.len()`, `rx.cap()` | number of queued items, buffer capacity |
