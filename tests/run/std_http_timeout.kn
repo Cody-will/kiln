@@ -1,0 +1,67 @@
+import std::io
+import std::io::{Read, Write}
+import std::net::{TcpListener, TcpStream}
+import std::net::http
+import std::time
+
+fn hello(req: http::Request) -> http::Response {
+	return http::Response::text(200, "hi {req.path()}")
+}
+
+// Reads until the server closes; returns how long that took.
+fn wait_closed(conn: &TcpStream) -> time::Duration {
+	start := time::Instant::now()
+	buf mut := [0 as u8; 512]
+	loop {
+		match conn.read(&mut buf) {
+			Ok(0) => return start.elapsed(),
+			Ok(_) => {},
+			Err(_) => return start.elapsed(),
+		}
+	}
+}
+
+fn main() -> Result<(), io::Error> {
+	listener := TcpListener::bind("127.0.0.1:0")?
+	port := listener.port()?
+	router mut := http::Router::new()
+	router.get("/", hello)
+	srv := http::Server::new(router)
+		.with_read_header_timeout(Some(time::millis(300)))
+		.with_idle_timeout(Some(time::millis(300)))
+	go move {
+		srv.serve(listener).unwrap()
+	}
+	addr := "127.0.0.1:{port}"
+
+	// Normal requests still work.
+	r := http::get("http://{addr}/ok")?
+	println("{r.status} {r.body_text()}")
+
+	// A connection that never sends a request is closed after the idle timeout.
+	idle := TcpStream::connect(&addr)?
+	t := wait_closed(&idle)
+	println("idle closed: {t.as_millis() >= 250 && t.as_millis() < 3000}")
+
+	// A client that sends part of its headers runs out of header time.
+	slow2 := TcpStream::connect(&addr)?
+	slow2.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n")?
+	t2 := wait_closed(&slow2)
+	println("partial headers closed: {t2.as_millis() >= 250 && t2.as_millis() < 3000}")
+
+	// A server that never answers: the client's timeout fires.
+	mute := TcpListener::bind("127.0.0.1:0")?
+	mport := mute.port()?
+	go move {
+		c := mute.accept().unwrap()
+		time::sleep(time::secs(5))
+		c.write_all(b"late").unwrap_or(())
+	}
+	client := http::Client::new().with_timeout(Some(time::millis(300)))
+	start := time::Instant::now()
+	match client.get("http://127.0.0.1:{mport}/") {
+		Ok(_) => println("unexpected response"),
+		Err(e) => println("client: {e.kind() == io::ErrorKind::TimedOut} {start.elapsed().as_millis() < 3000}"),
+	}
+	return Ok(())
+}

@@ -420,10 +420,12 @@ An HTTP/1.1 server and client. Each connection gets its own task; connections ar
 | patterns | `"/users"` matches exactly; `"/static/"` matches everything under it; the longest match wins; unmatched paths get 404, wrong methods 405 |
 | handlers | functions or closures from `Request` to `Response` |
 | `http::serve(addr, handler)` | serve every path with one handler |
+| `Server::new(router)` | a router plus timeouts: `with_read_header_timeout(d)` (default 10s), `with_read_timeout(d)` (60s, whole request), `with_write_timeout(d)` (60s, the response), `with_idle_timeout(d)` (120s between keep-alive requests); each takes `Some(duration)` or `None`; `listen(addr)`, `serve(listener)`. `Router::listen`/`serve` use these defaults. A client that runs out of time is disconnected |
+| `Client::new()` | `with_timeout(d)` bounds a whole exchange (connect, send, full response; `ErrorKind::TimedOut` when exceeded; default none), `with_connect_timeout(d)` (default 30s); `get`, `post`, `send` |
 | `Request` | `method`, `target`, `headers`, `body`; `path()`, `query()`, `query_param(name)`, `header(name)`, `body_text()` |
 | `Response` | `Response::text(status, s)`, `html`, `json`, `bytes`, `new(status)`, `not_found()`, `redirect(url)`, `with_header(k, v)`; `status`, `headers`, `body`, `body_text()` |
 | `Headers` | case-insensitive: `get`, `set`, `add`, `remove`, `has`, `entries()` |
-| `http::get(url)`, `post(url, content_type, body)`, `send(request)` | the client: plain `http://` URLs; chunked and fixed-length bodies |
+| `http::get(url)`, `post(url, content_type, body)`, `send(request)` | the client with a default `Client`: plain `http://` URLs; chunked and fixed-length bodies |
 | `http::escape(s)`, `unescape(s)`, `status_text(code)` | helpers |
 
 ```kiln
