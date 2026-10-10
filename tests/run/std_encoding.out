@@ -1,0 +1,8 @@
+686921 00FF10 Ok([104, 105]) Err(InvalidByte(1, 103)) Err(OddLength)
+[|] [Zg==|f] [Zm8=|fo] [Zm9v|foo] [Zm9vYg==|foob] [Zm9vYmE=|fooba] [Zm9vYmFy|foobar] 
++/+/ -_-_ YWI
+Err(InvalidByte(4, 33)) Err(InvalidLength) Err(InvalidPadding) Err(TrailingBits)
+Ok([97, 98]) Ok([102, 111, 111, 98])
+00000000  48 65 6c 6c 6f 2c 20 4b  69 6c 6e 21 20 00 01 20  |Hello, Kiln! .. |
+00000010  62 69 6e 61 72 79 20 64  61 74 61                 |binary data|
+base64: invalid byte 0x40 at offset 0

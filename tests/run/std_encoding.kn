@@ -1,0 +1,21 @@
+import std::encoding::{base64, hex}
+
+fn main() {
+    println("{hex::encode("hi!".as_bytes())} {hex::encode_upper(&[0u8, 255, 16])} {hex::decode("6869"):?} {hex::decode("6g"):?} {hex::decode("abc"):?}")
+    // RFC 4648 test vectors.
+    for s in ["", "f", "fo", "foo", "foob", "fooba", "foobar"].iter() {
+        e := base64::encode(s.as_bytes())
+        d := base64::decode(&e).unwrap()
+        print("[{e}|{String::from_utf8(d).unwrap()}] ")
+    }
+    println("")
+    t := [251u8, 255, 191]
+    println("{base64::STANDARD.encode(&t)} {base64::URL_SAFE.encode(&t)} {base64::URL_SAFE_NO_PAD.encode("ab".as_bytes())}")
+    println("{base64::decode("Zm9v!mFy"):?} {base64::decode("Zm9"):?} {base64::decode("Zm=v"):?} {base64::decode("Zh=="):?}")
+    println("{base64::URL_SAFE_NO_PAD.decode("YWI"):?} {base64::STANDARD_NO_PAD.decode("Zm9vYg"):?}")
+    print(hex::dump("Hello, Kiln! \x00\x01 binary data".as_bytes()))
+    match base64::decode("@@@@") {
+        Ok(_) => {}
+        Err(e) => println("{e}"),
+    }
+}

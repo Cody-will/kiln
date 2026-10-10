@@ -1,0 +1,190 @@
+// Base64 encoding (RFC 4648).
+//
+//	s := base64::encode(b"hello")              // "aGVsbG8="
+//	b := base64::decode("aGVsbG8=")?
+//	t := base64::URL_SAFE_NO_PAD.encode(&token)  // for URLs and JWTs
+//
+// Decoding is strict: it rejects characters outside the alphabet,
+// whitespace, and wrong padding.
+
+const STD_ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+const URL_ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+// An alphabet and padding choice.
+#[derive(Clone, Copy, Debug, Eq)]
+pub struct Engine {
+	url: bool,
+	pad: bool,
+}
+
+// The standard alphabet (`+`, `/`) with `=` padding.
+pub const STANDARD: Engine = Engine { url: false, pad: true }
+// The standard alphabet without padding.
+pub const STANDARD_NO_PAD: Engine = Engine { url: false, pad: false }
+// The URL- and filename-safe alphabet (`-`, `_`) with padding.
+pub const URL_SAFE: Engine = Engine { url: true, pad: true }
+// The URL-safe alphabet without padding (as in JWTs).
+pub const URL_SAFE_NO_PAD: Engine = Engine { url: true, pad: false }
+
+// Why base64 decoding failed.
+#[derive(Debug, Clone, Eq)]
+pub enum DecodeError {
+	// The byte at this offset is not in the alphabet.
+	InvalidByte(usize, u8),
+	// The input length is impossible for base64.
+	InvalidLength,
+	// Padding is missing, misplaced, or present when not expected.
+	InvalidPadding,
+	// The last character has bits set that encode nothing.
+	TrailingBits,
+}
+
+impl Display for DecodeError {
+	fn to_string(&self) -> String {
+		match self {
+			DecodeError::InvalidByte(i, b) => return "base64: invalid byte {*b:#04x} at offset {i}",
+			DecodeError::InvalidLength => return "base64: invalid input length".to_string(),
+			DecodeError::InvalidPadding => return "base64: invalid padding".to_string(),
+			DecodeError::TrailingBits => return "base64: trailing bits are not zero".to_string(),
+		}
+	}
+}
+
+impl Error for DecodeError {}
+
+// Encodes with the standard alphabet and padding.
+pub fn encode(b: &[u8]) -> String {
+	return STANDARD.encode(b)
+}
+
+// Decodes standard, padded base64.
+pub fn decode(s: &str) -> Result<Vec<u8>, DecodeError> {
+	return STANDARD.decode(s)
+}
+
+impl Engine {
+	fn alphabet(&self) -> &[u8] {
+		if self.url {
+			return URL_ALPHABET.as_bytes()
+		}
+		return STD_ALPHABET.as_bytes()
+	}
+
+	// The length of the encoding of `n` bytes.
+	pub fn encoded_len(&self, n: usize) -> usize {
+		if self.pad {
+			return (n + 2) / 3 * 4
+		}
+		return n / 3 * 4 + [0, 2, 3][n % 3]
+	}
+
+	// The encoding of `b`.
+	pub fn encode(&self, b: &[u8]) -> String {
+		a := self.alphabet()
+		out mut := String::with_capacity(self.encoded_len(b.len()))
+		i mut := 0
+		while i + 3 <= b.len() {
+			n := ((b[i] as u32) << 16) | ((b[i + 1] as u32) << 8) | (b[i + 2] as u32)
+			out.push_char(a[(n >> 18) as usize] as char)
+			out.push_char(a[((n >> 12) & 63) as usize] as char)
+			out.push_char(a[((n >> 6) & 63) as usize] as char)
+			out.push_char(a[(n & 63) as usize] as char)
+			i += 3
+		}
+		rest := b.len() - i
+		if rest == 1 {
+			n := (b[i] as u32) << 16
+			out.push_char(a[(n >> 18) as usize] as char)
+			out.push_char(a[((n >> 12) & 63) as usize] as char)
+			if self.pad {
+				out.push("==")
+			}
+		} else if rest == 2 {
+			n := ((b[i] as u32) << 16) | ((b[i + 1] as u32) << 8)
+			out.push_char(a[(n >> 18) as usize] as char)
+			out.push_char(a[((n >> 12) & 63) as usize] as char)
+			out.push_char(a[((n >> 6) & 63) as usize] as char)
+			if self.pad {
+				out.push_char('=')
+			}
+		}
+		return out
+	}
+
+	fn value(&self, c: u8) -> Option<u32> {
+		if c >= 65 && c <= 90 {
+			return Some((c - 65) as u32)
+		}
+		if c >= 97 && c <= 122 {
+			return Some((c - 71) as u32)
+		}
+		if c >= 48 && c <= 57 {
+			return Some((c + 4) as u32)
+		}
+		if self.url {
+			if c == 45 {
+				return Some(62)
+			}
+			if c == 95 {
+				return Some(63)
+			}
+		} else {
+			if c == 43 {
+				return Some(62)
+			}
+			if c == 47 {
+				return Some(63)
+			}
+		}
+		return None
+	}
+
+	// The bytes encoded in `s`.
+	pub fn decode(&self, s: &str) -> Result<Vec<u8>, DecodeError> {
+		b := s.as_bytes()
+		// Strip and check padding.
+		end mut := b.len()
+		if self.pad {
+			if b.len() % 4 != 0 {
+				return Err(DecodeError::InvalidLength)
+			}
+			if end > 0 && b[end - 1] == 61 {
+				end -= 1
+				if end > 0 && b[end - 1] == 61 {
+					end -= 1
+				}
+			}
+		}
+		if end % 4 == 1 {
+			return Err(DecodeError::InvalidLength)
+		}
+		out mut := Vec::with_capacity(end / 4 * 3 + 2)
+		let mut acc: u32 = 0
+		let mut bits: u32 = 0
+		i mut := 0
+		while i < end {
+			c := b[i]
+			v := match self.value(c) {
+				Some(v) => v,
+				None => {
+					if c == 61 {
+						return Err(DecodeError::InvalidPadding)
+					}
+					return Err(DecodeError::InvalidByte(i, c))
+				}
+			}
+			acc = (acc << 6) | v
+			bits += 6
+			if bits >= 8 {
+				bits -= 8
+				out.push((acc >> bits) as u8)
+				acc &= (1u32 << bits) - 1
+			}
+			i += 1
+		}
+		if acc != 0 {
+			return Err(DecodeError::TrailingBits)
+		}
+		return Ok(out)
+	}
+}

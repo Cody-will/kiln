@@ -1,0 +1,123 @@
+// Hexadecimal encoding.
+//
+//	s := hex::encode(b"hi")           // "6869"
+//	b := hex::decode("6869")?         // [104, 105]
+//	print(hex::dump(&data))           // a hexdump -C style listing
+
+const LOWER: &str = "0123456789abcdef"
+const UPPER: &str = "0123456789ABCDEF"
+
+// Why hex decoding failed.
+#[derive(Debug, Clone, Eq)]
+pub enum DecodeError {
+	// The input has an odd number of digits.
+	OddLength,
+	// The byte at this offset is not a hex digit.
+	InvalidByte(usize, u8),
+}
+
+impl Display for DecodeError {
+	fn to_string(&self) -> String {
+		match self {
+			DecodeError::OddLength => return "hex: odd length input".to_string(),
+			DecodeError::InvalidByte(i, b) => return "hex: invalid byte {*b:#04x} at offset {i}",
+		}
+	}
+}
+
+impl Error for DecodeError {}
+
+fn encode_with(b: &[u8], digits: &str) -> String {
+	d := digits.as_bytes()
+	out mut := String::with_capacity(b.len() * 2)
+	for x in b.iter() {
+		out.push_char(d[(*x >> 4) as usize] as char)
+		out.push_char(d[(*x & 15) as usize] as char)
+	}
+	return out
+}
+
+// Lowercase hex digits for `b`.
+pub fn encode(b: &[u8]) -> String {
+	return encode_with(b, LOWER)
+}
+
+// Uppercase hex digits for `b`.
+pub fn encode_upper(b: &[u8]) -> String {
+	return encode_with(b, UPPER)
+}
+
+fn digit(c: u8) -> Option<u8> {
+	if c >= 48 && c <= 57 {
+		return Some(c - 48)
+	}
+	if c >= 97 && c <= 102 {
+		return Some(c - 87)
+	}
+	if c >= 65 && c <= 70 {
+		return Some(c - 55)
+	}
+	return None
+}
+
+// The bytes written as hex digits in `s` (either case).
+pub fn decode(s: &str) -> Result<Vec<u8>, DecodeError> {
+	b := s.as_bytes()
+	out mut := Vec::with_capacity(b.len() / 2)
+	i mut := 0
+	while i + 1 < b.len() {
+		hi := match digit(b[i]) {
+			Some(d) => d,
+			None => return Err(DecodeError::InvalidByte(i, b[i])),
+		}
+		lo := match digit(b[i + 1]) {
+			Some(d) => d,
+			None => return Err(DecodeError::InvalidByte(i + 1, b[i + 1])),
+		}
+		out.push((hi << 4) | lo)
+		i += 2
+	}
+	if i < b.len() {
+		if digit(b[i]).is_none() {
+			return Err(DecodeError::InvalidByte(i, b[i]))
+		}
+		return Err(DecodeError::OddLength)
+	}
+	return Ok(out)
+}
+
+// A hexdump -C style listing: offset, 16 bytes in hex, and the printable
+// characters.
+pub fn dump(b: &[u8]) -> String {
+	out mut := String::new()
+	off mut := 0
+	while off < b.len() {
+		out.push("{off:08x}  ")
+		i mut := 0
+		while i < 16 {
+			if off + i < b.len() {
+				out.push("{b[off + i]:02x} ")
+			} else {
+				out.push("   ")
+			}
+			if i == 7 {
+				out.push(" ")
+			}
+			i += 1
+		}
+		out.push(" |")
+		j mut := off
+		while j < off + 16 && j < b.len() {
+			c := b[j]
+			if c >= 32 && c < 127 {
+				out.push_char(c as char)
+			} else {
+				out.push_char('.')
+			}
+			j += 1
+		}
+		out.push("|\n")
+		off += 16
+	}
+	return out
+}
