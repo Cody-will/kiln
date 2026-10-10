@@ -1139,3 +1139,844 @@ impl<T> std::iter::DoubleEndedIterator<T> for DequeIntoIter<T> {
 		return self.q.pop_back()
 	}
 }
+
+// ===== BTreeMap ===================================================================
+
+// Minimum degree: nodes other than the root hold B-1 to 2B-1 keys.
+const B: usize = 6
+
+struct Node<K, V> {
+	keys: Vec<K>,
+	vals: Vec<V>,
+	// Child node indices; empty for a leaf.
+	kids: Vec<usize>,
+}
+
+// A map with keys kept in sorted order, stored in a B-tree. Keys need Ord.
+// Iteration visits keys in ascending order, and `range` visits a slice of them.
+pub struct BTreeMap<K, V> {
+	nodes: Vec<Node<K, V>>,
+	free: Vec<usize>,
+	root: Option<usize>,
+	len: usize,
+}
+
+impl<K, V> BTreeMap<K, V> {
+	// An empty map.
+	pub fn new() -> BTreeMap<K, V> {
+		return BTreeMap { nodes: Vec::new(), free: Vec::new(), root: None, len: 0 }
+	}
+
+	pub fn len(&self) -> usize {
+		return self.len
+	}
+
+	pub fn is_empty(&self) -> bool {
+		return self.len == 0
+	}
+
+	// Removes every entry.
+	pub fn clear(&mut self) {
+		self.nodes.clear()
+		self.free.clear()
+		self.root = None
+		self.len = 0
+	}
+
+	// The entries in key order, as `(&key, &value)` pairs.
+	pub fn iter<'a>(&'a self) -> BTreeIter<'a, K, V> {
+		it mut := BTreeIter { nodes: &self.nodes, stack: Vec::new(), left: self.len }
+		if let Some(r) = self.root {
+			it.descend(r)
+		}
+		return it
+	}
+
+	// The keys in order.
+	pub fn keys<'a>(&'a self) -> BTreeKeys<'a, K, V> {
+		return BTreeKeys { inner: self.iter() }
+	}
+
+	// The values in key order.
+	pub fn values<'a>(&'a self) -> BTreeValues<'a, K, V> {
+		return BTreeValues { inner: self.iter() }
+	}
+
+	// The values in key order, mutably.
+	pub fn values_mut<'a>(&'a mut self) -> BTreeValuesMut<'a, K, V> {
+		ptrs mut := Vec::with_capacity(self.len)
+		{
+			it mut := self.iter()
+			while let Some((_, v)) = it.next() {
+				ptrs.push(v as *const V as *mut V)
+			}
+		}
+		return BTreeValuesMut { ptrs: ptrs.into_iter(), owner: self }
+	}
+
+	// The entries in key order, consuming the map.
+	pub fn into_iter(self) -> BTreeIntoIter<K, V> {
+		return BTreeIntoIter { map: self }
+	}
+
+	// The first (smallest) entry.
+	pub fn first_key_value(&self) -> Option<(&K, &V)> {
+		n mut := self.root?
+		while self.nodes[n].kids.len() > 0 {
+			n = self.nodes[n].kids[0]
+		}
+		return Some((&self.nodes[n].keys[0], &self.nodes[n].vals[0]))
+	}
+
+	// The last (largest) entry.
+	pub fn last_key_value(&self) -> Option<(&K, &V)> {
+		n mut := self.root?
+		while self.nodes[n].kids.len() > 0 {
+			k := self.nodes[n].kids.len() - 1
+			n = self.nodes[n].kids[k]
+		}
+		i := self.nodes[n].keys.len() - 1
+		return Some((&self.nodes[n].keys[i], &self.nodes[n].vals[i]))
+	}
+
+	// Removes and returns the first entry.
+	pub fn pop_first(&mut self) -> Option<(K, V)> {
+		r := self.root?
+		out := self.remove_end(r, false)
+		self.len -= 1
+		self.shrink_root()
+		return Some(out)
+	}
+
+	// Removes and returns the last entry.
+	pub fn pop_last(&mut self) -> Option<(K, V)> {
+		r := self.root?
+		out := self.remove_end(r, true)
+		self.len -= 1
+		self.shrink_root()
+		return Some(out)
+	}
+
+	fn new_node(&mut self, node: Node<K, V>) -> usize {
+		match self.free.pop() {
+			Some(i) => {
+				self.nodes[i] = node
+				return i
+			}
+			None => {
+				self.nodes.push(node)
+				return self.nodes.len() - 1
+			}
+		}
+	}
+
+	fn is_leaf(&self, n: usize) -> bool {
+		return self.nodes[n].kids.len() == 0
+	}
+
+	fn nkeys(&self, n: usize) -> usize {
+		return self.nodes[n].keys.len()
+	}
+
+	// Splits the full child `i` of `x` around its median key.
+	fn split_child(&mut self, x: usize, i: usize) {
+		y := self.nodes[x].kids[i]
+		keys := self.nodes[y].keys.split_off(B)
+		vals := self.nodes[y].vals.split_off(B)
+		kids mut := Vec::new()
+		if !self.is_leaf(y) {
+			kids = self.nodes[y].kids.split_off(B)
+		}
+		mk := self.nodes[y].keys.pop().unwrap()
+		mv := self.nodes[y].vals.pop().unwrap()
+		z := self.new_node(Node { keys: keys, vals: vals, kids: kids })
+		self.nodes[x].keys.insert(i, mk)
+		self.nodes[x].vals.insert(i, mv)
+		self.nodes[x].kids.insert(i + 1, z)
+	}
+
+	// Merges child `i + 1` of `x` and the key between them into child `i`.
+	fn merge(&mut self, x: usize, i: usize) {
+		y := self.nodes[x].kids[i]
+		z := self.nodes[x].kids.remove(i + 1)
+		k := self.nodes[x].keys.remove(i)
+		v := self.nodes[x].vals.remove(i)
+		self.nodes[y].keys.push(k)
+		self.nodes[y].vals.push(v)
+		zk mut := Vec::new()
+		zv mut := Vec::new()
+		zc mut := Vec::new()
+		std::mem::swap(&mut zk, &mut self.nodes[z].keys)
+		std::mem::swap(&mut zv, &mut self.nodes[z].vals)
+		std::mem::swap(&mut zc, &mut self.nodes[z].kids)
+		self.nodes[y].keys.append(&mut zk)
+		self.nodes[y].vals.append(&mut zv)
+		self.nodes[y].kids.append(&mut zc)
+		self.free.push(z)
+	}
+
+	// Makes sure child `i` of `x` has at least B keys before descending into
+	// it, by borrowing from a sibling or merging. Returns the child's new index.
+	fn fill_child(&mut self, x: usize, i: usize) -> usize {
+		c := self.nodes[x].kids[i]
+		if self.nkeys(c) >= B {
+			return i
+		}
+		n := self.nkeys(x)
+		if i > 0 && self.nkeys(self.nodes[x].kids[i - 1]) >= B {
+			// Rotate right: the separator moves down into c, and the left
+			// sibling's last key moves up.
+			l := self.nodes[x].kids[i - 1]
+			lk := self.nodes[l].keys.pop().unwrap()
+			lv := self.nodes[l].vals.pop().unwrap()
+			sk := std::mem::replace(&mut self.nodes[x].keys[i - 1], lk)
+			sv := std::mem::replace(&mut self.nodes[x].vals[i - 1], lv)
+			self.nodes[c].keys.insert(0, sk)
+			self.nodes[c].vals.insert(0, sv)
+			if !self.is_leaf(l) {
+				lc := self.nodes[l].kids.pop().unwrap()
+				self.nodes[c].kids.insert(0, lc)
+			}
+			return i
+		}
+		if i < n && self.nkeys(self.nodes[x].kids[i + 1]) >= B {
+			// Rotate left.
+			r := self.nodes[x].kids[i + 1]
+			rk := self.nodes[r].keys.remove(0)
+			rv := self.nodes[r].vals.remove(0)
+			sk := std::mem::replace(&mut self.nodes[x].keys[i], rk)
+			sv := std::mem::replace(&mut self.nodes[x].vals[i], rv)
+			self.nodes[c].keys.push(sk)
+			self.nodes[c].vals.push(sv)
+			if !self.is_leaf(r) {
+				rc := self.nodes[r].kids.remove(0)
+				self.nodes[c].kids.push(rc)
+			}
+			return i
+		}
+		if i < n {
+			self.merge(x, i)
+			return i
+		}
+		self.merge(x, i - 1)
+		return i - 1
+	}
+
+	// Removes the last (or first) entry of the subtree at `x`, which has at
+	// least B keys or is the root.
+	fn remove_end(&mut self, x: usize, last: bool) -> (K, V) {
+		n mut := x
+		loop {
+			if self.is_leaf(n) {
+				if last {
+					return (self.nodes[n].keys.pop().unwrap(), self.nodes[n].vals.pop().unwrap())
+				}
+				return (self.nodes[n].keys.remove(0), self.nodes[n].vals.remove(0))
+			}
+			i mut := 0
+			if last {
+				i = self.nkeys(n)
+			}
+			i = self.fill_child(n, i)
+			n = self.nodes[n].kids[i]
+		}
+	}
+
+	// After a removal: an empty root is replaced by its only child (or none).
+	fn shrink_root(&mut self) {
+		if let Some(r) = self.root {
+			if self.nkeys(r) == 0 {
+				if self.is_leaf(r) {
+					self.clear()
+				} else {
+					self.root = Some(self.nodes[r].kids.pop().unwrap())
+					self.free.push(r)
+				}
+			}
+		}
+	}
+}
+
+// The position of `q` among `keys`: (index, found).
+fn search<K: Borrow<Q>, Q: Ord>(keys: &Vec<K>, q: &Q) -> (usize, bool) {
+	i mut := 0
+	while i < keys.len() {
+		let kb: &Q = Borrow::borrow(&keys[i])
+		match kb.cmp(q) {
+			Ordering::Less => {}
+			Ordering::Equal => return (i, true),
+			Ordering::Greater => return (i, false),
+		}
+		i += 1
+	}
+	return (i, false)
+}
+
+impl<K: Ord, V> BTreeMap<K, V> {
+	// A map of the pairs from `items`; later duplicates win.
+	pub fn from_iter<I: Iterator<(K, V)>>(items: I) -> BTreeMap<K, V> {
+		m mut := BTreeMap::new()
+		m.extend(items)
+		return m
+	}
+
+	// The node and index holding `key`.
+	fn locate<Q: Ord>(&self, key: &Q) -> Option<(usize, usize)> where K: Borrow<Q> {
+		n mut := self.root?
+		loop {
+			(i, found) := search(&self.nodes[n].keys, key)
+			if found {
+				return Some((n, i))
+			}
+			if self.is_leaf(n) {
+				return None
+			}
+			n = self.nodes[n].kids[i]
+		}
+	}
+
+	// The value for `key`.
+	pub fn get<Q: Ord>(&self, key: &Q) -> Option<&V> where K: Borrow<Q> {
+		(n, i) := self.locate(key)?
+		return Some(&self.nodes[n].vals[i])
+	}
+
+	// The value for `key`, mutably.
+	pub fn get_mut<Q: Ord>(&mut self, key: &Q) -> Option<&mut V> where K: Borrow<Q> {
+		(n, i) := self.locate(key)?
+		return Some(&mut self.nodes[n].vals[i])
+	}
+
+	// The stored key and value for `key`.
+	pub fn get_key_value<Q: Ord>(&self, key: &Q) -> Option<(&K, &V)> where K: Borrow<Q> {
+		(n, i) := self.locate(key)?
+		return Some((&self.nodes[n].keys[i], &self.nodes[n].vals[i]))
+	}
+
+	// Whether the map has an entry for `key`.
+	pub fn contains_key<Q: Ord>(&self, key: &Q) -> bool where K: Borrow<Q> {
+		return self.locate(key).is_some()
+	}
+
+	// Sets `key` to `value`, returning the old value if there was one.
+	pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+		if let Some((n, i)) = self.locate(&key) {
+			return Some(std::mem::replace(&mut self.nodes[n].vals[i], value))
+		}
+		self.len += 1
+		r := match self.root {
+			Some(r) => r,
+			None => {
+				r := self.new_node(Node { keys: Vec::new(), vals: Vec::new(), kids: Vec::new() })
+				self.root = Some(r)
+				r
+			}
+		}
+		if self.nkeys(r) == 2 * B - 1 {
+			kids mut := Vec::new()
+			kids.push(r)
+			top := self.new_node(Node { keys: Vec::new(), vals: Vec::new(), kids: kids })
+			self.root = Some(top)
+			self.split_child(top, 0)
+		}
+		n mut := self.root.unwrap()
+		loop {
+			(i0, _) := search(&self.nodes[n].keys, &key)
+			if self.is_leaf(n) {
+				self.nodes[n].keys.insert(i0, key)
+				self.nodes[n].vals.insert(i0, value)
+				return None
+			}
+			i mut := i0
+			c := self.nodes[n].kids[i]
+			if self.nkeys(c) == 2 * B - 1 {
+				self.split_child(n, i)
+				if self.nodes[n].keys[i] < key {
+					i += 1
+				}
+			}
+			n = self.nodes[n].kids[i]
+		}
+	}
+
+	// Removes `key`, returning its value.
+	pub fn remove<Q: Ord>(&mut self, key: &Q) -> Option<V> where K: Borrow<Q> {
+		match self.remove_entry(key) {
+			Some((_, v)) => return Some(v),
+			None => return None,
+		}
+	}
+
+	// Removes `key`, returning the stored key and value.
+	pub fn remove_entry<Q: Ord>(&mut self, key: &Q) -> Option<(K, V)> where K: Borrow<Q> {
+		if !self.contains_key(key) {
+			return None
+		}
+		n mut := self.root.unwrap()
+		loop {
+			(i, found) := search(&self.nodes[n].keys, key)
+			if found && self.is_leaf(n) {
+				out := (self.nodes[n].keys.remove(i), self.nodes[n].vals.remove(i))
+				self.finish_remove()
+				return Some(out)
+			}
+			if found {
+				y := self.nodes[n].kids[i]
+				z := self.nodes[n].kids[i + 1]
+				if self.nkeys(y) >= B {
+					(pk, pv) := self.remove_end(y, true)
+					k := std::mem::replace(&mut self.nodes[n].keys[i], pk)
+					v := std::mem::replace(&mut self.nodes[n].vals[i], pv)
+					self.finish_remove()
+					return Some((k, v))
+				}
+				if self.nkeys(z) >= B {
+					(sk, sv) := self.remove_end(z, false)
+					k := std::mem::replace(&mut self.nodes[n].keys[i], sk)
+					v := std::mem::replace(&mut self.nodes[n].vals[i], sv)
+					self.finish_remove()
+					return Some((k, v))
+				}
+				// Both neighbors are minimal: merge them around the key and
+				// continue in the merged node, where the key now lives.
+				self.merge(n, i)
+				if n == self.root.unwrap() && self.nkeys(n) == 0 {
+					self.root = Some(y)
+					self.free.push(n)
+				}
+				n = y
+				continue
+			}
+			c := self.fill_child(n, i)
+			next := self.nodes[n].kids[c]
+			if n == self.root.unwrap() && self.nkeys(n) == 0 {
+				self.root = Some(next)
+				self.free.push(n)
+			}
+			n = next
+		}
+	}
+
+	fn finish_remove(&mut self) {
+		self.len -= 1
+		self.shrink_root()
+	}
+
+	// The entries with keys in `from..to` (`to` excluded), in order.
+	pub fn range<'a, Q: Ord>(&'a self, from: &Q, to: &'a Q) -> BTreeRange<'a, K, V, Q> where K: Borrow<Q> {
+		return BTreeRange { inner: self.iter_from(from), end: Some(to) }
+	}
+
+	// The entries with keys from `from` on, in order.
+	pub fn range_from<'a, Q: Ord>(&'a self, from: &Q) -> BTreeRange<'a, K, V, Q> where K: Borrow<Q> {
+		return BTreeRange { inner: self.iter_from(from), end: None }
+	}
+
+	// An iterator starting at the first key not less than `from`.
+	fn iter_from<'a, Q: Ord>(&'a self, from: &Q) -> BTreeIter<'a, K, V> where K: Borrow<Q> {
+		it mut := BTreeIter { nodes: &self.nodes, stack: Vec::new(), left: self.len }
+		if let Some(r) = self.root {
+			n mut := r
+			loop {
+				(i, found) := search(&self.nodes[n].keys, from)
+				it.stack.push((n, i))
+				if found || self.is_leaf(n) {
+					break
+				}
+				n = self.nodes[n].kids[i]
+			}
+		}
+		return it
+	}
+
+	// Keeps only the entries for which `keep` returns true.
+	pub fn retain(&mut self, keep: fn mut(&K, &mut V) -> bool) {
+		old mut := BTreeMap::new()
+		std::mem::swap(self, &mut old)
+		for (k, v) in old.into_iter() {
+			value mut := v
+			if keep(&k, &mut value) {
+				self.insert(k, value)
+			}
+		}
+	}
+
+	// Inserts every pair from `items`.
+	pub fn extend<I: Iterator<(K, V)>>(&mut self, items: I) {
+		it mut := items
+		while let Some((k, v)) = it.next() {
+			self.insert(k, v)
+		}
+	}
+
+	// Moves every entry with a key at or after `key` into a new map.
+	pub fn split_off<Q: Ord>(&mut self, key: &Q) -> BTreeMap<K, V> where K: Borrow<Q> {
+		out mut := BTreeMap::new()
+		loop {
+			match self.last_key_value() {
+				Some((k, _)) => {
+					let kb: &Q = Borrow::borrow(k)
+					if kb < key {
+						break
+					}
+				}
+				None => break,
+			}
+			(k, v) := self.pop_last().unwrap()
+			out.insert(k, v)
+		}
+		return out
+	}
+}
+
+impl<K: Eq, V: Eq> Eq for BTreeMap<K, V> {
+	fn eq(&self, other: &BTreeMap<K, V>) -> bool {
+		if self.len != other.len {
+			return false
+		}
+		a mut := self.iter()
+		b mut := other.iter()
+		while let Some((ka, va)) = a.next() {
+			(kb, vb) := b.next().unwrap()
+			if !(ka == kb) || !(va == vb) {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+impl<K: Clone, V: Clone> Clone for BTreeMap<K, V> {
+	fn clone(&self) -> BTreeMap<K, V> {
+		nodes mut := Vec::with_capacity(self.nodes.len())
+		for n in self.nodes.iter() {
+			nodes.push(Node { keys: n.keys.clone(), vals: n.vals.clone(), kids: n.kids.clone() })
+		}
+		return BTreeMap { nodes: nodes, free: self.free.clone(), root: self.root, len: self.len }
+	}
+}
+
+impl<K: Debug, V: Debug> Debug for BTreeMap<K, V> {
+	fn fmt_debug(&self, f: &mut std::fmt::Formatter) {
+		f.begin("{{")
+		first mut := true
+		for (k, v) in self.iter() {
+			f.item(first)
+			f.debug(k)
+			f.write(": ")
+			f.debug(v)
+			first = false
+		}
+		f.end("}}", first, false)
+	}
+}
+
+// In-order traversal. Each stack entry `(node, i)` means: the next key to
+// yield from `node` is `i` (its left subtree is done).
+pub struct BTreeIter<'a, K, V> {
+	nodes: &'a Vec<Node<K, V>>,
+	stack: Vec<(usize, usize)>,
+	left: usize,
+}
+
+impl<'a, K, V> BTreeIter<'a, K, V> {
+	fn descend(&mut self, from: usize) {
+		n mut := from
+		loop {
+			self.stack.push((n, 0))
+			if self.nodes[n].kids.len() == 0 {
+				return
+			}
+			n = self.nodes[n].kids[0]
+		}
+	}
+}
+
+impl<'a, K, V> Iterator<(&'a K, &'a V)> for BTreeIter<'a, K, V> {
+	fn next(&mut self) -> Option<(&'a K, &'a V)> {
+		loop {
+			(n, i) := *self.stack.last()?
+			nodes := self.nodes
+			node := &nodes[n]
+			if i < node.keys.len() {
+				self.stack.pop()
+				self.stack.push((n, i + 1))
+				if node.kids.len() > 0 {
+					self.descend(node.kids[i + 1])
+				}
+				if self.left > 0 {
+					self.left -= 1
+				}
+				return Some((&node.keys[i], &node.vals[i]))
+			}
+			self.stack.pop()
+		}
+	}
+}
+
+pub struct BTreeRange<'a, K, V, Q> {
+	inner: BTreeIter<'a, K, V>,
+	end: Option<&'a Q>,
+}
+
+impl<'a, K: Borrow<Q>, V, Q: Ord> Iterator<(&'a K, &'a V)> for BTreeRange<'a, K, V, Q> {
+	fn next(&mut self) -> Option<(&'a K, &'a V)> {
+		(k, v) := self.inner.next()?
+		if let Some(e) = self.end {
+			let kb: &Q = Borrow::borrow(k)
+			if !(kb < e) {
+				self.inner.stack.clear()
+				return None
+			}
+		}
+		return Some((k, v))
+	}
+}
+
+pub struct BTreeKeys<'a, K, V> {
+	inner: BTreeIter<'a, K, V>,
+}
+
+impl<'a, K, V> Iterator<&'a K> for BTreeKeys<'a, K, V> {
+	fn next(&mut self) -> Option<&'a K> {
+		(k, _) := self.inner.next()?
+		return Some(k)
+	}
+}
+
+pub struct BTreeValues<'a, K, V> {
+	inner: BTreeIter<'a, K, V>,
+}
+
+impl<'a, K, V> Iterator<&'a V> for BTreeValues<'a, K, V> {
+	fn next(&mut self) -> Option<&'a V> {
+		(_, v) := self.inner.next()?
+		return Some(v)
+	}
+}
+
+// Pointers to each value, collected in order while the map is mutably
+// borrowed by `owner`, so each `&mut V` is handed out once.
+pub struct BTreeValuesMut<'a, K, V> {
+	ptrs: std::iter::IntoIter<*mut V>,
+	owner: &'a mut BTreeMap<K, V>,
+}
+
+impl<'a, K, V> Iterator<&'a mut V> for BTreeValuesMut<'a, K, V> {
+	fn next(&mut self) -> Option<&'a mut V> {
+		p := self.ptrs.next()?
+		unsafe {
+			return Some(&mut *p)
+		}
+	}
+}
+
+pub struct BTreeIntoIter<K, V> {
+	map: BTreeMap<K, V>,
+}
+
+impl<K, V> Iterator<(K, V)> for BTreeIntoIter<K, V> {
+	fn next(&mut self) -> Option<(K, V)> {
+		return self.map.pop_first()
+	}
+}
+
+impl<K, V> std::iter::DoubleEndedIterator<(K, V)> for BTreeIntoIter<K, V> {
+	fn next_back(&mut self) -> Option<(K, V)> {
+		return self.map.pop_last()
+	}
+}
+
+// ===== BTreeSet ===================================================================
+
+// A set of values kept in sorted order.
+pub struct BTreeSet<T> {
+	map: BTreeMap<T, ()>,
+}
+
+impl<T> BTreeSet<T> {
+	pub fn new() -> BTreeSet<T> {
+		return BTreeSet { map: BTreeMap::new() }
+	}
+
+	pub fn len(&self) -> usize {
+		return self.map.len()
+	}
+
+	pub fn is_empty(&self) -> bool {
+		return self.map.len() == 0
+	}
+
+	pub fn clear(&mut self) {
+		self.map.clear()
+	}
+
+	// The values in ascending order.
+	pub fn iter<'a>(&'a self) -> BTreeKeys<'a, T, ()> {
+		return self.map.keys()
+	}
+
+	// The values in order, consuming the set.
+	pub fn into_iter(self) -> BTreeSetIntoIter<T> {
+		return BTreeSetIntoIter { inner: self.map.into_iter() }
+	}
+
+	// The smallest value.
+	pub fn first(&self) -> Option<&T> {
+		(k, _) := self.map.first_key_value()?
+		return Some(k)
+	}
+
+	// The largest value.
+	pub fn last(&self) -> Option<&T> {
+		(k, _) := self.map.last_key_value()?
+		return Some(k)
+	}
+
+	pub fn pop_first(&mut self) -> Option<T> {
+		(k, _) := self.map.pop_first()?
+		return Some(k)
+	}
+
+	pub fn pop_last(&mut self) -> Option<T> {
+		(k, _) := self.map.pop_last()?
+		return Some(k)
+	}
+}
+
+impl<T: Ord> BTreeSet<T> {
+	pub fn from_iter<I: Iterator<T>>(items: I) -> BTreeSet<T> {
+		s mut := BTreeSet::new()
+		s.extend(items)
+		return s
+	}
+
+	// Adds `value`; returns false if it was already present.
+	pub fn insert(&mut self, value: T) -> bool {
+		return self.map.insert(value, ()).is_none()
+	}
+
+	pub fn contains<Q: Ord>(&self, value: &Q) -> bool where T: Borrow<Q> {
+		return self.map.contains_key(value)
+	}
+
+	// Removes `value`; returns whether it was present.
+	pub fn remove<Q: Ord>(&mut self, value: &Q) -> bool where T: Borrow<Q> {
+		return self.map.remove(value).is_some()
+	}
+
+	// The values in `from..to`, in order.
+	pub fn range<'a, Q: Ord>(&'a self, from: &Q, to: &'a Q) -> BTreeSetRange<'a, T, Q> where T: Borrow<Q> {
+		return BTreeSetRange { inner: self.map.range(from, to) }
+	}
+
+	pub fn retain(&mut self, keep: fn mut(&T) -> bool) {
+		self.map.retain(|k, _v| keep(k))
+	}
+
+	pub fn extend<I: Iterator<T>>(&mut self, items: I) {
+		it mut := items
+		while let Some(x) = it.next() {
+			self.map.insert(x, ())
+		}
+	}
+
+	pub fn is_subset(&self, other: &BTreeSet<T>) -> bool {
+		for x in self.iter() {
+			if !other.contains(x) {
+				return false
+			}
+		}
+		return true
+	}
+
+	// The values in both sets, in order.
+	pub fn intersection<'a>(&'a self, other: &BTreeSet<T>) -> Vec<&'a T> {
+		out mut := Vec::new()
+		for x in self.iter() {
+			if other.contains(x) {
+				out.push(x)
+			}
+		}
+		return out
+	}
+
+	// The values in this set but not `other`, in order.
+	pub fn difference<'a>(&'a self, other: &BTreeSet<T>) -> Vec<&'a T> {
+		out mut := Vec::new()
+		for x in self.iter() {
+			if !other.contains(x) {
+				out.push(x)
+			}
+		}
+		return out
+	}
+
+	// The values in either set, in order, each once.
+	pub fn union<'a>(&'a self, other: &'a BTreeSet<T>) -> Vec<&'a T> {
+		out mut := Vec::new()
+		a mut := self.iter().peekable()
+		b mut := other.iter().peekable()
+		loop {
+			take_a := match (a.peek(), b.peek()) {
+				(None, None) => break,
+				(Some(_), None) => 0,
+				(None, Some(_)) => 1,
+				(Some(x), Some(y)) => match (**x).cmp(*y) {
+					Ordering::Less => 0,
+					Ordering::Greater => 1,
+					Ordering::Equal => 2,
+				},
+			}
+			if take_a == 0 {
+				out.push(a.next().unwrap())
+			} else if take_a == 1 {
+				out.push(b.next().unwrap())
+			} else {
+				out.push(a.next().unwrap())
+				b.next()
+			}
+		}
+		return out
+	}
+}
+
+impl<T: Eq> Eq for BTreeSet<T> {
+	fn eq(&self, other: &BTreeSet<T>) -> bool {
+		return self.map == other.map
+	}
+}
+
+impl<T: Clone> Clone for BTreeSet<T> {
+	fn clone(&self) -> BTreeSet<T> {
+		return BTreeSet { map: self.map.clone() }
+	}
+}
+
+impl<T: Debug> Debug for BTreeSet<T> {
+	fn fmt_debug(&self, f: &mut std::fmt::Formatter) {
+		f.list(self.iter())
+	}
+}
+
+pub struct BTreeSetRange<'a, T, Q> {
+	inner: BTreeRange<'a, T, (), Q>,
+}
+
+impl<'a, T: Borrow<Q>, Q: Ord> Iterator<&'a T> for BTreeSetRange<'a, T, Q> {
+	fn next(&mut self) -> Option<&'a T> {
+		(k, _) := self.inner.next()?
+		return Some(k)
+	}
+}
+
+pub struct BTreeSetIntoIter<T> {
+	inner: BTreeIntoIter<T, ()>,
+}
+
+impl<T> Iterator<T> for BTreeSetIntoIter<T> {
+	fn next(&mut self) -> Option<T> {
+		(k, _) := self.inner.next()?
+		return Some(k)
+	}
+}

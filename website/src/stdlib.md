@@ -23,6 +23,7 @@ The standard library is written in Kiln, on top of a small C runtime for system 
 | [`std::net::http`](#stdnethttp) | HTTP/1.1 server and client |
 | [`std::log`](#stdlog) | leveled logging |
 | [`std::fmt`](#stdfmt) | `Display` and `Debug` |
+| [`std::collections`](#stdcollections) | `HashMap`, `HashSet`, `BTreeMap`, `BTreeSet`, `VecDeque` |
 | [`std::mem`, `std::ptr`](#stdmem-and-stdptr) | low-level memory operations |
 
 ## std::time
@@ -319,6 +320,39 @@ impl fmt::Display for Point {
 fn main() {
 	p := Point { x: 1.5, y: -2.0 }
 	println("p = {p}")
+}
+```
+
+## std::collections
+
+| Item | Description |
+|---|---|
+| `HashMap<K, V>` | hash table; keys need `Hash + Eq`. `insert`, `get`, `get_mut`, `contains_key`, `remove`, `entry(k).or_insert(v)` / `or_insert_with(f)` / `and_modify(f)`, `retain`, `extend`, `iter`, `keys`, `values`, `values_mut`, `into_iter`, `drain`, `HashMap::from_iter(pairs)` |
+| `HashSet<T>` | `insert` (returns whether it was new), `contains`, `remove`, `union`, `intersection`, `difference`, `symmetric_difference`, `is_subset`, `is_disjoint` |
+| `BTreeMap<K, V>` | sorted map (a B-tree); keys need `Ord`. The `HashMap` methods plus `first_key_value`, `last_key_value`, `pop_first`, `pop_last`, `range(from, to)`, `range_from(from)`, `split_off(k)`; iterates in key order |
+| `BTreeSet<T>` | sorted set: `first`, `last`, `range`, and the set operations, in order |
+| `VecDeque<T>` | ring buffer: `push_back`, `push_front`, `pop_back`, `pop_front`, `front`, `back`, `get`, `insert`, `remove`, `rotate_left`, `retain`, `iter`, `iter_mut` |
+
+Lookups take any borrowed form of the key, so a `HashMap<String, V>` is
+searched with a `&str` and no allocation. `HashMap` iteration order is
+unspecified; use `BTreeMap` when order matters. Maps and sets implement
+`Eq` (independent of order for hash tables), `Clone`, and `Debug`.
+
+```kiln
+import std::collections::{BTreeMap, HashMap}
+
+fn main() {
+    counts mut := HashMap::new()
+    for w in "the cat and the hat".split(" ") {
+        *counts.entry(w.to_string()).or_insert(0) += 1
+    }
+    println("the: {counts.get("the"):?}")
+
+    sorted mut := BTreeMap::new()
+    for (w, n) in counts.iter() {
+        sorted.insert(w.clone(), *n)
+    }
+    println("{sorted:?}")  // {"and": 1, "cat": 1, "hat": 1, "the": 2}
 }
 ```
 

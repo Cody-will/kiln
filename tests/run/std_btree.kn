@@ -1,0 +1,113 @@
+import std::collections::{BTreeMap, BTreeSet}
+
+fn check(m: &BTreeMap<i32, i32>, present: &Vec<bool>) {
+    expect mut := Vec::new()
+    i mut := 0
+    while i < present.len() {
+        if present[i] {
+            expect.push(i as i32)
+        }
+        i += 1
+    }
+    let got: Vec<i32> = m.keys().map(|k| *k).collect()
+    if got != expect || m.len() != expect.len() {
+        panic("order mismatch: {got.len()} vs {expect.len()}")
+    }
+    for (k, v) in m.iter() {
+        if *v != *k * 3 {
+            panic("value mismatch")
+        }
+    }
+}
+
+fn main() {
+    m mut := BTreeMap::new()
+    present mut := Vec::new()
+    i mut := 0
+    while i < 3000 {
+        present.push(false)
+        i += 1
+    }
+    let mut s: u64 = 99
+    round mut := 0
+    while round < 6 {
+        n mut := 0
+        while n < 8000 {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)
+            k := ((s >> 33) % 3000) as i32
+            // Early rounds mostly insert, later rounds mostly remove.
+            if (((s >> 20) % 10) as i32) < round * 2 {
+                r := m.remove(&k)
+                if r.is_some() != present[k as usize] {
+                    panic("remove mismatch at {k}")
+                }
+                present[k as usize] = false
+            } else {
+                old := m.insert(k, k * 3)
+                if old.is_some() != present[k as usize] {
+                    panic("insert mismatch at {k}")
+                }
+                present[k as usize] = true
+            }
+            n += 1
+        }
+        check(&m, &present)
+        round += 1
+    }
+    println("stress ok {m.len()}")
+
+    big mut := BTreeMap::new()
+    q mut := 0
+    while q < 5000 {
+        big.insert(q, q)
+        q += 1
+    }
+    lo mut := 0
+    hi mut := 4999
+    while !big.is_empty() {
+        (a, _) := big.pop_first().unwrap()
+        if a != lo {
+            panic("pop_first order")
+        }
+        lo += 1
+        if let Some((b, _)) = big.pop_last() {
+            if b != hi {
+                panic("pop_last order")
+            }
+            hi -= 1
+        }
+    }
+    println("big drain ok {lo} {hi}")
+
+    // Drain from both ends.
+    while m.len() > 0 {
+        a := m.pop_first()
+        b := m.pop_last()
+        if a.is_none() {
+            panic("pop")
+        }
+    }
+    println("empty {m.is_empty()} {m.first_key_value():?}")
+
+    t mut := BTreeMap::new()
+    for w in "pear apple fig banana apple cherry".split(" ") {
+        t.insert(w.to_string(), w.len())
+    }
+    println("{t:?}")
+    println("{t.get("fig"):?} {t.first_key_value():?} {t.last_key_value():?}")
+    let r: Vec<&String> = t.range("b", "d").map(|(k, _)| k).collect()
+    println("{r:?}")
+    for v in t.values_mut() {
+        *v *= 10
+    }
+    tail := t.split_off("c")
+    println("{t:?} {tail:?}")
+
+    st mut := BTreeSet::from_iter([5, 1, 9, 3, 7].to_vec().into_iter())
+    other := BTreeSet::from_iter((4..8))
+    dup := st.insert(3)
+    println("{st:?} {st.first():?} {st.last():?} {st.contains(&9)} {dup}")
+    println("{st.union(&other):?} {st.intersection(&other):?} {st.difference(&other):?}")
+    let rr: Vec<&i32> = st.range(&2, &8).collect()
+    println("{rr:?} {st == st.clone()}")
+}

@@ -587,7 +587,7 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 | `std::fmt` | `Display`, `Debug`, `Formatter`, `fmt::debug`/`fmt::pretty`; format specs in interpolation | ✅ |
 | `std::mem`, `std::ptr` | `size_of`, `swap`, `replace`, `forget`; raw pointer operations for `unsafe` code | ✅ |
 | `std::strings`, `std::strconv`, `std::bytes`, `std::unicode` | text processing and parsing | 🚧 phase 2 |
-| `std::collections` | `HashMap`, `HashSet`, `BTreeMap`, `VecDeque` | 🚧 phase 2 |
+| `std::collections` | `HashMap`, `HashSet` (entry API, `Borrow` lookups), `BTreeMap`, `BTreeSet` (B-tree, ranges), `VecDeque` | ✅ |
 | `std::sort`, `std::math`, `std::rand`, `std::errors`, `std::flag`, `std::context` | | 🚧 phase 2 |
 | `std::encoding` | JSON, base64, hex, CSV | 🚧 phase 2 |
 | `std::crypto`, `std::hash` | SHA-256, MD5 | 🚧 phase 2 |
