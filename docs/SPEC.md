@@ -349,7 +349,8 @@ fn main() {
 - `go f(args)` and `go move { ... }` spawn a task.
   - Captured values must be `Send + 'static`.
   - The task gets a value either by moving it in or by sharing it through `Arc<T>`.
-- `go` returns a `Task<T>` handle. `task.join()` returns `Result<T, Panic>`, and dropping the handle detaches the task.
+- `go` is an expression that returns a `Task<T>` handle, where `T` is the result of the call or block. `task.join()` waits and returns `Result<T, Panic>`, and dropping the handle detaches the task. The program ends when `main` returns, even if other tasks are still running (as in Go).
+- If every task is blocked and none can be woken, the program stops with `fatal error: all tasks are asleep - deadlock!` and exit status 2.
 - `scope(|s| { ... s.spawn(|| ...) ... })` creates **scoped tasks**. These may borrow non-`'static` data and are joined before `scope` returns. (`go` is a keyword, so the method is named `spawn`; `scope` is an ordinary library function.) Tasks that borrow need `T: Sync` for each shared borrow and `T: Send` for each `&mut` borrow or moved value.
 - `go f(args)` moves its arguments into the task; an argument that borrows from the current function is an error. A `go { ... }` block without `move` may not borrow locals: use `go move { ... }`.
 - Types sent over a channel must be `Send`. Shared mutable state uses `Mutex<T>`, `RwLock<T>`, and atomics. `&T` crosses tasks only when `T: Sync`.
@@ -363,7 +364,9 @@ fn main() {
 **Channel syntax (decided)**: channels use Go-style operators:
 
 - Send with `tx <- v`.
-- Receive with `v := <-rx`, which blocks until a value arrives. A receive on a closed channel ends a `for` loop and makes `<-rx` in a `select` arm skip.
+- Receive with `v := <-rx`, which blocks until a value arrives. A receive on a closed channel ends a `for` loop and makes `<-rx` in a `select` arm skip. Outside `for` and `select`, `<-rx` on a closed, empty channel panics (Kiln has no zero values to return); use `rx.recv()` when closing is expected.
+- `select` with no `_` arm whose receive channels are all closed panics instead of blocking forever.
+- Values still buffered in a channel are dropped when the last end is dropped.
 - `for v in rx` receives until the channel is closed.
 
 Non-blocking and explicit operations are library methods:
@@ -601,12 +604,12 @@ kiln/
    - Links with the system C toolchain (`cc` on Unix, `link.exe` on Windows).
 10. **Incremental and query-based**: a `salsa` database so the compiler and language server share one engine.
 
-### Runtime (`kiln_runtime`, written in Rust then ported over time)
+### Runtime (`kiln_runtime`, a small C library linked into every program)
 
 - An M:N work-stealing scheduler like Go's G-M-P model:
-  - Each OS thread has a run queue, and idle threads steal work from others.
-  - Task stacks are growable segmented stacks, or fixed 64 KB stacks with guard pages for the MVP.
-  - Context switching is cooperative, with yield points at channel operations, I/O, and loop back-edges (preemption is planned).
+  - Each worker thread (one per CPU by default, `KILN_WORKERS` to override) has a run queue, and idle workers steal half of a random victim's queue.
+  - Task stacks are fixed 1 MiB stacks (reserved address space, committed on use) with a guard page, reused through a pool. Growable stacks are planned.
+  - Context switching is cooperative: tasks yield at channel operations, `select`, `join`, and scope waits. Yield points at loop back-edges (or signal-based preemption) are planned, so today a task in a long loop without channel operations keeps its worker busy.
 - Netpoller: epoll, kqueue, or IOCP.
 - Timers: a timer heap.
 - Channels: lock-free fast path with parked-task wait queues. `select` follows Go's randomized fair choice.

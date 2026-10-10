@@ -12,9 +12,13 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 | Ownership and borrow checking: moves, borrows (non-lexical lifetimes), lifetimes and elision, `Drop` order, `defer`, closure captures | ✅ Implemented (`kiln check`) |
 | `Send`/`Sync` and `'static` checks for `go` and scoped tasks | ✅ Implemented (`kiln check`) |
 | Code generation (Cranelift): functions, structs/enums/`match`, generics (monomorphized), traits and `dyn`, closures, `Result`/`?`, `defer`, `Drop`, `String`, `Vec`, `Box` | ✅ Implemented (`kiln build`, `kiln run`) |
-| Fixed-size arrays, slice patterns, `\|` patterns with bindings | 🚧 Not yet in codegen (reported as errors) |
+| Fixed-size arrays `[T; N]` | ✅ Implemented |
+| Integer overflow | ✅ Panics in debug builds, wraps with `--release` |
+| Slice patterns, `\|` patterns with bindings | 🚧 Not yet in codegen (reported as errors) |
 | Panics | ✅ Print a message and exit with status 101; 🚧 no unwinding (destructors and `defer` don't run on panic) |
-| Runtime: tasks, channels, `select`, scheduler | 🚧 Not yet: type-checked only |
+| Concurrency: `go` and `Task<T>`, channels, `select`, `scope`/`spawn`, M:N work-stealing scheduler, deadlock detection | ✅ Implemented on Linux, macOS, and Windows |
+| A panic inside a task | 🚧 Ends the whole program (exit 101); `join` never returns `Err` yet |
+| Preemption | 🚧 Not yet: tasks switch at channel operations, `select`, and `join`, so a long loop without them keeps its thread busy |
 | Standard library (`std::fs`, `std::net`, `std::time`, ...) | 🚧 Not yet: `std` imports resolve, but their items are opaque to the type checker |
 | Multi-file packages, `kiln.toml`, registry | 🚧 Not yet: `kiln check` works on a single file (inline `mod` blocks are supported) |
 | `kiln build`, `kiln run` | ✅ Implemented (single file) |
@@ -27,7 +31,7 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 - Unknown names, fields, and methods; wrong argument counts
 - Trait impls that are missing methods or have mismatched signatures, and unsatisfied bounds such as `T: Ord`
 - `?` used in a function that doesn't return `Result`/`Option`, or with an error type that has no `From` conversion
-- Non-exhaustive `match` on enums and `bool`
+- Non-exhaustive `match`, looking inside nested patterns (enum variants, tuples, structs, `bool`)
 - Assigning to, or taking `&mut` of, a variable not declared `mut`
 - Sending on a receive-only channel, or receiving on a send-only one
 - Using a value after it was moved (with a note showing where), including partial moves and moves in loops

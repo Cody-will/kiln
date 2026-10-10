@@ -1,0 +1,15 @@
+fn main() {
+	(atx, arx) := chan::<i32>(0)
+	(btx, brx) := chan::<i32>(1)
+	drop(atx)
+	btx <- 7
+	select {
+		v := <-arx => println("a {v}"),
+		v := <-brx => println("b {v}"),
+	}
+	drop(btx)
+	select {
+		v := <-arx => println("a {v}"),
+		v := <-brx => println("b {v}"),
+	}
+}

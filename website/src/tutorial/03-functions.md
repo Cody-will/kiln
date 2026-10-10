@@ -92,6 +92,3 @@ fn main() {
 
 A single-expression closure (`|x| x * 2`) returns its expression; a closure with a `{ }` body follows the function rule.
 
-<div class="status">
-🚧 Closure captures are type-checked but not yet analysed for borrowing. <code>move</code> closures parse but behave like ordinary ones until the borrow checker lands.
-</div>

@@ -1,0 +1,3 @@
+b 7
+panic: select: all channels are closed and there is no `_` arm
+[exit 101]

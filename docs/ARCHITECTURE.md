@@ -106,11 +106,15 @@ Checks each MIR body (see the module docs in `body.rs`):
 
 Loan sets are flow-sensitive: assigning a whole variable replaces the loans it holds. Closures that move a captured variable are callable once (calling twice is a use of a moved value). `defer` is modelled per execution: each `defer` pushes a call; the exit block pops and runs them last-in first-out (`DeferDispatch`), and a defer outside any loop can run at most once. Lifetime bounds (`'a: 'b` in generics and `where` clauses) extend which parameters a result may borrow from; `dyn Trait` without a lifetime is `'static`.
 
-Known gaps: partial moves are diagnosed, but drops of the remaining fields are not elaborated per field; the checker treats channel and `std` types as opaque; lifetime variance and higher-ranked lifetimes (`for<'a>`) are not modelled.
+Closures passed to `Scope::spawn` are *pinned*: they stay live, with their loans, until the scope body returns, because the task can run until the scope joins it. This rejects two scoped tasks mutating one variable, and tasks borrowing locals of the scope body.
+
+Known gaps: the checker treats `std` types as opaque; lifetime variance and higher-ranked lifetimes (`for<'a>`) are not modelled.
 
 ### `kiln_runtime`
 
-A small C library (`runtime/kiln_rt.c`) compiled by `build.rs` with the `cc` crate. The static library's bytes are embedded in the compiler (`kiln_runtime::LIB`), so an installed `kiln` binary needs only a system linker. It provides allocation (`kn_alloc`/`kn_free`), panics (`kn_panic`: flush stdout, print `panic: ...` to stderr, exit 101), printing, `String` building and formatting of numbers, string comparison and the `str` methods, `Vec` growth, and the `defer` stack. The concurrency runtime (scheduler, channels, `select`) will live here too.
+A small C library (`runtime/kiln_rt.c`) compiled by `build.rs` with the `cc` crate. The static library's bytes are embedded in the compiler (`kiln_runtime::LIB`), so an installed `kiln` binary needs only a system linker. It provides allocation (`kn_alloc`/`kn_free`), panics (`kn_panic`: flush stdout, print `panic: ...` to stderr, exit 101), printing, `String` building and formatting of numbers, string comparison and the `str` methods, `Vec` growth, and the `defer` stack. `runtime/kiln_sched.c` is the concurrency runtime: an M:N work-stealing scheduler with assembly context switches (x86_64, AArch64) or fibers (Windows), guarded pooled task stacks, task handles, scopes, channels, `select`, and deadlock detection; it also owns the C `main`, which runs the program's `kn_main` as the first task. See `crates/kiln_runtime/README.md`.
+
+Concurrency in codegen: a `go` lowers to a `Spawn` statement plus a nested MIR body (`GoBlock`, whose upvars the task owns); codegen moves the captured values into a heap environment, and `kn_go` runs the body's closure-ABI instance on a new task, returning the `Task<T>` handle. Channel ends and task handles are one pointer to a runtime object; their drop glue releases a reference. `select` lowers to one `kn_select` call over a case array, then a branch on the chosen index.
 
 Data layout shared with codegen: `String` and `Vec<T>` are `{ ptr, cap, len }` (three words); `&str` and `&[T]` are `{ ptr, len }`; `Box<T>` is one pointer; `&dyn Trait` and `Box<dyn Trait>` are `{ data, vtable }`, where the vtable is `[drop_glue, size, align, methods...]` in trait declaration order.
 
@@ -127,7 +131,7 @@ Lowers MIR to native code with [Cranelift](https://cranelift.dev).
 - `intrinsics.rs`: the prelude functions that have no Kiln body (`String`, `str`, `Vec`, `Box`, float math, `panic`, `assert`, `drop`, `clone`) and the MIR intrinsics used by `for` loops.
 - `link.rs`: writes the embedded runtime next to the object file and links with `cc` (or `$KILN_CC`/`$CC`) on Unix and `link.exe` (found via the `cc` crate's Visual Studio lookup) on Windows.
 
-Constructs codegen does not support yet are reported as errors at their source location, never miscompiled: fixed-size arrays (the type checker does not track lengths yet), `go`, channels, `select`, scoped tasks, `std` library items, slice patterns, `|` patterns that bind variables, and non-literal `const`/`static` values.
+Constructs codegen does not support yet are reported as errors at their source location, never miscompiled: `std` library items, slice patterns, `|` patterns that bind variables, and non-literal `const`/`static` values.
 
 Known codegen gaps: panics abort the process (no unwinding, so destructors don't run on panic); integer arithmetic wraps on overflow instead of panicking; no debug info; drops of the remaining fields after a partial move are not elaborated (those fields leak).
 
