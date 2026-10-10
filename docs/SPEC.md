@@ -358,6 +358,7 @@ fn main() {
 - Types sent over a channel must be `Send`. Shared mutable state uses `Mutex<T>`, `RwLock<T>`, and atomics. `&T` crosses tasks only when `T: Sync`.
 - **Channel types (decided, Go's exact forms)**:
   - `chan<- T` is a send-only end, and `<-chan T` is a receive-only end.
+  - The `<-` is a prefix, not a bracket: a vector of send ends is `Vec<chan<- T>` (one closing `>`), and `Vec<<-chan T>` parses as written.
   - `chan::<T>(n)` returns `(chan<- T, <-chan T)`; `n = 0` is unbuffered.
   - Both ends are `Clone`, so there can be many producers and many consumers.
   - `chan T` (bidirectional) is not a separate type in Kiln: under ownership, each end is a separate value, so the direction is always explicit.

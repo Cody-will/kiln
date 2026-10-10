@@ -225,6 +225,25 @@ impl<'s> Parser<'s> {
         Ok(())
     }
 
+    /// Whether token `n` ahead opens generic arguments (`<`, or the `<<` of `<<-chan`).
+    fn lt_at(&self, n: usize) -> bool {
+        *self.nth(n) == T::Lt || (*self.nth(n) == T::Shl && *self.nth(n + 1) == T::Minus)
+    }
+
+    /// `Vec<<-chan T>` lexes as `<<` `-`: splits it into `<` `<-`.
+    fn split_shl_arrow(&mut self) {
+        if self.at(&T::Shl)
+            && *self.nth(1) == T::Minus
+            && self.tokens[self.pos + 1].span.start == self.tokens[self.pos].span.end
+        {
+            let end = self.tokens[self.pos].span.end;
+            self.tokens[self.pos].kind = T::Lt;
+            self.tokens[self.pos].span.end = end - 1;
+            self.tokens[self.pos + 1].kind = T::LArrow;
+            self.tokens[self.pos + 1].span.start = end - 1;
+        }
+    }
+
     fn at_gt(&self) -> bool {
         matches!(self.peek(), T::Gt | T::Shr | T::Ge | T::ShrEq)
     }
@@ -932,6 +951,7 @@ impl<'s> Parser<'s> {
     // ----- types ----------------------------------------------------------
 
     fn parse_generic_args(&mut self) -> PResult<Vec<GenericArg>> {
+        self.split_shl_arrow();
         self.expect(&T::Lt)?;
         let mut args = Vec::new();
         loop {
@@ -966,9 +986,10 @@ impl<'s> Parser<'s> {
         loop {
             let ident = self.path_ident()?;
             let mut args = Vec::new();
+            self.split_shl_arrow();
             if self.at(&T::Lt) {
                 args = self.parse_generic_args()?;
-            } else if self.at(&T::ColonColon) && *self.nth(1) == T::Lt {
+            } else if self.at(&T::ColonColon) && self.lt_at(1) {
                 self.bump();
                 args = self.parse_generic_args()?;
             }
@@ -1712,7 +1733,7 @@ impl<'s> Parser<'s> {
                         _ => {
                             let method = self.expect_ident()?;
                             let mut generic_args = Vec::new();
-                            if self.at(&T::ColonColon) && *self.nth(1) == T::Lt {
+                            if self.at(&T::ColonColon) && self.lt_at(1) {
                                 self.bump();
                                 generic_args = self.parse_generic_args()?;
                             }
@@ -1748,7 +1769,7 @@ impl<'s> Parser<'s> {
             args: vec![],
         }];
         while self.eat(&T::ColonColon) {
-            if self.at(&T::Lt) {
+            if self.lt_at(0) {
                 let args = self.parse_generic_args()?;
                 segments.last_mut().unwrap().args = args;
             } else {

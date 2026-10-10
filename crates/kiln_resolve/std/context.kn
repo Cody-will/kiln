@@ -41,11 +41,9 @@ impl Display for Error {
 
 impl ErrorTrait for Error {}
 
-type Waiter = chan<- Error
-
 struct State {
 	err: Option<Error>,
-	waiters: Vec<Waiter>,
+	waiters: Vec<chan<- Error>,
 	children: Vec<Arc<Inner>>,
 }
 

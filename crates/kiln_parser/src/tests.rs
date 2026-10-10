@@ -1096,3 +1096,10 @@ fn lifetime_where_predicates() {
     assert!(matches!(&w[0].bounds[0], Bound::Lifetime(l) if l.name == "a"));
     assert!(w[1].lifetime.is_none());
 }
+
+#[test]
+fn channel_types_inside_generic_arguments() {
+    ok("struct S {\n w: Vec<chan<- i32>,\n r: Vec<<-chan i32>,\n m: Option<<-chan Vec<u8>>,\n}\nfn main() {\n v := Vec::<<-chan i32>::new()\n}\n");
+    // A shift is still a shift.
+    ok("fn main() {\n x := 1 << 2\n y := x<<-1\n}\n");
+}
