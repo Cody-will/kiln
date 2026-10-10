@@ -169,7 +169,10 @@ impl<'r, 'a> Typed<'r, 'a> {
                     .map(|(k, v)| (k.clone(), self.c.infer.zonk(v)))
                     .collect();
                 self.c.infer.restore(snap);
-                let mi = *imp.methods.get(&name)?;
+                let Some(&mi) = imp.methods.get(&name) else {
+                    // The impl uses the trait's default method.
+                    return self.has_body(trait_fn).then(|| (trait_fn, substs.clone()));
+                };
                 let (impl_own, _) = self.fn_generics(mi);
                 for (a, b) in own_generics.iter().zip(impl_own) {
                     if let Some(t) = substs.get(a) {

@@ -408,7 +408,10 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 self.defers.push((e.clone(), in_loop));
             }
             AstStmt::Go(GoTarget::Call(e)) => {
-                self.unsupported("`go` (the task runtime is not implemented yet)", s.span);
+                self.unsupported(
+                    "`go` tasks (the concurrency runtime is a later milestone)",
+                    s.span,
+                );
                 let operands = match &e.kind {
                     ExprKind::Call(f, args) => self.call_operands(f, args).1,
                     ExprKind::MethodCall { receiver, args, .. } => {
@@ -426,7 +429,10 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 );
             }
             AstStmt::Go(GoTarget::Block { is_move, body }) => {
-                self.unsupported("`go` (the task runtime is not implemented yet)", s.span);
+                self.unsupported(
+                    "`go` tasks (the concurrency runtime is a later milestone)",
+                    s.span,
+                );
                 let (operands, captures) = self.nested(
                     &[],
                     None,
@@ -646,13 +652,22 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
     /// value at `place`, and jump to `fail` otherwise. Binds nothing.
     fn test_pattern(&mut self, pat: &Pattern, place: Place, ty: &Ty, fail: BlockId) {
         let span = pat.span;
-        let refutable_inner = !matches!(
-            pat.kind,
+        let is_binding = |p: &Pattern| match &p.kind {
+            PatternKind::Ident { name, .. } => self.r.bindings.contains_key(&name.span),
+            _ => false,
+        };
+        let refutable_inner = match &pat.kind {
             PatternKind::Wild
-                | PatternKind::Rest
-                | PatternKind::Ident { sub: None, .. }
-                | PatternKind::Ref { .. }
-        );
+            | PatternKind::Rest
+            | PatternKind::Ref { .. }
+            | PatternKind::Or(_) => false,
+            PatternKind::Ident { .. } => !is_binding(pat),
+            // A string literal is itself a `&str`: compare against the reference.
+            PatternKind::Lit(Lit::Str(..)) => {
+                !matches!(ty, Ty::Ref(_, t) if matches!(**t, Ty::Prim(PrimTy::Str)))
+            }
+            _ => true,
+        };
         if refutable_inner {
             if let Ty::Ref(m, inner) = ty {
                 // Match ergonomics: look through references.
@@ -1465,7 +1480,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         };
         if scoped {
             self.unsupported(
-                "scoped tasks (the task runtime is not implemented yet)",
+                "scoped tasks (the concurrency runtime is a later milestone)",
                 e.span,
             );
             let captures = self.last_captures.take().unwrap_or_default();
@@ -1755,6 +1770,29 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         let it_op = self.expr(iter);
         let it = self.temp(it_ty.clone(), iter.span);
         self.assign(Place::local(it), Rvalue::Use(it_op), iter.span);
+        // By-value `Vec` iteration takes the elements up front (the vector's
+        // length becomes 0), so leaving the loop early can't drop an element twice.
+        let by_value_vec = matches!(&it_ty, Ty::Adt(d, _) if self.lang(*d, "Vec"));
+        let saved_len = if by_value_vec {
+            let l = self.temp_of(
+                usize_ty(),
+                Rvalue::Call {
+                    callee: Callee::Intrinsic("len".into()),
+                    args: vec![Operand::Copy(Place::local(it))],
+                    flows: vec![],
+                },
+                iter.span,
+            );
+            let forget = Rvalue::Call {
+                callee: Callee::Intrinsic("vec_forget_elems".into()),
+                args: vec![Operand::Copy(Place::local(it))],
+                flows: vec![],
+            };
+            self.push(StmtKind::Eval(forget), iter.span);
+            Some(l)
+        } else {
+            None
+        };
         let head = self.new_block();
         let bodyb = self.new_block();
         let after = self.new_block();
@@ -1763,7 +1801,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         self.cur = head;
         let sp = iter.span;
         let one = |t: Ty| Operand::constant(ConstKind::Int(1), t);
-        let mut cleanup: Option<Rvalue> = None;
+        let cleanup: Option<Rvalue> = None;
         // Emits the condition and element; returns the element local and type.
         let (el, elem_ty) = match &it_ty {
             Ty::Adt(d, a) if self.lang(*d, "Range") => {
@@ -1839,15 +1877,18 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     sp,
                     head,
                 );
-                let len = self.temp_of(
-                    usize_ty(),
-                    Rvalue::Call {
-                        callee: Callee::Intrinsic("len".into()),
-                        args: vec![Operand::Copy(Place::local(it))],
-                        flows: vec![],
-                    },
-                    sp,
-                );
+                let len = match saved_len.clone() {
+                    Some(l) => l,
+                    None => self.temp_of(
+                        usize_ty(),
+                        Rvalue::Call {
+                            callee: Callee::Intrinsic("len".into()),
+                            args: vec![Operand::Copy(Place::local(it))],
+                            flows: vec![],
+                        },
+                        sp,
+                    ),
+                };
                 let c = self.temp_of(
                     bool_ty(),
                     Rvalue::Pure(
@@ -1880,11 +1921,6 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                             flows: vec![0],
                         };
                         self.assign(Place::local(el), rv, sp);
-                        cleanup = Some(Rvalue::Call {
-                            callee: Callee::Intrinsic("vec_forget_elems".into()),
-                            args: vec![Operand::Copy(Place::local(it))],
-                            flows: vec![],
-                        });
                         (el, et)
                     }
                 };

@@ -120,7 +120,7 @@ impl Checker<'_, '_> {
     pub(crate) fn check_bodies(&mut self) {
         for i in 0..self.r.fns.len() {
             let f = &self.r.fns[i];
-            if f.is_prelude || f.decl.body.is_none() {
+            if f.decl.body.is_none() {
                 continue;
             }
             self.check_fn(i);
@@ -2314,8 +2314,13 @@ impl Body<'_, '_, '_> {
                     };
                     self.locals.insert(id, bt);
                 } else {
-                    // A unit variant / unit struct / const used as a pattern.
-                    self.path_pat(name.span, &t, p.span);
+                    // A unit variant / unit struct / const used as a pattern
+                    // (match ergonomics apply, as for `Path` patterns).
+                    let mut inner = t.clone();
+                    while let Ty::Ref(_, x) = inner {
+                        inner = self.shallow(&x);
+                    }
+                    self.path_pat(name.span, &inner, p.span);
                 }
                 if let Some(s) = sub {
                     self.bind_pat(s, &t, mode);
