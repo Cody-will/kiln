@@ -12,21 +12,21 @@ fn show(parts: &Vec<&[u8]>) -> String {
 }
 
 fn main() -> Result<(), std::io::Error> {
-	b := "  Hello, World, hello  ".as_bytes()
-	println("{bytes::index(b, "llo".as_bytes()):?} {bytes::last_index(b, "llo".as_bytes()):?} {bytes::index(b, "zz".as_bytes()):?}")
-	println("{bytes::count(b, "l".as_bytes())} {bytes::contains(b, "World".as_bytes())} {bytes::equal_fold("GoPher".as_bytes(), "gopher".as_bytes())}")
+	b := b"  Hello, World, hello  "
+	println("{bytes::index(b, b"llo"):?} {bytes::last_index(b, b"llo"):?} {bytes::index(b, b"zz"):?}")
+	println("{bytes::count(b, b"l")} {bytes::contains(b, b"World")} {bytes::equal_fold(b"GoPher", b"gopher")}")
 	t := bytes::trim_space(b)
 	println(String::from_utf8_lossy(t))
-	println(show(&bytes::split(t, ", ".as_bytes())))
+	println(show(&bytes::split(t, b", ")))
 	println(show(&bytes::fields(" a  bb\tccc\n".as_bytes())))
 	println(String::from_utf8_lossy(&bytes::to_upper(t)))
-	println(String::from_utf8_lossy(&bytes::replace_all(t, "llo".as_bytes(), "LP".as_bytes())))
-	println(String::from_utf8_lossy(&bytes::join(&["x".as_bytes(), "y".as_bytes(), "z".as_bytes()], "-".as_bytes())))
+	println(String::from_utf8_lossy(&bytes::replace_all(t, b"llo", b"LP")))
+	println(String::from_utf8_lossy(&bytes::join(&[b"x", b"y", b"z"], b"-")))
 	match bytes::cut("key=value".as_bytes(), "=".as_bytes()) {
 		Some((k, v)) => println("{String::from_utf8_lossy(k)} -> {String::from_utf8_lossy(v)}"),
 		None => println("no"),
 	}
-	println(String::from_utf8_lossy(bytes::trim("xxhixx".as_bytes(), "x".as_bytes())))
+	println(String::from_utf8_lossy(bytes::trim(b"xxhixx", b"x")))
 
 	buf mut := bytes::Buffer::new()
 	buf.write_str("line one\nline two\n")?

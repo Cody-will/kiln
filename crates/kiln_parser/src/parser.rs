@@ -1188,6 +1188,13 @@ impl<'s> Parser<'s> {
                 }
             },
             T::RawStr(s) => Lit::Str(s),
+            T::ByteStr(_) => {
+                let span = self.span();
+                return self.error_at(
+                    "byte strings are not allowed in patterns yet; use `bytes::equal`",
+                    span,
+                );
+            }
             T::Char(c) => Lit::Char(c),
             T::Keyword(Kw::True) => Lit::Bool(true),
             T::Keyword(Kw::False) => Lit::Bool(false),
@@ -1508,6 +1515,7 @@ impl<'s> Parser<'s> {
             | T::Float { .. }
             | T::Str(_)
             | T::RawStr(_)
+            | T::ByteStr(_)
             | T::Char(_)
             | T::LParen
             | T::LBracket
@@ -1811,6 +1819,7 @@ impl<'s> Parser<'s> {
             }),
             T::Float { value, suffix, .. } => ExprKind::Lit(Lit::Float { value, suffix }),
             T::RawStr(s) => ExprKind::Lit(Lit::Str(s)),
+            T::ByteStr(b) => ExprKind::Lit(Lit::ByteStr(b)),
             T::Char(c) => ExprKind::Lit(Lit::Char(c)),
             T::Keyword(Kw::True) => ExprKind::Lit(Lit::Bool(true)),
             T::Keyword(Kw::False) => ExprKind::Lit(Lit::Bool(false)),

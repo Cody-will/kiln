@@ -402,7 +402,7 @@ module.exports = grammar({
 
     // ----- literals and names ----------------------------------------------
 
-    _literal: ($) => choice($.string_literal, $.raw_string_literal, $.char_literal, $.boolean_literal, $.integer_literal, $.float_literal),
+    _literal: ($) => choice($.string_literal, $.raw_string_literal, $.byte_string_literal, $.byte_literal, $.char_literal, $.boolean_literal, $.integer_literal, $.float_literal),
 
     integer_literal: (_) =>
       token(seq(choice(/[0-9][0-9_]*/, /0x[0-9a-fA-F_]+/, /0b[01_]+/, /0o[0-7_]+/), optional(choice('i8', 'i16', 'i32', 'i64', 'i128', 'isize', 'u8', 'u16', 'u32', 'u64', 'u128', 'usize')))),
@@ -414,6 +414,9 @@ module.exports = grammar({
       )),
     boolean_literal: (_) => choice('true', 'false'),
     char_literal: (_) => token(seq("'", choice(/[^'\\]/, /\\[nrt0\\"'{}]/, /\\x[0-7][0-9a-fA-F]/, /\\u\{[0-9a-fA-F_]+\}/), "'")),
+    byte_string_literal: (_) =>
+      token(choice(seq('b"', repeat(choice(/[^"\\]/, /\\[nrt0\\"']/, /\\x[0-9a-fA-F]{2}/)), '"'), seq('br', choice(seq('"', /[^"]*/, '"'), seq('#"', /([^"]|"[^#])*/, '"#'))))),
+    byte_literal: (_) => token(seq("b'", choice(/[^'\\]/, /\\[nrt0\\"']/, /\\x[0-9a-fA-F]{2}/), "'")),
     raw_string_literal: (_) => token(seq('r', choice(seq('"', /[^"]*/, '"'), seq('#"', /([^"]|"[^#])*/, '"#')))),
 
     string_literal: ($) => seq('"', repeat(choice($.string_content, $.escape_sequence, $.interpolation)), token.immediate('"')),

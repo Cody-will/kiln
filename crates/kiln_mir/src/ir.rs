@@ -159,6 +159,8 @@ pub enum ConstKind {
     Char(char),
     /// A string literal (`&'static str`).
     Str(String),
+    /// A byte string literal (`&'static [u8]`).
+    Bytes(Vec<u8>),
     /// `()`, or a value with no runtime representation.
     Unit,
     /// A function item used as a value, with its generic substitution.

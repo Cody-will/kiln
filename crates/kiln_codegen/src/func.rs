@@ -1144,6 +1144,14 @@ impl FnCx<'_, '_, '_, '_> {
                 self.store(p, dest, 0);
                 self.store(n, dest, 8);
             }
+            ConstKind::Bytes(b) => {
+                let id = self.cg.bytes_data(b);
+                let gv = self.cg.module.declare_data_in_func(id, self.b.func);
+                let p = self.b.ins().global_value(types::I64, gv);
+                let n = self.iconst(b.len() as i64);
+                self.store(p, dest, 0);
+                self.store(n, dest, 8);
+            }
             ConstKind::Fn(i, substs) => {
                 let substs: HashMap<String, Ty> = substs
                     .iter()

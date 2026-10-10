@@ -24,6 +24,14 @@
         "named": true
       },
       {
+        "type": "byte_literal",
+        "named": true
+      },
+      {
+        "type": "byte_string_literal",
+        "named": true
+      },
+      {
         "type": "call_expression",
         "named": true
       },
@@ -213,6 +221,14 @@
       },
       {
         "type": "boolean_literal",
+        "named": true
+      },
+      {
+        "type": "byte_literal",
+        "named": true
+      },
+      {
+        "type": "byte_string_literal",
         "named": true
       },
       {
@@ -2019,6 +2035,14 @@
           "named": true
         },
         {
+          "type": "byte_literal",
+          "named": true
+        },
+        {
+          "type": "byte_string_literal",
+          "named": true
+        },
+        {
           "type": "char_literal",
           "named": true
         },
@@ -3217,6 +3241,14 @@
   {
     "type": "break",
     "named": false
+  },
+  {
+    "type": "byte_literal",
+    "named": true
+  },
+  {
+    "type": "byte_string_literal",
+    "named": true
   },
   {
     "type": "chan",

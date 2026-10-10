@@ -32,6 +32,7 @@ impl fmt::Display for Operand {
                 ConstKind::Bool(v) => write!(f, "const {v}"),
                 ConstKind::Char(v) => write!(f, "const {v:?}"),
                 ConstKind::Str(v) => write!(f, "const {v:?}"),
+                ConstKind::Bytes(v) => write!(f, "const b{:?}", String::from_utf8_lossy(v)),
                 ConstKind::Unit => f.write_str("const ()"),
                 ConstKind::Fn(i, _) => write!(f, "const fn#{i}"),
             },

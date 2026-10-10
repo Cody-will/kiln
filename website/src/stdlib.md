@@ -139,7 +139,7 @@ fn main() -> Result<(), io::Error> {
 
 ## std::bytes
 
-Functions mirror Go's `bytes` package and work on `&[u8]` (write a byte slice as `"text".as_bytes()`). Slices that come back borrow from the input.
+Functions mirror Go's `bytes` package and work on `&[u8]` (write a byte slice literal as `b"text"`, or convert a string with `s.as_bytes()`). Slices that come back borrow from the input.
 
 | Item | Description |
 |---|---|

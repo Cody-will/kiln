@@ -1,7 +1,7 @@
 // Byte slice helpers and a growable byte buffer, like Go's `bytes`.
 //
-//	bytes::index("hello".as_bytes(), "ll".as_bytes())        // Some(2)
-//	parts := bytes::split("a,b,c".as_bytes(), ",".as_bytes()) // three slices
+//	bytes::index(b"hello", b"ll")        // Some(2)
+//	parts := bytes::split(b"a,b,c", b",") // three slices
 //	buf mut := bytes::Buffer::new()
 //	buf.write_str("hi")?
 //	println(buf.to_string_lossy())

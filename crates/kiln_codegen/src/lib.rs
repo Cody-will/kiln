@@ -570,6 +570,21 @@ impl Codegen<'_, '_> {
     }
 
     /// A string literal's bytes in the data section.
+    /// Read-only data for a byte string literal.
+    pub(crate) fn bytes_data(&mut self, b: &[u8]) -> DataId {
+        let name = self.fresh_name("bytes");
+        let id = self
+            .module
+            .declare_data(&name, Linkage::Local, false, false)
+            .expect("declare data");
+        let mut d = DataDescription::new();
+        let mut bytes = b.to_vec();
+        bytes.push(0);
+        d.define(bytes.into_boxed_slice());
+        self.module.define_data(id, &d).expect("define data");
+        id
+    }
+
     pub(crate) fn string_data(&mut self, s: &str) -> DataId {
         if let Some(id) = self.strings.get(s) {
             return *id;

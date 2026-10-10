@@ -166,6 +166,13 @@ impl Lexer<'_> {
                 {
                     self.raw_string()
                 }
+                'b' if matches!(
+                    (self.peek_at(1), self.peek_at(2)),
+                    (Some('"' | '\''), _) | (Some('r'), Some('"' | '#'))
+                ) =>
+                {
+                    self.byte_literal()
+                }
                 c if is_ident_start(c) => self.ident(),
                 '0'..='9' => self.number(),
                 '"' => self.string(),
@@ -551,6 +558,109 @@ impl Lexer<'_> {
             offset: self.base + s,
             spec,
         });
+    }
+
+    /// Lexes `b"..."`, `br"..."`/`br#"..."#` (byte strings) and `b'x'` (a `u8`).
+    /// Only ASCII text is allowed; `\xHH` gives any byte.
+    fn byte_literal(&mut self) {
+        let start = self.pos;
+        self.bump(); // b
+        if self.peek() == Some('r') {
+            let n = self.out.tokens.len();
+            self.raw_string();
+            let mut ascii = true;
+            if self.out.tokens.len() > n {
+                let t = self.out.tokens.last_mut().unwrap();
+                if let TokenKind::RawStr(body) = &t.kind {
+                    ascii = body.is_ascii();
+                    t.kind = TokenKind::ByteStr(body.clone().into_bytes());
+                    t.span.start -= 1;
+                }
+            }
+            if !ascii {
+                self.error(
+                    "non-ASCII character in byte string (use `\\xHH`)",
+                    start,
+                    self.pos,
+                );
+            }
+            return;
+        }
+        let quote = self.bump().unwrap_or('"');
+        let mut out = Vec::new();
+        loop {
+            let at = self.pos;
+            match self.peek() {
+                None => {
+                    self.error("unterminated byte literal", start, self.pos);
+                    break;
+                }
+                Some('\n') if quote == '\'' => {
+                    self.error("unterminated byte literal", start, self.pos);
+                    break;
+                }
+                Some(c) if c == quote => {
+                    self.bump();
+                    break;
+                }
+                Some('\\') => {
+                    self.bump();
+                    if self.peek() == Some('x') {
+                        self.bump();
+                        let s = self.pos;
+                        for _ in 0..2 {
+                            if self.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
+                                self.bump();
+                            }
+                        }
+                        match u8::from_str_radix(&self.src[s..self.pos], 16) {
+                            Ok(v) if self.pos - s == 2 => out.push(v),
+                            _ => self.error(
+                                "invalid `\\x` escape (expected two hex digits)",
+                                at,
+                                self.pos,
+                            ),
+                        }
+                    } else if self.peek() == Some('u') {
+                        self.bump();
+                        self.error(
+                            "`\\u` escapes are not allowed in byte literals",
+                            at,
+                            self.pos,
+                        );
+                    } else if let Some(c) = self.escape(at) {
+                        out.push(c as u8);
+                    }
+                }
+                Some(c) => {
+                    self.bump();
+                    if c.is_ascii() {
+                        out.push(c as u8);
+                    } else {
+                        self.error(
+                            "non-ASCII character in byte literal (use `\\xHH`)",
+                            at,
+                            self.pos,
+                        );
+                    }
+                }
+            }
+        }
+        if quote == '\'' {
+            if out.len() != 1 {
+                self.error("a byte literal holds exactly one byte", start, self.pos);
+            }
+            let value = out.first().copied().unwrap_or(0) as u128;
+            self.push(
+                TokenKind::Int {
+                    value,
+                    suffix: Some("u8".to_string()),
+                },
+                start,
+            );
+        } else {
+            self.push(TokenKind::ByteStr(out), start);
+        }
     }
 
     fn raw_string(&mut self) {

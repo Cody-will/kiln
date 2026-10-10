@@ -169,6 +169,8 @@ pub enum TokenKind {
     Str(Vec<StrPart>),
     /// Raw string literal `r"..."`/`r#"..."#` (no escapes, no interpolation).
     RawStr(String),
+    /// Byte string literal `b"..."`/`br"..."` (type `&[u8]`).
+    ByteStr(Vec<u8>),
     /// Character literal.
     Char(char),
     /// Statement terminator; `implicit` is true when inserted at a newline.
@@ -244,6 +246,7 @@ impl TokenKind {
             TokenKind::Int { .. } => "integer literal".into(),
             TokenKind::Float { .. } => "float literal".into(),
             TokenKind::Str(_) | TokenKind::RawStr(_) => "string literal".into(),
+            TokenKind::ByteStr(_) => "byte string literal".into(),
             TokenKind::Char(_) => "character literal".into(),
             TokenKind::Semi { implicit: true } => "newline".into(),
             TokenKind::Eof => "end of file".into(),
@@ -314,9 +317,14 @@ impl TokenKind {
     pub fn ends_statement(&self) -> bool {
         use TokenKind::*;
         match self {
-            Ident(_) | Lifetime(_) | Int { .. } | Float { .. } | Str(_) | RawStr(_) | Char(_) => {
-                true
-            }
+            Ident(_)
+            | Lifetime(_)
+            | Int { .. }
+            | Float { .. }
+            | Str(_)
+            | RawStr(_)
+            | ByteStr(_)
+            | Char(_) => true,
             Keyword(k) => matches!(
                 k,
                 self::Keyword::Break

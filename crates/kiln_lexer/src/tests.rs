@@ -527,3 +527,32 @@ fn turbofish_ends_a_statement() {
     let gt = ks.iter().position(|k| *k == Gt).unwrap();
     assert!(!matches!(ks[gt + 1], Semi { .. }));
 }
+
+#[test]
+fn byte_literals() {
+    assert_eq!(
+        kinds(r#"b"a\x00\xff\n" br"\x" b'z' b'\xff'"#),
+        vec![
+            ByteStr(vec![b'a', 0, 0xff, b'\n']),
+            ByteStr(b"\\x".to_vec()),
+            Int {
+                value: 122,
+                suffix: Some("u8".into())
+            },
+            Int {
+                value: 255,
+                suffix: Some("u8".into())
+            },
+            NL,
+            Eof
+        ]
+    );
+    // `b` alone is still an identifier.
+    assert_eq!(
+        kinds("b + br"),
+        vec![ident("b"), Plus, ident("br"), NL, Eof]
+    );
+    assert!(errs("b\"é\"")[0].contains("non-ASCII"));
+    assert!(errs("b'ab'")[0].contains("exactly one byte"));
+    assert!(errs(r#"b"\u{41}""#)[0].contains("not allowed"));
+}

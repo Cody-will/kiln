@@ -923,7 +923,11 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
 
     fn lit(&self, l: &Lit, ty: Ty) -> Operand {
         let ty = match ty {
-            Ty::Ref(_, t) if !matches!(*t, Ty::Prim(PrimTy::Str)) => *t,
+            Ty::Ref(_, t)
+                if !matches!(*t, Ty::Prim(PrimTy::Str)) && !matches!(l, Lit::ByteStr(_)) =>
+            {
+                *t
+            }
             t => t,
         };
         let kind = match l {
@@ -940,6 +944,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             }
             Lit::Float { value, .. } => ConstKind::Float(*value),
             Lit::Str(s) => ConstKind::Str(s.clone()),
+            Lit::ByteStr(b) => ConstKind::Bytes(b.clone()),
             Lit::Char(c) => ConstKind::Char(*c),
             Lit::Bool(b) => ConstKind::Bool(*b),
         };

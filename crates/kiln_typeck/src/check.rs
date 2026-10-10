@@ -1386,6 +1386,7 @@ impl Body<'_, '_, '_> {
             Lit::Int { .. } => self.c.infer.fresh(VarKind::Int),
             Lit::Float { .. } => self.c.infer.fresh(VarKind::Float),
             Lit::Str(_) => Ty::r#ref(Ty::Prim(PrimTy::Str)),
+            Lit::ByteStr(_) => Ty::r#ref(Ty::Slice(Box::new(Ty::Prim(PrimTy::U8)))),
             Lit::Char(_) => Ty::Prim(PrimTy::Char),
             Lit::Bool(_) => Ty::Prim(PrimTy::Bool),
         }

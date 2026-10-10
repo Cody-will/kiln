@@ -155,6 +155,26 @@
       "patterns": [
         {
           "name": "string.quoted.raw.kiln",
+          "begin": "\\bbr(#*)\"",
+          "end": "\"\\1"
+        },
+        {
+          "name": "string.quoted.double.kiln",
+          "begin": "\\bb\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.kiln",
+              "match": "\\\\(?:[nrt0\\\\\"']|x[0-9A-Fa-f]{2})"
+            },
+            {
+              "name": "invalid.illegal.escape.kiln",
+              "match": "\\\\."
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.raw.kiln",
           "begin": "r(#*)\"",
           "end": "\"\\1"
         },
@@ -202,7 +222,7 @@
     },
     "chars": {
       "name": "string.quoted.single.kiln",
-      "match": "'(?:[^'\\\\]|\\\\(?:[nrt0\\\\\"'{}]|x[0-7][0-9A-Fa-f]|u\\{[0-9A-Fa-f_]{1,6}\\}))'"
+      "match": "b?'(?:[^'\\\\]|\\\\(?:[nrt0\\\\\"'{}]|x[0-9A-Fa-f]{2}|u\\{[0-9A-Fa-f_]{1,6}\\}))'"
     },
     "lifetimes": {
       "match": "'([A-Za-z_]\\w*)\\b(?!')",

@@ -8,6 +8,8 @@
 ; Literals
 (string_literal) @string
 (raw_string_literal) @string
+(byte_string_literal) @string
+(byte_literal) @character
 (char_literal) @character
 (escape_sequence) @string.escape
 (integer_literal) @number

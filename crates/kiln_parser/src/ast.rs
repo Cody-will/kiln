@@ -644,6 +644,8 @@ pub enum Lit {
     },
     /// Non-interpolated string (including raw strings).
     Str(String),
+    /// Byte string `b"..."` (a `&[u8]`).
+    ByteStr(Vec<u8>),
     /// Character.
     Char(char),
     /// Boolean.
