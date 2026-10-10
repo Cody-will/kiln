@@ -1,0 +1,36 @@
+import std::net::{TcpListener, TcpStream}
+import std::io::{self, BufReader}
+
+fn handle(conn: TcpStream) -> Result<(), io::Error> {
+	defer log::debug("connection closed")
+	reader mut := BufReader::new(&conn)
+	line := reader.read_line()?
+	path := line.split(' ').nth(1).unwrap_or("/")
+	body := match path {
+		"/" => "Welcome to Kiln",
+		"/health" => "ok",
+		_ => {
+			return respond(&conn, 404, "not found")
+		},
+	}
+	return respond(&conn, 200, body)
+}
+
+fn respond(conn: &TcpStream, code: u16, body: &str) -> Result<(), io::Error> {
+	conn.write_all("HTTP/1.1 {code} OK\r\nContent-Length: {body.len()}\r\n\r\n{body}")?
+	return Ok(())
+}
+
+fn main() -> Result<(), io::Error> {
+	listener := TcpListener::bind("0.0.0.0:8080")?
+	println("listening on :8080")
+	for conn in listener.incoming() {
+		conn := conn?
+		go move {
+			if let Err(e) = handle(conn) {
+				eprintln("conn error: {e}")
+			}
+		}
+	}
+	return Ok(())
+}

@@ -1,0 +1,30 @@
+import std::time
+
+fn worker(id: u32, jobs: <-chan Job, results: chan<- Output) {
+	for job in jobs {
+		results <- process(id, job)
+	}
+}
+
+fn main() {
+	(jobs_tx, jobs_rx) := chan::<Job>(100)
+	(res_tx, res_rx) := chan::<Output>(100)
+	for id in 0..4 {
+		go worker(id, jobs_rx.clone(), res_tx.clone())
+	}
+	for j in load_jobs() {
+		jobs_tx <- j
+	}
+	drop(jobs_tx)
+
+	timeout := time::after(5.secs())
+	loop {
+		select {
+			r := <-res_rx => println("got {r}"),
+			<-timeout => {
+				eprintln("timed out")
+				break
+			},
+		}
+	}
+}
