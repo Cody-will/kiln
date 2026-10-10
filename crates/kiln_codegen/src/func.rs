@@ -869,13 +869,13 @@ impl FnCx<'_, '_, '_, '_> {
     pub(crate) fn resolve(&mut self, idx: usize, substs: HashMap<String, Ty>) -> Target {
         let r = self.cg.r;
         let f = &r.fns[idx];
-        if f.trait_def.is_some() && f.impl_idx.is_none() {
+        if let (Some(trait_def), None) = (f.trait_def, f.impl_idx) {
             let self_ty = substs.get("Self").cloned().unwrap_or(Ty::Unit);
             if let Ty::Dyn(_) = self_ty {
                 let k = self
                     .cg
                     .typed
-                    .trait_methods(f.trait_def.unwrap())
+                    .trait_methods(trait_def)
                     .iter()
                     .position(|m| *m == idx)
                     .unwrap_or(0);
