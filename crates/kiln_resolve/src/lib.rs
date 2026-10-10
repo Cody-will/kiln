@@ -53,6 +53,7 @@ pub const STD_MODULES: &[(&str, &str)] = &[
     ("rand", include_str!("../std/rand.kn")),
     ("fmt", include_str!("../std/fmt.kn")),
     ("io", include_str!("../std/io.kn")),
+    ("bytes", include_str!("../std/bytes.kn")),
     ("path", include_str!("../std/path.kn")),
     ("fs", include_str!("../std/fs.kn")),
     ("os", include_str!("../std/os.kn")),

@@ -1,0 +1,395 @@
+// Byte slice helpers and a growable byte buffer, like Go's `bytes`.
+//
+//	bytes::index("hello".as_bytes(), "ll".as_bytes())        // Some(2)
+//	parts := bytes::split("a,b,c".as_bytes(), ",".as_bytes()) // three slices
+//	buf mut := bytes::Buffer::new()
+//	buf.write_str("hi")?
+//	println(buf.to_string_lossy())
+
+import std::io
+
+// The first offset of `needle` in `b`. An empty needle is found at 0.
+pub fn index(b: &[u8], needle: &[u8]) -> Option<usize> {
+	if needle.len() > b.len() {
+		return None
+	}
+	for i in 0..(b.len() - needle.len() + 1) {
+		if b[i..(i + needle.len())].starts_with(needle) {
+			return Some(i)
+		}
+	}
+	return None
+}
+
+// The last offset of `needle` in `b`.
+pub fn last_index(b: &[u8], needle: &[u8]) -> Option<usize> {
+	if needle.len() > b.len() {
+		return None
+	}
+	i mut := b.len() - needle.len() + 1
+	while i > 0 {
+		i -= 1
+		if b[i..(i + needle.len())].starts_with(needle) {
+			return Some(i)
+		}
+	}
+	return None
+}
+
+// The first offset of byte `c` in `b`.
+pub fn index_byte(b: &[u8], c: u8) -> Option<usize> {
+	for i in 0..b.len() {
+		if b[i] == c {
+			return Some(i)
+		}
+	}
+	return None
+}
+
+// Whether `needle` occurs in `b`.
+pub fn contains(b: &[u8], needle: &[u8]) -> bool {
+	return index(b, needle).is_some()
+}
+
+// Non-overlapping occurrences of `needle` in `b`. An empty needle counts
+// `b.len() + 1`, as in Go.
+pub fn count(b: &[u8], needle: &[u8]) -> usize {
+	if needle.len() == 0 {
+		return b.len() + 1
+	}
+	n mut := 0
+	i mut := 0
+	while i + needle.len() <= b.len() {
+		if b[i..(i + needle.len())].starts_with(needle) {
+			n += 1
+			i += needle.len()
+		} else {
+			i += 1
+		}
+	}
+	return n
+}
+
+// Whether `b` and `other` hold the same bytes.
+pub fn equal(b: &[u8], other: &[u8]) -> bool {
+	return b.len() == other.len() && b.starts_with(other)
+}
+
+fn lower(c: u8) -> u8 {
+	if c >= 65 && c <= 90 {
+		return c + 32
+	}
+	return c
+}
+
+fn upper(c: u8) -> u8 {
+	if c >= 97 && c <= 122 {
+		return c - 32
+	}
+	return c
+}
+
+// Equality ignoring ASCII case.
+pub fn equal_fold(b: &[u8], other: &[u8]) -> bool {
+	if b.len() != other.len() {
+		return false
+	}
+	for i in 0..b.len() {
+		if lower(b[i]) != lower(other[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// A copy with ASCII letters lowercased.
+pub fn to_lower(b: &[u8]) -> Vec<u8> {
+	out mut := Vec::with_capacity(b.len())
+	for c in b.iter() {
+		out.push(lower(*c))
+	}
+	return out
+}
+
+// A copy with ASCII letters uppercased.
+pub fn to_upper(b: &[u8]) -> Vec<u8> {
+	out mut := Vec::with_capacity(b.len())
+	for c in b.iter() {
+		out.push(upper(*c))
+	}
+	return out
+}
+
+// Whether `c` is ASCII whitespace (space, \t, \n, \v, \f, \r).
+pub fn is_space(c: u8) -> bool {
+	return c == 32 || (c >= 9 && c <= 13)
+}
+
+// `b` without leading and trailing ASCII whitespace.
+pub fn trim_space(b: &[u8]) -> &[u8] {
+	s mut := 0
+	e mut := b.len()
+	while s < e && is_space(b[s]) {
+		s += 1
+	}
+	while e > s && is_space(b[e - 1]) {
+		e -= 1
+	}
+	return &b[s..e]
+}
+
+// `b` without leading and trailing bytes that appear in `set`.
+pub fn trim<'a>(b: &'a [u8], set: &[u8]) -> &'a [u8] {
+	s mut := 0
+	e mut := b.len()
+	while s < e && index_byte(set, b[s]).is_some() {
+		s += 1
+	}
+	while e > s && index_byte(set, b[e - 1]).is_some() {
+		e -= 1
+	}
+	return &b[s..e]
+}
+
+// `b` without `prefix`, if it starts with it.
+pub fn strip_prefix<'a>(b: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
+	if b.starts_with(prefix) {
+		return Some(&b[prefix.len()..])
+	}
+	return None
+}
+
+// `b` without `suffix`, if it ends with it.
+pub fn strip_suffix<'a>(b: &'a [u8], suffix: &[u8]) -> Option<&'a [u8]> {
+	if b.ends_with(suffix) {
+		return Some(&b[0..(b.len() - suffix.len())])
+	}
+	return None
+}
+
+// The pieces of `b` between occurrences of `sep`. An empty `sep` splits
+// into single bytes.
+pub fn split<'a>(b: &'a [u8], sep: &[u8]) -> Vec<&'a [u8]> {
+	out mut := Vec::new()
+	if sep.len() == 0 {
+		for i in 0..b.len() {
+			out.push(&b[i..(i + 1)])
+		}
+		return out
+	}
+	start mut := 0
+	i mut := 0
+	while i + sep.len() <= b.len() {
+		if b[i..(i + sep.len())].starts_with(sep) {
+			out.push(&b[start..i])
+			i += sep.len()
+			start = i
+		} else {
+			i += 1
+		}
+	}
+	out.push(&b[start..])
+	return out
+}
+
+// The pieces of `b` around the first `sep`.
+pub fn cut<'a>(b: &'a [u8], sep: &[u8]) -> Option<(&'a [u8], &'a [u8])> {
+	match index(b, sep) {
+		Some(i) => return Some((&b[0..i], &b[(i + sep.len())..])),
+		None => return None,
+	}
+}
+
+// The runs of non-whitespace bytes in `b`.
+pub fn fields(b: &[u8]) -> Vec<&[u8]> {
+	out mut := Vec::new()
+	i mut := 0
+	while i < b.len() {
+		while i < b.len() && is_space(b[i]) {
+			i += 1
+		}
+		s := i
+		while i < b.len() && !is_space(b[i]) {
+			i += 1
+		}
+		if i > s {
+			out.push(&b[s..i])
+		}
+	}
+	return out
+}
+
+// The pieces joined with `sep` between them.
+pub fn join(parts: &[&[u8]], sep: &[u8]) -> Vec<u8> {
+	out mut := Vec::new()
+	for i in 0..parts.len() {
+		if i > 0 {
+			out.extend_from_slice(sep)
+		}
+		out.extend_from_slice(parts[i])
+	}
+	return out
+}
+
+// `b` repeated `n` times.
+pub fn repeat(b: &[u8], n: usize) -> Vec<u8> {
+	out mut := Vec::with_capacity(b.len() * n)
+	for _ in 0..n {
+		out.extend_from_slice(b)
+	}
+	return out
+}
+
+// A copy of `b` with every `old` replaced by `new`.
+pub fn replace_all(b: &[u8], old: &[u8], new: &[u8]) -> Vec<u8> {
+	if old.len() == 0 {
+		return b.to_vec()
+	}
+	out mut := Vec::with_capacity(b.len())
+	i mut := 0
+	while i < b.len() {
+		if i + old.len() <= b.len() && b[i..(i + old.len())].starts_with(old) {
+			out.extend_from_slice(new)
+			i += old.len()
+		} else {
+			out.push(b[i])
+			i += 1
+		}
+	}
+	return out
+}
+
+// A growable byte buffer that is written at the end and read from the
+// front, like Go's `bytes.Buffer`. Implements `io::Read` and `io::Write`.
+pub struct Buffer {
+	data: Vec<u8>,
+	off: usize,
+}
+
+impl Buffer {
+	// An empty buffer.
+	pub fn new() -> Buffer {
+		return Buffer { data: Vec::new(), off: 0 }
+	}
+
+	// A buffer holding `data`, ready to be read.
+	pub fn from_vec(data: Vec<u8>) -> Buffer {
+		return Buffer { data: data, off: 0 }
+	}
+
+	// A buffer holding a copy of `s`.
+	pub fn from_str(s: &str) -> Buffer {
+		return Buffer { data: s.as_bytes().to_vec(), off: 0 }
+	}
+
+	// The unread bytes.
+	pub fn as_bytes(&self) -> &[u8] {
+		return &self.data[self.off..]
+	}
+
+	// Number of unread bytes.
+	pub fn len(&self) -> usize {
+		return self.data.len() - self.off
+	}
+
+	// Whether nothing is left to read.
+	pub fn is_empty(&self) -> bool {
+		return self.len() == 0
+	}
+
+	// Discards everything.
+	pub fn reset(&mut self) {
+		self.data.clear()
+		self.off = 0
+	}
+
+	// Keeps only the first `n` unread bytes.
+	pub fn truncate(&mut self, n: usize) {
+		self.data.truncate(self.off + n)
+	}
+
+	// Appends one byte.
+	pub fn write_byte(&mut self, c: u8) {
+		self.data.push(c)
+	}
+
+	// Appends a character as UTF-8.
+	pub fn write_char(&mut self, c: char) {
+		s mut := String::new()
+		s.push_char(c)
+		self.data.extend_from_slice(s.as_bytes())
+	}
+
+	// Reads one byte.
+	pub fn read_byte(&mut self) -> Option<u8> {
+		if self.off >= self.data.len() {
+			return None
+		}
+		c := self.data[self.off]
+		self.off += 1
+		self.compact()
+		return Some(c)
+	}
+
+	// Reads up to and including `delim` (or to the end).
+	pub fn read_until(&mut self, delim: u8) -> Vec<u8> {
+		rest := &self.data[self.off..]
+		n := match index_byte(rest, delim) {
+			Some(i) => i + 1,
+			None => rest.len(),
+		}
+		out := rest[0..n].to_vec()
+		self.off += n
+		self.compact()
+		return out
+	}
+
+	// Takes the next `n` unread bytes (fewer at the end).
+	pub fn next(&mut self, n: usize) -> Vec<u8> {
+		k := if n < self.len() { n } else { self.len() }
+		out := self.data[self.off..(self.off + k)].to_vec()
+		self.off += k
+		self.compact()
+		return out
+	}
+
+	// The unread bytes as text, replacing invalid UTF-8 with U+FFFD.
+	pub fn to_string_lossy(&self) -> String {
+		return String::from_utf8_lossy(&self.data[self.off..])
+	}
+
+	// The unread bytes.
+	pub fn into_vec(self) -> Vec<u8> {
+		if self.off == 0 {
+			return self.data
+		}
+		return self.data[self.off..].to_vec()
+	}
+
+	fn compact(&mut self) {
+		if self.off == self.data.len() {
+			self.data.clear()
+			self.off = 0
+		}
+	}
+}
+
+impl io::Read for Buffer {
+	fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+		left := self.data.len() - self.off
+		n := if left < buf.len() { left } else { buf.len() }
+		for i in 0..n {
+			buf[i] = self.data[self.off + i]
+		}
+		self.off += n
+		self.compact()
+		return Ok(n)
+	}
+}
+
+impl io::Write for Buffer {
+	fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
+		self.data.extend_from_slice(buf)
+		return Ok(buf.len())
+	}
+}

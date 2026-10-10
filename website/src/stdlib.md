@@ -16,6 +16,7 @@ The standard library is written in Kiln, on top of a small C runtime for system 
 | [`std::time`](#stdtime) | durations, clocks, sleeping, timers |
 | [`std::sync`](#stdsync) | `Arc`, `Mutex`, `RwLock`, `WaitGroup`, `Once`, atomics |
 | [`std::io`](#stdio) | `Read`, `Write`, buffering, standard streams, errors |
+| [`std::bytes`](#stdbytes) | byte-slice helpers and `Buffer` |
 | [`std::fs`](#stdfs) | files and directories |
 | [`std::path`](#stdpath) | path manipulation |
 | [`std::os`](#stdos) | arguments, environment, exit, running programs |
@@ -129,6 +130,19 @@ fn main() -> Result<(), io::Error> {
 	return Ok(())
 }
 ```
+
+## std::bytes
+
+Functions mirror Go's `bytes` package and work on `&[u8]` (write a byte slice as `"text".as_bytes()`). Slices that come back borrow from the input.
+
+| Item | Description |
+|---|---|
+| `index`, `last_index`, `index_byte` | position of a sub-slice or byte, as `Option<usize>` |
+| `contains`, `count`, `equal`, `equal_fold` | searching and comparing (`equal_fold` ignores ASCII case) |
+| `trim_space`, `trim(b, set)`, `strip_prefix`, `strip_suffix` | trimming |
+| `split(b, sep)`, `fields(b)`, `cut(b, sep)` | splitting into borrowed pieces |
+| `join(parts, sep)`, `repeat`, `replace_all`, `to_lower`, `to_upper` | building new `Vec<u8>`s |
+| `Buffer` | written at the end, read from the front: `write_byte`, `write_char`, `read_byte`, `read_until`, `next(n)`, `len`, `reset`, `to_string_lossy`; implements `io::Read` and `io::Write` |
 
 ## std::fs
 

@@ -588,7 +588,8 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 | `std::log` | leveled logging to stderr (`KILN_LOG=debug`) | ✅ |
 | `std::fmt` | `Display`, `Debug`, `Formatter`, `fmt::debug`/`fmt::pretty`; format specs in interpolation | ✅ |
 | `std::mem`, `std::ptr` | `size_of`, `swap`, `replace`, `forget`; raw pointer operations for `unsafe` code | ✅ |
-| `std::strings`, `std::strconv`, `std::bytes`, `std::unicode` | text processing and parsing | 🚧 phase 2 |
+| `std::strings`, `std::strconv`, `std::unicode`, `std::utf8` | text processing and parsing | ✅ |
+| `std::bytes` | byte-slice search/split/trim/case helpers (`index`, `split`, `fields`, `cut`, `replace_all`, ...) and `Buffer` (`io::Read` + `io::Write`) | ✅ |
 | `std::collections` | `HashMap`, `HashSet` (entry API, `Borrow` lookups), `BTreeMap`, `BTreeSet` (B-tree, ranges), `VecDeque` | ✅ |
 | `std::math` | constants, trigonometry, exp/log, `hypot`, `gamma`, ...; also `f64`/`f32` methods | ✅ |
 | `std::rand` | shared generator (`rand::range`, `shuffle`, `choose`), seedable `Rng`, `secure_fill` from the OS | ✅ |

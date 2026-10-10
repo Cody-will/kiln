@@ -1,0 +1,46 @@
+import std::bytes
+import std::io::{Read, Write}
+
+fn show(parts: &Vec<&[u8]>) -> String {
+	out mut := String::new()
+	for p in parts.iter() {
+		out.push("[")
+		out.push(&String::from_utf8_lossy(*p))
+		out.push("]")
+	}
+	return out
+}
+
+fn main() -> Result<(), std::io::Error> {
+	b := "  Hello, World, hello  ".as_bytes()
+	println("{bytes::index(b, "llo".as_bytes()):?} {bytes::last_index(b, "llo".as_bytes()):?} {bytes::index(b, "zz".as_bytes()):?}")
+	println("{bytes::count(b, "l".as_bytes())} {bytes::contains(b, "World".as_bytes())} {bytes::equal_fold("GoPher".as_bytes(), "gopher".as_bytes())}")
+	t := bytes::trim_space(b)
+	println(String::from_utf8_lossy(t))
+	println(show(&bytes::split(t, ", ".as_bytes())))
+	println(show(&bytes::fields(" a  bb\tccc\n".as_bytes())))
+	println(String::from_utf8_lossy(&bytes::to_upper(t)))
+	println(String::from_utf8_lossy(&bytes::replace_all(t, "llo".as_bytes(), "LP".as_bytes())))
+	println(String::from_utf8_lossy(&bytes::join(&["x".as_bytes(), "y".as_bytes(), "z".as_bytes()], "-".as_bytes())))
+	match bytes::cut("key=value".as_bytes(), "=".as_bytes()) {
+		Some((k, v)) => println("{String::from_utf8_lossy(k)} -> {String::from_utf8_lossy(v)}"),
+		None => println("no"),
+	}
+	println(String::from_utf8_lossy(bytes::trim("xxhixx".as_bytes(), "x".as_bytes())))
+
+	buf mut := bytes::Buffer::new()
+	buf.write_str("line one\nline two\n")?
+	buf.write_byte(33)
+	buf.write_char('é')
+	println("{buf.len()}")
+	first := buf.read_until(10)
+	println("{String::from_utf8_lossy(&first):?}")
+	small mut := [0 as u8; 4]
+	n := buf.read(&mut small)?
+	println("{n} {String::from_utf8_lossy(&small[0..n])}")
+	println("{buf.to_string_lossy():?}")
+	rest mut := String::new()
+	buf.read_to_string(&mut rest)?
+	println("{rest:?} {buf.is_empty()}")
+	return Ok(())
+}

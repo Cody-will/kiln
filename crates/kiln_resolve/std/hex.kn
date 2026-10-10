@@ -1,6 +1,6 @@
 // Hexadecimal encoding.
 //
-//	s := hex::encode(b"hi")           // "6869"
+//	s := hex::encode("hi".as_bytes())         // "6869"
 //	b := hex::decode("6869")?         // [104, 105]
 //	print(hex::dump(&data))           // a hexdump -C style listing
 
