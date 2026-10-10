@@ -174,7 +174,7 @@ impl<'r, 'a> Codegen<'r, 'a> {
         self.vtables.insert(key, id);
         let l = self.layout(concrete);
         let methods = trait_
-            .map(|t| self.typed.trait_methods(t))
+            .map(|t| self.typed.dyn_methods(t))
             .unwrap_or_default();
         let mut d = DataDescription::new();
         let mut bytes = vec![0u8; 24 + 8 * methods.len()];

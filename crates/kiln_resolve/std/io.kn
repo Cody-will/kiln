@@ -6,6 +6,7 @@
 //		println("you said: {line}")
 //	}
 
+import super::super::Error as ErrorTrait
 fn kn_os_error_message(kind: i64, code: i64, out: &mut String)
 fn kn_io_write(fd: i64, buf: &[u8]) -> i64
 fn kn_io_flush(fd: i64) -> i64
@@ -156,6 +157,8 @@ impl Error {
 		return Error { kind: self.kind, code: self.code, msg: "{what}: {self.msg}" }
 	}
 }
+
+impl ErrorTrait for Error {}
 
 impl Display for Error {
 	fn to_string(&self) -> String {

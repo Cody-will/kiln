@@ -162,7 +162,14 @@ pub trait Display {
 pub trait Default {}
 pub unsafe trait Send {}
 pub unsafe trait Sync {}
-pub trait Error {}
+// An error value: something that can describe what went wrong. `source`
+// gives the lower-level error that caused it, if any, so callers can walk
+// the chain. `std::errors::AnyError` holds any error.
+pub trait Error: Display {
+	fn source(&self) -> Option<&dyn Error> {
+		return None
+	}
+}
 
 // Runs cleanup when a value goes out of scope.
 pub trait Drop {
@@ -629,6 +636,17 @@ impl<T> Option<T> {
 		match self {
 			Some(x) => return Ok(x),
 			None => return Err(f()),
+		}
+	}
+}
+
+impl<T, E: std::errors::IntoAnyError> Result<T, E> {
+	// Wraps the error with a message saying what was being done:
+	// `fs::read(p).context("loading {p}")?`.
+	pub fn context(self, msg: &str) -> Result<T, std::errors::AnyError> {
+		match self {
+			Ok(v) => return Ok(v),
+			Err(e) => return Err(e.into_any().context(msg)),
 		}
 	}
 }

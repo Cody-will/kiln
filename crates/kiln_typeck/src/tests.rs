@@ -320,7 +320,7 @@ fn generic_enum_and_option() {
     ok("fn first(v: &Vec<i32>) -> Option<i32> {\n if v.is_empty() {\n return None\n }\n return Some(v[0])\n}\nfn main() {\n x := first(&Vec::new()).unwrap_or(0)\n let y: i32 = x\n}");
     has(
         "fn f() -> Option<i32> {\n return Some(true)\n}\nfn main() {}",
-        "expected `Option<i32>`, found `Option<bool>`",
+        "mismatched types: expected `i32`, found `bool`",
     );
 }
 

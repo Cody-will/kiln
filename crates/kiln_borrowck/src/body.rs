@@ -799,6 +799,17 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
         out
     }
 
+    /// Whether `lp` extends `p` by dereferencing the reference stored at `p`.
+    fn through_deref_of(lp: &Place, p: &Place) -> bool {
+        lp.local == p.local
+            && lp.proj.len() > p.proj.len()
+            && lp.proj[..p.proj.len()] == p.proj[..]
+            && matches!(
+                lp.proj[p.proj.len()],
+                Proj::Deref(DerefKindKey::Shared | DerefKindKey::Mut)
+            )
+    }
+
     fn check_loans(&mut self) {
         for bi in 0..self.b.blocks.len() {
             if !self.reachable[bi] {
@@ -828,6 +839,9 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                         let conflict = match acc {
                             Access::Dead => lp.local == p.local && !lp.through_ref(),
                             Access::Read | Access::SharedBorrow => loan.mutable && lp.overlaps(&p),
+                            // Assigning a reference is a shallow write: data
+                            // borrowed through it (`&(*r).f`) is unaffected.
+                            Access::Write if Self::through_deref_of(lp, &p) => false,
                             Access::Write | Access::MutBorrow | Access::Move => lp.overlaps(&p),
                         };
                         // Writing through the reference that holds the loan is how `&mut` is used.

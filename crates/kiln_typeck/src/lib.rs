@@ -116,6 +116,24 @@ impl<'r, 'a> Typed<'r, 'a> {
             .collect()
     }
 
+    /// The methods in a `dyn principal` vtable, in slot order: the trait's own
+    /// methods, then each supertrait's (transitively, without repeats).
+    pub fn dyn_methods(&self, principal: DefId) -> Vec<usize> {
+        let mut traits = vec![principal];
+        let mut i = 0;
+        while i < traits.len() {
+            if let Some(info) = self.c.traits.get(&traits[i]) {
+                for s in &info.supertraits {
+                    if !traits.contains(s) {
+                        traits.push(*s);
+                    }
+                }
+            }
+            i += 1;
+        }
+        traits.iter().flat_map(|t| self.trait_methods(*t)).collect()
+    }
+
     /// Whether function `i` has a body.
     pub fn has_body(&self, i: usize) -> bool {
         self.c.sigs[i].has_body

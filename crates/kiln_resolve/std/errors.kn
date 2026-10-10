@@ -1,0 +1,134 @@
+// Errors of any type, with context.
+//
+// Functions that can fail in several ways can return `Result<T, AnyError>`
+// and use `?` on any error type; `.context(...)` says what was being done:
+//
+//	fn load(path: &str) -> Result<Config, AnyError> {
+//		text := fs::read_to_string(path).context("reading {path}")?
+//		cfg := parse(&text).context("parsing {path}")?
+//		if cfg.port == 0 {
+//			return Err(errors::new("port must be set"))
+//		}
+//		return Ok(cfg)
+//	}
+//
+// An AnyError displays as the chain of messages, outermost first, like Go's
+// wrapped errors: `parsing app.toml: line 3: expected '='`.
+//
+// Library code with a fixed set of failures should define its own error
+// enum (implementing Error) so callers can match on it; AnyError is for
+// applications and for passing errors along.
+
+// An error of any type, plus context messages.
+pub struct AnyError {
+	// The context message; empty for a wrapped error.
+	msg: String,
+	inner: Option<Box<dyn Error + Send + Sync>>,
+	cause: Option<Box<AnyError>>,
+}
+
+// An error with just a message.
+pub fn new(msg: &str) -> AnyError {
+	return AnyError { msg: msg.to_string(), inner: None, cause: None }
+}
+
+impl<E: Error + Send + Sync> From<E> for AnyError {
+	fn from(e: E) -> AnyError {
+		let b: Box<dyn Error + Send + Sync> = Box::new(e)
+		return AnyError { msg: String::new(), inner: Some(b), cause: None }
+	}
+}
+
+impl AnyError {
+	// Wraps the error with a message saying what was being done.
+	pub fn context(self, msg: &str) -> AnyError {
+		return AnyError { msg: msg.to_string(), inner: None, cause: Some(Box::new(self)) }
+	}
+
+	// The messages of the chain, outermost first, including the `source`
+	// chain of wrapped errors.
+	pub fn chain(&self) -> Vec<String> {
+		out mut := Vec::new()
+		cur mut := Some(self)
+		while let Some(e) = cur {
+			if let Some(inner) = &e.inner {
+				out.push(inner.to_string())
+				src mut := inner.source()
+				while let Some(s) = src {
+					out.push(s.to_string())
+					src = s.source()
+				}
+			} else {
+				out.push(e.msg.clone())
+			}
+			cur = match &e.cause {
+				Some(c) => Some(&**c),
+				None => None,
+			}
+		}
+		return out
+	}
+
+	// The innermost message.
+	pub fn root_cause(&self) -> String {
+		c mut := self.chain()
+		return c.pop().unwrap_or(String::new())
+	}
+}
+
+impl Display for AnyError {
+	fn to_string(&self) -> String {
+		out mut := String::new()
+		for m in self.chain().iter() {
+			if out.len() > 0 {
+				out.push(": ")
+			}
+			out.push(m)
+		}
+		return out
+	}
+}
+
+impl Debug for AnyError {
+	fn fmt_debug(&self, f: &mut std::fmt::Formatter) {
+		f.write(&self.to_string())
+	}
+}
+
+// Results whose error can become an AnyError (any `Error + Send + Sync`
+// type, or AnyError itself).
+pub trait IntoAnyError {
+	fn into_any(self) -> AnyError
+}
+
+impl IntoAnyError for AnyError {
+	fn into_any(self) -> AnyError {
+		return self
+	}
+}
+
+impl<E: Error + Send + Sync> IntoAnyError for E {
+	fn into_any(self) -> AnyError {
+		return AnyError::from(self)
+	}
+}
+
+// A simple error type holding a message, for implementing `Error` without
+// defining a new type.
+pub struct Message {
+	text: String,
+}
+
+impl Message {
+	pub fn new(text: &str) -> Message {
+		return Message { text: text.to_string() }
+	}
+}
+
+impl Display for Message {
+	fn to_string(&self) -> String {
+		return self.text.clone()
+	}
+}
+
+impl Error for Message {}

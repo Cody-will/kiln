@@ -1,0 +1,6 @@
+bad config at line 3: expected '='
+Ok(42)
+parsing "x1": invalid integer literal | root: invalid integer literal | 2
+negative: -3
+reading /nonexistent/file | 2
+loading kiln_errors_test.txt: parsing "bad": invalid integer literal

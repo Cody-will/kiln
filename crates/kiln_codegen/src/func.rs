@@ -146,6 +146,33 @@ impl Codegen<'_, '_> {
     }
 
     /// Defines the C `main` that calls the user's `main` and turns an `Err` into exit code 1.
+    /// The `Display::to_string` instance for the error type of `main`'s
+    /// `Result`, if it implements `Display`.
+    pub(crate) fn main_error_display(&mut self, main_idx: usize) -> Option<FuncId> {
+        let (_, ret) = self.typed.signature(main_idx);
+        if !self.is_lang(&ret, "Result") {
+            return None;
+        }
+        let (_, et) = self.field(&ret, "Err.0");
+        if self.is_lang(&et, "String") || matches!(&et, Ty::Ref(..)) {
+            return None;
+        }
+        self.display_fn(&et)
+    }
+
+    /// The `Display::to_string` instance for `t`, if `t` implements it.
+    fn display_fn(&mut self, t: &Ty) -> Option<FuncId> {
+        let disp = self.r.prelude_type("Display")?;
+        let m = *self.typed.trait_methods(disp).first()?;
+        let mut substs = HashMap::new();
+        substs.insert("Self".to_string(), t.clone());
+        let (i, s) = self.typed.resolve_trait_method(m, &substs)?;
+        if i == m && self.r.fns[i].decl.body.is_none() {
+            return None;
+        }
+        Some(self.instance(i, 0, s, Abi::Plain))
+    }
+
     pub(crate) fn define_entry(
         &mut self,
         main_idx: usize,
@@ -220,6 +247,27 @@ impl Codegen<'_, '_> {
                         (
                             b.ins().load(types::I64, flags(), p, 0),
                             b.ins().load(types::I64, flags(), p, 8),
+                        )
+                    } else if let Some(to_string) = self.entry_display {
+                        // `Display` errors print their message.
+                        let out = b.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            24,
+                            3,
+                        ));
+                        let rslot = b.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            8,
+                            3,
+                        ));
+                        let oa = b.ins().stack_addr(types::I64, out, 0);
+                        let ra = b.ins().stack_addr(types::I64, rslot, 0);
+                        b.ins().store(flags(), p, ra, 0);
+                        let tf = self.module.declare_func_in_func(to_string, b.func);
+                        b.ins().call(tf, &[oa, ra]);
+                        (
+                            b.ins().load(types::I64, flags(), oa, 0),
+                            b.ins().load(types::I64, flags(), oa, 16),
                         )
                     } else {
                         let gv = self.module.declare_data_in_func(msg, b.func);
@@ -1295,11 +1343,14 @@ impl FnCx<'_, '_, '_, '_> {
         let f = &r.fns[idx];
         if let (Some(trait_def), None) = (f.trait_def, f.impl_idx) {
             let self_ty = substs.get("Self").cloned().unwrap_or(Ty::Unit);
-            if let Ty::Dyn(_) = self_ty {
+            if let Ty::Dyn(traits) = self_ty {
+                // Slots follow the principal trait's vtable layout, which
+                // includes supertrait methods.
+                let principal = traits.first().copied().unwrap_or(trait_def);
                 let k = self
                     .cg
                     .typed
-                    .trait_methods(trait_def)
+                    .dyn_methods(principal)
                     .iter()
                     .position(|m| *m == idx)
                     .unwrap_or(0);
@@ -1600,6 +1651,39 @@ impl FnCx<'_, '_, '_, '_> {
         if self.is_str_like(t) {
             let (p, n) = self.str_at(addr, t);
             self.call_rt("kn_string_push", &[s, p, n]);
+            return;
+        }
+        // A `&dyn Trait` or `Box<dyn Trait>` whose trait has `Display` as a
+        // supertrait: call `to_string` through the vtable.
+        let pointee = match t {
+            Ty::Ref(_, x) => Some((**x).clone()),
+            Ty::Adt(_, a) if self.cg.is_lang(t, "Box") => a.first().cloned(),
+            _ => None,
+        };
+        if let Some(Ty::Dyn(traits)) = pointee {
+            let disp = self.cg.r.prelude_type("Display");
+            let m = disp.and_then(|d| self.cg.typed.trait_methods(d).first().copied());
+            let k = match (traits.first(), m) {
+                (Some(p), Some(m)) => self.cg.typed.dyn_methods(*p).iter().position(|x| *x == m),
+                _ => None,
+            };
+            let Some(k) = k else {
+                let n = self.cg.typed.fmt_ty(t);
+                return self.error(format!("cannot format a value of type `{n}`: its trait does not have `Display` as a supertrait"));
+            };
+            let data = self.load(types::I64, addr, 0);
+            let vt = self.load(types::I64, addr, 8);
+            let code = self.load(types::I64, vt, 24 + 8 * k as i32);
+            let self_slot = self.slot(8, 8);
+            self.store(data, self_slot, 0);
+            let tmp = self.slot(24, 8);
+            let sig = self.cg.ptr_sig(2);
+            let sref = self.b.import_signature(sig);
+            self.b.ins().call_indirect(sref, code, &[tmp, self_slot]);
+            let p = self.load(types::I64, tmp, 0);
+            let n = self.load(types::I64, tmp, 16);
+            self.call_rt("kn_string_push", &[s, p, n]);
+            self.free_string(tmp);
             return;
         }
         match t {

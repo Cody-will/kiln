@@ -186,7 +186,18 @@ impl<'r, 'a> Checker<'r, 'a> {
                 ),
                 *is_mut,
             ),
-            TypeKind::Dyn(bounds) | TypeKind::Impl(bounds) => Ty::Dyn(self.bound_traits(bounds)),
+            TypeKind::Dyn(bounds) | TypeKind::Impl(bounds) => {
+                // The principal trait (which lays out the vtable) comes first;
+                // the auto traits `Send` and `Sync` add no methods.
+                let mut ts = self.bound_traits(bounds);
+                let auto = |d: &DefId| {
+                    ["Send", "Sync"]
+                        .iter()
+                        .any(|n| self.r.prelude_type(n) == Some(*d))
+                };
+                ts.sort_by_key(|d| auto(d));
+                Ty::Dyn(ts)
+            }
             TypeKind::ChanSend(x) => Ty::ChanSend(Box::new(self.lower_ty(x, self_ty, infer))),
             TypeKind::ChanRecv(x) => Ty::ChanRecv(Box::new(self.lower_ty(x, self_ty, infer))),
             TypeKind::Never => Ty::Never,

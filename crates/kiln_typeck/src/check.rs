@@ -117,6 +117,11 @@ pub struct Body<'c, 'r, 'a> {
     auto_stack: Vec<DefId>,
     /// The expected type of the closure being checked, from the call it is passed to.
     expected_fn: Option<Ty>,
+    /// The type expected of the expression being checked, when it sits
+    /// directly in a typed position (a return value, an annotated `let`, an
+    /// argument). Variant constructors use it so their arguments coerce:
+    /// `Some(&msg)` where an `Option<&dyn Error>` is expected.
+    expected_ty: Option<Ty>,
     /// Immutable locals declared without an initializer (`let x: T`); their
     /// first assignment is allowed and checked by the borrow checker.
     deferred_init: std::collections::HashSet<LocalId>,
@@ -152,6 +157,7 @@ impl<'c, 'r, 'a> Body<'c, 'r, 'a> {
             interp_spans: HashSet::new(),
             auto_stack: vec![],
             expected_fn: None,
+            expected_ty: None,
             deferred_init: Default::default(),
         }
     }
@@ -266,6 +272,7 @@ impl Checker<'_, '_> {
             interp_spans: HashSet::new(),
             auto_stack: Vec::new(),
             expected_fn: None,
+            expected_ty: None,
             deferred_init: Default::default(),
         };
         if let (Some(sl), Some(sp), Some(st)) = (f.self_local, &sig.self_param, &self_ty) {
@@ -1085,7 +1092,7 @@ impl Body<'_, '_, '_> {
                 let declared = ty.as_ref().map(|t| self.lower(t));
                 let t = match (&declared, init) {
                     (Some(d), Some(e)) => {
-                        let f = self.expr(e);
+                        let f = self.expr_expect(e, d);
                         self.coerce(&f, d, e.span);
                         d.clone()
                     }
@@ -1318,7 +1325,20 @@ impl Body<'_, '_, '_> {
         self.expr_v(e, true)
     }
 
+    /// Checks `e` where a value of type `expected` is wanted.
+    fn expr_expect(&mut self, e: &Expr, expected: &Ty) -> Ty {
+        self.expected_ty = Some(expected.clone());
+        let t = self.expr(e);
+        self.expected_ty = None;
+        t
+    }
+
     fn expr_v(&mut self, e: &Expr, value: bool) -> Ty {
+        // An expectation applies to this expression only, never to the
+        // expressions nested inside it.
+        if !matches!(e.kind, ExprKind::Call(..)) {
+            self.expected_ty = None;
+        }
         let t = self.expr_inner(e, value);
         self.tys.insert(e.span, t.clone());
         t
@@ -1369,7 +1389,10 @@ impl Body<'_, '_, '_> {
                 self.check_cast(&from, &to, e.span);
                 to
             }
-            ExprKind::Call(f, args) => self.call(f, args, e.span),
+            ExprKind::Call(f, args) => {
+                let expected = self.expected_ty.take();
+                self.call_expect(f, args, e.span, expected)
+            }
             ExprKind::MethodCall {
                 receiver,
                 method,
@@ -1592,7 +1615,7 @@ impl Body<'_, '_, '_> {
                 let ret = self.rets.last().cloned().unwrap_or(Ty::Unit);
                 match v {
                     Some(x) => {
-                        let t = self.expr(x);
+                        let t = self.expr_expect(x, &ret);
                         if matches!(self.c.infer.zonk(&ret), Ty::Unit)
                             && !matches!(self.shallow(&t), Ty::Unit | Ty::Never)
                         {
@@ -2115,7 +2138,7 @@ impl Body<'_, '_, '_> {
             )
     }
 
-    fn call(&mut self, f: &Expr, args: &[Expr], span: Span) -> Ty {
+    fn call_expect(&mut self, f: &Expr, args: &[Expr], span: Span, expected: Option<Ty>) -> Ty {
         if let ExprKind::Path(p) = &f.kind {
             if self.c.r.path(p.span) == Res::Builtin(Builtin::Chan) {
                 let explicit = self.seg_args(p, p.segments.len() - 1);
@@ -2183,6 +2206,17 @@ impl Body<'_, '_, '_> {
         }
         match self.shallow(&ft) {
             Ty::Fn(params, ret, _) => {
+                // A variant constructor takes its type from the expected type
+                // when they agree, so its arguments are coercion sites.
+                if let (Some(exp), ExprKind::Path(p)) = (&expected, &f.kind) {
+                    if let Res::Def(d) = self.c.r.path(p.span) {
+                        if matches!(self.c.r.def(d).kind, DefKind::Variant { .. })
+                            && self.c.infer.can_unify(&ret, exp)
+                        {
+                            self.c.infer.unify(&ret, exp);
+                        }
+                    }
+                }
                 self.check_args(&params, args, span);
                 self.solve_arg_obligations();
                 *ret
@@ -2232,7 +2266,13 @@ impl Body<'_, '_, '_> {
                     self.expected_fn = Some(p);
                 }
             }
-            let t = self.expr(a);
+            let t = match params.get(i) {
+                Some(p) => {
+                    let p = p.clone();
+                    self.expr_expect(a, &p)
+                }
+                None => self.expr(a),
+            };
             if let Some(p) = params.get(i) {
                 self.coerce(&t, p, a.span);
             }
@@ -2373,6 +2413,13 @@ impl Body<'_, '_, '_> {
             {
                 if self.method_on(c, name).is_some() {
                     return None;
+                }
+                // `boxed.to_string()` on a `Box<dyn Display>` (or another
+                // smart pointer) reaches the pointee through autoderef.
+                if let (Ty::Adt(..), Some(d)) = (c, self.c.r.prelude_type("Display")) {
+                    if !self.implements(c, d) && self.deref_step(c).is_some() {
+                        return None;
+                    }
                 }
                 if let Some(d) = self.c.r.prelude_type("Display") {
                     self.obligations.push((c.clone(), d, span));

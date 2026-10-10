@@ -112,6 +112,8 @@ pub struct Codegen<'r, 'a> {
     pub(crate) debug_glue: HashMap<String, FuncId>,
     pub(crate) clone_glue: HashMap<String, FuncId>,
     pub(crate) vtables: HashMap<String, DataId>,
+    /// `Display::to_string` for `main`'s error type, if it has one.
+    pub(crate) entry_display: Option<FuncId>,
     pub(crate) shims: HashMap<FuncId, FuncId>,
     pub(crate) strings: HashMap<String, DataId>,
     /// Static items used by the program: definition → (storage, initializer
@@ -373,6 +375,7 @@ pub fn compile(typed: Typed<'_, '_>, opts: Options) -> Result<Vec<u8>, Vec<Diagn
         errors: vec![],
         counter: 0,
         span: Span::new(0, 0),
+        entry_display: None,
     };
     cg.declare_runtime();
     let Some(main_idx) = (0..r.fns.len()).find(|&i| {
@@ -385,6 +388,8 @@ pub fn compile(typed: Typed<'_, '_>, opts: Options) -> Result<Vec<u8>, Vec<Diagn
         )]);
     };
     let user_main = cg.instance(main_idx, 0, HashMap::new(), Abi::Plain);
+    // How a `main` that returns `Err(e)` prints `e`.
+    cg.entry_display = cg.main_error_display(main_idx);
     cg.drain();
     // Compile the initializers of the statics in use (which may use more).
     let mut inits: Vec<(DataId, FuncId)> = Vec::new();

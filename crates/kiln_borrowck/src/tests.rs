@@ -751,3 +751,14 @@ fn deep_flows_through_generic_results() {
         "cannot assign to `x` because it is borrowed",
     );
 }
+
+#[test]
+fn reassigning_a_reference_keeps_borrows_through_it() {
+    // Walking a linked structure: `cur` moves on while `&(*e).next` is live.
+    ok("struct N {\n v: i32,\n next: Option<Box<N>>,\n}\nfn sum(n: &N) -> i32 {\n t mut := 0\n cur mut := Some(n)\n while let Some(e) = cur {\n  t += e.v\n  cur = match &e.next {\n   Some(b) => Some(&**b),\n   None => None,\n  }\n }\n return t\n}\nfn main() {}");
+    // But overwriting an owner is still a conflict.
+    err1(
+        "fn main() {\n v mut := Vec::new()\n v.push(1)\n r := &v[0]\n v = Vec::new()\n x := *r\n}",
+        "cannot assign to `v` because it is borrowed",
+    );
+}

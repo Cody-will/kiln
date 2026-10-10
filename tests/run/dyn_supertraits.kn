@@ -1,0 +1,41 @@
+trait Err2: Display {
+    fn source(&self) -> Option<&dyn Err2> {
+        return None
+    }
+}
+
+struct A {}
+
+impl Display for A {
+    fn to_string(&self) -> String {
+        return "a failed".to_string()
+    }
+}
+
+impl Err2 for A {}
+
+struct Any {
+    inner: Box<dyn Send + Err2 + Sync>,
+}
+
+impl<E: Err2 + Send + Sync> From<E> for Any {
+    fn from(e: E) -> Any {
+        return Any { inner: Box::new(e) }
+    }
+}
+
+fn f() -> Result<i32, A> {
+    return Err(A {})
+}
+
+fn g() -> Result<i32, Any> {
+    x := f()?
+    return Ok(x)
+}
+
+fn main() {
+    match g() {
+        Ok(_) => println("ok"),
+        Err(e) => println("{e.inner.to_string()} {e.inner} {e.inner.source().is_none()}"),
+    }
+}
