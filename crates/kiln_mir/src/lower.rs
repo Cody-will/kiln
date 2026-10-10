@@ -986,6 +986,39 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         (p, ty)
     }
 
+    /// Applies a deref coercion: `op: &T` goes through `n` user `deref`
+    /// (or `deref_mut`) calls, is reborrowed, then takes any remaining
+    /// built-in coercion to `target` (`&String` → `&str`).
+    fn deref_coercion(
+        &mut self,
+        op: Operand,
+        src: Ty,
+        n: usize,
+        target: Ty,
+        span: Span,
+    ) -> Operand {
+        let Ty::Ref(m, inner) = src else { return op };
+        let mutable = matches!(target, Ty::Ref(true, _));
+        let r = self.temp(Ty::Ref(m, inner.clone()), span);
+        self.assign(Place::local(r), Rvalue::Use(op), span);
+        let mut place = Place::local(r).project(Proj::Deref(DerefKind::Ref(m).into()));
+        let mut ty = *inner;
+        let saved = std::mem::replace(&mut self.want_mut, mutable);
+        for _ in 0..n {
+            match self.deref_once(place.clone(), &ty, span) {
+                Some((p, t)) => (place, ty) = (p, t),
+                None => break,
+            }
+        }
+        self.want_mut = saved;
+        let rty = Ty::Ref(mutable, Box::new(ty));
+        let res = self.temp_of(rty.clone(), Rvalue::Ref { mutable, place }, span);
+        if rty == target {
+            return res;
+        }
+        self.temp_of(target.clone(), Rvalue::Coerce(res, target), span)
+    }
+
     /// One dereference step: through `&T`, `*T`, `Box<T>`, or a user `Deref`
     /// impl (which calls `deref`, or `deref_mut` when the place is written).
     fn deref_once(&mut self, p: Place, ty: &Ty, span: Span) -> Option<(Place, Ty)> {
@@ -1199,6 +1232,12 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
     /// Lowers `e` to an operand, applying any implicit coercion recorded by the type checker.
     fn expr(&mut self, e: &Expr) -> Operand {
         let op = self.expr_inner(e);
+        if let (Some(&n), Some(target)) = (
+            self.res.deref_coercions.get(&e.span),
+            self.res.coercions.get(&e.span).cloned(),
+        ) {
+            return self.deref_coercion(op, self.ty(e), n, target, e.span);
+        }
         if let Some(target) = self.res.coercions.get(&e.span).cloned() {
             // An interpolated `String` used as `&str`: keep it in a temporary
             // and borrow that.

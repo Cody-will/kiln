@@ -67,6 +67,9 @@ pub struct FnResults {
     pub fn_derefs: HashMap<Span, usize>,
     /// Implicit coercions: expression span → the type it was coerced to.
     pub coercions: HashMap<Span, Ty>,
+    /// Coercions through user `Deref` impls (`&MutexGuard<Vec<T>>` → `&Vec<T>`):
+    /// expression span → number of `deref` calls before any built-in coercion.
+    pub deref_coercions: HashMap<Span, usize>,
     /// Trait bounds in scope (`(param, trait)`).
     pub bounds: Vec<(String, DefId)>,
     /// `for` loops over an `Iterator`: loop span → element type. The `next`
@@ -105,6 +108,9 @@ pub struct Body<'c, 'r, 'a> {
     closure_stack: Vec<(Span, bool)>,
     iter_items: HashMap<Span, Ty>,
     coercions: Vec<(Span, Ty, Ty)>,
+    deref_coercions: HashMap<Span, usize>,
+    /// Deref steps taken by the last successful `coerces`.
+    deref_steps: usize,
     /// Spans of interpolated string literals (which may coerce to `&str`).
     interp_spans: HashSet<Span>,
     /// ADTs whose auto-trait impls are being computed (cycle guard).
@@ -141,6 +147,8 @@ impl<'c, 'r, 'a> Body<'c, 'r, 'a> {
             closure_stack: Vec::new(),
             iter_items: HashMap::new(),
             coercions: vec![],
+            deref_coercions: HashMap::new(),
+            deref_steps: 0,
             interp_spans: HashSet::new(),
             auto_stack: vec![],
             expected_fn: None,
@@ -253,6 +261,8 @@ impl Checker<'_, '_> {
             closure_stack: Vec::new(),
             iter_items: HashMap::new(),
             coercions: vec![],
+            deref_coercions: HashMap::new(),
+            deref_steps: 0,
             interp_spans: HashSet::new(),
             auto_stack: Vec::new(),
             expected_fn: None,
@@ -339,6 +349,7 @@ impl Body<'_, '_, '_> {
                     )
                 })
                 .collect(),
+            deref_coercions: self.deref_coercions.clone(),
             coercions: self
                 .coercions
                 .iter()
@@ -523,6 +534,9 @@ impl Body<'_, '_, '_> {
     /// (`&String → &str`, `&Vec<T> → &[T]`, `&[T; N] → &[T]`, `&Box<T> → &T`, `&T → &dyn Trait`).
     fn coerce(&mut self, found: &Ty, expected: &Ty, span: Span) -> bool {
         if self.coerces(found, expected) {
+            if self.deref_steps > 0 {
+                self.deref_coercions.insert(span, self.deref_steps);
+            }
             self.coercions.push((span, found.clone(), expected.clone()));
             return true;
         }
@@ -557,6 +571,7 @@ impl Body<'_, '_, '_> {
     }
 
     fn coerces(&mut self, found: &Ty, expected: &Ty) -> bool {
+        self.deref_steps = 0;
         let (f, e) = (self.shallow(found), self.shallow(expected));
         if matches!(f, Ty::Never) {
             return true;
@@ -588,6 +603,20 @@ impl Body<'_, '_, '_> {
                 (_, Ty::Dyn(traits)) => {
                     let traits = traits.clone();
                     return traits.iter().all(|t| self.implements(&fi, *t));
+                }
+                // Deref coercion through a user `Deref` (`DerefMut` for
+                // `&mut`): `&MutexGuard<Vec<T>>` → `&Vec<T>` → `&[T]`.
+                (Ty::Adt(..), _) => {
+                    let tn = if *em { "DerefMut" } else { "Deref" };
+                    let Some(u) = self.overloaded_deref(&fi, tn) else {
+                        return false;
+                    };
+                    let next = Ty::Ref(*em, Box::new(u));
+                    if self.coerces(&next, &e) {
+                        self.deref_steps += 1;
+                        return true;
+                    }
+                    return false;
                 }
                 _ => return false,
             }

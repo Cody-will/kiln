@@ -1,0 +1,40 @@
+import std::sync::Mutex
+
+fn push(v: &mut Vec<i32>, x: i32) {
+    v.push(x)
+}
+
+fn first(v: &[i32]) -> &i32 {
+    return &v[0]
+}
+
+fn main() {
+    more()
+    m := Mutex::new(Vec::new())
+    {
+        let mut g = m.lock()
+        push(&mut g, 7)
+        push(&mut g, 8)
+        println("{first(&g)} {g.len()}")
+    }
+}
+
+fn len(s: &str) -> usize {
+    return s.len()
+}
+
+fn sum(v: &[i32]) -> i32 {
+    let mut s = 0
+    for x in v.iter() {
+        s += *x
+    }
+    return s
+}
+
+fn more() {
+    a := std::sync::Arc::new("hello".to_string())
+    println("{len(&a)}")
+    m := Mutex::new([1, 2, 3].to_vec())
+    g := m.lock()
+    println("{sum(&g)}")
+}
