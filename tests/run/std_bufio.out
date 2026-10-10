@@ -1,8 +1,7 @@
 hé
 Some(104) Some('é') Some('l')
 3
-wörld
-
+"wörld\r\n"
 peek: count exceeds buffer size
 Some("wörld")
 ["one", "two", "", "three"]

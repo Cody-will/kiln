@@ -6,7 +6,7 @@ fn main() -> Result<(), io::Error> {
 	println("{String::from_utf8_lossy(r.peek(3)?)}")
 	println("{r.read_byte()?:?} {r.read_char()?:?} {r.read_char()?:?}")
 	println("{r.discard(3)?}")
-	println("{String::from_utf8_lossy(r.peek(8)?)}")
+	println("{String::from_utf8_lossy(r.peek(8)?):?}")
 	match r.peek(9) {
 		Ok(_) => println("unexpected"),
 		Err(e) => println("{e}"),
