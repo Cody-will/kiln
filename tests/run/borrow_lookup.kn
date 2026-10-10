@@ -1,20 +1,20 @@
 import std::collections::BTreeMap
 
 fn f(m: &BTreeMap<String, i32>, key: String) -> Option<&i32> {
-    x := m.get(key.as_str())
-    return x
+	x := m.get(key.as_str())
+	return x
 }
 
 fn g(m: &BTreeMap<String, i32>, key: String) -> Option<&i32> {
-    v := match 1 {
-        1 => m.get(key.as_str()),
-        _ => None,
-    }
-    return v
+	v := match 1 {
+		1 => m.get(key.as_str()),
+		_ => None,
+	}
+	return v
 }
 
 fn main() {
-    m mut := BTreeMap::new()
-    m.insert("k".to_string(), 7)
-    println("{f(&m, "k".to_string()):?} {g(&m, "z".to_string()):?}")
+	m mut := BTreeMap::new()
+	m.insert("k".to_string(), 7)
+	println("{f(&m, "k".to_string()):?} {g(&m, "z".to_string()):?}")
 }

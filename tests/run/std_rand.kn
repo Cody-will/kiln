@@ -1,51 +1,51 @@
 import std::rand
 
 fn main() {
-    r mut := rand::Rng::with_seed(42)
-    a := r.next_u64()
-    r2 mut := rand::Rng::with_seed(42)
-    println("{a == r2.next_u64()}")
-    counts mut := [0; 6]
-    i mut := 0
-    while i < 60000 {
-        d := r.range(1, 7)
-        counts[(d - 1) as usize] += 1
-        i += 1
-    }
-    ok mut := true
-    for c in counts.iter() {
-        if *c < 9500 || *c > 10500 {
-            ok = false
-        }
-    }
-    println("dice uniform {ok}")
-    neg mut := true
-    j mut := 0
-    while j < 1000 {
-        x := rand::range(-5i64, 5)
-        if x < -5 || x >= 5 {
-            neg = false
-        }
-        b := rand::range(250u8, 255)
-        if b < 250 {
-            neg = false
-        }
-        j += 1
-    }
-    println("ranges ok {neg}")
-    v mut := [1, 2, 3, 4, 5, 6, 7, 8].to_vec()
-    rand::shuffle(&mut v)
-    v.sort()
-    println("{v:?} {rand::choose(&v).is_some()}")
-    f := rand::next_f64()
-    println("{f >= 0.0 && f < 1.0}")
-    key mut := [0u8; 16]
-    rand::secure_fill(&mut key)
-    sum mut := 0.0
-    k mut := 0
-    while k < 10000 {
-        sum += r.normal()
-        k += 1
-    }
-    println("normal mean small {(sum / 10000.0).abs() < 0.05}")
+	r mut := rand::Rng::with_seed(42)
+	a := r.next_u64()
+	r2 mut := rand::Rng::with_seed(42)
+	println("{a == r2.next_u64()}")
+	counts mut := [0; 6]
+	i mut := 0
+	while i < 60000 {
+		d := r.range(1, 7)
+		counts[(d - 1) as usize] += 1
+		i += 1
+	}
+	ok mut := true
+	for c in counts.iter() {
+		if *c < 9500 || *c > 10500 {
+			ok = false
+		}
+	}
+	println("dice uniform {ok}")
+	neg mut := true
+	j mut := 0
+	while j < 1000 {
+		x := rand::range(-5i64, 5)
+		if x < -5 || x >= 5 {
+			neg = false
+		}
+		b := rand::range(250u8, 255)
+		if b < 250 {
+			neg = false
+		}
+		j += 1
+	}
+	println("ranges ok {neg}")
+	v mut := [1, 2, 3, 4, 5, 6, 7, 8].to_vec()
+	rand::shuffle(&mut v)
+	v.sort()
+	println("{v:?} {rand::choose(&v).is_some()}")
+	f := rand::next_f64()
+	println("{f >= 0.0 && f < 1.0}")
+	key mut := [0u8; 16]
+	rand::secure_fill(&mut key)
+	sum mut := 0.0
+	k mut := 0
+	while k < 10000 {
+		sum += r.normal()
+		k += 1
+	}
+	println("normal mean small {(sum / 10000.0).abs() < 0.05}")
 }

@@ -142,9 +142,9 @@ pub trait DoubleEndedIterator<T>: Iterator<T> {
 	fn next_back(&mut self) -> Option<T>
 
 	// The values in reverse order.
-	fn rev(self) -> Rev<Self, T> {
-		return Rev { inner: self }
-	}
+		fn rev(self) -> Rev<Self, T> {
+			return Rev { inner: self }
+		}
 }
 
 impl<T> DoubleEndedIterator<T> for Range<T> {

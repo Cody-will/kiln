@@ -264,6 +264,7 @@ version = "0.1.0"
 dependencies = [
  "kiln_borrowck",
  "kiln_codegen",
+ "kiln_fmt",
  "kiln_lexer",
  "kiln_mir",
  "kiln_parser",
@@ -288,6 +289,14 @@ dependencies = [
  "kiln_resolve",
  "kiln_runtime",
  "kiln_typeck",
+]
+
+[[package]]
+name = "kiln_fmt"
+version = "0.1.0"
+dependencies = [
+ "kiln_lexer",
+ "kiln_parser",
 ]
 
 [[package]]

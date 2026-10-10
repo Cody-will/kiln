@@ -43,9 +43,10 @@ The `kiln` binary has these commands today:
 | `kiln build <file.kn> [-o out]` | Compile to a native executable |
 | `kiln run <file.kn>` | Compile and run |
 | `kiln test [paths...]` | Run `#[test]` functions |
+| `kiln fmt [--check] [paths...]` | Format source files |
 
 <div class="status">
-🚧 <code>kiln fmt</code> and <code>kiln new</code> are specified but not implemented yet. <code>kiln build</code>, <code>kiln run</code>, and <code>kiln test</code> work on single files.
+🚧 <code>kiln new</code> is specified but not implemented yet. <code>kiln build</code>, <code>kiln run</code>, and <code>kiln test</code> work on single files.
 </div>
 
 ## Editor support

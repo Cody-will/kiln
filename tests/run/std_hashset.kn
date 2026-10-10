@@ -1,15 +1,15 @@
 import std::collections::HashSet
 
 fn main() {
-    a mut := HashSet::from_iter([1, 2, 3, 4].to_vec().into_iter())
-    b := HashSet::from_iter((3..7))
-    println("{a.insert(2)} {a.insert(9)} {a.contains(&9)} {a.len()}")
-    i mut := a.intersection(&b)
-    i.sort()
-    println("{i:?} {a.difference(&b).len()} {a.union(&b).len()} {a.symmetric_difference(&b).len()}")
-    println("{a.remove(&9)} {a:?}")
-    a.retain(|x| *x % 2 == 0)
-    names mut := HashSet::new()
-    names.insert("x".to_string())
-    println("{a:?} {names.contains("x")} {a == a.clone()} {a.is_subset(&b)}")
+	a mut := HashSet::from_iter([1, 2, 3, 4].to_vec().into_iter())
+	b := HashSet::from_iter((3..7))
+	println("{a.insert(2)} {a.insert(9)} {a.contains(&9)} {a.len()}")
+	i mut := a.intersection(&b)
+	i.sort()
+	println("{i:?} {a.difference(&b).len()} {a.union(&b).len()} {a.symmetric_difference(&b).len()}")
+	println("{a.remove(&9)} {a:?}")
+	a.retain(|x| *x % 2 == 0)
+	names mut := HashSet::new()
+	names.insert("x".to_string())
+	println("{a:?} {names.contains("x")} {a == a.clone()} {a.is_subset(&b)}")
 }

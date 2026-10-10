@@ -7,6 +7,7 @@
 //	}
 
 import super::super::Error as ErrorTrait
+
 fn kn_os_error_message(kind: i64, code: i64, out: &mut String)
 fn kn_io_write(fd: i64, buf: &[u8]) -> i64
 fn kn_io_flush(fd: i64) -> i64
@@ -183,18 +184,18 @@ pub trait Read {
 	fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error>
 
 	// Reads everything until the end, appending to `out`; returns the count.
-	fn read_to_end(&mut self, out: &mut Vec<u8>) -> Result<usize, Error> {
-		buf mut := [0 as u8; 8192]
-		total mut := 0
-		loop {
-			n := self.read(&mut buf)?
-			if n == 0 {
-				return Ok(total)
+		fn read_to_end(&mut self, out: &mut Vec<u8>) -> Result<usize, Error> {
+			buf mut := [0 as u8; 8192]
+			total mut := 0
+			loop {
+				n := self.read(&mut buf)?
+				if n == 0 {
+					return Ok(total)
+				}
+				out.extend_from_slice(&buf[0..n])
+				total += n
 			}
-			out.extend_from_slice(&buf[0..n])
-			total += n
 		}
-	}
 
 	// Reads everything until the end as UTF-8 text, appending to `out`.
 	fn read_to_string(&mut self, out: &mut String) -> Result<usize, Error> {
@@ -229,9 +230,9 @@ pub trait Write {
 	fn write(&mut self, buf: &[u8]) -> Result<usize, Error>
 
 	// Pushes buffered data to its destination.
-	fn flush(&mut self) -> Result<(), Error> {
-		return Ok(())
-	}
+		fn flush(&mut self) -> Result<(), Error> {
+			return Ok(())
+		}
 
 	// Writes all of `buf`.
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), Error> {

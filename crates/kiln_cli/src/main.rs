@@ -12,9 +12,12 @@
 //! - `kiln test [--release] [--run <substr>] [--ignored] [--timeout <secs>] [paths...]`:
 //!   build and run `#[test]` functions (see [`test`]).
 //!
+//! - `kiln fmt [--check] [--stdin] [paths...]`: format source files (see [`fmt`]).
+//!
 //! Exit status is 0 on success, 1 when the file has errors, and 2 on usage errors
 //! (`kiln run` exits with the program's status).
 
+mod fmt;
 mod test;
 
 use kiln_lexer::{lex, Diagnostic, LineIndex, TokenKind};
@@ -35,6 +38,9 @@ USAGE:
     kiln test [--release] [--run <substr>] [--ignored] [--timeout <secs>] [paths...]
                             Run #[test] functions in the given files, or in every
                             .kn file under the given directories (default: .)
+    kiln fmt [--check] [--stdin] [paths...]
+                            Format .kn files in place (default: every file under .);
+                            --check lists unformatted files and exits 1
 
     Debug builds (the default) panic on integer overflow; --release builds wrap.
     kiln help               Show this message
@@ -76,6 +82,7 @@ fn main() -> ExitCode {
                 _ => usage_error(),
             }
         }
+        [cmd, rest @ ..] if cmd == "fmt" => fmt::run(rest),
         [cmd, rest @ ..] if cmd == "test" => match test::parse_args(rest) {
             Some(o) => test::run(o),
             None => usage_error(),

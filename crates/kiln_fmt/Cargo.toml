@@ -1,0 +1,15 @@
+[package]
+name = "kiln_fmt"
+description = "The canonical Kiln formatter (`kiln fmt`)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+kiln_lexer = { path = "../kiln_lexer" }
+kiln_parser = { path = "../kiln_parser" }
+
+[lints]
+workspace = true

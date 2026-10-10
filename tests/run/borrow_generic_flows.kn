@@ -2,32 +2,32 @@ import std::collections::BTreeMap
 import std::encoding::json::{self, Value, Error, FromJson}
 
 fn e1<T: FromJson>(v: &Value) -> Result<BTreeMap<String, T>, Error> {
-    m := json::expect_object(v, "a map")?
-    out mut := BTreeMap::new()
-    for (k, _) in m.iter() {
-        let x: T = json::field(m, k)?
-        out.insert(k.to_string(), x)
-    }
-    return Ok(out)
+	m := json::expect_object(v, "a map")?
+	out mut := BTreeMap::new()
+	for (k, _) in m.iter() {
+		let x: T = json::field(m, k)?
+		out.insert(k.to_string(), x)
+	}
+	return Ok(out)
 }
 
 fn e2<T: FromJson>(v: &Value) -> Result<BTreeMap<String, T>, Error> {
-    m := json::expect_object(v, "a map")?
-    out mut := BTreeMap::new()
-    for (k, _) in m.iter() {
-        out.insert(k.clone(), 1)
-    }
-    return Err(Error::new("x"))
+	m := json::expect_object(v, "a map")?
+	out mut := BTreeMap::new()
+	for (k, _) in m.iter() {
+		out.insert(k.clone(), 1)
+	}
+	return Err(Error::new("x"))
 }
 
 fn e3<T: FromJson>(m: &json::Map) -> Result<T, Error> {
-    let x: T = json::field(m, "a")?
-    return Ok(x)
+	let x: T = json::field(m, "a")?
+	return Ok(x)
 }
 
 fn main() {
-    v := json::parse(r#"{"x": 1, "y": 2}"#).unwrap()
-    let m: BTreeMap<String, i64> = e1(&v).unwrap()
-    println("{m:?} {e2::<i64>(&v).is_err()}")
-    println("{e3::<i64>(v.as_object().unwrap()):?}")
+	v := json::parse(r#"{"x": 1, "y": 2}"#).unwrap()
+	let m: BTreeMap<String, i64> = e1(&v).unwrap()
+	println("{m:?} {e2::<i64>(&v).is_err()}")
+	println("{e3::<i64>(v.as_object().unwrap()):?}")
 }

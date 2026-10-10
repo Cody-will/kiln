@@ -2,66 +2,66 @@ import std::errors::{self, AnyError}
 import std::fs
 
 fn parse(s: &str) -> Result<i32, AnyError> {
-    n := i32::parse(s.trim()).context("parsing \"{s}\"")?
-    if n < 0 {
-        return Err(errors::new("negative: {n}"))
-    }
-    return Ok(n)
+	n := i32::parse(s.trim()).context("parsing \"{s}\"")?
+	if n < 0 {
+		return Err(errors::new("negative: {n}"))
+	}
+	return Ok(n)
 }
 
 fn load(path: &str) -> Result<i32, AnyError> {
-    text := fs::read_to_string(path).context("reading {path}")?
-    return parse(&text).context("loading {path}")
+	text := fs::read_to_string(path).context("reading {path}")?
+	return parse(&text).context("loading {path}")
 }
 
 struct ConfigError {
-    line: i32,
-    cause: errors::Message,
+	line: i32,
+	cause: errors::Message,
 }
 
 impl Display for ConfigError {
-    fn to_string(&self) -> String {
-        return "bad config at line {self.line}"
-    }
+	fn to_string(&self) -> String {
+		return "bad config at line {self.line}"
+	}
 }
 
 impl Error for ConfigError {
-    fn source(&self) -> Option<&dyn Error> {
-        return Some(&self.cause)
-    }
+	fn source(&self) -> Option<&dyn Error> {
+		return Some(&self.cause)
+	}
 }
 
 fn check() -> Result<(), ConfigError> {
-    return Err(ConfigError { line: 3, cause: errors::Message::new("expected '='") })
+	return Err(ConfigError { line: 3, cause: errors::Message::new("expected '='") })
 }
 
 fn bare() -> Result<String, AnyError> {
-    check()?
-    return Ok(fs::read_to_string("/nope")?)
+	check()?
+	return Ok(fs::read_to_string("/nope")?)
 }
 
 fn main() {
-    match bare() {
-        Ok(_) => {}
-        Err(e) => println("{e}"),
-    }
-    println("{parse("42"):?}")
-    match parse("x1") {
-        Ok(_) => {}
-        Err(e) => println("{e} | root: {e.root_cause()} | {e.chain().len()}"),
-    }
-    match parse("-3") {
-        Ok(_) => {}
-        Err(e) => println("{e}"),
-    }
-    match load("/nonexistent/file") {
-        Ok(_) => {}
-        Err(e) => println("{e.chain()[0]} | {e.chain().len()}"),
-    }
-    fs::write_string("kiln_errors_test.txt", "bad").unwrap()
-    match load("kiln_errors_test.txt") {
-        Ok(_) => {}
-        Err(e) => println("{e:?}"),
-    }
-    fs::remove_file("kiln_errors_test.txt").unwrap()
+	match bare() {
+		Ok(_) => {}
+		Err(e) => println("{e}"),
+	}
+	println("{parse("42"):?}")
+	match parse("x1") {
+		Ok(_) => {}
+		Err(e) => println("{e} | root: {e.root_cause()} | {e.chain().len()}"),
+	}
+	match parse("-3") {
+		Ok(_) => {}
+		Err(e) => println("{e}"),
+	}
+	match load("/nonexistent/file") {
+		Ok(_) => {}
+		Err(e) => println("{e.chain()[0]} | {e.chain().len()}"),
+	}
+	fs::write_string("kiln_errors_test.txt", "bad").unwrap()
+	match load("kiln_errors_test.txt") {
+		Ok(_) => {}
+		Err(e) => println("{e:?}"),
+	}
+	fs::remove_file("kiln_errors_test.txt").unwrap()
 }

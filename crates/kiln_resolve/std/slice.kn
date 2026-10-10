@@ -10,8 +10,8 @@
 // The sorts move elements bitwise. That is sound because a panic (say, in a
 // comparison function) ends the program rather than unwinding.
 
-import std::ptr
 import std::mem
+import std::ptr
 
 impl<T> [T] {
 	// Swaps the elements at `i` and `j`.

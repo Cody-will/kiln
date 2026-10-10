@@ -1266,7 +1266,7 @@ impl<K, V> BTreeMap<K, V> {
 			None => {
 				self.nodes.push(node)
 				return self.nodes.len() - 1
-			}
+			},
 		}
 	}
 
@@ -1470,7 +1470,7 @@ impl<K: Ord, V> BTreeMap<K, V> {
 				r := self.new_node(Node { keys: Vec::new(), vals: Vec::new(), kids: Vec::new() })
 				self.root = Some(r)
 				r
-			}
+			},
 		}
 		if self.nkeys(r) == 2 * B - 1 {
 			kids mut := Vec::new()

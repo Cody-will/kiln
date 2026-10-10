@@ -174,7 +174,7 @@ impl i8 {
 					return i8::MIN
 				}
 				return i8::MAX
-			}
+			},
 		}
 	}
 
@@ -494,7 +494,7 @@ impl i16 {
 					return i16::MIN
 				}
 				return i16::MAX
-			}
+			},
 		}
 	}
 
@@ -814,7 +814,7 @@ impl i32 {
 					return i32::MIN
 				}
 				return i32::MAX
-			}
+			},
 		}
 	}
 
@@ -1134,7 +1134,7 @@ impl i64 {
 					return i64::MIN
 				}
 				return i64::MAX
-			}
+			},
 		}
 	}
 
@@ -1454,7 +1454,7 @@ impl isize {
 					return isize::MIN
 				}
 				return isize::MAX
-			}
+			},
 		}
 	}
 
@@ -1762,7 +1762,7 @@ impl u8 {
 			Some(r) => return r,
 			None => {
 				return u8::MAX
-			}
+			},
 		}
 	}
 
@@ -2039,7 +2039,7 @@ impl u16 {
 			Some(r) => return r,
 			None => {
 				return u16::MAX
-			}
+			},
 		}
 	}
 
@@ -2316,7 +2316,7 @@ impl u32 {
 			Some(r) => return r,
 			None => {
 				return u32::MAX
-			}
+			},
 		}
 	}
 
@@ -2593,7 +2593,7 @@ impl u64 {
 			Some(r) => return r,
 			None => {
 				return u64::MAX
-			}
+			},
 		}
 	}
 
@@ -2870,7 +2870,7 @@ impl usize {
 			Some(r) => return r,
 			None => {
 				return usize::MAX
-			}
+			},
 		}
 	}
 

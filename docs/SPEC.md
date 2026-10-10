@@ -653,6 +653,7 @@ Resolved in this revision: explicit `return`, the canonical formatter, the `.kn`
 - **Imports**: within each group, imports are sorted (std first, then third-party, then the local package), and duplicates are merged.
 - **Semicolons**: the formatter removes them where a newline already ends the statement.
 - **Enforcement**: `kiln build` stays silent about formatting, while `kiln fmt --check` exits non-zero for CI.
+- **Ambiguity**: where tokens alone don't say whether `<` `>` are generic brackets or comparisons (or `|` a closure), the author's spacing is kept: a space before the token means an operator.
 
 ## 11. Implementation Roadmap
 
@@ -708,9 +709,9 @@ kiln/
 
 ### Tooling
 
-- **`kiln fmt`**: CST-based with a single style and no options.
+- **`kiln fmt`** ✅: a single style and no options. It formats the token stream plus the comments between tokens (no CST needed): it keeps the author's line breaks, recomputes indentation from bracket nesting, normalizes spacing, commas, semicolons, blank lines, and import order, and keeps the author's spacing where tokens are ambiguous (`a<b`). It verifies its output re-lexes to the same tokens and comments and re-parses, and refuses rather than emit a changed program. Not yet done: re-breaking lists that exceed 100 columns.
 - **`kiln` package manager**: resolver (PubGrub), registry client, lockfile, and build caching.
-- **`kiln-ls` language server** (the rust-analyzer equivalent):
+- **`kiln lsp` language server** (the rust-analyzer equivalent). ✅ First version: `kiln lsp` (in `crates/kiln_lsp`, on `lsp-server`/`lsp-types` from the rust-analyzer project) re-runs the whole front end on each change (full-document sync) and answers from the results: diagnostics, hover, go to definition, find references, rename, completion, document symbols, formatting via `kiln fmt`, and inlay type hints. Not yet: the salsa database and incremental analysis, multiple files, semantic tokens, code actions, lifetime hints. The plan:
   - Implements LSP on top of the salsa query database.
   - Features: diagnostics, go-to-definition, find references, hover types, completion, rename, inlay hints (inferred types and lifetimes), code actions such as "add `&`" or "add lifetime", and semantic tokens.
 - **Tree-sitter grammar** (`tree-sitter-kiln`): used for highlighting in Neovim, Helix, Zed, and GitHub, with `highlights.scm` and `indents.scm`.

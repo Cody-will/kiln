@@ -240,3 +240,37 @@ fn stack_overflow_is_reported_clearly() {
     assert_eq!(out.status.code(), Some(1));
     assert!(err.contains("MiB of stack"), "{err}");
 }
+
+#[test]
+fn fmt_check_and_write() {
+    let dir = scratch("fmt");
+    let src = dir.join("a.kn");
+    std::fs::write(&src, "fn main(){\nx:=1+2\n    println(\"{x}\");\n}\n").unwrap();
+    let out = Command::new(kiln())
+        .arg("fmt")
+        .arg("--check")
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("a.kn"));
+    let out = Command::new(kiln()).arg("fmt").arg(&src).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        std::fs::read_to_string(&src).unwrap(),
+        "fn main() {\n\tx := 1 + 2\n\tprintln(\"{x}\")\n}\n"
+    );
+    let out = Command::new(kiln())
+        .arg("fmt")
+        .arg("--check")
+        .arg(&src)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    // Syntax errors: reported, file untouched.
+    std::fs::write(&src, "fn main( {\n").unwrap();
+    let out = Command::new(kiln()).arg("fmt").arg(&src).output().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("syntax errors"));
+}

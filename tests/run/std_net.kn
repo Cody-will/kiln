@@ -1,8 +1,8 @@
 import std::io
 import std::io::{BufReader, Read}
+import std::log
 import std::net
 import std::net::{TcpListener, TcpStream, UdpSocket}
-import std::log
 
 fn echo(conn: TcpStream) -> Result<(), io::Error> {
 	r mut := BufReader::new(&conn)

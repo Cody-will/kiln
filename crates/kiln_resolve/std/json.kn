@@ -506,7 +506,7 @@ fn write_value(out: &mut String, v: &Value, depth: usize, pretty: bool) {
 				indent(out, depth)
 			}
 			out.push_char('}')
-		}
+		},
 	}
 }
 
@@ -816,7 +816,7 @@ impl<'a> Parser<'a> {
 		if !is_float {
 			match i64::parse(text) {
 				Ok(v) => return Ok(Value::Int(v)),
-				Err(_) => {}
+				Err(_) => {},
 			}
 		}
 		match std::strconv::parse_float(text) {
@@ -839,9 +839,9 @@ pub trait FromJson {
 
 	// The value for a missing object member (`Option` gives `None`; other
 	// types make the member required).
-	fn from_missing() -> Option<Self> {
-		return None
-	}
+		fn from_missing() -> Option<Self> {
+			return None
+		}
 }
 
 // Compact JSON for `v`.
@@ -920,7 +920,7 @@ pub fn variant<'a>(v: &'a Value, ty: &str) -> Result<(&'a str, Option<&'a Value>
 				return Ok((k.as_str(), Some(x)))
 			}
 		}
-		_ => {}
+		_ => {},
 	}
 	return Err(Error::mismatch("a variant of {ty}", v))
 }
@@ -1149,7 +1149,7 @@ impl FromJson for i8 {
 					return Ok(*n as i8)
 				}
 			}
-			_ => {}
+			_ => {},
 		}
 		return Err(Error::mismatch("i8", v))
 	}
@@ -1169,7 +1169,7 @@ impl FromJson for i16 {
 					return Ok(*n as i16)
 				}
 			}
-			_ => {}
+			_ => {},
 		}
 		return Err(Error::mismatch("i16", v))
 	}
@@ -1189,7 +1189,7 @@ impl FromJson for i32 {
 					return Ok(*n as i32)
 				}
 			}
-			_ => {}
+			_ => {},
 		}
 		return Err(Error::mismatch("i32", v))
 	}
@@ -1205,7 +1205,7 @@ impl FromJson for i64 {
 	fn from_json(v: &Value) -> Result<i64, Error> {
 		match v {
 			Value::Int(n) => return Ok(*n as i64),
-			_ => {}
+			_ => {},
 		}
 		return Err(Error::mismatch("i64", v))
 	}
@@ -1221,7 +1221,7 @@ impl FromJson for isize {
 	fn from_json(v: &Value) -> Result<isize, Error> {
 		match v {
 			Value::Int(n) => return Ok(*n as isize),
-			_ => {}
+			_ => {},
 		}
 		return Err(Error::mismatch("isize", v))
 	}
@@ -1241,7 +1241,7 @@ impl FromJson for u8 {
 					return Ok(*n as u8)
 				}
 			}
-			_ => {}
+			_ => {},
 		}
 		return Err(Error::mismatch("u8", v))
 	}
@@ -1261,7 +1261,7 @@ impl FromJson for u16 {
 					return Ok(*n as u16)
 				}
 			}
-			_ => {}
+			_ => {},
 		}
 		return Err(Error::mismatch("u16", v))
 	}
@@ -1281,7 +1281,7 @@ impl FromJson for u32 {
 					return Ok(*n as u32)
 				}
 			}
-			_ => {}
+			_ => {},
 		}
 		return Err(Error::mismatch("u32", v))
 	}
@@ -1309,7 +1309,7 @@ impl FromJson for u64 {
 					return Ok(*f as u64)
 				}
 			}
-			_ => {}
+			_ => {},
 		}
 		return Err(Error::mismatch("u64", v))
 	}
@@ -1337,7 +1337,7 @@ impl FromJson for usize {
 					return Ok(*f as usize)
 				}
 			}
-			_ => {}
+			_ => {},
 		}
 		return Err(Error::mismatch("usize", v))
 	}

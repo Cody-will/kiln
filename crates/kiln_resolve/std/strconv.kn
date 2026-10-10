@@ -259,7 +259,7 @@ pub fn quote(s: &str) -> String {
 				} else {
 					out.push_char(c)
 				}
-			}
+			},
 		}
 	}
 	out.push_char('"')
