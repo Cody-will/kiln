@@ -251,6 +251,8 @@ fn run_one(exe: &Path, t: &kiln_parser::TestCase, o: &TestOpts) -> Outcome {
     };
     let mut out = String::from_utf8_lossy(&ho.join().unwrap_or_default()).into_owned();
     out.push_str(&String::from_utf8_lossy(&he.join().unwrap_or_default()));
+    // Windows console output may use CRLF; show plain newlines.
+    let mut out = out.replace("\r\n", "\n");
     let Some(status) = status else {
         out.push_str(&format!("test timed out after {:?}\n", o.timeout));
         return Outcome::Fail(out);
