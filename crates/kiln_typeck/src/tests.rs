@@ -664,3 +664,25 @@ fn array_lengths_are_part_of_the_type() {
         "array lengths must be integer literals for now",
     );
 }
+
+#[test]
+fn exhaustiveness_looks_inside_patterns() {
+    let opt = "enum E {\n A(bool),\n B,\n}\n";
+    ok(&format!("{opt}fn f(e: E) -> i32 {{\n return match e {{\n E::A(true) => 1,\n E::A(false) => 2,\n E::B => 3,\n }}\n}}"));
+    has(
+        &format!("{opt}fn f(e: E) -> i32 {{\n return match e {{\n E::A(true) => 1,\n E::B => 3,\n }}\n}}"),
+        "non-exhaustive match: `A` not covered",
+    );
+    // Nested enums, tuples, and the unit pattern.
+    ok("fn f(r: Result<(), Option<i32>>) -> i32 {\n return match r {\n Ok(()) => 0,\n Err(Some(_)) => 1,\n Err(None) => 2,\n }\n}");
+    ok("fn f(p: (bool, bool)) -> i32 {\n return match p {\n (true, _) => 1,\n (false, true) => 2,\n (false, false) => 3,\n }\n}");
+    has(
+        "fn f(p: (bool, bool)) -> i32 {\n return match p {\n (true, _) => 1,\n (false, true) => 2,\n }\n}",
+        "non-exhaustive match: not all values of `(bool, bool)` are covered",
+    );
+    // Integers need a wildcard.
+    has(
+        "fn f(n: i32) -> i32 {\n return match n {\n 0 => 1,\n 1 => 2,\n }\n}",
+        "non-exhaustive match: not all values of `i32` are covered",
+    );
+}

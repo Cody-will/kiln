@@ -1336,7 +1336,7 @@ impl<'s> Parser<'s> {
                     Ok(s) => {
                         let block_like = match &s.kind {
                             StmtKind::Expr(e) => e.is_block_like(),
-                            StmtKind::Item(_) | StmtKind::Go(GoTarget::Block { .. }) => true,
+                            StmtKind::Item(_) => true,
                             _ => false,
                         };
                         stmts.push(s);
@@ -1429,25 +1429,6 @@ impl<'s> Parser<'s> {
             StmtKind::ShortDecl { names, tuple, init }
         } else if self.eat_kw(Kw::Defer) {
             StmtKind::Defer(self.parse_expr()?)
-        } else if self.eat_kw(Kw::Go) {
-            let is_move = self.eat_kw(Kw::Move);
-            if self.at(&T::LBrace) {
-                StmtKind::Go(GoTarget::Block {
-                    is_move,
-                    body: self.parse_block()?,
-                })
-            } else if is_move {
-                return self.unexpected("`{` after `go move`");
-            } else {
-                let e = self.parse_expr()?;
-                if !matches!(e.kind, ExprKind::Call(..) | ExprKind::MethodCall { .. }) {
-                    return self.error_at(
-                        "`go` requires a function call or a block (`go f(x)` or `go move { ... }`)",
-                        e.span,
-                    );
-                }
-                StmtKind::Go(GoTarget::Call(e))
-            }
         } else {
             let e = self.parse_expr()?;
             if let Some(op) = assign_op(self.peek()) {
@@ -1592,8 +1573,37 @@ impl<'s> Parser<'s> {
         }
     }
 
+    /// `go f(args)` / `go [move] { ... }` (after `go`).
+    fn parse_go(&mut self, start: Span) -> PResult<Expr> {
+        let is_move = self.eat_kw(Kw::Move);
+        let target = if self.at(&T::LBrace) {
+            GoTarget::Block {
+                is_move,
+                body: self.parse_block()?,
+            }
+        } else if is_move {
+            return self.unexpected("`{` after `go move`");
+        } else {
+            let e = self.parse_unary()?;
+            if !matches!(e.kind, ExprKind::Call(..) | ExprKind::MethodCall { .. }) {
+                return self.error_at(
+                    "`go` requires a function call or a block (`go f(x)` or `go move { ... }`)",
+                    e.span,
+                );
+            }
+            GoTarget::Call(e)
+        };
+        Ok(Expr {
+            span: start.to(self.prev_span()),
+            kind: ExprKind::Go(Box::new(target)),
+        })
+    }
+
     fn parse_unary(&mut self) -> PResult<Expr> {
         let start = self.span();
+        if self.eat_kw(Kw::Go) {
+            return self.parse_go(start);
+        }
         let op = match self.peek() {
             T::Minus => UnOp::Neg,
             T::Bang => UnOp::Not,

@@ -284,10 +284,15 @@ impl Body<'_, '_, '_> {
             }
             if !self.implements(&t, tr) {
                 let (tn, trn) = (self.fmt(&t), self.c.r.def(tr).name.clone());
+                let help = if trn == "Send" || trn == "Sync" {
+                    format!("`{trn}` is automatic when every field is `{trn}` (raw pointers are not); if `{tn}` is safe anyway, add `unsafe impl {trn} for {tn} {{}}`")
+                } else {
+                    format!("add `impl {trn} for {tn}` or `#[derive({trn})]`")
+                };
                 self.error_help(
                     format!("the trait `{trn}` is not implemented for `{tn}`"),
                     span,
-                    format!("add `impl {trn} for {tn}` or `#[derive({trn})]`"),
+                    help,
                 );
             }
         }
@@ -843,18 +848,6 @@ impl Body<'_, '_, '_> {
                 self.expr(e);
                 Ty::Unit
             }
-            StmtKind::Go(GoTarget::Call(e)) => {
-                self.expr(e);
-                Ty::Unit
-            }
-            StmtKind::Go(GoTarget::Block { body, .. }) => {
-                self.rets.push(Ty::Unit);
-                let saved = std::mem::take(&mut self.loops);
-                self.block(body, false);
-                self.loops = saved;
-                self.rets.pop();
-                Ty::Unit
-            }
             StmtKind::Item(_) => Ty::Unit,
             StmtKind::Expr(e) => self.expr_v(e, value),
         }
@@ -1268,6 +1261,38 @@ impl Body<'_, '_, '_> {
                 self.rets.pop();
                 Ty::Fn(pts, Box::new(rt))
             }
+            ExprKind::Go(g) => {
+                // `go f(x)`: the task's result is the call's; a `go` block
+                // returns with `return v` (unit when it has none).
+                let t = match &**g {
+                    GoTarget::Call(call) => self.expr(call),
+                    GoTarget::Block { body, .. } => {
+                        let rt = self.fresh();
+                        self.rets.push(rt.clone());
+                        let saved = std::mem::take(&mut self.loops);
+                        let bt = self.block(body, false);
+                        self.loops = saved;
+                        self.rets.pop();
+                        if !matches!(self.shallow(&bt), Ty::Never)
+                            && !self.c.infer.try_unify(&rt, &Ty::Unit)
+                        {
+                            let r = self.fmt(&rt);
+                            self.error_help(
+                                format!(
+                                    "`go` block must return a value of type `{r}` on every path"
+                                ),
+                                body.span,
+                                "add a `return` statement",
+                            );
+                        }
+                        rt
+                    }
+                };
+                match self.c.r.prelude_type("Task") {
+                    Some(d) => Ty::Adt(d, vec![t]),
+                    None => Ty::Unknown,
+                }
+            }
             ExprKind::Error => Ty::Unknown,
         }
     }
@@ -1615,6 +1640,10 @@ impl Body<'_, '_, '_> {
                     let t = self.expr(a);
                     self.coerce(&t, &int_ty(PrimTy::Usize), a.span);
                 }
+                // Values sent over a channel move to another task.
+                if let Some(send) = self.c.r.prelude_type("Send") {
+                    self.obligations.push((elem.clone(), send, span));
+                }
                 return Ty::Tuple(vec![
                     Ty::ChanSend(Box::new(elem.clone())),
                     Ty::ChanRecv(Box::new(elem)),
@@ -1775,10 +1804,13 @@ impl Body<'_, '_, '_> {
         let ret = match (c, name) {
             (Ty::ChanSend(x), "try_send") => {
                 self.check_args(&[(**x).clone()], args, span);
-                // The error type (`TrySendError<T>`) lives in std, which is opaque for now.
-                return Some(self.c.result_ty(Ty::Unit, Ty::Unknown));
+                let err = Ty::Adt(self.c.lang("TrySendError"), vec![(**x).clone()]);
+                return Some(self.c.result_ty(Ty::Unit, err));
             }
-            (Ty::ChanRecv(x), "try_recv") => self.c.result_ty((**x).clone(), Ty::Unknown),
+            (Ty::ChanRecv(x), "try_recv") => {
+                let err = Ty::Adt(self.c.lang("TryRecvError"), vec![]);
+                self.c.result_ty((**x).clone(), err)
+            }
             (Ty::ChanRecv(x), "recv") => self.c.option_ty((**x).clone()),
             (Ty::ChanSend(_), "close") => Ty::Unit,
             (Ty::ChanSend(_) | Ty::ChanRecv(_), "len" | "cap") => Ty::Prim(PrimTy::Usize),
@@ -2398,6 +2430,8 @@ impl Body<'_, '_, '_> {
                         }
                     }
                     Ty::Unknown => ps.iter().for_each(|x| self.bind_pat(x, &Ty::Unknown, mode)),
+                    // `()` matches the unit value.
+                    _ if ps.is_empty() => self.pat_unify(&Ty::Unit, &t, p.span),
                     _ if !has_rest => {
                         let vars: Vec<Ty> = ps.iter().map(|_| self.fresh()).collect();
                         let tup = Ty::Tuple(vars.clone());
@@ -2666,96 +2700,320 @@ impl Body<'_, '_, '_> {
         }
     }
 
-    /// Whether `p` matches every value of its type (ignoring types it can't see).
-    fn irrefutable(&self, p: &Pattern) -> bool {
-        match &p.kind {
-            PatternKind::Wild | PatternKind::Rest => true,
-            PatternKind::Ident { name, sub, .. } => {
-                self.c.r.bindings.contains_key(&name.span)
-                    && sub.as_ref().is_none_or(|s| self.irrefutable(s))
+    // ----- exhaustiveness ---------------------------------------------------------
+    //
+    // The usefulness algorithm (Maranget, "Warnings for pattern matching"):
+    // a match is exhaustive when a wildcard row is not useful after its arms.
+    // Enum variants, `bool`, tuples, and structs are constructors; values of
+    // other types (integers, strings) are only covered by wildcards.
+
+    fn x_fields(&self, t: &Ty, variant: Option<DefId>) -> Vec<(String, Ty)> {
+        let Ty::Adt(d, args) = t else { return vec![] };
+        let Some(info) = self.c.adts.get(d) else {
+            return vec![];
+        };
+        let map: HashMap<String, Ty> = info
+            .generics
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
+        let shape = match variant {
+            None => &info.shape,
+            Some(v) => match info.variants.iter().find(|(id, _)| *id == v) {
+                Some((_, sh)) => sh,
+                None => return vec![],
+            },
+        };
+        match shape {
+            crate::collect::Shape::Named(fs) => {
+                fs.iter().map(|(n, t)| (n.clone(), t.subst(&map))).collect()
             }
-            PatternKind::Tuple(ps) => ps.iter().all(|x| self.irrefutable(x)),
-            PatternKind::Ref { inner, .. } => self.irrefutable(inner),
-            PatternKind::Or(ps) => ps.iter().any(|x| self.irrefutable(x)),
-            PatternKind::Struct { path, fields, .. } => {
-                matches!(self.c.r.path(path.span), Res::Def(d) if self.c.r.def(d).kind == DefKind::Struct)
-                    && fields.iter().all(|f| self.irrefutable(&f.pat))
-            }
-            PatternKind::TupleStruct(path, ps) => {
-                matches!(self.c.r.path(path.span), Res::Def(d) if self.c.r.def(d).kind == DefKind::Struct)
-                    && ps.iter().all(|x| self.irrefutable(x))
-            }
-            _ => false,
+            crate::collect::Shape::Tuple(ts) => ts
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (i.to_string(), t.subst(&map)))
+                .collect(),
+            crate::collect::Shape::Unit => vec![],
         }
     }
 
-    /// Variant names fully covered by `p` (top-level variant with irrefutable fields).
-    fn covered_variants(&self, p: &Pattern, out: &mut Vec<String>) {
-        let variant_name = |path: &Path| -> Option<String> {
-            match self.c.r.path(path.span) {
-                Res::Def(d) if matches!(self.c.r.def(d).kind, DefKind::Variant { .. }) => {
-                    Some(self.c.r.def(d).name.clone())
+    /// All constructors of `t` with their field types, or `None` when its
+    /// values can't be enumerated.
+    fn x_ctors(&self, t: &Ty) -> Option<Vec<(XCtor, Vec<Ty>)>> {
+        let t = self.c.infer.zonk(&self.strip_refs(t));
+        match &t {
+            Ty::Prim(PrimTy::Bool) => Some(vec![
+                (XCtor::Bool(true), vec![]),
+                (XCtor::Bool(false), vec![]),
+            ]),
+            Ty::Unit => Some(vec![(XCtor::Single, vec![])]),
+            Ty::Tuple(ts) => Some(vec![(XCtor::Single, ts.clone())]),
+            Ty::Adt(d, _) => {
+                let info = self.c.adts.get(d)?;
+                if info.is_enum {
+                    let vs: Vec<DefId> = info.variants.iter().map(|(v, _)| *v).collect();
+                    Some(
+                        vs.into_iter()
+                            .enumerate()
+                            .map(|(i, v)| {
+                                let fs = self
+                                    .x_fields(&t, Some(v))
+                                    .into_iter()
+                                    .map(|(_, t)| t)
+                                    .collect();
+                                (XCtor::Variant(i), fs)
+                            })
+                            .collect(),
+                    )
+                } else {
+                    let fs = self
+                        .x_fields(&t, None)
+                        .into_iter()
+                        .map(|(_, t)| t)
+                        .collect();
+                    Some(vec![(XCtor::Single, fs)])
                 }
-                Res::Assoc { name, .. } => Some(name),
+            }
+            _ => None,
+        }
+    }
+
+    /// The constructor named by a pattern path, with its named fields.
+    fn x_ctor_of(&self, span: Span, t: &Ty) -> Option<(XCtor, Vec<(String, Ty)>)> {
+        let t = self.c.infer.zonk(&self.strip_refs(t));
+        match self.c.r.path(span) {
+            Res::Def(d) => match self.c.r.def(d).kind {
+                DefKind::Variant { index, .. } => {
+                    Some((XCtor::Variant(index), self.x_fields(&t, Some(d))))
+                }
+                DefKind::Struct => Some((XCtor::Single, self.x_fields(&t, None))),
                 _ => None,
+            },
+            Res::Assoc { name, .. } => {
+                let Ty::Adt(d, _) = &t else { return None };
+                let info = self.c.adts.get(d)?;
+                let (i, (v, _)) = info
+                    .variants
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (v, _))| self.c.r.def(*v).name == name)?;
+                Some((XCtor::Variant(i), self.x_fields(&t, Some(*v))))
             }
-        };
-        match &p.kind {
-            PatternKind::Or(ps) => ps.iter().for_each(|x| self.covered_variants(x, out)),
-            PatternKind::Ref { inner, .. } => self.covered_variants(inner, out),
-            PatternKind::Path(path) => out.extend(variant_name(path)),
-            PatternKind::Ident { name, .. } if !self.c.r.bindings.contains_key(&name.span) => {
-                if let Res::Def(d) = self.c.r.path(name.span) {
-                    out.push(self.c.r.def(d).name.clone());
+            _ => None,
+        }
+    }
+
+    /// Positional sub-patterns, expanding `..` to wildcards.
+    fn x_positional(&self, ps: &[Pattern], tys: &[Ty]) -> Vec<XPat> {
+        let n = tys.len();
+        let rest = ps.iter().position(|x| matches!(x.kind, PatternKind::Rest));
+        let ty = |i: usize| tys.get(i).cloned().unwrap_or(Ty::Unknown);
+        let mut out = vec![XPat::Wild; n];
+        match rest {
+            Some(r) => {
+                for (i, p) in ps[..r].iter().enumerate() {
+                    if i < n {
+                        out[i] = self.x_lower(p, &ty(i));
+                    }
+                }
+                let after = &ps[r + 1..];
+                for (k, p) in after.iter().enumerate() {
+                    if let Some(i) = (n + k).checked_sub(after.len()) {
+                        out[i] = self.x_lower(p, &ty(i));
+                    }
                 }
             }
-            PatternKind::TupleStruct(path, ps) if ps.iter().all(|x| self.irrefutable(x)) => {
-                out.extend(variant_name(path))
+            None => {
+                for (i, p) in ps.iter().enumerate().take(n) {
+                    out[i] = self.x_lower(p, &ty(i));
+                }
             }
-            PatternKind::Struct { path, fields, .. }
-                if fields.iter().all(|f| self.irrefutable(&f.pat)) =>
-            {
-                out.extend(variant_name(path))
+        }
+        out
+    }
+
+    fn x_lower(&self, p: &Pattern, t: &Ty) -> XPat {
+        match &p.kind {
+            PatternKind::Wild | PatternKind::Rest => XPat::Wild,
+            PatternKind::Ident { name, sub, .. } => {
+                if self.c.r.bindings.contains_key(&name.span) {
+                    return match sub {
+                        Some(s) => self.x_lower(s, t),
+                        None => XPat::Wild,
+                    };
+                }
+                match self.x_ctor_of(name.span, t) {
+                    Some((k, fs)) => XPat::Ctor(k, vec![XPat::Wild; fs.len()]),
+                    None => XPat::Opaque,
+                }
             }
-            PatternKind::Lit(Lit::Bool(b)) => out.push(b.to_string()),
-            _ => {}
+            PatternKind::Ref { inner, .. } => self.x_lower(inner, t),
+            PatternKind::Or(ps) => XPat::Or(ps.iter().map(|x| self.x_lower(x, t)).collect()),
+            PatternKind::Lit(Lit::Bool(b)) => XPat::Ctor(XCtor::Bool(*b), vec![]),
+            PatternKind::Tuple(ps) => {
+                let tys = match self.c.infer.zonk(&self.strip_refs(t)) {
+                    Ty::Tuple(ts) => ts,
+                    _ => vec![Ty::Unknown; ps.len()],
+                };
+                XPat::Ctor(XCtor::Single, self.x_positional(ps, &tys))
+            }
+            PatternKind::Path(path) => match self.x_ctor_of(path.span, t) {
+                Some((k, fs)) => XPat::Ctor(k, vec![XPat::Wild; fs.len()]),
+                None => XPat::Opaque,
+            },
+            PatternKind::TupleStruct(path, ps) => match self.x_ctor_of(path.span, t) {
+                Some((k, fs)) => {
+                    let tys: Vec<Ty> = fs.into_iter().map(|(_, t)| t).collect();
+                    XPat::Ctor(k, self.x_positional(ps, &tys))
+                }
+                None => XPat::Opaque,
+            },
+            PatternKind::Struct { path, fields, .. } => match self.x_ctor_of(path.span, t) {
+                Some((k, fs)) => XPat::Ctor(
+                    k,
+                    fs.iter()
+                        .map(|(n, ft)| match fields.iter().find(|f| f.name.name == *n) {
+                            Some(f) => self.x_lower(&f.pat, ft),
+                            None => XPat::Wild,
+                        })
+                        .collect(),
+                ),
+                None => XPat::Opaque,
+            },
+            _ => XPat::Opaque,
+        }
+    }
+
+    /// Whether the pattern row `q` matches some value that no row of `rows` matches.
+    fn x_useful(&self, rows: &[Vec<XPat>], q: &[XPat], tys: &[Ty]) -> bool {
+        if q.is_empty() {
+            return rows.is_empty();
+        }
+        // Expand or-patterns in the first column.
+        let mut flat: Vec<Vec<XPat>> = vec![];
+        let mut stack: Vec<Vec<XPat>> = rows.iter().rev().cloned().collect();
+        while let Some(r) = stack.pop() {
+            match &r[0] {
+                XPat::Or(alts) => {
+                    for a in alts.iter().rev() {
+                        let mut v = vec![a.clone()];
+                        v.extend_from_slice(&r[1..]);
+                        stack.push(v);
+                    }
+                }
+                _ => flat.push(r),
+            }
+        }
+        let specialize = |k: XCtor, arity: usize| -> Vec<Vec<XPat>> {
+            flat.iter()
+                .filter_map(|r| {
+                    let head = match &r[0] {
+                        XPat::Ctor(k2, args) if *k2 == k => args.clone(),
+                        XPat::Wild => vec![XPat::Wild; arity],
+                        _ => return None,
+                    };
+                    let mut v = head;
+                    v.extend_from_slice(&r[1..]);
+                    Some(v)
+                })
+                .collect()
+        };
+        let ctor_tys = |k: XCtor, arity: usize| -> Vec<Ty> {
+            self.x_ctors(&tys[0])
+                .and_then(|cs| cs.into_iter().find(|(c, _)| *c == k).map(|(_, t)| t))
+                .unwrap_or_else(|| vec![Ty::Unknown; arity])
+        };
+        match &q[0] {
+            XPat::Or(alts) => alts.iter().any(|a| {
+                let mut v = vec![a.clone()];
+                v.extend_from_slice(&q[1..]);
+                self.x_useful(&flat, &v, tys)
+            }),
+            XPat::Ctor(k, args) => {
+                let mut nq = args.clone();
+                nq.extend_from_slice(&q[1..]);
+                let mut nt = ctor_tys(*k, args.len());
+                nt.extend_from_slice(&tys[1..]);
+                self.x_useful(&specialize(*k, args.len()), &nq, &nt)
+            }
+            XPat::Wild | XPat::Opaque => {
+                let seen: Vec<XCtor> = flat
+                    .iter()
+                    .filter_map(|r| match &r[0] {
+                        XPat::Ctor(k, _) => Some(*k),
+                        _ => None,
+                    })
+                    .collect();
+                match self.x_ctors(&tys[0]) {
+                    Some(all) if all.iter().all(|(k, _)| seen.contains(k)) => {
+                        all.iter().any(|(k, ftys)| {
+                            let mut nq = vec![XPat::Wild; ftys.len()];
+                            nq.extend_from_slice(&q[1..]);
+                            let mut nt = ftys.clone();
+                            nt.extend_from_slice(&tys[1..]);
+                            self.x_useful(&specialize(*k, ftys.len()), &nq, &nt)
+                        })
+                    }
+                    _ => {
+                        let default: Vec<Vec<XPat>> = flat
+                            .iter()
+                            .filter(|r| matches!(r[0], XPat::Wild))
+                            .map(|r| r[1..].to_vec())
+                            .collect();
+                        self.x_useful(&default, &q[1..], &tys[1..])
+                    }
+                }
+            }
         }
     }
 
     fn check_exhaustive(&mut self, st: &Ty, arms: &[MatchArm], span: Span) {
-        let unguarded: Vec<&MatchArm> = arms.iter().filter(|a| a.guard.is_none()).collect();
-        if unguarded.iter().any(|a| self.irrefutable(&a.pat)) {
+        let rows: Vec<Vec<XPat>> = arms
+            .iter()
+            .filter(|a| a.guard.is_none())
+            .map(|a| vec![self.x_lower(&a.pat, st)])
+            .collect();
+        let tys = [st.clone()];
+        if !self.x_useful(&rows, &[XPat::Wild], &tys) {
             return;
         }
-        let mut covered = Vec::new();
-        for a in &unguarded {
-            self.covered_variants(&a.pat, &mut covered);
+        let t = self.c.infer.zonk(&self.strip_refs(st));
+        if matches!(t, Ty::Unknown | Ty::Never) {
+            return;
         }
-        let t = self.strip_refs(st);
-        let all: Vec<String> = match &t {
-            Ty::Adt(d, _) if self.c.adts[d].is_enum => self.c.adts[d]
-                .variants
-                .iter()
-                .map(|(v, _)| self.c.r.def(*v).name.clone())
-                .collect(),
-            Ty::Prim(PrimTy::Bool) => vec!["true".into(), "false".into()],
-            Ty::Unknown | Ty::Never => return,
-            _ => {
-                let f = self.fmt(&t);
-                self.error_help(
-                    format!("non-exhaustive match: not all values of `{f}` are covered"),
-                    span,
-                    "add a `_ => ...` arm",
-                );
-                return;
-            }
+        // Name the top-level constructors that are not fully covered.
+        let names: Option<Vec<String>> = match &t {
+            Ty::Adt(d, _) if self.c.adts.get(d).is_some_and(|i| i.is_enum) => Some(
+                self.c.adts[d]
+                    .variants
+                    .iter()
+                    .map(|(v, _)| self.c.r.def(*v).name.clone())
+                    .collect(),
+            ),
+            Ty::Prim(PrimTy::Bool) => Some(vec!["true".into(), "false".into()]),
+            _ => None,
         };
-        let missing: Vec<String> = all
-            .into_iter()
-            .filter(|v| !covered.contains(v))
-            .map(|v| format!("`{v}`"))
-            .collect();
-        if !missing.is_empty() {
+        let missing: Vec<String> = match (names, self.x_ctors(&t)) {
+            (Some(names), Some(cs)) => cs
+                .iter()
+                .zip(names)
+                .filter(|((k, ftys), _)| {
+                    let q = vec![XPat::Ctor(*k, vec![XPat::Wild; ftys.len()])];
+                    self.x_useful(&rows, &q, &tys)
+                })
+                .map(|(_, n)| format!("`{n}`"))
+                .collect(),
+            _ => vec![],
+        };
+        if missing.is_empty() {
+            let f = self.fmt(&t);
+            self.error_help(
+                format!("non-exhaustive match: not all values of `{f}` are covered"),
+                span,
+                "add a `_ => ...` arm",
+            );
+        } else {
             self.error_help(
                 format!("non-exhaustive match: {} not covered", missing.join(", ")),
                 span,
@@ -2763,6 +3021,25 @@ impl Body<'_, '_, '_> {
             );
         }
     }
+}
+
+/// A pattern simplified for exhaustiveness checking.
+#[derive(Clone, Debug)]
+enum XPat {
+    Wild,
+    Ctor(XCtor, Vec<XPat>),
+    Or(Vec<XPat>),
+    /// A literal or range of a type whose values aren't enumerated.
+    Opaque,
+}
+
+/// A constructor: an enum variant (by index), a `bool`, or the only
+/// constructor of a struct or tuple.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum XCtor {
+    Variant(usize),
+    Bool(bool),
+    Single,
 }
 
 fn op_symbol(op: BinOp) -> &'static str {

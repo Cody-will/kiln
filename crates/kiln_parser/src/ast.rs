@@ -553,7 +553,7 @@ pub struct ShortName {
     pub mutable: bool,
 }
 
-/// Target of a `go` statement.
+/// Target of a `go` expression.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GoTarget {
     /// `go f(args)` / `go obj.method(args)`.
@@ -606,8 +606,6 @@ pub enum StmtKind {
     },
     /// `defer expr` / `defer { ... }`
     Defer(Expr),
-    /// `go ...`
-    Go(GoTarget),
     /// An expression statement.
     Expr(Expr),
     /// A nested item.
@@ -829,6 +827,8 @@ pub enum ExprKind {
     Block(Block),
     /// `unsafe { ... }`
     Unsafe(Block),
+    /// `go f(args)` or `go [move] { ... }`: starts a task, giving a `Task<T>`.
+    Go(Box<GoTarget>),
     /// `if cond { } else ...`
     If {
         /// Condition.
@@ -928,6 +928,7 @@ impl Expr {
                 | ExprKind::While { .. }
                 | ExprKind::WhileLet { .. }
                 | ExprKind::Loop { .. }
+                | ExprKind::Go(_)
         )
     }
 }

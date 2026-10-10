@@ -36,6 +36,30 @@ pub trait Drop {
 	fn drop(&mut self)
 }
 
+// A handle to a task started with `go`. `join` waits for the task and gives
+// its result; dropping the handle detaches the task.
+pub struct Task<T>
+
+impl<T> Task<T> {
+	pub fn join(self) -> Result<T, Panic>
+}
+
+// A task's panic. Panics currently end the whole program, so `join` never
+// returns one yet.
+pub struct Panic
+
+// Why `tx.try_send(v)` failed; the value is handed back.
+pub enum TrySendError<T> {
+	Full(T),
+	Closed(T),
+}
+
+// Why `rx.try_recv()` failed.
+pub enum TryRecvError {
+	Empty,
+	Closed,
+}
+
 // Scoped tasks: tasks spawned with `s.spawn(...)` may borrow locals and are
 // joined before `scope` returns.
 pub struct Scope

@@ -1067,12 +1067,6 @@ impl<'a> Resolver<'a> {
                 self.walk_expr(value);
             }
             StmtKind::Defer(e) | StmtKind::Expr(e) => self.walk_expr(e),
-            StmtKind::Go(GoTarget::Call(e)) => self.walk_expr(e),
-            StmtKind::Go(GoTarget::Block { body, .. }) => {
-                let saved = std::mem::take(&mut self.loops);
-                self.walk_block(body);
-                self.loops = saved;
-            }
             StmtKind::Item(item) => self.walk_item(item),
         }
     }
@@ -1315,6 +1309,14 @@ impl<'a> Resolver<'a> {
             }
             ExprKind::Tuple(xs) | ExprKind::Array(xs) => xs.iter().for_each(|x| self.walk_expr(x)),
             ExprKind::Block(b) | ExprKind::Unsafe(b) => self.walk_block(b),
+            ExprKind::Go(g) => match &**g {
+                GoTarget::Call(e) => self.walk_expr(e),
+                GoTarget::Block { body, .. } => {
+                    let saved = std::mem::take(&mut self.loops);
+                    self.walk_block(body);
+                    self.loops = saved;
+                }
+            },
             ExprKind::If { cond, then, els } => {
                 self.walk_expr(cond);
                 self.walk_block(then);

@@ -558,28 +558,38 @@ fn channel_send() {
     }
 }
 
+/// The `go` target of an expression statement.
+fn go_target(src: &str) -> GoTarget {
+    match stmt(src) {
+        StmtKind::Expr(Expr {
+            kind: ExprKind::Go(t),
+            ..
+        }) => *t,
+        s => panic!("{s:?}"),
+    }
+}
+
 #[test]
-fn go_statements() {
+fn go_expressions() {
+    assert!(matches!(go_target("go worker(1, rx)"), GoTarget::Call(_)));
+    assert!(matches!(go_target("go srv.run()"), GoTarget::Call(_)));
     assert!(matches!(
-        stmt("go worker(1, rx)"),
-        StmtKind::Go(GoTarget::Call(_))
+        go_target("go move {\n\thandle(conn)\n}"),
+        GoTarget::Block { is_move: true, .. }
     ));
     assert!(matches!(
-        stmt("go srv.run()"),
-        StmtKind::Go(GoTarget::Call(_))
-    ));
-    assert!(matches!(
-        stmt("go move {\n\thandle(conn)\n}"),
-        StmtKind::Go(GoTarget::Block { is_move: true, .. })
-    ));
-    assert!(matches!(
-        stmt("go {\n}"),
-        StmtKind::Go(GoTarget::Block { is_move: false, .. })
+        go_target("go {\n}"),
+        GoTarget::Block { is_move: false, .. }
     ));
     assert_eq!(
         errs("fn main() {\n\tgo x\n}"),
         vec!["`go` requires a function call or a block (`go f(x)` or `go move { ... }`)"]
     );
+    // `go` is an expression producing a task handle.
+    match stmt("t := go f(1)") {
+        StmtKind::ShortDecl { init, .. } => assert!(matches!(init.kind, ExprKind::Go(_))),
+        s => panic!("{s:?}"),
+    }
 }
 
 #[test]
