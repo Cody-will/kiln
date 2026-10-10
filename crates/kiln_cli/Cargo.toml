@@ -20,6 +20,7 @@ kiln_resolve = { path = "../kiln_resolve" }
 kiln_borrowck = { path = "../kiln_borrowck" }
 kiln_codegen = { path = "../kiln_codegen" }
 kiln_fmt = { path = "../kiln_fmt" }
+kiln_lsp = { path = "../kiln_lsp" }
 
 [lints]
 workspace = true

@@ -13,6 +13,7 @@
 //!   build and run `#[test]` functions (see [`test`]).
 //!
 //! - `kiln fmt [--check] [--stdin] [paths...]`: format source files (see [`fmt`]).
+//! - `kiln lsp`: the language server, speaking LSP on stdin/stdout.
 //!
 //! Exit status is 0 on success, 1 when the file has errors, and 2 on usage errors
 //! (`kiln run` exits with the program's status).
@@ -41,6 +42,7 @@ USAGE:
     kiln fmt [--check] [--stdin] [paths...]
                             Format .kn files in place (default: every file under .);
                             --check lists unformatted files and exits 1
+    kiln lsp                The language server (LSP over stdio), for editors
 
     Debug builds (the default) panic on integer overflow; --release builds wrap.
     kiln help               Show this message
@@ -83,6 +85,15 @@ fn main() -> ExitCode {
             }
         }
         [cmd, rest @ ..] if cmd == "fmt" => fmt::run(rest),
+        [cmd, rest @ ..] if cmd == "lsp" && rest.iter().all(|a| a == "--stdio") => {
+            match kiln_lsp::server::run() {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("kiln lsp: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         [cmd, rest @ ..] if cmd == "test" => match test::parse_args(rest) {
             Some(o) => test::run(o),
             None => usage_error(),

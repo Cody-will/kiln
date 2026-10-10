@@ -68,7 +68,8 @@ Each test runs in its own process, in parallel, so a panic fails only that test.
 
 ## Editors
 
-- **VS Code:** syntax highlighting, bracket matching, comment toggling, and auto-indent through `editors/vscode`.
+- **VS Code:** `editors/vscode` adds highlighting and editing support and starts the language server.
+- **Language server:** `kiln lsp` speaks the Language Server Protocol over stdio, so any LSP editor can use it (Neovim: `cmd = { "kiln", "lsp" }`). It provides diagnostics as you type, hover (types, signatures, docs), go to definition, find references, rename, completion (locals, items, keywords, `.` members), the document outline, formatting through `kiln fmt`, and inlay type hints on `x := ...`. It works on one file at a time, like the rest of the toolchain today.
 - **Tree-sitter editors** (Neovim, Helix, Zed): `editors/tree-sitter-kiln` provides a grammar and `highlights.scm`.
 
 ## Planned
@@ -76,18 +77,32 @@ Each test runs in its own process, in parallel, so a panic fails only that test.
 | Command | Description |
 |---|---|
 | 🚧 `kiln new <name>` | Create a package with `kiln.toml` and `src/main.kn` |
-| 🚧 `kiln fmt` | The canonical formatter: tabs, Go-style braces, trailing commas on multi-line lists, and no configuration |
 | 🚧 `kiln lint`, `kiln doc`, `kiln bench` | Linting, documentation, benchmarks |
 | 🚧 `kiln add`, `kiln publish` | Dependency management and the package registry |
-| 🚧 `kiln-ls` | A language server for diagnostics, hover, go-to-definition, completion, and rename |
 
-## Formatting style
+## Formatting: `kiln fmt`
 
-`kiln fmt` will have exactly one style, and all code in this book follows it:
+`kiln fmt` rewrites files in the one canonical style, like `gofmt`:
+
+```sh
+kiln fmt                 # every .kn file under the current directory
+kiln fmt src/main.kn     # one file (or a directory)
+kiln fmt --check         # change nothing; list unformatted files, exit 1 if any (for CI)
+kiln fmt --stdin < a.kn  # standard input to standard output (for editors)
+```
+
+It keeps your line breaks and comments and normalizes everything else. Files with syntax errors are reported and left alone. The style, which all code in this book follows:
 
 - Indent with tabs.
 - Put the opening brace on the same line.
 - Multi-line lists end with a trailing comma; single-line lists don't.
 - No semicolons at line ends.
+- Spaces around binary operators, none after `(` or before `,`; `S { x: 1 }` but `std::io::{Read, Write}`.
+- A continued line (`.method()` chains, a line ending in an operator) is indented one more tab.
+- At most one blank line in a row, and one between top-level items.
+- Consecutive `import` lines are sorted (std first) and deduplicated.
+- `//comment` becomes `// comment`.
+
+Where tokens alone can't tell (`a<b` could be generics), `kiln fmt` keeps your choice of spacing: write `a < b` and it stays.
 
 Because there are no options, every Kiln codebase looks the same.

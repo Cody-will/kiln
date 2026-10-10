@@ -15,7 +15,16 @@ This extension adds editing support for [Kiln](https://github.com/Cody-will/kiln
   - continuing `///` doc comments on Enter.
 - **Indentation:** Kiln files indent with tabs, matching `kiln fmt`.
 
-Semantic highlighting, diagnostics, and go-to-definition will come from the Kiln language server (`kiln-ls`). It is planned but not written yet.
+- **Language server:** the extension starts `kiln lsp` (the `kiln` binary on your PATH, or the `kiln.server.path` setting) and gets:
+  - diagnostics as you type (parse, name, type, and borrow errors);
+  - hover with types, signatures, and doc comments (including the standard library);
+  - go to definition, find references, and rename (within the file);
+  - completion of locals, functions, types, keywords, and `.` fields and methods;
+  - the document outline;
+  - formatting with `kiln fmt` (Format Document, or format on save);
+  - inlay type hints for `x := ...` bindings.
+
+  **Kiln: Restart Language Server** restarts it after you rebuild `kiln`.
 
 ## Install locally
 
@@ -24,6 +33,7 @@ You can do either of the following.
 **Copy the folder into your extensions directory (no build step):**
 
 ```sh
+cd editors/vscode && npm install --omit=dev && cd -
 cp -r editors/vscode ~/.vscode/extensions/kiln-lang.kiln-0.1.0
 ```
 

@@ -1,7 +1,7 @@
 {
   "name": "kiln",
   "displayName": "Kiln",
-  "description": "Syntax highlighting and editing support for the Kiln programming language",
+  "description": "Kiln language support: highlighting, diagnostics, hover, go to definition, references, rename, completion, formatting, and inlay hints",
   "version": "0.1.0",
   "publisher": "kiln-lang",
   "license": "MIT OR Apache-2.0",
@@ -10,7 +10,7 @@
     "url": "https://github.com/Cody-will/kiln"
   },
   "engines": {
-    "vscode": "^1.75.0"
+    "vscode": "^1.82.0"
   },
   "categories": [
     "Programming Languages"
@@ -43,15 +43,39 @@
       "[kiln]": {
         "editor.insertSpaces": false,
         "editor.tabSize": 4,
-        "editor.detectIndentation": false
+        "editor.detectIndentation": false,
+        "editor.defaultFormatter": "kiln-lang.kiln"
       }
-    }
+    },
+    "configuration": {
+      "title": "Kiln",
+      "properties": {
+        "kiln.server.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the `kiln` executable used for the language server (default: `kiln` on PATH)."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "kiln.restartServer",
+        "title": "Kiln: Restart Language Server"
+      }
+    ]
   },
   "scripts": {
-    "test": "node test/grammar.test.js"
+    "test": "node --check extension.js && node test/grammar.test.js"
   },
   "devDependencies": {
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.1.0"
-  }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:kiln"
+  ]
 }

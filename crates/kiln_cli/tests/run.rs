@@ -274,3 +274,82 @@ fn fmt_check_and_write() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("syntax errors"));
 }
+
+/// Drives `kiln lsp` over stdio: initialize, open a file, hover, definition,
+/// formatting, shutdown.
+#[test]
+fn lsp_session() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::process::Stdio;
+    let mut child = Command::new(kiln())
+        .arg("lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut send = |v: String| {
+        write!(stdin, "Content-Length: {}\r\n\r\n{v}", v.len()).unwrap();
+        stdin.flush().unwrap();
+    };
+    let mut recv = || -> String {
+        let mut len = 0;
+        loop {
+            let mut line = String::new();
+            out.read_line(&mut line).unwrap();
+            if line == "\r\n" {
+                break;
+            }
+            if let Some(n) = line.strip_prefix("Content-Length: ") {
+                len = n.trim().parse().unwrap();
+            }
+        }
+        let mut buf = vec![0; len];
+        out.read_exact(&mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    };
+    send(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#.into());
+    assert!(recv().contains("hoverProvider"));
+    send(r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#.into());
+    let text = "fn add(a: i32, b: i32) -> i32 {\n\treturn a + b\n}\n\nfn main() {\n\tx := add(1, 2)\n\tprintln(\"{x}\")\n  y := undefined\n}\n";
+    let open = format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"file:///t.kn","languageId":"kiln","version":1,"text":{}}}}}}}"#,
+        json_str(text)
+    );
+    send(open);
+    let diags = recv();
+    assert!(
+        diags.contains("publishDiagnostics") && diags.contains("undefined"),
+        "{diags}"
+    );
+    send(r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":"file:///t.kn"},"position":{"line":5,"character":7}}}"#.into());
+    let def = recv();
+    assert!(
+        def.contains(r#""start":{"character":3,"line":0}"#) || def.contains(r#""line":0"#),
+        "{def}"
+    );
+    send(r#"{"jsonrpc":"2.0","id":3,"method":"textDocument/formatting","params":{"textDocument":{"uri":"file:///t.kn"},"options":{"tabSize":4,"insertSpaces":false}}}"#.into());
+    let f = recv();
+    assert!(f.contains(r#"\ty := undefined"#), "{f}");
+    send(r#"{"jsonrpc":"2.0","id":4,"method":"shutdown"}"#.into());
+    recv();
+    send(r#"{"jsonrpc":"2.0","method":"exit"}"#.into());
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+fn json_str(s: &str) -> String {
+    let mut o = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\t' => o.push_str("\\t"),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}

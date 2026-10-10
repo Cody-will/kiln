@@ -26,7 +26,8 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 | Multi-file packages, `kiln.toml`, registry | 🚧 Not yet: `kiln check` works on a single file (inline `mod` blocks are supported) |
 | `kiln build`, `kiln run` | ✅ Implemented (single file) |
 | `kiln test` (`#[test]`, `#[should_panic]`, `#[ignore]`, process-per-test, parallel) | ✅ Implemented (single files and directories) |
-| `kiln fmt`, language server | 🚧 Not yet |
+| `kiln fmt` | ✅ canonical formatter with `--check` and `--stdin` |
+| Language server | ✅ `kiln lsp` (single-file): diagnostics, hover, definition, references, rename, completion, symbols, formatting, inlay hints; wired into the VS Code extension |
 
 ## What `kiln check` catches today
 
