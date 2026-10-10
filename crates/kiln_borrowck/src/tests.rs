@@ -735,3 +735,19 @@ fn closure_capabilities() {
     // A plain `fn` coerces to `fn mut`, not the other way around.
     ok("fn each(f: fn mut(i32)) {\n f(1)\n}\nfn show(x: i32) {}\nfn main() {\n each(show)\n}");
 }
+
+#[test]
+fn deep_flows_through_generic_results() {
+    // `take` returns a value from behind `&mut self`, not a borrow of it.
+    ok("fn main() {\n o mut := Some(5)\n v := o.take()\n b := o.is_none()\n w := v\n}");
+    ok("fn main() {\n v mut := Vec::new()\n v.push(1)\n old := std::mem::replace(&mut v, Vec::new())\n v.push(2)\n n := old.len()\n}");
+    // But a reference moved out keeps its own loan.
+    err1(
+        "fn main() {\n x mut := 1\n slot mut := Some(&x)\n r := slot.take().unwrap()\n x = 3\n y := *r\n}",
+        "cannot assign to `x` because it is borrowed",
+    );
+    err1(
+        "fn main() {\n x mut := 1\n y := 2\n v mut := &x\n r := std::mem::replace(&mut v, &y)\n x = 3\n z := *r\n}",
+        "cannot assign to `x` because it is borrowed",
+    );
+}

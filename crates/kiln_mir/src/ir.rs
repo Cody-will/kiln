@@ -271,6 +271,10 @@ pub enum Callee {
     Intrinsic(String),
 }
 
+/// Flag on a call's flow index: the result holds what the argument's
+/// referent holds, not the argument's own borrow (see [`crate::sig::return_flows`]).
+pub const DEEP_FLOW: usize = 1 << 31;
+
 /// The right-hand side of an assignment.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Rvalue {

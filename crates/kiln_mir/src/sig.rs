@@ -16,9 +16,21 @@ pub struct TyLifetimes {
     pub elided: bool,
     /// Whether the type mentions a generic parameter, `Self`, a trait object, or a function type.
     pub generic: bool,
+    /// Whether such a generic part appears outside any reference or pointer
+    /// (`T`, `Vec<T>`, but not `&T` or `&mut Option<T>`).
+    pub generic_value: bool,
+    /// Reference nesting depth during the walk.
+    behind: u32,
 }
 
 impl TyLifetimes {
+    fn set_generic(&mut self) {
+        self.generic = true;
+        if self.behind == 0 {
+            self.generic_value = true;
+        }
+    }
+
     /// Whether values of this type may hold borrows.
     pub fn has_refs(&self) -> bool {
         self.elided || self.generic || self.has_lifetimes()
@@ -49,13 +61,15 @@ fn walk(t: &Type, generics: &[String], r: &Resolved<'_>, out: &mut TyLifetimes) 
                 }
                 None => out.elided = true,
             }
+            out.behind += 1;
             walk(inner, generics, r, out);
+            out.behind -= 1;
         }
         TypeKind::Path(p) => {
             if p.segments.len() == 1 {
                 let n = &p.segments[0].ident.name;
                 if generics.contains(n) || n == "Self" {
-                    out.generic = true;
+                    out.set_generic();
                 }
             }
             let last = p.segments.last().unwrap();
@@ -81,16 +95,19 @@ fn walk(t: &Type, generics: &[String], r: &Resolved<'_>, out: &mut TyLifetimes) 
                 }
             }
             if matches!(r.path(p.span), Res::TyParam(_) | Res::SelfTy) {
-                out.generic = true;
+                out.set_generic();
             }
         }
-        TypeKind::Ptr { inner, .. } | TypeKind::Slice(inner) | TypeKind::Array(inner, _) => {
-            walk(inner, generics, r, out)
+        TypeKind::Ptr { inner, .. } => {
+            out.behind += 1;
+            walk(inner, generics, r, out);
+            out.behind -= 1;
         }
+        TypeKind::Slice(inner) | TypeKind::Array(inner, _) => walk(inner, generics, r, out),
         TypeKind::ChanSend(inner) | TypeKind::ChanRecv(inner) => walk(inner, generics, r, out),
         TypeKind::Tuple(ts) => ts.iter().for_each(|x| walk(x, generics, r, out)),
         TypeKind::Fn { params, ret, .. } => {
-            out.generic = true;
+            out.set_generic();
             params.iter().for_each(|x| walk(x, generics, r, out));
             if let Some(x) = ret {
                 walk(x, generics, r, out);
@@ -106,7 +123,7 @@ fn walk(t: &Type, generics: &[String], r: &Resolved<'_>, out: &mut TyLifetimes) 
             }
         }
         TypeKind::Impl(bounds) => {
-            out.generic = true;
+            out.set_generic();
             for b in bounds {
                 if let Bound::Lifetime(l) = b {
                     out.named.insert(l.name.clone());
@@ -154,6 +171,7 @@ pub fn fn_lifetimes(
     if let Some(sp) = &decl.self_param {
         let mut l = TyLifetimes {
             generic: true,
+            generic_value: matches!(sp, SelfParam::Value { .. }),
             ..Default::default()
         };
         if let SelfParam::Ref { lifetime, .. } = sp {
@@ -226,7 +244,9 @@ pub fn outlives_rel(rel: &[(String, String)], a: &str, b: &str) -> bool {
 /// - an elided lifetime flows from `&self`/`&mut self` if present, else from the
 ///   single reference parameter, else (ambiguous; reported at the definition)
 ///   from every reference parameter;
-/// - a generic return type may carry borrows from any parameter.
+/// - a generic return type may carry borrows from any parameter; from a
+///   parameter that is generic only behind a reference, it carries the
+///   referent's borrows (a *deep* flow, index | [`crate::DEEP_FLOW`]).
 pub fn return_flows(
     params: &[TyLifetimes],
     ret: &TyLifetimes,
@@ -235,7 +255,17 @@ pub fn return_flows(
 ) -> Vec<usize> {
     let mut out = BTreeSet::new();
     if ret.generic {
-        out.extend(0..params.len());
+        // A generic result may carry anything a by-value argument holds.
+        // From an argument that is generic only behind a reference
+        // (`&mut Option<T>`), it carries what the referent holds but not the
+        // reference's own borrow: `opt.take()` does not keep `opt` borrowed.
+        for (i, p) in params.iter().enumerate() {
+            if p.generic && !p.generic_value {
+                out.insert(i | crate::DEEP_FLOW);
+            } else {
+                out.insert(i);
+            }
+        }
     }
     for (i, p) in params.iter().enumerate() {
         if ret

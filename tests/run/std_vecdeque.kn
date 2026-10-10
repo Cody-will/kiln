@@ -1,0 +1,28 @@
+import std::collections::VecDeque
+
+fn main() {
+    q mut := VecDeque::new()
+    i mut := 0
+    while i < 10 {
+        q.push_back(i)
+        if i % 3 == 0 {
+            q.push_front(100 + i)
+        }
+        i += 1
+    }
+    println("{q:?} {q.len()}")
+    println("{q.pop_front():?} {q.pop_back():?} {q.front():?} {q.back():?} {q.get(3):?}")
+    for x in q.iter_mut() {
+        *x += 1
+    }
+    q.retain(|x| *x % 2 == 0)
+    q.rotate_left(2)
+    println("{q:?} {q.contains(&8)}")
+    q.insert(1, 55)
+    println("{q.remove(0):?} {q:?}")
+    let r: Vec<i32> = q.iter().rev().map(|x| *x).collect()
+    println("{r:?}")
+    names := VecDeque::from_vec(["a".to_string(), "b".to_string()].to_vec())
+    c := names.clone()
+    println("{c == names} {names.into_iter().collect():?}")
+}

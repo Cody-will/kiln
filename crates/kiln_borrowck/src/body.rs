@@ -199,8 +199,12 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
     // ----- loans ----------------------------------------------------------------------
 
     fn compute_loans(&mut self) {
+        // Two loan sets per local: `holds[i]`, the loans local `i` holds, and
+        // `holds[n + i]`, the loans held by what `i` points to (used for
+        // deep flows, where a call returns a value taken from behind a
+        // reference).
         let n = self.b.locals.len();
-        self.holds = vec![BTreeSet::new(); n];
+        self.holds = vec![BTreeSet::new(); 2 * n];
         for i in 1..=self.b.arg_count {
             if self.may_hold_cache[i] && self.b.kind == BodyKind::Fn {
                 let id = self.loans.len();
@@ -211,6 +215,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                     param: Some(i - 1),
                 });
                 self.holds[i].insert(id);
+                self.holds[n + i].insert(id);
             }
         }
         for (bi, bb) in self.b.blocks.iter().enumerate() {
@@ -291,39 +296,69 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
 
     /// Applies statement `loc` to the per-local loan sets.
     fn holds_transfer(&self, st: &mut [BTreeSet<usize>], loc: Loc) {
+        let n = self.b.locals.len();
+        let deep_of = |st: &[BTreeSet<usize>], o: &Operand| -> BTreeSet<usize> {
+            o.place()
+                .map(|p| st[n + p.local.0 as usize].clone())
+                .unwrap_or_default()
+        };
         match &self.stmt(loc).kind {
             StmtKind::Assign(dest, rv) => {
                 let root = dest.local.0 as usize;
                 if !self.may_hold_cache[root] {
                     return;
                 }
-                let add: BTreeSet<usize> = match rv {
-                    Rvalue::Use(o) => Self::op_holds_in(st, o),
+                let (add, deep): (BTreeSet<usize>, BTreeSet<usize>) = match rv {
+                    Rvalue::Use(o) | Rvalue::Coerce(o, _) => {
+                        (Self::op_holds_in(st, o), deep_of(st, o))
+                    }
                     Rvalue::Ref { place, .. } => {
+                        let base = place.local.0 as usize;
                         let mut s = BTreeSet::from([self.loan_at[&loc]]);
+                        // What the new reference points to holds the base's
+                        // loans (and, through a reference, its referent's).
+                        let mut d = st[base].clone();
                         if place.through_ref() {
-                            s.extend(st[place.local.0 as usize].iter().copied());
+                            s.extend(st[base].iter().copied());
+                            d.extend(st[n + base].iter().copied());
                         }
-                        s
+                        (s, d)
                     }
-                    Rvalue::Aggregate(_, ops) => {
-                        ops.iter().flat_map(|o| Self::op_holds_in(st, o)).collect()
+                    Rvalue::Aggregate(_, ops) => (
+                        ops.iter().flat_map(|o| Self::op_holds_in(st, o)).collect(),
+                        ops.iter().flat_map(|o| deep_of(st, o)).collect(),
+                    ),
+                    Rvalue::Call { args, flows, .. } => {
+                        let mut a = BTreeSet::new();
+                        let mut d = BTreeSet::new();
+                        for f in flows {
+                            let Some(o) = args.get(f & !DEEP_FLOW) else {
+                                continue;
+                            };
+                            let inner = deep_of(st, o);
+                            if f & DEEP_FLOW == 0 {
+                                a.extend(Self::op_holds_in(st, o));
+                            } else {
+                                a.extend(inner.iter().copied());
+                            }
+                            d.extend(inner);
+                        }
+                        (a, d)
                     }
-                    Rvalue::Call { args, flows, .. } => flows
-                        .iter()
-                        .filter_map(|i| args.get(*i))
-                        .flat_map(|o| Self::op_holds_in(st, o))
-                        .collect(),
-                    Rvalue::Pure(..) => BTreeSet::new(),
-                    Rvalue::Coerce(o, _) => Self::op_holds_in(st, o),
+                    Rvalue::Pure(..) => (BTreeSet::new(), BTreeSet::new()),
                 };
                 if dest.proj.is_empty() {
                     st[root] = add;
+                    st[n + root] = deep;
                 } else {
                     st[root].extend(add);
+                    st[n + root].extend(deep);
                 }
             }
-            StmtKind::StorageDead(l) if !self.pinned.contains(l) => st[l.0 as usize].clear(),
+            StmtKind::StorageDead(l) if !self.pinned.contains(l) => {
+                st[l.0 as usize].clear();
+                st[n + l.0 as usize].clear();
+            }
             _ => {}
         }
     }
@@ -332,7 +367,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
     fn holds_before(&self, bi: usize, si: usize) -> Vec<BTreeSet<usize>> {
         let mut st = self.hin[bi]
             .clone()
-            .unwrap_or_else(|| vec![BTreeSet::new(); self.b.locals.len()]);
+            .unwrap_or_else(|| vec![BTreeSet::new(); 2 * self.b.locals.len()]);
         for i in 0..si {
             self.holds_transfer(&mut st, (bi, i));
         }
@@ -341,10 +376,14 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
 
     /// Locals holding loan `l`.
     fn holders(&self, l: usize) -> Vec<Local> {
-        (0..self.holds.len())
+        let n = self.b.locals.len();
+        let mut out: Vec<Local> = (0..self.holds.len())
             .filter(|i| self.holds[*i].contains(&l))
-            .map(|i| Local(i as u32))
-            .collect()
+            .map(|i| Local((i % n) as u32))
+            .collect();
+        out.sort_by_key(|l| l.0);
+        out.dedup_by_key(|l| l.0);
+        out
     }
 
     // ----- liveness ---------------------------------------------------------------------
@@ -778,6 +817,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                             continue; // reported by the return check
                         }
                         live_loans.extend(st[l.0 as usize].iter().copied());
+                        live_loans.extend(st[self.b.locals.len() + l.0 as usize].iter().copied());
                     }
                     for li in live_loans {
                         if Some(li) == created {
@@ -940,7 +980,14 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                     );
                 }
                 (None, Some(idx)) => {
-                    let allowed = self.b.return_flows.clone().unwrap_or_default();
+                    let allowed: Vec<usize> = self
+                        .b
+                        .return_flows
+                        .clone()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|f| f & !DEEP_FLOW)
+                        .collect();
                     if allowed.contains(&idx) {
                         continue;
                     }
