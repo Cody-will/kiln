@@ -1,4 +1,5 @@
 /target
+/crates/kiln_tls/target
 **/*.rs.bk
 *.swp
 .DS_Store

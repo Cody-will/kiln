@@ -37,7 +37,7 @@ fn main() -> Result<(), io::Error> {
 	r5 := http::send(http::Request::new("DELETE", "{base}/hello"))?
 	println("{r5.status}")
 	println("{http::escape("a b&c=d/é")} {http::unescape("a+b%26c")}")
-	match http::get("https://example.com") {
+	match http::get("ftp://example.com") {
 		Ok(_) => println("??"),
 		Err(e) => println("{e}"),
 	}

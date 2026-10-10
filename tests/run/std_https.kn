@@ -1,0 +1,102 @@
+import std::io
+import std::io::{Read, Write}
+import std::net::TcpListener
+import std::net::http
+import std::net::tls
+
+// A test certificate authority and a "localhost" certificate it signed
+// (P-256, valid until 2126). Test use only.
+const CA: &str = r"-----BEGIN CERTIFICATE-----
+MIIBhTCCASugAwIBAgIULyCVIvmQ+2CxJFLYWuU9ml7PZw8wCgYIKoZIzj0EAwIw
+FzEVMBMGA1UEAwwMS2lsbiBUZXN0IENBMCAXDTI2MTAxMDIyNTEwMVoYDzIxMjYw
+OTE2MjI1MTAxWjAXMRUwEwYDVQQDDAxLaWxuIFRlc3QgQ0EwWTATBgcqhkjOPQIB
+BggqhkjOPQMBBwNCAATI8t3Kt+ZirtD7sECnafMzxMqvSi3hFHrUU3VSD7so6H7m
+o496SLA8b+GB1a9Q7FbV+ZRuJZ1qA7298UTFZ/2eo1MwUTAdBgNVHQ4EFgQUGSWI
+XE0GBs5ufAekxmgu3YDnLzMwHwYDVR0jBBgwFoAUGSWIXE0GBs5ufAekxmgu3YDn
+LzMwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiAI+5/Tl55VTKY+
++KAUacg9Jjy34HuYABBmRwsO7XGvpQIhAKZVqPZ6H2KgB608aTLgnJyvDZNQRL+N
+BBNxWWza1aKk
+-----END CERTIFICATE-----"
+const CERT: &str = r"-----BEGIN CERTIFICATE-----
+MIIBrTCCAVOgAwIBAgIUHQN4MbVrOlqORiOFhTJxbNXjQU4wCgYIKoZIzj0EAwIw
+FzEVMBMGA1UEAwwMS2lsbiBUZXN0IENBMCAXDTI2MTAxMDIyNTEwMVoYDzIxMjYw
+OTE2MjI1MTAxWjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggq
+hkjOPQMBBwNCAASxosX0bhvQt6T5CVB3mapqRQt429y5iOTxfJpxSfDL89PFK+Mi
+ymSaokUIdHdM0km1+bMr/fU7RiPmsBl5ZcDjo34wfDAaBgNVHREEEzARgglsb2Nh
+bGhvc3SHBH8AAAEwCQYDVR0TBAIwADATBgNVHSUEDDAKBggrBgEFBQcDATAdBgNV
+HQ4EFgQUBmJhmBZINO3xIHHY36iBHtBpO3EwHwYDVR0jBBgwFoAUGSWIXE0GBs5u
+fAekxmgu3YDnLzMwCgYIKoZIzj0EAwIDSAAwRQIhAJIeCYPeWquZdRDipdEekbtW
+XEgIyvPQQ5uEqtVSV+6dAiBnfL336BIFAVGKvthBhAxxL8aFP0cWK4CvpXaOe01y
+Nw==
+-----END CERTIFICATE-----"
+const KEY: &str = r"-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgxBMjZh7fVtaKBzR9
+FZ/2y9hLgwiz2D/1w/k3MFAyphKhRANCAASxosX0bhvQt6T5CVB3mapqRQt429y5
+iOTxfJpxSfDL89PFK+MiymSaokUIdHdM0km1+bMr/fU7RiPmsBl5ZcDj
+-----END PRIVATE KEY-----"
+
+fn hello(req: http::Request) -> http::Response {
+	return http::Response::text(200, "secure hello {req.path()} {req.body_text()}")
+}
+
+fn main() -> Result<(), io::Error> {
+	// Raw TLS: an echo server.
+	srv := tls::ServerConfig::from_pem(CERT.as_bytes(), KEY.as_bytes())?
+	l := TcpListener::bind("127.0.0.1:0")?
+	port := l.port()?
+	go move {
+		for _ in 0..3 {
+			c := l.accept().unwrap()
+			match tls::TlsStream::server(c, &srv) {
+				Ok(s) => {
+					s mut := s
+					buf mut := [0 as u8; 64]
+					n := s.read(&mut buf).unwrap()
+					s.write_all(&buf[0..n]).unwrap()
+					s.close().unwrap()
+				},
+				Err(_) => {},
+			}
+		}
+	}
+	cfg := tls::ClientConfig::with_roots_pem(CA.as_bytes())?
+	c mut := tls::TlsStream::connect("localhost:{port}", &cfg)?
+	c.write_all(b"ping")?
+	out mut := Vec::new()
+	c.read_to_end(&mut out)?
+	println("echo: {String::from_utf8_lossy(&out)} tls1.{c.version() - 10}")
+
+	// Without the private CA the certificate is rejected.
+	public := tls::ClientConfig::new()?
+	match tls::TlsStream::connect("localhost:{port}", &public) {
+		Ok(_) => println("unexpected: untrusted certificate accepted"),
+		Err(e) => println("untrusted: {e.to_string().contains("UnknownIssuer")}"),
+	}
+	// The name must match too.
+	match tls::TlsStream::client(std::net::TcpStream::connect("127.0.0.1:{port}")?, "example.org", &cfg) {
+		Ok(_) => println("unexpected: wrong name accepted"),
+		Err(e) => println("wrong name: {e}"),
+	}
+	println("bad pem: {tls::ServerConfig::from_pem(b"nope", b"nope").is_err()}")
+
+	// HTTPS server and client.
+	hl := TcpListener::bind("127.0.0.1:0")?
+	hport := hl.port()?
+	router mut := http::Router::new()
+	router.get("/hi", hello)
+	router.post("/hi", hello)
+	hcfg := tls::ServerConfig::from_pem(CERT.as_bytes(), KEY.as_bytes())?
+	go move {
+		http::Server::new(router).serve_tls(hl, hcfg).unwrap()
+	}
+	client := http::Client::new().with_tls_config(tls::ClientConfig::with_roots_pem(CA.as_bytes())?)
+	r := client.get("https://localhost:{hport}/hi")?
+	println("{r.status} {r.body_text()}")
+	r2 := client.post("https://localhost:{hport}/hi", "text/plain", b"body")?
+	println("{r2.status} {r2.body_text()}")
+	match http::get("https://localhost:{hport}/hi") {
+		Ok(_) => println("unexpected: default client trusted the test CA"),
+		Err(e) => println("default client: {e.to_string().contains("UnknownIssuer")}"),
+	}
+	return Ok(())
+}

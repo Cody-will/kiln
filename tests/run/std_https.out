@@ -1,0 +1,7 @@
+echo: ping tls1.3
+untrusted: true
+wrong name: tls: invalid peer certificate: certificate not valid for name "example.org"; certificate is only valid for DnsName("localhost") or IpAddress(127.0.0.1)
+bad pem: true
+200 secure hello /hi 
+200 secure hello /hi body
+default client: true

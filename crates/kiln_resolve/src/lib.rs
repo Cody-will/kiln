@@ -68,6 +68,7 @@ pub const STD_MODULES: &[(&str, &str)] = &[
     ("context", include_str!("../std/context.kn")),
     ("net", include_str!("../std/net.kn")),
     ("net::http", include_str!("../std/http.kn")),
+    ("net::tls", include_str!("../std/tls.kn")),
     ("log", include_str!("../std/log.kn")),
 ];
 

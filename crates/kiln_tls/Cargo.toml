@@ -1,0 +1,30 @@
+# Built separately (not a workspace member) as a static library by
+# kiln_runtime's build script and linked into Kiln programs that use TLS.
+[package]
+name = "kiln_tls"
+description = "TLS for Kiln programs: rustls behind a small C ABI."
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+[dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pki-types = { version = "1", features = ["std"] }
+webpki-roots = "1"
+
+[profile.release]
+strip = "debuginfo"
+panic = "abort"
+opt-level = 3
+codegen-units = 1
+lto = true
+
+[profile.dev]
+panic = "abort"
+
+[workspace]

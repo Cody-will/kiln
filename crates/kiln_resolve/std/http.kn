@@ -1,4 +1,4 @@
-// HTTP/1.1 servers and clients (plain HTTP; TLS is not supported yet).
+// HTTP/1.1 servers and clients, over plain TCP or TLS (https://).
 //
 //	fn hello(req: http::Request) -> http::Response {
 //		return http::Response::text(200, "hello from {req.path()}\n")
@@ -20,7 +20,8 @@
 
 import std::io
 import std::io::{BufReader, Read, Write}
-import std::net::{TcpListener, TcpStream}
+import std::net::{split_host_port, TcpListener, TcpStream}
+import std::net::tls
 import std::sync::Arc
 import std::time
 import std::time::{Duration, Instant}
@@ -372,6 +373,11 @@ impl Router {
 	pub fn serve(self, listener: TcpListener) -> Result<(), io::Error> {
 		return Server::new(self).serve(listener)
 	}
+
+	// Serves HTTPS on `addr` with the default `Server` timeouts.
+	pub fn listen_tls(self, addr: &str, cfg: tls::ServerConfig) -> Result<(), io::Error> {
+		return Server::new(self).listen_tls(addr, cfg)
+	}
 }
 
 // Serves HTTP on `addr`, sending every request to `handler`.
@@ -454,8 +460,68 @@ impl Server {
 			conn := listener.accept()?
 			s := srv.clone()
 			go move {
-				serve_conn(conn, s)
+				serve_conn(Conn::Plain(conn), s)
 			}
+		}
+	}
+
+	// Serves HTTPS on `addr` with the certificate and key in `cfg`.
+	pub fn listen_tls(self, addr: &str, cfg: tls::ServerConfig) -> Result<(), io::Error> {
+		return self.serve_tls(TcpListener::bind(addr)?, cfg)
+	}
+
+	// Serves HTTPS on connections from `listener`. The TLS handshake must
+	// finish within the read-header timeout.
+	pub fn serve_tls(self, listener: TcpListener, cfg: tls::ServerConfig) -> Result<(), io::Error> {
+		srv := Arc::new(self)
+		tc := Arc::new(cfg)
+		loop {
+			conn := listener.accept()?
+			s := srv.clone()
+			t := tc.clone()
+			go move {
+				dl := Deadline::after(s.read_header_timeout)
+				if dl.arm(&conn, false).is_err() || dl.arm(&conn, true).is_err() {
+					return
+				}
+				match tls::TlsStream::server(conn, &*t) {
+					Ok(stream) => serve_conn(Conn::Tls(stream), s),
+					Err(_) => return,
+				}
+			}
+		}
+	}
+}
+
+// A server or client connection: plain TCP or TLS.
+enum Conn {
+	Plain(TcpStream),
+	Tls(tls::TlsStream),
+}
+
+impl Conn {
+	fn tcp(&self) -> &TcpStream {
+		match self {
+			Conn::Plain(t) => return t,
+			Conn::Tls(t) => return t.tcp(),
+		}
+	}
+}
+
+impl Read for Conn {
+	fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+		match self {
+			Conn::Plain(t) => return t.read(buf),
+			Conn::Tls(t) => return t.read(buf),
+		}
+	}
+}
+
+impl Write for Conn {
+	fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
+		match self {
+			Conn::Plain(t) => return t.write(buf),
+			Conn::Tls(t) => return t.write(buf),
 		}
 	}
 }
@@ -520,20 +586,20 @@ struct Limits {
 }
 
 // Serves one connection: requests in a loop while it is kept alive.
-fn serve_conn(conn: TcpStream, srv: Arc<Server>) {
-	remote := conn.peer_addr().unwrap_or(String::new())
-	reader mut := BufReader::new(&conn)
+fn serve_conn(conn: Conn, srv: Arc<Server>) {
+	remote := conn.tcp().peer_addr().unwrap_or(String::new())
+	reader mut := BufReader::new(conn)
 	lim := Limits { header: srv.read_header_timeout, read: srv.read_timeout }
 	loop {
 		wait := Deadline::after(srv.idle_timeout)
-		req mut := match read_request(&mut reader, &conn, wait, &lim) {
+		req mut := match read_request(&mut reader, wait, &lim) {
 			Ok(Some(r)) => r,
 			Ok(None) => return,
 			Err(e) => {
 				if e.kind() != io::ErrorKind::TimedOut {
 					d := Deadline::after(srv.write_timeout)
-					if d.arm(&conn, true).is_ok() {
-						write_response(&conn, &Response::text(400, "400 bad request: {e}\n"), false, false)
+					if d.arm(reader.get_ref().tcp(), true).is_ok() {
+						write_response(reader.get_mut(), &Response::text(400, "400 bad request: {e}\n"), false, false)
 					}
 				}
 				return
@@ -548,7 +614,7 @@ fn serve_conn(conn: TcpStream, srv: Arc<Server>) {
 		head := req.method == "HEAD"
 		resp := srv.router.route(req)
 		d := Deadline::after(srv.write_timeout)
-		if d.arm(&conn, true).is_err() || write_response(&conn, &resp, keep, head).is_err() || !keep {
+		if d.arm(reader.get_ref().tcp(), true).is_err() || write_response(reader.get_mut(), &resp, keep, head).is_err() || !keep {
 			return
 		}
 	}
@@ -557,8 +623,8 @@ fn serve_conn(conn: TcpStream, srv: Arc<Server>) {
 // Reads one request; None if the connection closed cleanly first.
 // `wait` bounds the wait for the request to start; `lim` then bounds
 // reading it.
-fn read_request(r: &mut BufReader<&TcpStream>, conn: &TcpStream, wait: Deadline, lim: &Limits) -> Result<Option<Request>, io::Error> {
-	wait.arm(conn, false)?
+fn read_request(r: &mut BufReader<Conn>, wait: Deadline, lim: &Limits) -> Result<Option<Request>, io::Error> {
+	wait.arm(r.get_ref().tcp(), false)?
 	// The request starts with its first byte.
 	match r.peek(1) {
 		Ok(b) => {
@@ -575,14 +641,14 @@ fn read_request(r: &mut BufReader<&TcpStream>, conn: &TcpStream, wait: Deadline,
 	}
 	body_dl := Deadline::after(lim.read)
 	dl := Deadline::after(lim.header).earlier(body_dl)
-	dl.arm(conn, false)?
+	dl.arm(r.get_ref().tcp(), false)?
 	line mut := match r.next_line()? {
 		Some(l) => l,
 		None => return Ok(None),
 	}
 	// Tolerate blank lines between requests.
 	while line.is_empty() {
-		dl.arm(conn, false)?
+		dl.arm(r.get_ref().tcp(), false)?
 		line = match r.next_line()? {
 			Some(l) => l,
 			None => return Ok(None),
@@ -593,12 +659,12 @@ fn read_request(r: &mut BufReader<&TcpStream>, conn: &TcpStream, wait: Deadline,
 		return Err(invalid("malformed request line"))
 	}
 	req mut := Request::new(parts[0], parts[1])
-	req.headers = read_headers(r, conn, dl)?
+	req.headers = read_headers(r, dl)?
 	// HTTP/1.0 connections close after one request unless asked otherwise.
 	if parts[2] == "HTTP/1.0" && !req.headers.has("Connection") {
 		req.headers.set("Connection", "close")
 	}
-	req.body = read_body(r, &req.headers, true, conn, body_dl)?
+	req.body = read_body(r, &req.headers, true, body_dl)?
 	return Ok(Some(req))
 }
 
@@ -607,10 +673,10 @@ fn invalid(msg: &str) -> io::Error {
 }
 
 // Reads header lines up to the blank line.
-fn read_headers(r: &mut BufReader<&TcpStream>, conn: &TcpStream, dl: Deadline) -> Result<Headers, io::Error> {
+fn read_headers(r: &mut BufReader<Conn>, dl: Deadline) -> Result<Headers, io::Error> {
 	h mut := Headers::new()
 	loop {
-		dl.arm(conn, false)?
+		dl.arm(r.get_ref().tcp(), false)?
 		line := match r.next_line()? {
 			Some(l) => l,
 			None => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "connection closed in headers")),
@@ -630,7 +696,7 @@ fn read_headers(r: &mut BufReader<&TcpStream>, conn: &TcpStream, dl: Deadline) -
 
 // Reads a body as described by the headers. Requests without a length have
 // no body; responses without one run to the end of the connection.
-fn read_body(r: &mut BufReader<&TcpStream>, h: &Headers, request: bool, conn: &TcpStream, dl: Deadline) -> Result<Vec<u8>, io::Error> {
+fn read_body(r: &mut BufReader<Conn>, h: &Headers, request: bool, dl: Deadline) -> Result<Vec<u8>, io::Error> {
 	body mut := Vec::new()
 	te := match h.get("Transfer-Encoding") {
 		Some(v) => v.to_lower(),
@@ -638,7 +704,7 @@ fn read_body(r: &mut BufReader<&TcpStream>, h: &Headers, request: bool, conn: &T
 	}
 	if te.contains("chunked") {
 		loop {
-			dl.arm(conn, false)?
+			dl.arm(r.get_ref().tcp(), false)?
 			line := match r.next_line()? {
 				Some(l) => l,
 				None => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "connection closed in body")),
@@ -653,7 +719,7 @@ fn read_body(r: &mut BufReader<&TcpStream>, h: &Headers, request: bool, conn: &T
 			}
 			if n == 0 {
 				// Trailers, then the blank line.
-				read_headers(r, conn, dl)?
+				read_headers(r, dl)?
 				return Ok(body)
 			}
 			if body.len() + n > MAX_BODY {
@@ -663,8 +729,8 @@ fn read_body(r: &mut BufReader<&TcpStream>, h: &Headers, request: bool, conn: &T
 			for _ in 0..n {
 				body.push(0 as u8)
 			}
-			fill(r, &mut body.as_mut_slice()[start..], conn, dl)?
-			dl.arm(conn, false)?
+			fill(r, &mut body.as_mut_slice()[start..], dl)?
+			dl.arm(r.get_ref().tcp(), false)?
 			r.next_line()?
 		}
 	}
@@ -680,14 +746,14 @@ fn read_body(r: &mut BufReader<&TcpStream>, h: &Headers, request: bool, conn: &T
 			for _ in 0..n {
 				body.push(0 as u8)
 			}
-			fill(r, body.as_mut_slice(), conn, dl)?
+			fill(r, body.as_mut_slice(), dl)?
 		},
 		None => {
 			if !request {
 				buf mut := Vec::new()
 				buf.resize(65536, 0 as u8)
 				loop {
-					dl.arm(conn, false)?
+					dl.arm(r.get_ref().tcp(), false)?
 					n := r.read(buf.as_mut_slice())?
 					if n == 0 {
 						break
@@ -704,11 +770,11 @@ fn read_body(r: &mut BufReader<&TcpStream>, h: &Headers, request: bool, conn: &T
 }
 
 // Fills `buf`, re-arming the deadline every 64 KiB.
-fn fill(r: &mut BufReader<&TcpStream>, buf: &mut [u8], conn: &TcpStream, dl: Deadline) -> Result<(), io::Error> {
+fn fill(r: &mut BufReader<Conn>, buf: &mut [u8], dl: Deadline) -> Result<(), io::Error> {
 	at mut := 0
 	while at < buf.len() {
 		end := if buf.len() - at > 65536 { at + 65536 } else { buf.len() }
-		dl.arm(conn, false)?
+		dl.arm(r.get_ref().tcp(), false)?
 		r.read_exact(&mut buf[at..end])?
 		at = end
 	}
@@ -716,7 +782,7 @@ fn fill(r: &mut BufReader<&TcpStream>, buf: &mut [u8], conn: &TcpStream, dl: Dea
 }
 
 // Writes a response with Content-Length and Connection headers.
-fn write_response(conn: &TcpStream, resp: &Response, keep: bool, head: bool) -> Result<(), io::Error> {
+fn write_response(conn: &mut Conn, resp: &Response, keep: bool, head: bool) -> Result<(), io::Error> {
 	out mut := String::new()
 	out.push("HTTP/1.1 {resp.status} {status_text(resp.status)}\r\n")
 	for (k, v) in resp.headers.entries() {
@@ -757,17 +823,26 @@ pub fn send(req: Request) -> Result<Response, io::Error> {
 //
 //	c := http::Client::new().with_timeout(Some(time::secs(5)))
 //	resp := c.get("http://example.com/")?
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct Client {
 	timeout: Option<Duration>,
 	connect_timeout: Option<Duration>,
+	tls: Option<Arc<tls::ClientConfig>>,
 }
 
 impl Client {
 	// A client with no overall time limit that gives up connecting after
 	// 30 seconds (like Go's default transport).
 	pub fn new() -> Client {
-		return Client { timeout: None, connect_timeout: Some(time::secs(30)) }
+		return Client { timeout: None, connect_timeout: Some(time::secs(30)), tls: None }
+	}
+
+	// Uses `cfg` for https:// URLs instead of the default (the Mozilla
+	// roots), e.g. to trust a private certificate authority.
+	pub fn with_tls_config(self, cfg: tls::ClientConfig) -> Client {
+		c mut := self
+		c.tls = Some(Arc::new(cfg))
+		return c
 	}
 
 	// Limits a whole exchange (connecting, sending, and reading the full
@@ -798,31 +873,58 @@ impl Client {
 	// Sends a request whose target is a full "http://host[:port]/path" URL
 	// and reads the response. Redirects are not followed.
 	pub fn send(&self, req: Request) -> Result<Response, io::Error> {
-		return exchange(req, self.timeout, self.connect_timeout)
+		match &self.tls {
+			Some(c) => return exchange(req, self.timeout, self.connect_timeout, Some(&**c)),
+			None => return exchange(req, self.timeout, self.connect_timeout, None),
+		}
 	}
 }
 
-fn exchange(req: Request, timeout: Option<Duration>, connect_timeout: Option<Duration>) -> Result<Response, io::Error> {
+fn exchange(req: Request, timeout: Option<Duration>, connect_timeout: Option<Duration>, tls_cfg: Option<&tls::ClientConfig>) -> Result<Response, io::Error> {
 	url := req.target.as_str()
-	rest := match url.strip_prefix("http://") {
-		Some(r) => r,
-		None => {
-			if url.starts_with("https://") {
-				return Err(io::Error::new(io::ErrorKind::Unsupported, "https is not supported yet"))
-			}
-			return Err(io::Error::new(io::ErrorKind::InvalidInput, "url must start with http://: {url}"))
+	(rest, secure) := match url.strip_prefix("http://") {
+		Some(r) => (r, false),
+		None => match url.strip_prefix("https://") {
+			Some(r) => (r, true),
+			None => return Err(io::Error::new(io::ErrorKind::InvalidInput, "url must start with http:// or https://: {url}")),
 		},
 	}
 	(hostport, path) := match rest.find("/") {
 		Some(i) => (&rest[0..i], &rest[i..]),
 		None => (rest, "/"),
 	}
-	addr := if hostport.ends_with("]") || !hostport.contains(":") { "{hostport}:80" } else { hostport.to_string() }
+	has_port := !hostport.ends_with("]") && hostport.contains(":")
+	default_port := if secure { 443 } else { 80 }
+	addr := if has_port { hostport.to_string() } else { "{hostport}:{default_port}" }
+	hostname := if has_port {
+		match split_host_port(hostport) {
+			Ok((h, _)) => h,
+			Err(_) => hostport,
+		}
+	} else {
+		hostport
+	}
 	dl := Deadline::after(timeout)
 	cdl := dl.earlier(Deadline::after(connect_timeout))
-	conn := match cdl.left()? {
+	tcp := match cdl.left()? {
 		Some(d) => TcpStream::connect_timeout(&addr, d)?,
 		None => TcpStream::connect(&addr)?,
+	}
+	conn mut := if secure {
+		// The handshake counts against the overall deadline (and at most
+		// the connect timeout).
+		cdl.arm(&tcp, false)?
+		cdl.arm(&tcp, true)?
+		host := match hostname.strip_prefix("[") {
+			Some(x) => x.strip_suffix("]").unwrap_or(x),
+			None => hostname,
+		}
+		Conn::Tls(match tls_cfg {
+			Some(c) => tls::TlsStream::client(tcp, host, c)?,
+			None => tls::TlsStream::client(tcp, host, &tls::ClientConfig::new()?)?,
+		})
+	} else {
+		Conn::Plain(tcp)
 	}
 	out mut := String::new()
 	out.push("{req.method} {path} HTTP/1.1\r\nHost: {hostport}\r\n")
@@ -839,11 +941,11 @@ fn exchange(req: Request, timeout: Option<Duration>, connect_timeout: Option<Dur
 		out.push("Content-Length: {req.body.len()}\r\n")
 	}
 	out.push("Connection: close\r\n\r\n")
-	dl.arm(&conn, true)?
+	dl.arm(conn.tcp(), true)?
 	conn.write_all(out.as_bytes())?
 	conn.write_all(req.body.as_slice())?
-	r mut := BufReader::new(&conn)
-	dl.arm(&conn, false)?
+	r mut := BufReader::new(conn)
+	dl.arm(r.get_ref().tcp(), false)?
 	line := match r.next_line()? {
 		Some(l) => l,
 		None => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "server closed the connection")),
@@ -857,9 +959,9 @@ fn exchange(req: Request, timeout: Option<Duration>, connect_timeout: Option<Dur
 		None => return Err(invalid("malformed status code")),
 	}
 	resp mut := Response::new(status)
-	resp.headers = read_headers(&mut r, &conn, dl)?
+	resp.headers = read_headers(&mut r, dl)?
 	if req.method != "HEAD" && status != 204 && status != 304 && !(status >= 100 && status < 200) {
-		resp.body = read_body(&mut r, &resp.headers, false, &conn, dl)?
+		resp.body = read_body(&mut r, &resp.headers, false, dl)?
 	}
 	return Ok(resp)
 }

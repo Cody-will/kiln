@@ -6,4 +6,4 @@
 
 405
 a+b%26c%3Dd%2F%C3%A9 a b&c
-https is not supported yet
+url must start with http:// or https://: ftp://example.com

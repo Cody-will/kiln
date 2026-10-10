@@ -9,7 +9,7 @@ Kiln's standard library covers the ground of Go's: time, concurrency, files, pro
 
 The standard library is written in Kiln, on top of a small C runtime for system calls, timers, and the network poller. You can read its source in `crates/kiln_resolve/std/`.
 
-Phase 2 added text and data modules: `strings`, `strconv`, `bytes`, `collections`, `math`, `rand`, `errors`, `flag`, `encoding` (JSON, base64, hex, CSV), `crypto` (SHA-256, SHA-1, MD5, HMAC), `regexp`, and `context`, plus `kiln test` and network timeouts. 🚧 Next: HTTPS, `compress`, `mime`, `url`, and templates.
+Phase 2 added text and data modules: `strings`, `strconv`, `bytes`, `collections`, `math`, `rand`, `errors`, `flag`, `encoding` (JSON, base64, hex, CSV), `crypto` (SHA-256, SHA-1, MD5, HMAC), `regexp`, and `context`, plus `kiln test` and network timeouts. 🚧 Next: `compress`, `mime`, `url`, and templates.
 
 | Module | What it is for |
 |---|---|
@@ -26,7 +26,8 @@ Phase 2 added text and data modules: `strings`, `strconv`, `bytes`, `collections
 | [`std::path`](#stdpath) | path manipulation |
 | [`std::os`](#stdos) | arguments, environment, exit, running programs |
 | [`std::net`](#stdnet) | TCP and UDP |
-| [`std::net::http`](#stdnethttp) | HTTP/1.1 server and client |
+| [`std::net::http`](#stdnethttp) | HTTP/1.1 server and client (HTTP and HTTPS) |
+| [`std::net::tls`](#stdnettls) | TLS streams |
 | [`std::log`](#stdlog) | leveled logging |
 | [`std::fmt`](#stdfmt) | `Display` and `Debug` |
 | [`std::strings`](#stdstrings) | string building and joining (most operations are `str` methods) |
@@ -420,7 +421,7 @@ fn main() -> Result<(), io::Error> {
 
 ## std::net::http
 
-An HTTP/1.1 server and client. Each connection gets its own task; connections are kept alive between requests. 🚧 HTTPS is not supported yet.
+An HTTP/1.1 server and client, over plain TCP or TLS. Each connection gets its own task; connections are kept alive between requests.
 
 | Item | Description |
 |---|---|
@@ -429,11 +430,12 @@ An HTTP/1.1 server and client. Each connection gets its own task; connections ar
 | handlers | functions or closures from `Request` to `Response` |
 | `http::serve(addr, handler)` | serve every path with one handler |
 | `Server::new(router)` | a router plus timeouts: `with_read_header_timeout(d)` (default 10s), `with_read_timeout(d)` (60s, whole request), `with_write_timeout(d)` (60s, the response), `with_idle_timeout(d)` (120s between keep-alive requests); each takes `Some(duration)` or `None`; `listen(addr)`, `serve(listener)`. `Router::listen`/`serve` use these defaults. A client that runs out of time is disconnected |
-| `Client::new()` | `with_timeout(d)` bounds a whole exchange (connect, send, full response; `ErrorKind::TimedOut` when exceeded; default none), `with_connect_timeout(d)` (default 30s); `get`, `post`, `send` |
+| HTTPS server | `Server::listen_tls(addr, cfg)` / `serve_tls(listener, cfg)` (and `Router::listen_tls`) with a `tls::ServerConfig`; the handshake must finish within the read-header timeout |
+| `Client::new()` | `with_timeout(d)` bounds a whole exchange (connect, send, full response; `ErrorKind::TimedOut` when exceeded; default none), `with_connect_timeout(d)` (default 30s), `with_tls_config(cfg)` (trust a private CA); `get`, `post`, `send`; `https://` URLs verify the server's certificate against the Mozilla roots |
 | `Request` | `method`, `target`, `headers`, `body`; `path()`, `query()`, `query_param(name)`, `header(name)`, `body_text()` |
 | `Response` | `Response::text(status, s)`, `html`, `json`, `bytes`, `new(status)`, `not_found()`, `redirect(url)`, `with_header(k, v)`; `status`, `headers`, `body`, `body_text()` |
 | `Headers` | case-insensitive: `get`, `set`, `add`, `remove`, `has`, `entries()` |
-| `http::get(url)`, `post(url, content_type, body)`, `send(request)` | the client with a default `Client`: plain `http://` URLs; chunked and fixed-length bodies |
+| `http::get(url)`, `post(url, content_type, body)`, `send(request)` | the client with a default `Client`: `http://` and `https://` URLs; chunked and fixed-length bodies |
 | `http::escape(s)`, `unescape(s)`, `status_text(code)` | helpers |
 
 ```kiln
@@ -455,6 +457,39 @@ fn main() -> Result<(), io::Error> {
 		return http::Response::json(200, "{{\"visits\": {n}}}")
 	})
 	return router.listen(":8080")
+}
+```
+
+## std::net::tls
+
+Encrypted TCP streams (TLS 1.2 and 1.3). The protocol implementation is [rustls](https://github.com/rustls/rustls) with *ring* cryptography, linked only into programs that use TLS; socket I/O stays in Kiln, so waits park only the task and TCP timeouts apply.
+
+| Item | Description |
+|---|---|
+| `ClientConfig::new()` | trusts the Mozilla root certificates (webpki-roots) |
+| `ClientConfig::with_roots_pem(pem)` | also trusts the PEM certificates given (private CAs) |
+| `ClientConfig::insecure_skip_verify()` | accepts any certificate; tests only |
+| `ServerConfig::from_pem(cert, key)`, `from_files(cert_path, key_path)` | a certificate chain (leaf first) and a PKCS#8, PKCS#1, or SEC1 key |
+| `TlsStream::connect(addr, &cfg)` | dial and handshake, checking the certificate against the host name |
+| `TlsStream::client(tcp, host, &cfg)`, `TlsStream::server(tcp, &cfg)` | handshake over an existing connection |
+| `TlsStream` | `Read` and `Write` (both need `&mut`), `close()` sends close_notify, `tcp()` for timeouts and addresses, `version()` (12 or 13) |
+
+A peer that closes without close_notify makes `read` return an `UnexpectedEof` error, since the data may have been cut short.
+
+```kiln
+import std::io
+import std::net::http
+import std::net::tls
+
+fn hello(req: http::Request) -> http::Response {
+	return http::Response::text(200, "hello over TLS\n")
+}
+
+fn main() -> Result<(), io::Error> {
+	router mut := http::Router::new()
+	router.get("/", hello)
+	cfg := tls::ServerConfig::from_files("cert.pem", "key.pem")?
+	return router.listen_tls(":8443", cfg)
 }
 ```
 

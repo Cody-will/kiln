@@ -13,11 +13,24 @@ pub fn link(object: &Path, out: &Path) -> Result<(), String> {
     let rt = dir.join(kiln_runtime::LIB_NAME);
     std::fs::write(&rt, kiln_runtime::LIB)
         .map_err(|e| format!("could not write {}: {e}", rt.display()))?;
-    let mut cmd = linker_command(object, &rt, out)?;
+    // The TLS library is only written and linked for programs that use it
+    // (their object refers to `kn_tls_*` symbols).
+    let uses_tls = std::fs::read(object)
+        .map(|b| b.windows(7).any(|w| w == b"kn_tls_"))
+        .unwrap_or(false);
+    let tls = dir.join(kiln_runtime::TLS_LIB_NAME);
+    if uses_tls {
+        std::fs::write(&tls, kiln_runtime::TLS_LIB)
+            .map_err(|e| format!("could not write {}: {e}", tls.display()))?;
+    }
+    let mut cmd = linker_command(object, &rt, uses_tls.then_some(tls.as_path()), out)?;
     let output = cmd
         .output()
         .map_err(|e| format!("could not run the linker ({cmd:?}): {e}"))?;
     let _ = std::fs::remove_file(&rt);
+    if uses_tls {
+        let _ = std::fs::remove_file(&tls);
+    }
     if !output.status.success() {
         return Err(format!(
             "linking failed ({}):\n{}{}",
@@ -30,17 +43,37 @@ pub fn link(object: &Path, out: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn linker_command(object: &Path, rt: &Path, out: &Path) -> Result<Command, String> {
+fn linker_command(
+    object: &Path,
+    rt: &Path,
+    tls: Option<&Path>,
+    out: &Path,
+) -> Result<Command, String> {
     let cc = std::env::var("KILN_CC")
         .or_else(|_| std::env::var("CC"))
         .unwrap_or_else(|_| "cc".into());
     let mut cmd = Command::new(cc);
-    cmd.arg(object).arg(rt).arg("-o").arg(out).arg("-lm");
+    cmd.arg(object).arg(rt);
+    if let Some(tls) = tls {
+        cmd.arg(tls);
+        // What the Rust standard library inside it needs.
+        if cfg!(target_os = "macos") {
+            cmd.args(["-lSystem", "-liconv"]);
+        } else {
+            cmd.args(["-lpthread", "-ldl", "-lrt", "-lutil", "-lgcc_s"]);
+        }
+    }
+    cmd.arg("-o").arg(out).arg("-lm");
     Ok(cmd)
 }
 
 #[cfg(windows)]
-fn linker_command(object: &Path, rt: &Path, out: &Path) -> Result<Command, String> {
+fn linker_command(
+    object: &Path,
+    rt: &Path,
+    tls: Option<&Path>,
+    out: &Path,
+) -> Result<Command, String> {
     let target = if cfg!(target_arch = "aarch64") {
         "aarch64-pc-windows-msvc"
     } else {
@@ -59,5 +92,15 @@ fn linker_command(object: &Path, rt: &Path, out: &Path) -> Result<Command, Strin
         .arg("vcruntime.lib")
         .arg("legacy_stdio_definitions.lib")
         .arg("kernel32.lib");
+    if let Some(tls) = tls {
+        cmd.arg(tls).args([
+            "advapi32.lib",
+            "ntdll.lib",
+            "userenv.lib",
+            "ws2_32.lib",
+            "bcrypt.lib",
+            "synchronization.lib",
+        ]);
+    }
     Ok(cmd)
 }

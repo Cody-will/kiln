@@ -22,6 +22,20 @@ pub const LIB_NAME: &str = "kiln_rt.lib";
 #[cfg(not(target_env = "msvc"))]
 pub const LIB_NAME: &str = "libkiln_rt.a";
 
+/// The TLS static library (rustls behind a C ABI; see `crates/kiln_tls`).
+#[cfg(target_env = "msvc")]
+pub static TLS_LIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kiln_tls.lib"));
+/// The TLS static library (rustls behind a C ABI; see `crates/kiln_tls`).
+#[cfg(not(target_env = "msvc"))]
+pub static TLS_LIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libkiln_tls.a"));
+
+/// The TLS library's file name for this target.
+#[cfg(target_env = "msvc")]
+pub const TLS_LIB_NAME: &str = "kiln_tls.lib";
+/// The TLS library's file name for this target.
+#[cfg(not(target_env = "msvc"))]
+pub const TLS_LIB_NAME: &str = "libkiln_tls.a";
+
 #[cfg(test)]
 mod tests {
     #[test]
