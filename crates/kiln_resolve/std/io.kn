@@ -477,6 +477,191 @@ impl<R: Read> BufReader<R> {
 	pub fn buffered(&self) -> &[u8] {
 		return &self.buf[self.pos..self.end]
 	}
+
+	// The next `n` bytes without consuming them (fewer only at the end of
+	// input). `n` must not exceed the buffer capacity.
+	pub fn peek(&mut self, n: usize) -> Result<&[u8], Error> {
+		if n > self.buf.len() {
+			return Err(Error::new(ErrorKind::InvalidInput, "peek: count exceeds buffer size"))
+		}
+		if self.end - self.pos < n && self.pos > 0 {
+			k := self.end - self.pos
+			for i in 0..k {
+				self.buf[i] = self.buf[self.pos + i]
+			}
+			self.pos = 0
+			self.end = k
+		}
+		while self.end - self.pos < n {
+			got := self.inner.read(&mut self.buf[self.end..])?
+			if got == 0 {
+				break
+			}
+			self.end += got
+		}
+		stop := if self.end - self.pos < n { self.end } else { self.pos + n }
+		return Ok(&self.buf[self.pos..stop])
+	}
+
+	// Reads one byte, or `None` at the end of input.
+	pub fn read_byte(&mut self) -> Result<Option<u8>, Error> {
+		if self.fill()? == 0 {
+			return Ok(None)
+		}
+		b := self.buf[self.pos]
+		self.pos += 1
+		return Ok(Some(b))
+	}
+
+	// Reads one UTF-8 character, or `None` at the end of input. Invalid
+	// bytes read as U+FFFD, one byte at a time.
+	pub fn read_char(&mut self) -> Result<Option<char>, Error> {
+		p := self.peek(4)?
+		if p.len() == 0 {
+			return Ok(None)
+		}
+		(c, n) := std::utf8::decode(p)
+		self.pos += n
+		return Ok(Some(c))
+	}
+
+	// Skips up to `n` bytes; returns how many were skipped.
+	pub fn discard(&mut self, n: usize) -> Result<usize, Error> {
+		done mut := 0
+		while done < n {
+			avail := self.fill()?
+			if avail == 0 {
+				break
+			}
+			k := if avail < n - done { avail } else { n - done }
+			self.pos += k
+			done += k
+		}
+		return Ok(done)
+	}
+
+	// The wrapped reader; buffered data is lost.
+	pub fn into_inner(self) -> R {
+		return self.inner
+	}
+}
+
+// How a `Scanner` splits its input into tokens.
+#[derive(Clone, Copy, Debug, Eq)]
+pub enum Split {
+	// Lines without their `\n` or `\r\n` (the default).
+	Lines,
+	// Runs of non-whitespace separated by Unicode whitespace.
+	Words,
+	// Single UTF-8 characters.
+	Chars,
+}
+
+// Reads tokens (lines by default) from a reader, like Go's `bufio.Scanner`.
+//
+//	sc mut := io::Scanner::new(io::stdin())
+//	while let Some(line) = sc.next()? { ... }
+//
+// A token longer than `max_token` bytes (64 KiB by default) is an
+// `InvalidData` error rather than unbounded buffering.
+pub struct Scanner<R> {
+	r: BufReader<R>,
+	split: Split,
+	max: usize,
+}
+
+impl<R: Read> Scanner<R> {
+	// A line scanner.
+	pub fn new(inner: R) -> Scanner<R> {
+		return Scanner { r: BufReader::new(inner), split: Split::Lines, max: 65536 }
+	}
+
+	// Changes how input is split.
+	pub fn split(&mut self, how: Split) {
+		self.split = how
+	}
+
+	// Changes the largest allowed token size.
+	pub fn max_token(&mut self, n: usize) {
+		self.max = n
+	}
+
+	fn too_long(&self) -> Error {
+		return Error::new(ErrorKind::InvalidData, "scanner: token too long")
+	}
+
+	// The next token, or `None` at the end of input.
+	pub fn next(&mut self) -> Result<Option<String>, Error> {
+		match self.split {
+			Split::Lines => {
+				line mut := Vec::new()
+				loop {
+					b := match self.r.read_byte()? {
+						Some(b) => b,
+						None => {
+							if line.len() == 0 {
+								return Ok(None)
+							}
+							break
+						},
+					}
+					if b == 10 {
+						break
+					}
+					if line.len() >= self.max {
+						return Err(self.too_long())
+					}
+					line.push(b)
+				}
+				if line.len() > 0 && line[line.len() - 1] == 13 {
+					line.pop()
+				}
+				return Ok(Some(String::from_utf8_lossy(&line)))
+			},
+			Split::Words => {
+				word mut := String::new()
+				loop {
+					c := match self.r.read_char()? {
+						Some(c) => c,
+						None => break,
+					}
+					if c.is_whitespace() {
+						if word.len() > 0 {
+							break
+						}
+						continue
+					}
+					if word.len() >= self.max {
+						return Err(self.too_long())
+					}
+					word.push_char(c)
+				}
+				if word.len() == 0 {
+					return Ok(None)
+				}
+				return Ok(Some(word))
+			},
+			Split::Chars => {
+				match self.r.read_char()? {
+					Some(c) => {
+						s mut := String::new()
+						s.push_char(c)
+						return Ok(Some(s))
+					},
+					None => return Ok(None),
+				}
+			},
+		}
+	}
+
+	// All remaining tokens.
+	pub fn collect_all(&mut self) -> Result<Vec<String>, Error> {
+		out mut := Vec::new()
+		while let Some(t) = self.next()? {
+			out.push(t)
+		}
+		return Ok(out)
+	}
 }
 
 impl<R: Read> Read for BufReader<R> {
@@ -527,6 +712,16 @@ impl<W: Write> BufWriter<W> {
 	// The wrapped writer.
 	pub fn get_ref(&self) -> &W {
 		return &self.inner
+	}
+
+	// Number of bytes waiting in the buffer.
+	pub fn buffered(&self) -> usize {
+		return self.buf.len()
+	}
+
+	// Free space left in the buffer before it flushes.
+	pub fn available(&self) -> usize {
+		return self.cap - self.buf.len()
 	}
 }
 

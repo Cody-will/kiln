@@ -1,0 +1,12 @@
+hé
+Some(104) Some('é') Some('l')
+3
+wörld
+
+peek: count exceeds buffer size
+Some("wörld")
+["one", "two", "", "three"]
+["the", "quick", "brown", "fox"]
+["a", "é", "😀"]
+scanner: token too long
+5 11

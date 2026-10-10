@@ -1,0 +1,36 @@
+import std::io
+import std::io::{BufReader, BufWriter, Read, Scanner, Split, Write}
+
+fn main() -> Result<(), io::Error> {
+	r mut := BufReader::with_capacity(8, io::Cursor::from_str("héllo wörld\r\nsecond line\nno newline"))
+	println("{String::from_utf8_lossy(r.peek(3)?)}")
+	println("{r.read_byte()?:?} {r.read_char()?:?} {r.read_char()?:?}")
+	println("{r.discard(3)?}")
+	println("{String::from_utf8_lossy(r.peek(8)?)}")
+	match r.peek(9) {
+		Ok(_) => println("unexpected"),
+		Err(e) => println("{e}"),
+	}
+	println("{r.next_line()?:?}")
+
+	sc mut := Scanner::new(io::Cursor::from_str("one\r\ntwo\n\nthree"))
+	println("{sc.collect_all()?:?}")
+	w mut := Scanner::new(io::Cursor::from_str("  the quick\tbrown\n fox  "))
+	w.split(Split::Words)
+	println("{w.collect_all()?:?}")
+	c mut := Scanner::new(io::Cursor::from_str("aé😀"))
+	c.split(Split::Chars)
+	println("{c.collect_all()?:?}")
+	long mut := Scanner::new(io::Cursor::from_str("abcdefghij\n"))
+	long.max_token(4)
+	match long.next() {
+		Ok(t) => println("unexpected {t:?}"),
+		Err(e) => println("{e}"),
+	}
+
+	let sink: Vec<u8> = Vec::new()
+	bw mut := BufWriter::with_capacity(16, sink)
+	bw.write_str("hello")?
+	println("{bw.buffered()} {bw.available()}")
+	return Ok(())
+}

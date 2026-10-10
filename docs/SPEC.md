@@ -581,7 +581,7 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 |---|---|---|
 | `std::time` | `Duration` (`time::secs(5)`), `Instant`, `SystemTime` (RFC 3339 display), `sleep`, `after`, `tick` | ✅ |
 | `std::sync` | `Arc`, `Mutex`, `RwLock`, `WaitGroup`, `Once`, `AtomicI64`, `AtomicBool`, `AtomicUsize` | ✅ |
-| `std::io` | `Read`/`Write`, `BufReader` (`next_line`), `BufWriter`, `Cursor`, `copy`, stdin/stdout/stderr, `Error`/`ErrorKind` | ✅ |
+| `std::io` | `Read`/`Write`, `BufReader` (`next_line`, `peek`, `read_byte`, `read_char`, `discard`), `BufWriter` (`buffered`, `available`), `Scanner` (lines/words/chars, Go's `bufio.Scanner`; bufio lives in `io` as in Rust), `Cursor`, `copy`, stdin/stdout/stderr, `Error`/`ErrorKind` | ✅ |
 | `std::fs` | `File`, `OpenOptions`, `read_to_string`, `write`, `read_dir`, `metadata`, `create_dir_all`, `remove_dir_all`, ... | ✅ |
 | `std::path` | string paths: `join`, `base`, `dir`, `ext`, `stem`, `clean`, `is_absolute` | ✅ |
 | `std::os` | `args`, `getenv`/`setenv`, `exit`, working directory, `Command` (run programs, capture output) | ✅ |

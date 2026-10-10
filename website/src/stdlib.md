@@ -108,8 +108,9 @@ fn main() {
 |---|---|
 | `trait Read` | `read(&mut buf)`; provided: `read_to_end`, `read_to_string`, `read_exact` |
 | `trait Write` | `write(buf)`, `flush()`; provided: `write_all`, `write_str` |
-| `BufReader::new(r)` | buffered reading: `next_line()` (without the newline, `None` at the end), `read_line(&mut s)`, `read_until(byte, &mut v)` |
-| `BufWriter::new(w)` | buffered writing; flushes when dropped |
+| `BufReader::new(r)` | buffered reading: `next_line()` (without the newline, `None` at the end), `read_line(&mut s)`, `read_until(byte, &mut v)`, `peek(n)`, `read_byte()`, `read_char()`, `discard(n)`, `into_inner()` |
+| `BufWriter::new(w)` | buffered writing; flushes when dropped; `buffered()`, `available()` |
+| `Scanner::new(r)` | Go's `bufio.Scanner`: `next()` returns the next token (`None` at the end); `split(Split::Lines / Words / Chars)`; `max_token(n)` caps token size (64 KiB default); `collect_all()` |
 | `Cursor` | an in-memory reader and writer over a `Vec<u8>` |
 | `io::copy(&mut r, &mut w)` | copy everything from a reader to a writer |
 | `io::stdin()`, `stdout()`, `stderr()`, `io::read_line()` | the standard streams |
