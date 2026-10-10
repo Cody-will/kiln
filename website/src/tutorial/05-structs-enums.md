@@ -115,3 +115,26 @@ fn main() {
 <div class="status">
 Exhaustiveness checking looks inside patterns: <code>Some(true)</code>, <code>Some(false)</code>, and <code>None</code> together cover an <code>Option&lt;bool&gt;</code>. 🚧 Integer ranges are not counted yet, so matches on integers need a <code>_</code> arm.
 </div>
+
+## Printing values
+
+Interpolation takes Rust-style format specs after a colon. `:?` prints the
+debug form, which `#[derive(Debug)]` builds from the type's structure:
+
+```kiln
+#[derive(Debug)]
+struct Point {
+    x: i32,
+    y: f64,
+}
+
+fn main() {
+    p := Point { x: 1, y: 2.5 }
+    println("{p:?}")        // Point { x: 1, y: 2.5 }
+    println("{p.y:>8.2}|")  //     2.50|
+    println("{255:#x}")     // 0xff
+}
+```
+
+`{p:#?}` pretty-prints over several lines. Width, fill, alignment (`<` `^` `>`),
+`+`, zero padding, precision, and `x` `o` `b` `e` all work as in Rust.

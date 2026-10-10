@@ -1557,10 +1557,15 @@ impl FnCx<'_, '_, '_, '_> {
                             let (p, n) = self.str_lit(t);
                             self.call_rt("kn_string_push", &[dest, p, n]);
                         }
-                        InterpSeg::Arg(i) => {
+                        InterpSeg::Arg(i, None) => {
                             let t = self.op_ty(&ops[*i]);
                             let a = self.op_addr(&ops[*i]);
                             self.fmt_into(dest, a, &t);
+                        }
+                        InterpSeg::Arg(i, Some(spec)) => {
+                            let t = self.op_ty(&ops[*i]);
+                            let a = self.op_addr(&ops[*i]);
+                            self.fmt_spec_into(dest, a, &t, spec);
                         }
                     }
                 }
@@ -2005,5 +2010,129 @@ impl FnCx<'_, '_, '_, '_> {
                 IntCC::UnsignedGreaterThanOrEqual,
             ),
         }
+    }
+
+    /// Appends the value at `a` (type `t`) formatted by `spec` to String `s`.
+    fn fmt_spec_into(&mut self, s: Value, a: Value, t: &Ty, spec: &kiln_parser::ast::FmtSpec) {
+        use kiln_parser::ast::FmtKind;
+        // Numbers are found through references.
+        let (mut base, mut addr) = (t.clone(), a);
+        while let Ty::Ref(_, inner) = &base {
+            if self.cg.is_fat(&base) {
+                break;
+            }
+            addr = self.load(types::I64, addr, 0);
+            base = (**inner).clone();
+        }
+        let float = matches!(base, Ty::Prim(PrimTy::F32 | PrimTy::F64));
+        let int = matches!(&base, Ty::Prim(p) if p.is_integer());
+        let numeric = float || int;
+        let as_f64 = |cx: &mut Self| -> Value {
+            let st = cx.cg.scalar(&base).unwrap_or(types::I64);
+            let v = cx.load(st, addr, 0);
+            if st == types::F64 {
+                v
+            } else if st == types::F32 {
+                cx.b.ins().fpromote(types::F64, v)
+            } else if Self::is_signed(&base) {
+                cx.b.ins().fcvt_from_sint(types::F64, v)
+            } else {
+                cx.b.ins().fcvt_from_uint(types::F64, v)
+            }
+        };
+        let tmp = self.new_string();
+        match spec.kind {
+            FmtKind::Display => match (float, spec.precision) {
+                (true, Some(p)) => {
+                    let v = as_f64(self);
+                    let p = self.iconst(p as i64);
+                    self.call_rt("kn_fmt_f64_fixed", &[tmp, v, p]);
+                }
+                _ => self.fmt_into(tmp, a, t),
+            },
+            FmtKind::Debug => {
+                // A `Formatter { out: String, depth: usize, pretty: bool }`.
+                let f = self.slot(40, 8);
+                self.init_string(f);
+                let z = self.iconst(0);
+                self.store(z, f, 24);
+                let pretty = self.b.ins().iconst(types::I8, spec.alt as i64);
+                self.store(pretty, f, 32);
+                self.debug_into(f, a, t);
+                self.free_string(tmp);
+                return self.fmt_pad(s, f, spec, numeric, true);
+            }
+            FmtKind::LowerHex | FmtKind::UpperHex | FmtKind::Octal | FmtKind::Binary => {
+                let st = self.cg.scalar(&base).unwrap_or(types::I64);
+                let v = self.load(st, addr, 0);
+                // The bits at the type's width (two's complement for negatives).
+                let v = if st == types::I64 {
+                    v
+                } else {
+                    self.b.ins().uextend(types::I64, v)
+                };
+                let radix = match spec.kind {
+                    FmtKind::LowerHex | FmtKind::UpperHex => 16,
+                    FmtKind::Octal => 8,
+                    _ => 2,
+                };
+                let r = self.b.ins().iconst(types::I32, radix);
+                let up = self
+                    .b
+                    .ins()
+                    .iconst(types::I32, (spec.kind == FmtKind::UpperHex) as i64);
+                let alt = self.b.ins().iconst(types::I32, spec.alt as i64);
+                self.call_rt("kn_fmt_radix", &[tmp, v, r, up, alt]);
+            }
+            FmtKind::LowerExp | FmtKind::UpperExp => {
+                let v = as_f64(self);
+                let p = self.iconst(spec.precision.map(|p| p as i64).unwrap_or(-1));
+                let up = self
+                    .b
+                    .ins()
+                    .iconst(types::I32, (spec.kind == FmtKind::UpperExp) as i64);
+                self.call_rt("kn_fmt_f64_exp", &[tmp, v, p, up]);
+            }
+        }
+        self.fmt_pad(s, tmp, spec, numeric, false);
+    }
+
+    /// Appends String `tmp` to `s` with `spec`'s width, alignment, and fill,
+    /// then frees `tmp`.
+    fn fmt_pad(
+        &mut self,
+        s: Value,
+        tmp: Value,
+        spec: &kiln_parser::ast::FmtSpec,
+        numeric: bool,
+        debug: bool,
+    ) {
+        use kiln_parser::ast::FmtAlign;
+        let p = self.load(types::I64, tmp, 0);
+        let n = self.load(types::I64, tmp, 16);
+        let width = self.iconst(spec.width.map(|w| w as i64).unwrap_or(-1));
+        let fill = self
+            .b
+            .ins()
+            .iconst(types::I32, spec.fill.unwrap_or(' ') as i64);
+        let align = self.b.ins().iconst(
+            types::I32,
+            match spec.align {
+                None => 0,
+                Some(FmtAlign::Left) => 1,
+                Some(FmtAlign::Center) => 2,
+                Some(FmtAlign::Right) => 3,
+            },
+        );
+        let flags = (spec.plus as i64) | ((spec.zero as i64) << 1) | ((numeric as i64) << 2);
+        let flags = self.b.ins().iconst(types::I32, flags);
+        // Precision truncates text (but not Debug output or numbers).
+        let prec = match (numeric || debug, spec.precision) {
+            (false, Some(p)) => p as i64,
+            _ => -1,
+        };
+        let prec = self.iconst(prec);
+        self.call_rt("kn_fmt_pad", &[s, p, n, width, fill, align, flags, prec]);
+        self.free_string(tmp);
     }
 }

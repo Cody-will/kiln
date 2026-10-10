@@ -185,7 +185,8 @@ fn string_interpolation() {
                 parts[1],
                 StrPart::Interp {
                     src: "name".into(),
-                    offset: 5
+                    offset: 5,
+                    spec: None,
                 }
             );
             assert_eq!(parts[2], StrPart::Text(", you are ".into()));
@@ -489,4 +490,40 @@ fn lexes_full_function() {
             Eof,
         ]
     );
+}
+
+#[test]
+fn interpolation_format_specs() {
+    let parts = match &kinds("\"{x:>8.2} {a::b} {v:?} {m[i]}\"")[0] {
+        Str(p) => p.clone(),
+        t => panic!("{t:?}"),
+    };
+    let specs: Vec<(String, Option<String>)> = parts
+        .iter()
+        .filter_map(|p| match p {
+            StrPart::Interp { src, spec, .. } => {
+                Some((src.clone(), spec.as_ref().map(|s| s.0.clone())))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        specs,
+        vec![
+            ("x".into(), Some(">8.2".into())),
+            ("a::b".into(), None),
+            ("v".into(), Some("?".into())),
+            ("m[i]".into(), None),
+        ]
+    );
+}
+
+#[test]
+fn turbofish_ends_a_statement() {
+    let ks = kinds("x := None::<i32>\ny := 1");
+    assert!(ks.iter().any(|k| matches!(k, Semi { implicit: true })));
+    // A `>` comparison at the end of a line still continues the expression.
+    let ks = kinds("x := a >\nb");
+    let gt = ks.iter().position(|k| *k == Gt).unwrap();
+    assert!(!matches!(ks[gt + 1], Semi { .. }));
 }

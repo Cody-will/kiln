@@ -752,3 +752,21 @@ fn associated_and_computed_constants() {
         vec!["mismatched types: expected `i32`, found `&str`"]
     );
 }
+
+#[test]
+fn format_specs() {
+    ok("#[derive(Debug)]\nstruct P {\n x: i32,\n}\nfn main() {\n n := 5\n s := \"{n:>4} {n:#x} {1.5:.2} {1.5:e} {P { x: 1 }:?} {\"a\":^5}\"\n}");
+    assert_eq!(
+        errs("struct Q {}\nfn main() {\n q := Q {}\n s := \"{q:?} {\"a\":x} {true:e}\"\n}"),
+        vec![
+            "`Q` cannot be formatted with `:?` because it does not implement `Debug`",
+            "hexadecimal, octal, and binary formats need an integer, found `str`",
+            "scientific notation needs a number, found `bool`",
+        ]
+    );
+}
+
+#[test]
+fn turbofish_on_variants() {
+    ok("fn main() {\n x := None::<i32>\n y := x.is_none()\n}");
+}

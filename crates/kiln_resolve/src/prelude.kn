@@ -121,7 +121,14 @@ impl Ordering {
 		return self
 	}
 }
-pub trait Debug {}
+// The programmer-facing form, used by `"{x:?}"`. `#[derive(Debug)]` (and
+// the built-in types) print the structure: `Point { x: 1, y: 2 }`,
+// `Some("a")`, `[1, 2]`. See `std::fmt` to implement it by hand.
+pub trait Debug {
+	fn fmt_debug(&self, f: &mut std::fmt::Formatter) {
+		std::fmt::derived_debug(self, f)
+	}
+}
 // Text form used by string interpolation (`"{x}"`) and `to_string()`.
 pub trait Display {
 	fn to_string(&self) -> String

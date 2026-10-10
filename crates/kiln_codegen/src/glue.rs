@@ -1213,3 +1213,272 @@ impl FnCx<'_, '_, '_, '_> {
         }
     }
 }
+
+/// Debug glue: the structural `Debug::fmt_debug` behind derived and built-in
+/// impls. It writes to a `std::fmt::Formatter`, whose `out: String` is at
+/// offset 0 (see `KnFormatter` in the runtime).
+impl Codegen<'_, '_> {
+    pub(crate) fn debug_glue_for(&mut self, t: &Ty) -> FuncId {
+        let key = format!("{t:?}");
+        if let Some(id) = self.debug_glue.get(&key) {
+            return *id;
+        }
+        let sig = self.ptr_sig(2);
+        self.counter += 1;
+        let name = format!("kn_debug{}", self.counter);
+        let id = self
+            .module
+            .declare_function(&name, Linkage::Local, &sig)
+            .expect("declare glue");
+        self.debug_glue.insert(key, id);
+        self.queue.push_back(Work::DebugGlue { id, ty: t.clone() });
+        id
+    }
+
+    pub(crate) fn define_debug_glue(&mut self, id: FuncId, t: &Ty) {
+        let t = t.clone();
+        self.with_glue(id, 2, |cx, ps| cx.debug_fields(ps[0], ps[1], &t));
+    }
+}
+
+impl FnCx<'_, '_, '_, '_> {
+    fn fmt_text(&mut self, f: Value, text: &str) {
+        let (p, n) = self.str_lit(text);
+        self.call_rt("kn_string_push", &[f, p, n]);
+    }
+
+    fn fmt_begin(&mut self, f: Value, open: &str) {
+        let (p, n) = self.str_lit(open);
+        self.call_rt("kn_fmt_begin", &[f, p, n]);
+    }
+
+    fn fmt_sep(&mut self, f: Value, first: Value, spaced: bool) {
+        let sp = self.b.ins().iconst(types::I32, spaced as i64);
+        self.call_rt("kn_fmt_sep", &[f, first, sp]);
+    }
+
+    fn fmt_end(&mut self, f: Value, close: &str, empty: Value, spaced: bool) {
+        let (p, n) = self.str_lit(close);
+        let sp = self.b.ins().iconst(types::I32, spaced as i64);
+        self.call_rt("kn_fmt_end", &[f, p, n, empty, sp]);
+    }
+
+    /// Writes a fixed list of items, each written by `item(cx, i)`.
+    fn debug_group(
+        &mut self,
+        f: Value,
+        open: &str,
+        close: &str,
+        spaced: bool,
+        n: usize,
+        item: impl Fn(&mut Self, usize),
+    ) {
+        self.fmt_begin(f, open);
+        for i in 0..n {
+            let first = self.b.ins().iconst(types::I32, (i == 0) as i64);
+            self.fmt_sep(f, first, spaced);
+            item(self, i);
+        }
+        let empty = self.b.ins().iconst(types::I32, (n == 0) as i64);
+        self.fmt_end(f, close, empty, spaced);
+    }
+
+    /// Writes `[a, b, ...]` for `len` elements of type `et` at `data`.
+    fn debug_seq(&mut self, f: Value, data: Value, len: Value, et: &Ty) {
+        self.fmt_begin(f, "[");
+        let size = self.cg.layout(et).size;
+        let et2 = et.clone();
+        self.for_count(len, |cx, i| {
+            let first = cx.b.ins().icmp_imm(IntCC::Equal, i, 0);
+            let first = cx.b.ins().uextend(types::I32, first);
+            cx.fmt_sep(f, first, false);
+            let off = cx.b.ins().imul_imm(i, size as i64);
+            let x = cx.b.ins().iadd(data, off);
+            cx.debug_into(f, x, &et2);
+        });
+        let empty = self.b.ins().icmp_imm(IntCC::Equal, len, 0);
+        let empty = self.b.ins().uextend(types::I32, empty);
+        self.fmt_end(f, "]", empty, false);
+    }
+
+    /// Structural Debug output of a value ignoring its own `Debug` impl:
+    /// the default `Debug::fmt_debug`.
+    pub(crate) fn derived_debug(&mut self, f: Value, a: Value, t: &Ty) {
+        if matches!(t, Ty::Adt(..))
+            && !["Vec", "String", "Box"]
+                .iter()
+                .any(|n| self.cg.is_lang(t, n))
+        {
+            let id = self.cg.debug_glue_for(t);
+            self.call_fn(id, &[f, a]);
+            return;
+        }
+        self.debug_into(f, a, t);
+    }
+
+    /// Writes the Debug form of the value at `a` (type `t`) to formatter `f`.
+    pub(crate) fn debug_into(&mut self, f: Value, a: Value, t: &Ty) {
+        use kiln_resolve::PrimTy;
+        if self.cg.is_lang(t, "String") {
+            let (p, n) = (self.load(types::I64, a, 0), self.load(types::I64, a, 16));
+            self.call_rt("kn_fmt_debug_str", &[f, p, n]);
+            return;
+        }
+        match t {
+            Ty::Ref(_, inner) | Ty::Ptr(_, inner) if matches!(**inner, Ty::Prim(PrimTy::Str)) => {
+                let (p, n) = (self.load(types::I64, a, 0), self.load(types::I64, a, 8));
+                self.call_rt("kn_fmt_debug_str", &[f, p, n]);
+            }
+            Ty::Ref(_, inner) if matches!(**inner, Ty::Slice(_)) => {
+                let Ty::Slice(et) = &**inner else {
+                    unreachable!()
+                };
+                let (p, n) = (self.load(types::I64, a, 0), self.load(types::I64, a, 8));
+                let et = (**et).clone();
+                self.debug_seq(f, p, n, &et);
+            }
+            Ty::Ref(_, inner) if !self.cg.is_fat(t) => {
+                let p = self.load(types::I64, a, 0);
+                let inner = (**inner).clone();
+                self.debug_into(f, p, &inner);
+            }
+            Ty::Prim(PrimTy::Char) => {
+                let v = self.load(types::I32, a, 0);
+                self.call_rt("kn_fmt_debug_char", &[f, v]);
+            }
+            Ty::Prim(PrimTy::F32 | PrimTy::F64) => {
+                let st = self.cg.scalar(t).unwrap();
+                let v = self.load(st, a, 0);
+                let v = if st == types::F32 {
+                    self.b.ins().fpromote(types::F64, v)
+                } else {
+                    v
+                };
+                self.call_rt("kn_fmt_debug_f64", &[f, v]);
+            }
+            Ty::Prim(_) | Ty::Unit | Ty::Never => self.fmt_into(f, a, t),
+            Ty::Tuple(ts) => {
+                let ts = ts.clone();
+                let t2 = t.clone();
+                self.debug_group(f, "(", ")", false, ts.len(), |cx, i| {
+                    let (off, _) = cx.cg.field(&t2, &i.to_string());
+                    let x = cx.b.ins().iadd_imm(a, off as i64);
+                    cx.debug_into(f, x, &ts[i]);
+                });
+            }
+            Ty::Array(et, n) => {
+                let n = self.iconst(*n as i64);
+                let et = (**et).clone();
+                self.debug_seq(f, a, n, &et);
+            }
+            Ty::Adt(_, args) if self.cg.is_lang(t, "Box") => {
+                let p = self.load(types::I64, a, 0);
+                let inner = args[0].clone();
+                self.debug_into(f, p, &inner);
+            }
+            Ty::Adt(_, args) if self.cg.is_lang(t, "Vec") => {
+                let (p, n) = (self.load(types::I64, a, 0), self.load(types::I64, a, 16));
+                let et = args[0].clone();
+                self.debug_seq(f, p, n, &et);
+            }
+            Ty::Adt(..) => {
+                if let Some(id) = self.cg.user_impl(t, "Debug", "fmt_debug") {
+                    let out = self.slot(1, 1);
+                    let sa = self.slot(8, 8);
+                    self.store(a, sa, 0);
+                    let sf = self.slot(8, 8);
+                    self.store(f, sf, 0);
+                    self.call_fn(id, &[out, sa, sf]);
+                    return;
+                }
+                let id = self.cg.debug_glue_for(t);
+                self.call_fn(id, &[f, a]);
+            }
+            Ty::Fn(..) => self.fmt_text(f, "<fn>"),
+            Ty::ChanSend(_) | Ty::ChanRecv(_) => self.fmt_text(f, "<chan>"),
+            Ty::Ptr(..) => {
+                let v = self.load(types::I64, a, 0);
+                let (r, u, alt) = (
+                    self.b.ins().iconst(types::I32, 16),
+                    self.b.ins().iconst(types::I32, 0),
+                    self.b.ins().iconst(types::I32, 1),
+                );
+                self.call_rt("kn_fmt_radix", &[f, v, r, u, alt]);
+            }
+            Ty::Dyn(_) => self.fmt_text(f, "<dyn>"),
+            _ => {
+                let n = self.cg.typed.fmt_ty(t);
+                self.error(format!("cannot Debug-format values of type `{n}`"));
+            }
+        }
+    }
+
+    /// The body of an ADT's Debug glue: `Name { field: value, .. }`,
+    /// `Name(value, ..)`, or `Name`; a range prints as `start..end`.
+    fn debug_fields(&mut self, f: Value, a: Value, t: &Ty) {
+        if let Ty::Adt(d, args) = t {
+            if self.cg.r.is_core(*d) && self.cg.r.def(*d).name == "Range" {
+                let et = args[0].clone();
+                let (o0, _) = self.cg.field(t, "start");
+                let (o1, _) = self.cg.field(t, "end");
+                let x = self.b.ins().iadd_imm(a, o0 as i64);
+                self.debug_into(f, x, &et);
+                self.fmt_text(f, "..");
+                let y = self.b.ins().iadd_imm(a, o1 as i64);
+                self.debug_into(f, y, &et);
+                return;
+            }
+        }
+        let variants = self.cg.variants_of(t);
+        let is_enum = variants.first().is_some_and(|v| v.is_some());
+        let named = |cx: &Self, v: Option<DefId>| -> bool {
+            let d = match (v, t) {
+                (Some(v), _) => v,
+                (None, Ty::Adt(d, _)) => *d,
+                _ => return false,
+            };
+            let _ = d;
+            let fields = cx.cg.typed.adt_fields(t, v);
+            fields
+                .first()
+                .is_some_and(|(n, _)| n.parse::<usize>().is_err())
+        };
+        let write_one = |cx: &mut Self, v: Option<DefId>, prefix: &str| {
+            let name = match (v, t) {
+                (Some(v), _) => cx.cg.r.def(v).name.clone(),
+                (None, Ty::Adt(d, _)) => cx.cg.r.def(*d).name.clone(),
+                _ => String::new(),
+            };
+            cx.fmt_text(f, &name);
+            let fields = cx.cg.typed.adt_fields(t, v);
+            if fields.is_empty() {
+                return;
+            }
+            let is_named = named(cx, v);
+            let t2 = t.clone();
+            let prefix = prefix.to_string();
+            let (open, close) = if is_named { (" {", "}") } else { ("(", ")") };
+            cx.debug_group(f, open, close, is_named, fields.len(), |cx, i| {
+                let (n, ft) = &fields[i];
+                if is_named {
+                    cx.fmt_text(f, &format!("{n}: "));
+                }
+                let (off, _) = cx.cg.field(&t2, &format!("{prefix}{n}"));
+                let x = cx.b.ins().iadd_imm(a, off as i64);
+                cx.debug_into(f, x, ft);
+            });
+        };
+        if !is_enum {
+            write_one(self, None, "");
+            return;
+        }
+        let tag = self.load(types::I32, a, 0);
+        for (vi, v) in variants.into_iter().enumerate() {
+            let prefix = v
+                .map(|v| format!("{}.", self.cg.r.def(v).name))
+                .unwrap_or_default();
+            let is = self.b.ins().icmp_imm(IntCC::Equal, tag, vi as i64);
+            self.when(is, |cx| write_one(cx, v, &prefix));
+        }
+    }
+}

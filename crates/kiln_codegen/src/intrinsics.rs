@@ -369,6 +369,17 @@ impl FnCx<'_, '_, '_, '_> {
         if self.num_intrinsic(ty_name, short, args, dest, dt) {
             return;
         }
+        if name == "fmt::derived_debug" {
+            let mut t = self.t_arg();
+            let (a, f) = if matches!(t, Ty::Prim(kiln_resolve::PrimTy::Str) | Ty::Slice(_)) {
+                t = Ty::Ref(false, Box::new(t));
+                (self.op_addr(&args[0]), self.op_scalar(&args[1]))
+            } else {
+                (self.op_scalar(&args[0]), self.op_scalar(&args[1]))
+            };
+            self.derived_debug(f, a, &t);
+            return;
+        }
         if let Some(op) = name
             .strip_prefix("cmp::derived_")
             .or(name.strip_prefix("hash::derived_"))

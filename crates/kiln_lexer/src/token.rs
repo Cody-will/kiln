@@ -138,6 +138,9 @@ pub enum StrPart {
         src: String,
         /// Byte offset of `src` within the original file.
         offset: usize,
+        /// The format spec after a top-level `:` (`{x:>8}` has `>8`), with its
+        /// byte offset in the file.
+        spec: Option<(String, usize)>,
     },
 }
 

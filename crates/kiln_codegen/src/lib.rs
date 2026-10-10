@@ -61,6 +61,11 @@ pub(crate) enum Work {
         id: FuncId,
         ty: Ty,
     },
+    /// Structural Debug output for a type: `(f: *mut Formatter, value)`.
+    DebugGlue {
+        id: FuncId,
+        ty: Ty,
+    },
     /// Structural hashing for a type: `(hasher: *mut u64, value)`.
     HashGlue {
         id: FuncId,
@@ -104,6 +109,7 @@ pub struct Codegen<'r, 'a> {
     pub(crate) eq_glue: HashMap<String, FuncId>,
     pub(crate) cmp_glue: HashMap<String, FuncId>,
     pub(crate) hash_glue: HashMap<String, FuncId>,
+    pub(crate) debug_glue: HashMap<String, FuncId>,
     pub(crate) clone_glue: HashMap<String, FuncId>,
     pub(crate) vtables: HashMap<String, DataId>,
     pub(crate) shims: HashMap<FuncId, FuncId>,
@@ -160,6 +166,49 @@ const RUNTIME: &[(&str, &[Type], Option<Type>)] = &[
         Some(types::I32),
     ),
     ("kn_hash_u64", &[types::I64, types::I64], None),
+    (
+        "kn_fmt_debug_str",
+        &[types::I64, types::I64, types::I64],
+        None,
+    ),
+    ("kn_fmt_debug_char", &[types::I64, types::I32], None),
+    ("kn_fmt_debug_f64", &[types::I64, types::F64], None),
+    (
+        "kn_fmt_radix",
+        &[types::I64, types::I64, types::I32, types::I32, types::I32],
+        None,
+    ),
+    (
+        "kn_fmt_f64_fixed",
+        &[types::I64, types::F64, types::I64],
+        None,
+    ),
+    (
+        "kn_fmt_f64_exp",
+        &[types::I64, types::F64, types::I64, types::I32],
+        None,
+    ),
+    ("kn_fmt_begin", &[types::I64, types::I64, types::I64], None),
+    ("kn_fmt_sep", &[types::I64, types::I32, types::I32], None),
+    (
+        "kn_fmt_end",
+        &[types::I64, types::I64, types::I64, types::I32, types::I32],
+        None,
+    ),
+    (
+        "kn_fmt_pad",
+        &[
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I32,
+            types::I32,
+            types::I32,
+            types::I64,
+        ],
+        None,
+    ),
     ("kn_hash_bytes", &[types::I64, types::I64, types::I64], None),
     (
         "kn_str_cmp",
@@ -313,6 +362,7 @@ pub fn compile(typed: Typed<'_, '_>, opts: Options) -> Result<Vec<u8>, Vec<Diagn
         eq_glue: HashMap::new(),
         cmp_glue: HashMap::new(),
         hash_glue: HashMap::new(),
+        debug_glue: HashMap::new(),
         clone_glue: HashMap::new(),
         vtables: HashMap::new(),
         shims: HashMap::new(),
@@ -550,6 +600,7 @@ impl Codegen<'_, '_> {
                 Work::EqGlue { id, ty } => self.define_eq_glue(id, &ty),
                 Work::CmpGlue { id, ty } => self.define_cmp_glue(id, &ty),
                 Work::HashGlue { id, ty } => self.define_hash_glue(id, &ty),
+                Work::DebugGlue { id, ty } => self.define_debug_glue(id, &ty),
                 Work::CloneGlue { id, ty } => self.define_clone_glue(id, &ty),
                 Work::Shim { id, target, nargs } => self.define_shim(id, target, nargs),
             }

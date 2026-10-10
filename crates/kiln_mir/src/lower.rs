@@ -1250,8 +1250,8 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 for part in parts {
                     match part {
                         ast::InterpPart::Text(t) => segs.push(InterpSeg::Text(t.clone())),
-                        ast::InterpPart::Expr(x) => {
-                            segs.push(InterpSeg::Arg(ops.len()));
+                        ast::InterpPart::Expr(x, spec) => {
+                            segs.push(InterpSeg::Arg(ops.len(), spec.clone()));
                             ops.push(self.read(x));
                         }
                     }

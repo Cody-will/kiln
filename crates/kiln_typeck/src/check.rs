@@ -98,6 +98,8 @@ pub struct Body<'c, 'r, 'a> {
     callee_substs: HashMap<Span, HashMap<String, Ty>>,
     const_uses: std::collections::HashSet<Span>,
     fn_derefs: HashMap<Span, usize>,
+    /// Format specs to check once argument types are known.
+    fmt_specs: Vec<(Ty, kiln_parser::ast::FmtSpec, Span)>,
     /// Closures being checked (innermost last) and whether each mutates a
     /// variable declared outside it, which makes an un-annotated closure `fn mut`.
     closure_stack: Vec<(Span, bool)>,
@@ -135,6 +137,7 @@ impl<'c, 'r, 'a> Body<'c, 'r, 'a> {
             callee_substs: HashMap::new(),
             const_uses: Default::default(),
             fn_derefs: HashMap::new(),
+            fmt_specs: Vec::new(),
             closure_stack: Vec::new(),
             iter_items: HashMap::new(),
             coercions: vec![],
@@ -246,6 +249,7 @@ impl Checker<'_, '_> {
             callee_substs: HashMap::new(),
             const_uses: Default::default(),
             fn_derefs: HashMap::new(),
+            fmt_specs: Vec::new(),
             closure_stack: Vec::new(),
             iter_items: HashMap::new(),
             coercions: vec![],
@@ -399,6 +403,47 @@ impl Body<'_, '_, '_> {
         }
     }
 
+    /// Checks that each format spec suits its argument's type.
+    fn check_fmt_specs(&mut self) {
+        use kiln_parser::ast::FmtKind;
+        for (t, spec, span) in std::mem::take(&mut self.fmt_specs) {
+            let mut t = self.c.infer.zonk(&t);
+            while let Ty::Ref(_, inner) = t {
+                t = *inner;
+            }
+            let int = matches!(&t, Ty::Prim(p) if p.is_integer());
+            let float = matches!(t, Ty::Prim(PrimTy::F32 | PrimTy::F64));
+            let shown = self.fmt(&t);
+            match spec.kind {
+                FmtKind::Debug => {
+                    if let Some(d) = self.c.r.prelude_type("Debug") {
+                        if !self.implements(&t, d) {
+                            self.error_help(
+                                format!("`{shown}` cannot be formatted with `:?` because it does not implement `Debug`"),
+                                span,
+                                "add `#[derive(Debug)]` to the type, or implement `fmt::Debug`",
+                            );
+                        }
+                    }
+                }
+                FmtKind::LowerHex | FmtKind::UpperHex | FmtKind::Octal | FmtKind::Binary => {
+                    if !int {
+                        self.error(format!("hexadecimal, octal, and binary formats need an integer, found `{shown}`"), span);
+                    }
+                }
+                FmtKind::LowerExp | FmtKind::UpperExp => {
+                    if !int && !float {
+                        self.error(
+                            format!("scientific notation needs a number, found `{shown}`"),
+                            span,
+                        );
+                    }
+                }
+                FmtKind::Display => {}
+            }
+        }
+    }
+
     fn finish(&mut self) {
         self.solve_arg_obligations();
         let obligations = std::mem::take(&mut self.obligations);
@@ -422,6 +467,7 @@ impl Body<'_, '_, '_> {
             }
         }
         self.c.infer.apply_literal_defaults();
+        self.check_fmt_specs();
         let declared = std::mem::take(&mut self.declared);
         for (id, span) in declared {
             let t = self.locals.get(&id).cloned().unwrap_or(Ty::Unknown);
@@ -889,7 +935,7 @@ impl Body<'_, '_, '_> {
     /// no impl block; their methods are the traits' defaults.
     fn builtin_trait_method(&mut self, t: &Ty, name: &str) -> Option<Method> {
         let t = t.clone();
-        for tn in ["Eq", "Ord", "Hash"] {
+        for tn in ["Eq", "Ord", "Hash", "Debug"] {
             let Some(tr) = self.c.r.prelude_type(tn) else {
                 continue;
             };
@@ -1268,8 +1314,11 @@ impl Body<'_, '_, '_> {
             ExprKind::Interp(parts) => {
                 self.interp_spans.insert(e.span);
                 for p in parts {
-                    if let InterpPart::Expr(x) = p {
-                        self.expr(x);
+                    if let InterpPart::Expr(x, spec) = p {
+                        let t = self.expr(x);
+                        if let Some(spec) = spec {
+                            self.fmt_specs.push((t, spec.clone(), x.span));
+                        }
                     }
                 }
                 self.c.string_ty()
@@ -1873,7 +1922,11 @@ impl Body<'_, '_, '_> {
                     },
                     DefKind::Variant { .. } => {
                         let (adt, shape) = self.variant_info(d);
-                        let explicit = if p.segments.len() >= 2 {
+                        // `None::<i32>` or `Option::<i32>::None`.
+                        let last = p.segments.len() - 1;
+                        let explicit = if !p.segments[last].args.is_empty() {
+                            self.seg_args(p, last)
+                        } else if p.segments.len() >= 2 {
                             self.seg_args(p, p.segments.len() - 2)
                         } else {
                             vec![]

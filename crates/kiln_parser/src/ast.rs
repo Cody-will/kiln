@@ -655,8 +655,138 @@ pub enum Lit {
 pub enum InterpPart {
     /// Literal text.
     Text(String),
-    /// An embedded expression.
-    Expr(Expr),
+    /// An embedded expression, with its format spec (`{x:>8.2}`), if any.
+    Expr(Expr, Option<FmtSpec>),
+}
+
+/// How an interpolated value is formatted: `{x:[[fill]align][+][#][0][width][.precision][kind]}`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct FmtSpec {
+    /// Padding character (default space).
+    pub fill: Option<char>,
+    /// `<` left, `^` center, `>` right (default: right for numbers, left otherwise).
+    pub align: Option<FmtAlign>,
+    /// `+`: always print the sign of numbers.
+    pub plus: bool,
+    /// `#`: alternate form (`0x` prefixes, pretty `{:#?}`).
+    pub alt: bool,
+    /// `0`: pad numbers with zeros after the sign.
+    pub zero: bool,
+    /// Minimum width in characters.
+    pub width: Option<usize>,
+    /// Digits after the point (floats) or maximum characters (strings).
+    pub precision: Option<usize>,
+    /// Which representation.
+    pub kind: FmtKind,
+}
+
+/// Alignment within the width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(missing_docs)]
+pub enum FmtAlign {
+    Left,
+    Center,
+    Right,
+}
+
+/// The representation a format spec asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum FmtKind {
+    /// `{x}`: `Display`.
+    #[default]
+    Display,
+    /// `{x:?}`: `Debug`.
+    Debug,
+    /// `{x:x}` / `{x:X}`: hexadecimal.
+    LowerHex,
+    /// Uppercase hexadecimal.
+    UpperHex,
+    /// `{x:o}`: octal.
+    Octal,
+    /// `{x:b}`: binary.
+    Binary,
+    /// `{x:e}` / `{x:E}`: scientific notation.
+    LowerExp,
+    /// Uppercase `E` scientific notation.
+    UpperExp,
+}
+
+impl FmtSpec {
+    /// Parses the text after `:` in `{x:spec}`.
+    pub fn parse(s: &str) -> Result<FmtSpec, String> {
+        let cs: Vec<char> = s.chars().collect();
+        let mut i = 0;
+        let mut f = FmtSpec::default();
+        let align = |c: char| match c {
+            '<' => Some(FmtAlign::Left),
+            '^' => Some(FmtAlign::Center),
+            '>' => Some(FmtAlign::Right),
+            _ => None,
+        };
+        if cs.len() >= 2 && align(cs[1]).is_some() {
+            f.fill = Some(cs[0]);
+            f.align = align(cs[1]);
+            i = 2;
+        } else if let Some(a) = cs.first().and_then(|c| align(*c)) {
+            f.align = Some(a);
+            i = 1;
+        }
+        if cs.get(i) == Some(&'+') {
+            f.plus = true;
+            i += 1;
+        }
+        if cs.get(i) == Some(&'#') {
+            f.alt = true;
+            i += 1;
+        }
+        if cs.get(i) == Some(&'0') {
+            f.zero = true;
+            i += 1;
+        }
+        let num = |i: &mut usize| -> Option<usize> {
+            let st = *i;
+            while *i < cs.len() && cs[*i].is_ascii_digit() {
+                *i += 1;
+            }
+            (*i > st).then(|| {
+                cs[st..*i]
+                    .iter()
+                    .collect::<String>()
+                    .parse()
+                    .unwrap_or(usize::MAX)
+            })
+        };
+        f.width = num(&mut i);
+        if cs.get(i) == Some(&'.') {
+            i += 1;
+            f.precision = num(&mut i);
+            if f.precision.is_none() {
+                return Err("expected a number after `.` in format spec".into());
+            }
+        }
+        f.kind = match cs.get(i) {
+            None => FmtKind::Display,
+            Some('?') => FmtKind::Debug,
+            Some('x') => FmtKind::LowerHex,
+            Some('X') => FmtKind::UpperHex,
+            Some('o') => FmtKind::Octal,
+            Some('b') => FmtKind::Binary,
+            Some('e') => FmtKind::LowerExp,
+            Some('E') => FmtKind::UpperExp,
+            Some(c) => {
+                return Err(format!(
+                    "unknown format `{c}` (expected one of `?`, `x`, `X`, `o`, `b`, `e`, `E`)"
+                ))
+            }
+        };
+        if f.kind != FmtKind::Display {
+            i += 1;
+        }
+        if i != cs.len() {
+            return Err(format!("invalid format spec `{s}`; the form is `[[fill]align][+][#][0][width][.precision][?|x|X|o|b|e|E]`"));
+        }
+        Ok(f)
+    }
 }
 
 /// Binary operators.

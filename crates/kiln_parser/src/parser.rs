@@ -1909,7 +1909,7 @@ impl<'s> Parser<'s> {
         for part in parts {
             match part {
                 StrPart::Text(s) => out.push(InterpPart::Text(s.clone())),
-                StrPart::Interp { src, offset } => {
+                StrPart::Interp { src, offset, spec } => {
                     let lexed = lex_at(src, *offset);
                     self.errors.extend(lexed.errors);
                     let mut sub = Parser::new(self.src, lexed.tokens, Vec::new());
@@ -1928,7 +1928,19 @@ impl<'s> Parser<'s> {
                         },
                     };
                     self.errors.extend(sub.errors);
-                    out.push(InterpPart::Expr(expr));
+                    let spec = spec
+                        .as_ref()
+                        .and_then(|(text, at)| match FmtSpec::parse(text) {
+                            Ok(f) => Some(f),
+                            Err(msg) => {
+                                self.errors.push(Diagnostic::error(
+                                    msg,
+                                    Span::new(*at, at + text.len().max(1)),
+                                ));
+                                None
+                            }
+                        });
+                    out.push(InterpPart::Expr(expr, spec));
                 }
             }
         }

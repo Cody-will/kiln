@@ -1,5 +1,14 @@
-// Formatting. Values are formatted with string interpolation:
-// "{x}" uses Display, "{x:?}" uses Debug.
+// Formatting. Values are formatted with string interpolation, which takes an
+// optional format spec after a colon:
+//
+//	"{x}"        Display              "{x:?}"     Debug
+//	"{x:#?}"     pretty Debug         "{n:5}"     width 5 (numbers right-aligned)
+//	"{s:<10}"    left-align           "{s:^10}"   center      "{s:*>10}" fill with *
+//	"{f:.2}"     2 decimal places     "{n:+}"     always show the sign
+//	"{n:08.3}"   zero-padded          "{n:x}" "{n:X}" "{n:o}" "{n:b}"  hex, octal, binary
+//	"{n:#x}"     with 0x prefix       "{f:e}"     scientific (1.5e3)
+//
+// The form is `[[fill]align][+][#][0][width][.precision][kind]`, as in Rust.
 //
 // Implement Display to give a type a user-facing form:
 //
@@ -8,6 +17,111 @@
 //			return "({self.x}, {self.y})"
 //		}
 //	}
+//
+// Debug is derived with `#[derive(Debug)]`, or implemented by hand:
+//
+//	impl fmt::Debug for Secret {
+//		fn fmt_debug(&self, f: &mut fmt::Formatter) {
+//			f.write("Secret(..)")
+//		}
+//	}
 
 pub import Display
 pub import Debug
+
+fn kn_fmt_begin(f: *mut Formatter, p: *const u8, n: usize)
+fn kn_fmt_sep(f: *mut Formatter, first: i32, spaced: i32)
+fn kn_fmt_end(f: *mut Formatter, p: *const u8, n: usize, empty: i32, spaced: i32)
+
+// Where Debug output goes. `{x:#?}` sets pretty mode, in which lists and
+// structs put each item on its own indented line.
+pub struct Formatter {
+	out: String,
+	depth: usize,
+	pretty: bool,
+}
+
+impl Formatter {
+	// A formatter writing to a new string.
+	pub fn new(pretty: bool) -> Formatter {
+		return Formatter { out: String::new(), depth: 0, pretty: pretty }
+	}
+
+	// Appends text.
+	pub fn write(&mut self, s: &str) {
+		self.out.push(s)
+	}
+
+	pub fn write_char(&mut self, c: char) {
+		self.out.push_char(c)
+	}
+
+	// Whether this is pretty (`{:#?}`) output.
+	pub fn is_pretty(&self) -> bool {
+		return self.pretty
+	}
+
+	// Writes the Debug form of `v`.
+	pub fn debug<T: Debug>(&mut self, v: &T) {
+		v.fmt_debug(self)
+	}
+
+	// Starts a bracketed group: `f.begin("[")`. Then, for each item, call
+	// `f.item(first)` and write it; finish with `f.end("]", empty)`.
+	pub fn begin(&mut self, open: &str) {
+		kn_fmt_begin(self as *mut Formatter, std::ptr::str_ptr(open) as *const u8, open.len())
+	}
+
+	// Writes the separator before an item (`, `, or a newline and indent
+	// when pretty).
+	pub fn item(&mut self, first: bool) {
+		kn_fmt_sep(self as *mut Formatter, first as i32, 0)
+	}
+
+	// Like `item`, for `{ ... }` groups, which have spaces inside the
+	// braces in compact form: `P { x: 1 }`.
+	pub fn field(&mut self, first: bool) {
+		kn_fmt_sep(self as *mut Formatter, first as i32, 1)
+	}
+
+	// Closes the group `begin` opened. `empty` if no items were written;
+	// `spaced` for `{ ... }` groups.
+	pub fn end(&mut self, close: &str, empty: bool, spaced: bool) {
+		kn_fmt_end(self as *mut Formatter, std::ptr::str_ptr(close) as *const u8, close.len(), empty as i32, spaced as i32)
+	}
+
+	// Writes `[a, b, c]` from Debug values.
+	pub fn list<I: Iterator<T>, T: Debug>(&mut self, items: I) {
+		self.begin("[")
+		first mut := true
+		for x in items {
+			self.item(first)
+			first = false
+			x.fmt_debug(self)
+		}
+		self.end("]", first, false)
+	}
+
+	// The text written so far.
+	pub fn finish(self) -> String {
+		return self.out
+	}
+}
+
+// The Debug form of `v`, as `"{v:?}"` gives.
+pub fn debug<T: Debug>(v: &T) -> String {
+	f mut := Formatter::new(false)
+	v.fmt_debug(&mut f)
+	return f.finish()
+}
+
+// The pretty Debug form of `v`, as `"{v:#?}"` gives.
+pub fn pretty<T: Debug>(v: &T) -> String {
+	f mut := Formatter::new(true)
+	v.fmt_debug(&mut f)
+	return f.finish()
+}
+
+// Field-by-field Debug output, ignoring any hand-written `fmt_debug` of `T`
+// itself (fields still use theirs): the default `Debug::fmt_debug`.
+pub fn derived_debug<T>(v: &T, f: &mut Formatter)

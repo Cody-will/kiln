@@ -537,3 +537,267 @@ int32_t kn_parse_f64(const uint8_t *p, size_t n, double *out) {
     *out = strtod(buf, NULL);
     return 1;
 }
+
+/* ---- Formatting (format specs and Debug) ----
+ * KnFormatter mirrors std::fmt::Formatter: { out: String, depth: usize, pretty: bool }. */
+typedef struct {
+    KnVec out;
+    uint64_t depth;
+    uint8_t pretty;
+} KnFormatter;
+
+static void kn_push_cstr(KnVec *s, const char *c) {
+    kn_string_push(s, (const uint8_t *)c, strlen(c));
+}
+
+static void kn_push_utf8(KnVec *s, uint32_t c) {
+    uint8_t b[4];
+    size_t n;
+    if (c < 0x80) {
+        b[0] = (uint8_t)c;
+        n = 1;
+    } else if (c < 0x800) {
+        b[0] = (uint8_t)(0xC0 | (c >> 6));
+        b[1] = (uint8_t)(0x80 | (c & 63));
+        n = 2;
+    } else if (c < 0x10000) {
+        b[0] = (uint8_t)(0xE0 | (c >> 12));
+        b[1] = (uint8_t)(0x80 | ((c >> 6) & 63));
+        b[2] = (uint8_t)(0x80 | (c & 63));
+        n = 3;
+    } else {
+        b[0] = (uint8_t)(0xF0 | (c >> 18));
+        b[1] = (uint8_t)(0x80 | ((c >> 12) & 63));
+        b[2] = (uint8_t)(0x80 | ((c >> 6) & 63));
+        b[3] = (uint8_t)(0x80 | (c & 63));
+        n = 4;
+    }
+    kn_string_push(s, b, n);
+}
+
+/* Escapes one character for Debug output inside `quote` quotes. */
+static void kn_escape_char(KnVec *s, uint32_t c, char quote) {
+    char buf[16];
+    switch (c) {
+    case '\n': kn_push_cstr(s, "\\n"); return;
+    case '\r': kn_push_cstr(s, "\\r"); return;
+    case '\t': kn_push_cstr(s, "\\t"); return;
+    case '\\': kn_push_cstr(s, "\\\\"); return;
+    case 0: kn_push_cstr(s, "\\0"); return;
+    }
+    if (c == (uint32_t)quote) {
+        buf[0] = '\\';
+        buf[1] = quote;
+        kn_string_push(s, (const uint8_t *)buf, 2);
+        return;
+    }
+    if (c < 32 || c == 127) {
+        snprintf(buf, sizeof buf, "\\u{%x}", (unsigned)c);
+        kn_push_cstr(s, buf);
+        return;
+    }
+    kn_push_utf8(s, c);
+}
+
+/* Debug form of a string: quoted, with escapes. */
+void kn_fmt_debug_str(KnVec *s, const uint8_t *p, size_t n) {
+    kn_push_cstr(s, "\"");
+    size_t i = 0;
+    while (i < n) {
+        uint8_t b = p[i];
+        uint32_t c;
+        size_t k;
+        if (b < 0x80) {
+            c = b;
+            k = 1;
+        } else if ((b & 0xE0) == 0xC0) {
+            c = ((uint32_t)(b & 31) << 6) | (p[i + 1] & 63);
+            k = 2;
+        } else if ((b & 0xF0) == 0xE0) {
+            c = ((uint32_t)(b & 15) << 12) | ((uint32_t)(p[i + 1] & 63) << 6) | (p[i + 2] & 63);
+            k = 3;
+        } else {
+            c = ((uint32_t)(b & 7) << 18) | ((uint32_t)(p[i + 1] & 63) << 12) |
+                ((uint32_t)(p[i + 2] & 63) << 6) | (p[i + 3] & 63);
+            k = 4;
+        }
+        kn_escape_char(s, c, '"');
+        i += k;
+    }
+    kn_push_cstr(s, "\"");
+}
+
+/* Debug form of a char: 'c' with escapes. */
+void kn_fmt_debug_char(KnVec *s, uint32_t c) {
+    kn_push_cstr(s, "'");
+    kn_escape_char(s, c, '\'');
+    kn_push_cstr(s, "'");
+}
+
+/* Debug form of a float: like Display, but whole numbers keep ".0". */
+void kn_fmt_debug_f64(KnVec *s, double v) {
+    size_t start = s->len;
+    kn_fmt_f64(s, v);
+    if (isnan(v) || isinf(v)) return;
+    for (size_t i = start; i < s->len; i++)
+        if (s->ptr[i] == '.' || s->ptr[i] == 'e') return;
+    kn_push_cstr(s, ".0");
+}
+
+/* `v` in base 2, 8, or 16; `alt` adds the 0b/0o/0x prefix. */
+void kn_fmt_radix(KnVec *s, uint64_t v, int32_t radix, int32_t upper, int32_t alt) {
+    char buf[80];
+    int i = sizeof buf;
+    const char *dig = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    do {
+        buf[--i] = dig[v % (uint64_t)radix];
+        v /= (uint64_t)radix;
+    } while (v);
+    if (alt) {
+        buf[--i] = radix == 16 ? 'x' : radix == 8 ? 'o' : 'b';
+        buf[--i] = '0';
+    }
+    kn_string_push(s, (const uint8_t *)buf + i, sizeof buf - (size_t)i);
+}
+
+/* `v` with exactly `prec` digits after the point. */
+void kn_fmt_f64_fixed(KnVec *s, double v, int64_t prec) {
+    if (isnan(v) || isinf(v)) {
+        kn_fmt_f64(s, v);
+        return;
+    }
+    if (prec > 1000) prec = 1000;
+    int n = snprintf(NULL, 0, "%.*f", (int)prec, v);
+    char *buf = malloc((size_t)n + 1);
+    if (!buf) oom();
+    snprintf(buf, (size_t)n + 1, "%.*f", (int)prec, v);
+    kn_string_push(s, (const uint8_t *)buf, (size_t)n);
+    free(buf);
+}
+
+/* Scientific notation like Rust: 1.5e3, 1e-7, 2.50E10 (prec < 0: shortest). */
+void kn_fmt_f64_exp(KnVec *s, double v, int64_t prec, int32_t upper) {
+    if (isnan(v) || isinf(v)) {
+        kn_fmt_f64(s, v);
+        return;
+    }
+    char buf[64];
+    if (prec < 0) {
+        int p;
+        for (p = 1; p <= 17; p++) {
+            snprintf(buf, sizeof buf, "%.*e", p - 1, v);
+            if (strtod(buf, NULL) == v) break;
+        }
+    } else {
+        if (prec > 40) prec = 40;
+        snprintf(buf, sizeof buf, "%.*e", (int)prec, v);
+    }
+    char *e = strchr(buf, 'e');
+    if (!e) {
+        kn_push_cstr(s, buf);
+        return;
+    }
+    *e = 0;
+    int exp = atoi(e + 1);
+    /* Shortest form: drop a trailing ".0..." (1.0e3 -> 1e3). */
+    if (prec < 0) {
+        char *dot = strchr(buf, '.');
+        if (dot) {
+            char *end = buf + strlen(buf);
+            while (end > dot + 1 && end[-1] == '0') *--end = 0;
+            if (end == dot + 1) *dot = 0;
+        }
+    }
+    char tail[16];
+    snprintf(tail, sizeof tail, "%c%d", upper ? 'E' : 'e', exp);
+    kn_push_cstr(s, buf);
+    kn_push_cstr(s, tail);
+}
+
+static void kn_indent(KnVec *s, uint64_t depth) {
+    for (uint64_t i = 0; i < depth; i++) kn_push_cstr(s, "    ");
+}
+
+/* Opens a list, tuple, or struct body: writes `open`, one level deeper. */
+void kn_fmt_begin(KnFormatter *f, const uint8_t *p, size_t n) {
+    kn_string_push(&f->out, p, n);
+    f->depth++;
+}
+
+/* Before an item: a separator (and in pretty mode, a newline and indent).
+ * `spaced` puts a space after `{` in compact mode: `P { x: 1 }`. */
+void kn_fmt_sep(KnFormatter *f, int32_t first, int32_t spaced) {
+    if (f->pretty) {
+        kn_push_cstr(&f->out, first ? "\n" : ",\n");
+        kn_indent(&f->out, f->depth);
+    } else if (!first) {
+        kn_push_cstr(&f->out, ", ");
+    } else if (spaced) {
+        kn_push_cstr(&f->out, " ");
+    }
+}
+
+/* Closes what kn_fmt_begin opened; `empty` if no items were written. */
+void kn_fmt_end(KnFormatter *f, const uint8_t *p, size_t n, int32_t empty, int32_t spaced) {
+    f->depth--;
+    if (!empty) {
+        if (f->pretty) {
+            kn_push_cstr(&f->out, ",\n");
+            kn_indent(&f->out, f->depth);
+        } else if (spaced) {
+            kn_push_cstr(&f->out, " ");
+        }
+    }
+    kn_string_push(&f->out, p, n);
+}
+
+/* Appends `src` to `dst`, padded to `width` characters with `fill`.
+ * align: 0 default, 1 left, 2 center, 3 right. flags: 1 plus sign, 2 zero
+ * padding, 4 numeric (right-aligned by default; signs/prefixes stay in front
+ * of zero padding). `prec` >= 0 truncates non-numeric text to that many chars. */
+void kn_fmt_pad(KnVec *dst, const uint8_t *src, size_t n, int64_t width, uint32_t fill,
+                int32_t align, int32_t flags, int64_t prec) {
+    int numeric = (flags & 4) != 0;
+    const char *sign = "";
+    if (numeric && (flags & 1) && !(n > 0 && src[0] == '-') &&
+        !(n >= 3 && (memcmp(src, "NaN", 3) == 0))) {
+        sign = "+";
+    }
+    if (!numeric && prec >= 0) {
+        /* Truncate to prec characters. */
+        size_t i = 0;
+        int64_t c = 0;
+        while (i < n && c < prec) {
+            i++;
+            while (i < n && (src[i] & 0xC0) == 0x80) i++;
+            c++;
+        }
+        n = i;
+    }
+    int64_t chars = (int64_t)strlen(sign);
+    for (size_t i = 0; i < n; i++)
+        if ((src[i] & 0xC0) != 0x80) chars++;
+    int64_t pad = width > chars ? width - chars : 0;
+    if (numeric && (flags & 2)) {
+        /* Zero padding goes after the sign and any 0x/0o/0b prefix. */
+        size_t lead = 0;
+        if (n > 0 && (src[0] == '-' || src[0] == '+')) lead = 1;
+        kn_push_cstr(dst, sign);
+        kn_string_push(dst, src, lead);
+        if (n >= lead + 2 && src[lead] == '0' &&
+            (src[lead + 1] == 'x' || src[lead + 1] == 'o' || src[lead + 1] == 'b')) {
+            kn_string_push(dst, src + lead, 2);
+            lead += 2;
+        }
+        for (int64_t i = 0; i < pad; i++) kn_push_cstr(dst, "0");
+        kn_string_push(dst, src + lead, n - lead);
+        return;
+    }
+    if (align == 0) align = numeric ? 3 : 1;
+    int64_t before = align == 3 ? pad : align == 2 ? pad / 2 : 0;
+    int64_t after = pad - before;
+    for (int64_t i = 0; i < before; i++) kn_push_utf8(dst, fill);
+    kn_push_cstr(dst, sign);
+    kn_string_push(dst, src, n);
+    for (int64_t i = 0; i < after; i++) kn_push_utf8(dst, fill);
+}

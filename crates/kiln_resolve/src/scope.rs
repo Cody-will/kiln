@@ -1392,7 +1392,7 @@ impl<'a> Resolver<'a> {
             ExprKind::Lit(_) | ExprKind::Error => {}
             ExprKind::Interp(parts) => {
                 for p in parts {
-                    if let InterpPart::Expr(x) = p {
+                    if let InterpPart::Expr(x, _) = p {
                         self.walk_expr(x);
                     }
                 }

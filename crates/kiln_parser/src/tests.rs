@@ -205,7 +205,7 @@ fn interpolated_strings() {
         ExprKind::Interp(parts) => {
             assert_eq!(parts.len(), 5);
             match &parts[3] {
-                InterpPart::Expr(e) => assert_eq!(sx(e), "(Add a (Mul b 2))"),
+                InterpPart::Expr(e, _) => assert_eq!(sx(e), "(Add a (Mul b 2))"),
                 p => panic!("{p:?}"),
             }
         }
@@ -218,7 +218,7 @@ fn interpolation_spans_point_into_file() {
     let src = r#""x = {foo}""#;
     match expr(src).kind {
         ExprKind::Interp(parts) => match &parts[1] {
-            InterpPart::Expr(e) => assert_eq!(&src[e.span.start..e.span.end], "foo"),
+            InterpPart::Expr(e, _) => assert_eq!(&src[e.span.start..e.span.end], "foo"),
             p => panic!("{p:?}"),
         },
         k => panic!("{k:?}"),

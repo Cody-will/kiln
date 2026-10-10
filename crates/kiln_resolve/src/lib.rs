@@ -195,6 +195,14 @@ pub enum PrimTy {
 }
 
 impl PrimTy {
+    /// Whether this is an integer type.
+    pub fn is_integer(self) -> bool {
+        !matches!(
+            self,
+            PrimTy::F32 | PrimTy::F64 | PrimTy::Bool | PrimTy::Char | PrimTy::Str
+        )
+    }
+
     /// Looks up a primitive type by name.
     pub fn from_name(s: &str) -> Option<PrimTy> {
         use PrimTy::*;

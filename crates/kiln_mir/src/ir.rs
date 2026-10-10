@@ -230,8 +230,8 @@ pub enum Op {
 #[derive(Debug, Clone, PartialEq)]
 pub enum InterpSeg {
     Text(String),
-    /// Format operand `i`.
-    Arg(usize),
+    /// Format operand `i`, with its format spec.
+    Arg(usize, Option<kiln_parser::ast::FmtSpec>),
 }
 
 /// What an aggregate builds.

@@ -35,6 +35,8 @@ pub fn lex_at(src: &str, base: usize) -> Lexed {
         pos: 0,
         base,
         out: Lexed::default(),
+        turbofish: Vec::new(),
+        closed_turbofish: false,
     };
     l.run();
     l.out
@@ -46,6 +48,11 @@ struct Lexer<'a> {
     pos: usize,
     base: usize,
     out: Lexed,
+    /// Open `::<...>` turbofish groups: the `<`/`>` nesting depth inside each.
+    turbofish: Vec<usize>,
+    /// Whether the last token was the `>` that closed a turbofish (so a
+    /// newline after it ends the statement: `x := None::<i32>`).
+    closed_turbofish: bool,
 }
 
 fn is_ident_start(c: char) -> bool {
@@ -84,14 +91,42 @@ impl Lexer<'_> {
 
     fn push(&mut self, kind: TokenKind, start: usize) {
         let span = self.span(start);
+        self.closed_turbofish = false;
+        match kind {
+            TokenKind::Lt => {
+                if matches!(
+                    self.out.tokens.last().map(|t| &t.kind),
+                    Some(TokenKind::ColonColon)
+                ) {
+                    self.turbofish.push(1);
+                } else if let Some(d) = self.turbofish.last_mut() {
+                    *d += 1;
+                }
+            }
+            TokenKind::Gt | TokenKind::Shr => {
+                let n = if kind == TokenKind::Shr { 2 } else { 1 };
+                for _ in 0..n {
+                    if let Some(d) = self.turbofish.last_mut() {
+                        *d -= 1;
+                        if *d == 0 {
+                            self.turbofish.pop();
+                            self.closed_turbofish = true;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
         self.out.tokens.push(Token { kind, span });
     }
 
     fn last_ends_statement(&self) -> bool {
-        self.out
-            .tokens
-            .last()
-            .is_some_and(|t| t.kind.ends_statement())
+        self.closed_turbofish
+            || self
+                .out
+                .tokens
+                .last()
+                .is_some_and(|t| t.kind.ends_statement())
     }
 
     /// Called at a newline (at byte offset `at`): inserts a semicolon if needed.
@@ -451,8 +486,22 @@ impl Lexer<'_> {
     fn interpolation(&mut self, open: usize, parts: &mut Vec<StrPart>) {
         let s = self.pos;
         let mut depth = 0usize;
+        // Parentheses and brackets, so `{f(a: b)}`-like text is not split.
+        let mut nest = 0usize;
+        // The last top-level single `:` (not `::`): the format spec separator.
+        let mut colon: Option<usize> = None;
         loop {
             match self.peek() {
+                Some('(' | '[') => nest += 1,
+                Some(')' | ']') => nest = nest.saturating_sub(1),
+                Some(':') if depth == 0 && nest == 0 => {
+                    let b = self.src.as_bytes();
+                    let prev = self.pos > s && b[self.pos - 1] == b':';
+                    let next = b.get(self.pos + 1) == Some(&b':');
+                    if !prev && !next {
+                        colon = Some(self.pos);
+                    }
+                }
                 None | Some('\n') => {
                     self.error(
                         "unterminated interpolation in string literal",
@@ -480,7 +529,14 @@ impl Lexer<'_> {
             }
             self.bump();
         }
-        let src = self.src[s..self.pos].to_string();
+        let end = self.pos;
+        let (src, spec) = match colon {
+            Some(c) => (
+                self.src[s..c].to_string(),
+                Some((self.src[c + 1..end].to_string(), self.base + c + 1)),
+            ),
+            None => (self.src[s..end].to_string(), None),
+        };
         self.bump(); // closing brace
         if src.trim().is_empty() {
             self.error(
@@ -493,6 +549,7 @@ impl Lexer<'_> {
         parts.push(StrPart::Interp {
             src,
             offset: self.base + s,
+            spec,
         });
     }
 

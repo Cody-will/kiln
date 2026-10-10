@@ -30,6 +30,8 @@ Non-goals for 1.0: inheritance, implicit numeric conversions, macros that rewrit
   - Integers: `42`, `0xFF`, `0b1010`, `1_000`, with optional suffixes `42u8` and `3i64`.
   - Floats: `3.14` and `1e9f32`.
   - Strings: `"..."`, raw strings `r"..."`, and interpolation `"hi {name}"`.
+  - Format specs follow Rust: `"{x:spec}"` where spec is `[[fill]align][+][#][0][width][.precision][type]`. Align is `<` `^` `>`; type is `?` (Debug), `x`/`X` (hex), `o`, `b`, `e`/`E` (scientific), or empty (Display). `#` adds `0x`/`0o`/`0b` prefixes, or pretty-prints with `:#?`. Precision rounds floats and truncates strings. Width and precision are literal numbers. `{{` and `}}` are literal braces. A `::` inside the braces is a path (`{a::b}`), not a spec. Specs are checked at compile time: `:?` needs `Debug`, and `x`/`o`/`b` need an integer.
+  - `#[derive(Debug)]` (or an empty `impl Debug for T {}`) gives structural Debug output in Rust's format, `Point { x: 1, y: 2.0 }`. Implement `fn fmt_debug(&self, f: &mut fmt::Formatter)` to override it; overrides are used when the value is nested inside other values too.
   - Characters: `'a'`.
   - Booleans: `true` and `false`.
 
@@ -580,7 +582,7 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 | `std::net` | `TcpListener`, `TcpStream`, `UdpSocket`, `split_host_port` (DNS through the OS resolver) | ✅ |
 | `std::net::http` | HTTP/1.1 server (`Router`, keep-alive) and client (`get`, `post`, `send`); no TLS yet | ✅ |
 | `std::log` | leveled logging to stderr (`KILN_LOG=debug`) | ✅ |
-| `std::fmt` | `Display` and `Debug` (formatting itself is string interpolation) | ✅ |
+| `std::fmt` | `Display`, `Debug`, `Formatter`, `fmt::debug`/`fmt::pretty`; format specs in interpolation | ✅ |
 | `std::mem`, `std::ptr` | `size_of`, `swap`, `replace`, `forget`; raw pointer operations for `unsafe` code | ✅ |
 | `std::strings`, `std::strconv`, `std::bytes`, `std::unicode` | text processing and parsing | 🚧 phase 2 |
 | `std::collections` | `HashMap`, `HashSet`, `BTreeMap`, `VecDeque` | 🚧 phase 2 |
