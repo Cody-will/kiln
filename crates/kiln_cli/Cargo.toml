@@ -15,6 +15,9 @@ path = "src/main.rs"
 kiln_lexer = { path = "../kiln_lexer" }
 kiln_parser = { path = "../kiln_parser" }
 kiln_typeck = { path = "../kiln_typeck" }
+kiln_mir = { path = "../kiln_mir" }
+kiln_resolve = { path = "../kiln_resolve" }
+kiln_borrowck = { path = "../kiln_borrowck" }
 
 [lints]
 workspace = true

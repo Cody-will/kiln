@@ -67,7 +67,7 @@ fn longest<'a>(a: &'a str, b: &'a str) -> &'a str {
 	return b
 }
 
-fn sign(n: i32) -> &str {
+fn sign(n: i32) -> &'static str {
 	label := if n < 0 { "neg" } else if n == 0 { "zero" } else { "pos" }
 	return label
 }

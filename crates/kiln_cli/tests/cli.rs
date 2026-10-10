@@ -78,3 +78,31 @@ fn check_reports_type_errors_with_caret() {
     assert!(err.contains("return true"), "{err}");
     assert!(err.contains("^^^^"), "{err}");
 }
+
+#[test]
+fn check_reports_borrow_errors_with_notes() {
+    let dir = std::env::temp_dir().join("kiln_cli_borrowck_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("moved.kn");
+    std::fs::write(
+        &file,
+        "fn take(s: String) {}\n\nfn main() {\n\ts := String::from(\"hi\")\n\ttake(s)\n\ttake(s)\n}\n",
+    )
+    .unwrap();
+    let (code, _, err) = kiln(&["check", file.to_str().unwrap()]);
+    assert_eq!(code, 1);
+    assert!(err.contains("error: use of moved value: `s`"), "{err}");
+    assert!(err.contains("6 | \ttake(s)"), "{err}");
+    assert!(err.contains("note: value moved here"), "{err}");
+    assert!(err.contains("5 | \ttake(s)"), "{err}");
+    assert!(err.contains("help:"), "{err}");
+}
+
+#[test]
+fn mir_dumps_bodies() {
+    let (code, out, err) = kiln(&["mir", "examples/hello.kn"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("main Fn"), "{out}");
+    assert!(out.contains("bb0:"), "{out}");
+    assert!(out.contains("return"), "{out}");
+}

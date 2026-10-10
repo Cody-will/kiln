@@ -28,7 +28,7 @@ error: mismatched types: expected `String`, found `&str`
 Use `.to_string()` or change the return type to `&str`. Here's the fixed version, which also shows `if` as a value:
 
 ```kiln
-fn describe(n: i32) -> &str {
+fn describe(n: i32) -> &'static str {
 	label := if n < 0 { "negative" } else if n == 0 { "zero" } else { "positive" }
 	return label
 }
@@ -45,7 +45,7 @@ fn main() {
 `match` compares a value against patterns, top to bottom:
 
 ```kiln
-fn classify(n: u32) -> &str {
+fn classify(n: u32) -> &'static str {
 	return match n {
 		0 => "none",
 		1 | 2 | 3 => "a few",
