@@ -39,7 +39,10 @@ fn errors_are_rendered_and_exit_nonzero() {
     std::fs::write(&file, "fn main() {\n\tx := 1 +\n}\n").unwrap();
     let (code, _, err) = kiln(&["parse", file.to_str().unwrap()]);
     assert_eq!(code, 1);
-    assert!(err.contains("error: expected expression, found `}`"), "{err}");
+    assert!(
+        err.contains("error: expected expression, found `}`"),
+        "{err}"
+    );
     assert!(err.contains("bad.kn:3:1"), "{err}");
 }
 
