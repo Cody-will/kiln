@@ -25,9 +25,102 @@ pub trait Copy {}
 pub trait Clone {
 	fn clone(&self) -> Self
 }
-pub trait Eq {}
-pub trait Ord {}
-pub trait Hash {}
+// Equality, used by `==` and `!=`. `#[derive(Eq)]` (and the built-in types)
+// compare field by field; implement `eq` by hand to compare differently.
+pub trait Eq {
+	fn eq(&self, other: &Self) -> bool {
+		return std::cmp::derived_eq(self, other)
+	}
+
+	fn ne(&self, other: &Self) -> bool {
+		return !self.eq(other)
+	}
+}
+
+// Total ordering, used by `<`, `<=`, `>`, `>=`, sorting, and `BTreeMap`.
+// `#[derive(Ord)]` orders field by field in declaration order (enums by
+// variant, then payload); strings and sequences order lexicographically.
+pub trait Ord {
+	fn cmp(&self, other: &Self) -> Ordering {
+		return std::cmp::derived_cmp(self, other)
+	}
+
+	fn lt(&self, other: &Self) -> bool {
+		return self.cmp(other) == Ordering::Less
+	}
+
+	fn le(&self, other: &Self) -> bool {
+		return self.cmp(other) != Ordering::Greater
+	}
+
+	fn gt(&self, other: &Self) -> bool {
+		return self.cmp(other) == Ordering::Greater
+	}
+
+	fn ge(&self, other: &Self) -> bool {
+		return self.cmp(other) != Ordering::Less
+	}
+}
+
+// Hashing, used by `HashMap` and `HashSet`. Values that are equal must hash
+// the same, so a type that implements `eq` by hand must implement `hash` too.
+pub trait Hash {
+	fn hash(&self, h: &mut std::hash::Hasher) {
+		std::hash::derived_hash(self, h)
+	}
+}
+
+// The result of comparing two values.
+#[derive(Clone, Copy, Eq, Ord, Hash, Debug)]
+pub enum Ordering {
+	Less,
+	Equal,
+	Greater,
+}
+
+impl Ordering {
+	pub fn is_eq(self) -> bool {
+		return self == Ordering::Equal
+	}
+
+	pub fn is_ne(self) -> bool {
+		return self != Ordering::Equal
+	}
+
+	pub fn is_lt(self) -> bool {
+		return self == Ordering::Less
+	}
+
+	pub fn is_gt(self) -> bool {
+		return self == Ordering::Greater
+	}
+
+	pub fn is_le(self) -> bool {
+		return self != Ordering::Greater
+	}
+
+	pub fn is_ge(self) -> bool {
+		return self != Ordering::Less
+	}
+
+	// Less becomes Greater and vice versa.
+	pub fn reverse(self) -> Ordering {
+		return match self {
+			Ordering::Less => Ordering::Greater,
+			Ordering::Equal => Ordering::Equal,
+			Ordering::Greater => Ordering::Less,
+		}
+	}
+
+	// `self`, or `other` when `self` is Equal: chains comparisons, as in
+	// `a.last.cmp(&b.last).then(a.first.cmp(&b.first))`.
+	pub fn then(self, other: Ordering) -> Ordering {
+		if self == Ordering::Equal {
+			return other
+		}
+		return self
+	}
+}
 pub trait Debug {}
 // Text form used by string interpolation (`"{x}"`) and `to_string()`.
 pub trait Display {

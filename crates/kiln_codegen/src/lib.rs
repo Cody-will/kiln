@@ -56,6 +56,16 @@ pub(crate) enum Work {
         substs: HashMap<String, Ty>,
         abi: Abi,
     },
+    /// Structural ordering for a type: `(out: *mut i8 (-1/0/1), a, b)`.
+    CmpGlue {
+        id: FuncId,
+        ty: Ty,
+    },
+    /// Structural hashing for a type: `(hasher: *mut u64, value)`.
+    HashGlue {
+        id: FuncId,
+        ty: Ty,
+    },
     /// Structural equality for a type: `(out: *mut bool, a, b)`.
     EqGlue {
         id: FuncId,
@@ -92,6 +102,8 @@ pub struct Codegen<'r, 'a> {
     pub(crate) needs_drop_cache: HashMap<String, bool>,
     pub(crate) drop_glue: HashMap<String, FuncId>,
     pub(crate) eq_glue: HashMap<String, FuncId>,
+    pub(crate) cmp_glue: HashMap<String, FuncId>,
+    pub(crate) hash_glue: HashMap<String, FuncId>,
     pub(crate) clone_glue: HashMap<String, FuncId>,
     pub(crate) vtables: HashMap<String, DataId>,
     pub(crate) shims: HashMap<FuncId, FuncId>,
@@ -147,6 +159,8 @@ const RUNTIME: &[(&str, &[Type], Option<Type>)] = &[
         &[types::I64, types::I64, types::I64, types::I64],
         Some(types::I32),
     ),
+    ("kn_hash_u64", &[types::I64, types::I64], None),
+    ("kn_hash_bytes", &[types::I64, types::I64, types::I64], None),
     (
         "kn_str_cmp",
         &[types::I64, types::I64, types::I64, types::I64],
@@ -297,6 +311,8 @@ pub fn compile(typed: Typed<'_, '_>, opts: Options) -> Result<Vec<u8>, Vec<Diagn
         needs_drop_cache: HashMap::new(),
         drop_glue: HashMap::new(),
         eq_glue: HashMap::new(),
+        cmp_glue: HashMap::new(),
+        hash_glue: HashMap::new(),
         clone_glue: HashMap::new(),
         vtables: HashMap::new(),
         shims: HashMap::new(),
@@ -532,6 +548,8 @@ impl Codegen<'_, '_> {
                 } => self.define_fn(id, fn_idx, body, substs, abi),
                 Work::DropGlue { id, ty } => self.define_drop_glue(id, &ty),
                 Work::EqGlue { id, ty } => self.define_eq_glue(id, &ty),
+                Work::CmpGlue { id, ty } => self.define_cmp_glue(id, &ty),
+                Work::HashGlue { id, ty } => self.define_hash_glue(id, &ty),
                 Work::CloneGlue { id, ty } => self.define_clone_glue(id, &ty),
                 Work::Shim { id, target, nargs } => self.define_shim(id, target, nargs),
             }

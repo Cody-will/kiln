@@ -366,6 +366,41 @@ impl FnCx<'_, '_, '_, '_> {
         if self.mem_intrinsic(name, args, dest, dt) {
             return;
         }
+        if let Some(op) = name
+            .strip_prefix("cmp::derived_")
+            .or(name.strip_prefix("hash::derived_"))
+        {
+            // args: &T, &T (eq, cmp) or &T, &mut Hasher (hash).
+            let mut t = self.t_arg();
+            let (a, b) = if matches!(t, Ty::Prim(kiln_resolve::PrimTy::Str) | Ty::Slice(_)) {
+                // Unsized: compare the fat references themselves.
+                t = Ty::Ref(false, Box::new(t));
+                let a = self.op_addr(&args[0]);
+                let b = if op == "hash" {
+                    self.op_scalar(&args[1])
+                } else {
+                    self.op_addr(&args[1])
+                };
+                (a, b)
+            } else {
+                (self.op_scalar(&args[0]), self.op_scalar(&args[1]))
+            };
+            match op {
+                "eq" => {
+                    let e = self.derived_eq(a, b, &t);
+                    self.store(e, dest, 0);
+                }
+                "cmp" => {
+                    // `Ordering`: Less = 0, Equal = 1, Greater = 2.
+                    let c = self.derived_cmp(a, b, &t);
+                    let c = self.b.ins().sextend(types::I32, c);
+                    let tag = self.b.ins().iadd_imm(c, 1);
+                    self.store(tag, dest, 0);
+                }
+                _ => self.derived_hash(a, &t, b),
+            }
+            return;
+        }
         match (ty_name, short) {
             (_, "slice_range") => {
                 // args: &base, start, end, flags (bit 0: has end, bit 1: inclusive).

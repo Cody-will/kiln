@@ -1,0 +1,87 @@
+import std::cmp
+import std::hash
+
+#[derive(Eq, Ord, Hash, Debug)]
+enum Shape {
+	Dot,
+	Circle(i32),
+	Rect { w: i32, h: i32 },
+}
+
+#[derive(Eq, Ord, Hash)]
+struct P {
+	name: String,
+	age: i32,
+}
+
+// Case-insensitive name; equality and hash must agree.
+struct Name {
+	s: String,
+}
+
+impl Eq for Name {
+	fn eq(&self, other: &Name) -> bool {
+		return self.s.to_lower() == other.s.to_lower()
+	}
+}
+
+impl Hash for Name {
+	fn hash(&self, h: &mut hash::Hasher) {
+		self.s.to_lower().hash(h)
+	}
+}
+
+impl Ord for Name {
+	fn cmp(&self, other: &Name) -> Ordering {
+		return self.s.to_lower().cmp(&other.s.to_lower())
+	}
+}
+
+#[derive(Eq, Ord, Hash)]
+struct Pair {
+	n: Name,
+	k: i32,
+}
+
+fn biggest<T: Ord>(v: &Vec<T>) -> &T {
+	b mut := &v[0]
+	for x in v {
+		if x > b {
+			b = x
+		}
+	}
+	return b
+}
+
+fn main() {
+	println("{(3 as i32).cmp(&5) == Ordering::Less} {"b".cmp("a") == Ordering::Greater} {(1, "x") < (1, "y")}")
+	println("{Shape::Dot < Shape::Circle(0)} {Shape::Circle(5) < Shape::Circle(2)} {Shape::Rect { w: 1, h: 9 } > Shape::Rect { w: 1, h: 2 }}")
+	a := P { name: "ann".to_string(), age: 30 }
+	b := P { name: "ann".to_string(), age: 31 }
+	println("{a < b} {a == b} {a.cmp(&a) == Ordering::Equal} {hash::hash(&a) == hash::hash(&P { name: "ann".to_string(), age: 30 })} {hash::hash(&a) != hash::hash(&b)}")
+	x := Name { s: "Bob".to_string() }
+	y := Name { s: "bOB".to_string() }
+	println("{x == y} {hash::hash(&x) == hash::hash(&y)} {x.cmp(&y) == Ordering::Equal}")
+	p := Pair { n: Name { s: "A".to_string() }, k: 1 }
+	q := Pair { n: Name { s: "a".to_string() }, k: 1 }
+	println("{p == q} {hash::hash(&p) == hash::hash(&q)} {p <= q}")
+	v mut := Vec::new()
+	v.push("pear".to_string())
+	v.push("zebra".to_string())
+	v.push("apple".to_string())
+	println("{biggest(&v)} {cmp::max(4, 9)} {cmp::min("b", "a")} {cmp::clamp(150, 0, 100)}")
+	println("{cmp::Reverse(1) < cmp::Reverse(2)} {Ordering::Less.reverse() == Ordering::Greater}")
+	w1 mut := Vec::new()
+	w1.push(1)
+	w1.push(2)
+	w2 mut := Vec::new()
+	w2.push(1)
+	w2.push(2)
+	w2.push(0)
+	println("{w1 < w2} {hash::hash(&w1) == hash::hash(&w1.clone())} {hash::hash(&"hi") == hash::hash(&"hi".to_string())}")
+	h1 mut := hash::Hasher::with_seed(7)
+	h1.write("abc".as_bytes())
+	h2 mut := hash::Hasher::with_seed(7)
+	h2.write("abc".as_bytes())
+	println("{h1.finish() == h2.finish()} {1.5 < 2.5} {Some(3) > None}")
+}

@@ -1873,6 +1873,28 @@ impl FnCx<'_, '_, '_, '_> {
                     self.b.ins().bxor_imm(e, 1)
                 });
             }
+            if matches!(op, Lt | Le | Gt | Ge) {
+                // Structural ordering (`Ord`), as for `.cmp()`.
+                let mut t = self.op_ty(l);
+                let mut pa = self.op_addr(l);
+                let mut pb = self.op_addr(r);
+                while let Ty::Ref(_, inner) = &t {
+                    if self.cg.is_fat(&t) {
+                        break;
+                    }
+                    pa = self.load(types::I64, pa, 0);
+                    pb = self.load(types::I64, pb, 0);
+                    t = (**inner).clone();
+                }
+                let c = self.cmp_at(pa, pb, &t);
+                let cc = match op {
+                    Lt => IntCC::SignedLessThan,
+                    Le => IntCC::SignedLessThanOrEqual,
+                    Gt => IntCC::SignedGreaterThan,
+                    _ => IntCC::SignedGreaterThanOrEqual,
+                };
+                return Some(self.b.ins().icmp_imm(cc, c, 0));
+            }
             let n = self.cg.typed.fmt_ty(&t);
             self.error(format!(
                 "code generation does not support comparing or combining values of type `{n}` yet"

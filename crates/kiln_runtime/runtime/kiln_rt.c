@@ -408,3 +408,52 @@ void kn_memmove(void *dst, const void *src, size_t n) {
 	if (n)
 		memmove(dst, src, n);
 }
+
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#endif
+
+/* ---- Hashing (std::hash::Hasher) ----
+ * A fast multiply-fold hash (in the style of wyhash/foldhash) with a random
+ * per-process seed, so hash tables resist inputs built to collide. The state
+ * is one u64; every input is mixed in with a 64x64->128 multiply. */
+static inline uint64_t kn_fold_mul(uint64_t a, uint64_t b) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    return (a * b) ^ __umulh(a, b);
+#else
+    __uint128_t p = (__uint128_t)a * b;
+    return (uint64_t)p ^ (uint64_t)(p >> 64);
+#endif
+}
+
+#define KN_H1 0x243f6a8885a308d3ULL
+#define KN_H2 0x13198a2e03707344ULL
+
+void kn_hash_u64(uint64_t *h, int64_t x) {
+    *h = kn_fold_mul(*h ^ (uint64_t)x, KN_H1);
+}
+
+void kn_hash_bytes(uint64_t *h, const uint8_t *p, size_t n) {
+    uint64_t s = *h;
+    size_t i = 0;
+    for (; i + 16 <= n; i += 16) {
+        uint64_t a, b;
+        memcpy(&a, p + i, 8);
+        memcpy(&b, p + i + 8, 8);
+        s = kn_fold_mul(s ^ a, b ^ KN_H1);
+    }
+    if (i + 8 <= n) {
+        uint64_t a;
+        memcpy(&a, p + i, 8);
+        s = kn_fold_mul(s ^ a, KN_H2);
+        i += 8;
+    }
+    uint64_t tail = 0;
+    if (i < n) memcpy(&tail, p + i, n - i);
+    /* The length is mixed in, so "ab"+"c" and "a"+"bc" differ. */
+    *h = kn_fold_mul(s ^ tail, KN_H1 ^ (uint64_t)n);
+}
+
+uint64_t kn_hash_finish(uint64_t h) {
+    return kn_fold_mul(h, KN_H2) ^ h;
+}

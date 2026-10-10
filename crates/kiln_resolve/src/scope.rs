@@ -1628,7 +1628,9 @@ fn static_lifetimes(ty: &Type) -> Type {
     let mut t = ty.clone();
     fn fix(t: &mut Type) {
         match &mut t.kind {
-            TypeKind::Ref { lifetime, inner, .. } => {
+            TypeKind::Ref {
+                lifetime, inner, ..
+            } => {
                 if lifetime.is_none() {
                     *lifetime = Some(Ident {
                         name: "static".into(),

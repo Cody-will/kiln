@@ -516,6 +516,9 @@ impl FnCx<'_, '_, '_, '_> {
                 });
             }
             Ty::Adt(..) => {
+                if let Some(e) = self.user_eq(a, b, t) {
+                    return and(self, e);
+                }
                 // Out of line, so recursive types terminate.
                 let id = self.cg.eq_glue_for(t);
                 let out = self.slot(1, 1);
@@ -696,6 +699,517 @@ impl FnCx<'_, '_, '_, '_> {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Ordering and hashing glue: the structural `Ord::cmp` and `Hash::hash`
+/// behind derived (and built-in) impls, and lookups of hand-written impls,
+/// which take precedence wherever a value of that type is nested.
+impl Codegen<'_, '_> {
+    /// The out-of-line ordering function for `t`: `(out: *mut i8, a, b)`.
+    pub(crate) fn cmp_glue_for(&mut self, t: &Ty) -> FuncId {
+        let key = format!("{t:?}");
+        if let Some(id) = self.cmp_glue.get(&key) {
+            return *id;
+        }
+        let sig = self.ptr_sig(3);
+        self.counter += 1;
+        let name = format!("kn_cmp{}", self.counter);
+        let id = self
+            .module
+            .declare_function(&name, Linkage::Local, &sig)
+            .expect("declare glue");
+        self.cmp_glue.insert(key, id);
+        self.queue.push_back(Work::CmpGlue { id, ty: t.clone() });
+        id
+    }
+
+    /// The out-of-line hash function for `t`: `(hasher: *mut u64, value)`.
+    pub(crate) fn hash_glue_for(&mut self, t: &Ty) -> FuncId {
+        let key = format!("{t:?}");
+        if let Some(id) = self.hash_glue.get(&key) {
+            return *id;
+        }
+        let sig = self.ptr_sig(2);
+        self.counter += 1;
+        let name = format!("kn_hash{}", self.counter);
+        let id = self
+            .module
+            .declare_function(&name, Linkage::Local, &sig)
+            .expect("declare glue");
+        self.hash_glue.insert(key, id);
+        self.queue.push_back(Work::HashGlue { id, ty: t.clone() });
+        id
+    }
+
+    pub(crate) fn define_cmp_glue(&mut self, id: FuncId, t: &Ty) {
+        let t = t.clone();
+        self.with_glue(id, 3, |cx, ps| {
+            let z = cx.b.ins().iconst(types::I8, 0);
+            cx.store(z, ps[0], 0);
+            cx.cmp_fields(ps[1], ps[2], &t, ps[0]);
+        });
+    }
+
+    pub(crate) fn define_hash_glue(&mut self, id: FuncId, t: &Ty) {
+        let t = t.clone();
+        self.with_glue(id, 2, |cx, ps| cx.hash_fields(ps[1], &t, ps[0]));
+    }
+
+    /// The hand-written implementation of `trait_name::method` for `t`, if
+    /// `t` has one (rather than using the trait's default method).
+    pub(crate) fn user_impl(&mut self, t: &Ty, trait_name: &str, method: &str) -> Option<FuncId> {
+        let Ty::Adt(d, _) = t else { return None };
+        if ["String", "Vec", "Box"].iter().any(|n| self.is_lang(t, n)) || self.r.is_core(*d) {
+            return None;
+        }
+        let r = self.r;
+        let tr = r.prelude_type(trait_name)?;
+        let tf = (0..r.fns.len())
+            .find(|&i| r.fns[i].trait_def == Some(tr) && r.fns[i].decl.name.name == method)?;
+        let mut substs = HashMap::new();
+        substs.insert("Self".to_string(), t.clone());
+        match self.typed.resolve_trait_method(tf, &substs) {
+            Some((i2, s2)) if i2 != tf => Some(self.instance(i2, 0, s2, Abi::Plain)),
+            _ => None,
+        }
+    }
+}
+
+impl FnCx<'_, '_, '_, '_> {
+    /// Compares the values at `a` and `b` (type `t`): an `i8` -1, 0, or 1.
+    pub(crate) fn cmp_at(&mut self, a: Value, b: Value, t: &Ty) -> Value {
+        let res = self.slot(1, 1);
+        let z = self.b.ins().iconst(types::I8, 0);
+        self.store(z, res, 0);
+        self.cmp_into(a, b, t, res);
+        self.load(types::I8, res, 0)
+    }
+
+    /// The structural ordering of an ADT, ignoring its own `Ord` impl (but
+    /// not those of its fields): the body of the default `Ord::cmp`.
+    pub(crate) fn derived_cmp(&mut self, a: Value, b: Value, t: &Ty) -> Value {
+        if !matches!(t, Ty::Adt(..))
+            || self.cg.is_lang(t, "Vec")
+            || self.cg.is_lang(t, "String")
+            || self.cg.is_lang(t, "Box")
+        {
+            return self.cmp_at(a, b, t);
+        }
+        let id = self.cg.cmp_glue_for(t);
+        let out = self.slot(1, 1);
+        self.call_fn(id, &[out, a, b]);
+        self.load(types::I8, out, 0)
+    }
+
+    /// Structural equality of an ADT ignoring its own `Eq` impl.
+    pub(crate) fn derived_eq(&mut self, a: Value, b: Value, t: &Ty) -> Value {
+        if !matches!(t, Ty::Adt(..))
+            || self.cg.is_lang(t, "Vec")
+            || self.cg.is_lang(t, "String")
+            || self.cg.is_lang(t, "Box")
+        {
+            return self.eq_at(a, b, t);
+        }
+        let id = self.cg.eq_glue_for(t);
+        let out = self.slot(1, 1);
+        self.call_fn(id, &[out, a, b]);
+        self.load(types::I8, out, 0)
+    }
+
+    /// Structural hash of a value ignoring its own `Hash` impl.
+    pub(crate) fn derived_hash(&mut self, a: Value, t: &Ty, h: Value) {
+        if !matches!(t, Ty::Adt(..))
+            || self.cg.is_lang(t, "Vec")
+            || self.cg.is_lang(t, "String")
+            || self.cg.is_lang(t, "Box")
+        {
+            return self.hash_into(a, t, h);
+        }
+        let id = self.cg.hash_glue_for(t);
+        self.call_fn(id, &[h, a]);
+    }
+
+    /// Calls a hand-written `eq` for `t`; returns its `i8` result.
+    pub(crate) fn user_eq(&mut self, a: Value, b: Value, t: &Ty) -> Option<Value> {
+        let id = self.cg.user_impl(t, "Eq", "eq")?;
+        Some(self.call_ref_method(id, a, b, 1))
+    }
+
+    /// Calls `id(ret, &a, &b)` and loads the `size`-byte scalar result.
+    fn call_ref_method(&mut self, id: FuncId, a: Value, b: Value, size: u32) -> Value {
+        let out = self.slot(size.max(1), size.max(1));
+        let sa = self.slot(8, 8);
+        self.store(a, sa, 0);
+        let sb = self.slot(8, 8);
+        self.store(b, sb, 0);
+        self.call_fn(id, &[out, sa, sb]);
+        let st = if size == 4 { types::I32 } else { types::I8 };
+        self.load(st, out, 0)
+    }
+
+    /// Stores `gt - lt` (each an `i8` 0/1) into `*res`.
+    fn set_order(&mut self, lt: Value, gt: Value, res: Value) {
+        let v = self.b.ins().isub(gt, lt);
+        self.store(v, res, 0);
+    }
+
+    /// Compares `a` and `b` into `*res` unless an earlier part already decided it.
+    fn cmp_into(&mut self, a: Value, b: Value, t: &Ty, res: Value) {
+        let r = self.load(types::I8, res, 0);
+        let undecided = self.b.ins().icmp_imm(IntCC::Equal, r, 0);
+        let t = t.clone();
+        self.when(undecided, |cx| cx.cmp_now(a, b, &t, res));
+    }
+
+    fn cmp_strs(&mut self, (p, n): (Value, Value), (q, m): (Value, Value), res: Value) {
+        let c = self.call_rt("kn_str_cmp", &[p, n, q, m]).unwrap();
+        let lt = self.b.ins().icmp_imm(IntCC::SignedLessThan, c, 0);
+        let gt = self.b.ins().icmp_imm(IntCC::SignedGreaterThan, c, 0);
+        self.set_order(lt, gt, res);
+    }
+
+    /// Lexicographic comparison of two sequences (`data`, `len`).
+    fn cmp_seq(&mut self, (da, la): (Value, Value), (db, lb): (Value, Value), et: &Ty, res: Value) {
+        let size = self.cg.layout(et).size;
+        let shorter = self.b.ins().icmp(IntCC::UnsignedLessThan, la, lb);
+        let n = self.b.ins().select(shorter, la, lb);
+        let et2 = et.clone();
+        self.for_count(n, |cx, i| {
+            let off = cx.b.ins().imul_imm(i, size as i64);
+            let x = cx.b.ins().iadd(da, off);
+            let y = cx.b.ins().iadd(db, off);
+            cx.cmp_into(x, y, &et2, res);
+        });
+        let r = self.load(types::I8, res, 0);
+        let undecided = self.b.ins().icmp_imm(IntCC::Equal, r, 0);
+        self.when(undecided, |cx| {
+            let lt = cx.b.ins().icmp(IntCC::UnsignedLessThan, la, lb);
+            let gt = cx.b.ins().icmp(IntCC::UnsignedGreaterThan, la, lb);
+            cx.set_order(lt, gt, res);
+        });
+    }
+
+    /// Runs `f(i)` for `i` in `0..n`.
+    fn for_count(&mut self, n: Value, f: impl Fn(&mut Self, Value)) {
+        let i = self.slot(8, 8);
+        let z = self.iconst(0);
+        self.store(z, i, 0);
+        let (head, body, done) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        self.b.ins().jump(head, &[]);
+        self.b.switch_to_block(head);
+        let iv = self.load(types::I64, i, 0);
+        let more = self.b.ins().icmp(IntCC::UnsignedLessThan, iv, n);
+        self.b.ins().brif(more, body, &[], done, &[]);
+        self.b.switch_to_block(body);
+        f(self, iv);
+        let next = self.b.ins().iadd_imm(iv, 1);
+        self.store(next, i, 0);
+        self.b.ins().jump(head, &[]);
+        self.b.switch_to_block(done);
+    }
+
+    /// Compares assuming `*res` is 0 (undecided so far).
+    fn cmp_now(&mut self, a: Value, b: Value, t: &Ty, res: Value) {
+        use kiln_resolve::PrimTy;
+        if self.cg.is_lang(t, "String") {
+            let x = (self.load(types::I64, a, 0), self.load(types::I64, a, 16));
+            let y = (self.load(types::I64, b, 0), self.load(types::I64, b, 16));
+            return self.cmp_strs(x, y, res);
+        }
+        match t {
+            Ty::Unit | Ty::Never => {}
+            Ty::Ref(_, inner) | Ty::Ptr(_, inner) if matches!(**inner, Ty::Prim(PrimTy::Str)) => {
+                let x = (self.load(types::I64, a, 0), self.load(types::I64, a, 8));
+                let y = (self.load(types::I64, b, 0), self.load(types::I64, b, 8));
+                self.cmp_strs(x, y, res);
+            }
+            Ty::Ref(_, inner) if matches!(**inner, Ty::Slice(_)) => {
+                let Ty::Slice(et) = &**inner else {
+                    unreachable!()
+                };
+                let x = (self.load(types::I64, a, 0), self.load(types::I64, a, 8));
+                let y = (self.load(types::I64, b, 0), self.load(types::I64, b, 8));
+                let et = (**et).clone();
+                self.cmp_seq(x, y, &et, res);
+            }
+            Ty::Ref(_, inner) if !self.cg.is_fat(t) => {
+                let (pa, pb) = (self.load(types::I64, a, 0), self.load(types::I64, b, 0));
+                let inner = (**inner).clone();
+                self.cmp_now(pa, pb, &inner, res);
+            }
+            Ty::Prim(PrimTy::F32 | PrimTy::F64) => {
+                use cranelift_codegen::ir::condcodes::FloatCC;
+                let st = self.cg.scalar(t).unwrap();
+                let (x, y) = (self.load(st, a, 0), self.load(st, b, 0));
+                let lt = self.b.ins().fcmp(FloatCC::LessThan, x, y);
+                let gt = self.b.ins().fcmp(FloatCC::GreaterThan, x, y);
+                self.set_order(lt, gt, res);
+            }
+            _ if self.cg.scalar(t).is_some()
+                && !self.cg.is_lang(t, "Box")
+                && !matches!(t, Ty::Adt(..)) =>
+            {
+                let st = self.cg.scalar(t).unwrap();
+                let (x, y) = (self.load(st, a, 0), self.load(st, b, 0));
+                let (l, g) = if Self::is_signed(t) {
+                    (IntCC::SignedLessThan, IntCC::SignedGreaterThan)
+                } else {
+                    (IntCC::UnsignedLessThan, IntCC::UnsignedGreaterThan)
+                };
+                let lt = self.b.ins().icmp(l, x, y);
+                let gt = self.b.ins().icmp(g, x, y);
+                self.set_order(lt, gt, res);
+            }
+            Ty::Tuple(ts) => {
+                for (i, et) in ts.clone().iter().enumerate() {
+                    let (off, _) = self.cg.field(t, &i.to_string());
+                    let x = self.b.ins().iadd_imm(a, off as i64);
+                    let y = self.b.ins().iadd_imm(b, off as i64);
+                    self.cmp_into(x, y, et, res);
+                }
+            }
+            Ty::Array(et, n) => {
+                let n = self.iconst(*n as i64);
+                let et = (**et).clone();
+                self.cmp_seq((a, n), (b, n), &et, res);
+            }
+            Ty::Adt(_, args) if self.cg.is_lang(t, "Box") => {
+                let (pa, pb) = (self.load(types::I64, a, 0), self.load(types::I64, b, 0));
+                let inner = args[0].clone();
+                self.cmp_now(pa, pb, &inner, res);
+            }
+            Ty::Adt(_, args) if self.cg.is_lang(t, "Vec") => {
+                let x = (self.load(types::I64, a, 0), self.load(types::I64, a, 16));
+                let y = (self.load(types::I64, b, 0), self.load(types::I64, b, 16));
+                let et = args[0].clone();
+                self.cmp_seq(x, y, &et, res);
+            }
+            Ty::Adt(..) => {
+                if let Some(id) = self.cg.user_impl(t, "Ord", "cmp") {
+                    // `Ordering` is Less = 0, Equal = 1, Greater = 2.
+                    let tag = self.call_ref_method(id, a, b, 4);
+                    let v = self.b.ins().iadd_imm(tag, -1);
+                    let v = self.b.ins().ireduce(types::I8, v);
+                    self.store(v, res, 0);
+                    return;
+                }
+                let v = self.derived_cmp(a, b, t);
+                self.store(v, res, 0);
+            }
+            _ => {
+                let n = self.cg.typed.fmt_ty(t);
+                self.error(format!("cannot order values of type `{n}`"));
+            }
+        }
+    }
+
+    /// Field-by-field ordering of an ADT (the body of its cmp glue). Enum
+    /// values order by variant (declaration order), then by payload.
+    fn cmp_fields(&mut self, a: Value, b: Value, t: &Ty, res: Value) {
+        let variants = self.cg.variants_of(t);
+        let is_enum = variants.first().is_some_and(|v| v.is_some());
+        if !is_enum {
+            for (n, ft) in self.cg.typed.adt_fields(t, None) {
+                let (off, _) = self.cg.field(t, &n);
+                let x = self.b.ins().iadd_imm(a, off as i64);
+                let y = self.b.ins().iadd_imm(b, off as i64);
+                self.cmp_into(x, y, &ft, res);
+            }
+            return;
+        }
+        let ta = self.load(types::I32, a, 0);
+        let tb = self.load(types::I32, b, 0);
+        let lt = self.b.ins().icmp(IntCC::UnsignedLessThan, ta, tb);
+        let gt = self.b.ins().icmp(IntCC::UnsignedGreaterThan, ta, tb);
+        // `None` orders before `Some` although `Some` is declared first.
+        let is_option = matches!(t, Ty::Adt(d, _) if self.cg.r.is_core(*d) && self.cg.r.def(*d).name == "Option");
+        let (lt, gt) = if is_option { (gt, lt) } else { (lt, gt) };
+        self.set_order(lt, gt, res);
+        let same = self.b.ins().icmp(IntCC::Equal, ta, tb);
+        let t = t.clone();
+        self.when(same, |cx| {
+            for (vi, v) in variants.into_iter().enumerate() {
+                let fields = cx.cg.typed.adt_fields(&t, v);
+                if fields.is_empty() {
+                    continue;
+                }
+                let prefix = v
+                    .map(|v| format!("{}.", cx.cg.r.def(v).name))
+                    .unwrap_or_default();
+                let tag = cx.load(types::I32, a, 0);
+                let is = cx.b.ins().icmp_imm(IntCC::Equal, tag, vi as i64);
+                cx.when(is, |cx| {
+                    for (n, ft) in &fields {
+                        let (off, _) = cx.cg.field(&t, &format!("{prefix}{n}"));
+                        let x = cx.b.ins().iadd_imm(a, off as i64);
+                        let y = cx.b.ins().iadd_imm(b, off as i64);
+                        cx.cmp_into(x, y, ft, res);
+                    }
+                });
+            }
+        });
+    }
+
+    fn hash_seq(&mut self, data: Value, len: Value, et: &Ty, h: Value) {
+        self.call_rt("kn_hash_u64", &[h, len]);
+        let size = self.cg.layout(et).size;
+        let et2 = et.clone();
+        self.for_count(len, |cx, i| {
+            let off = cx.b.ins().imul_imm(i, size as i64);
+            let x = cx.b.ins().iadd(data, off);
+            cx.hash_into(x, &et2, h);
+        });
+    }
+
+    /// Feeds the value at `a` (type `t`) to the hasher state at `h`. Values
+    /// that are equal hash the same; `-0.0` and `0.0` are not distinguished.
+    pub(crate) fn hash_into(&mut self, a: Value, t: &Ty, h: Value) {
+        use kiln_resolve::PrimTy;
+        if self.cg.is_lang(t, "String") {
+            let (p, n) = (self.load(types::I64, a, 0), self.load(types::I64, a, 16));
+            self.call_rt("kn_hash_bytes", &[h, p, n]);
+            return;
+        }
+        match t {
+            Ty::Unit | Ty::Never => {}
+            Ty::Ref(_, inner) | Ty::Ptr(_, inner) if matches!(**inner, Ty::Prim(PrimTy::Str)) => {
+                let (p, n) = (self.load(types::I64, a, 0), self.load(types::I64, a, 8));
+                self.call_rt("kn_hash_bytes", &[h, p, n]);
+            }
+            Ty::Ref(_, inner) if matches!(**inner, Ty::Slice(_)) => {
+                let Ty::Slice(et) = &**inner else {
+                    unreachable!()
+                };
+                let (p, n) = (self.load(types::I64, a, 0), self.load(types::I64, a, 8));
+                let et = (**et).clone();
+                self.hash_seq(p, n, &et, h);
+            }
+            Ty::Ref(_, inner) if !self.cg.is_fat(t) => {
+                let p = self.load(types::I64, a, 0);
+                let inner = (**inner).clone();
+                self.hash_into(p, &inner, h);
+            }
+            Ty::Prim(PrimTy::F32 | PrimTy::F64) => {
+                let st = self.cg.scalar(t).unwrap();
+                let x = self.load(st, a, 0);
+                // +0.0 == -0.0, so they must hash alike.
+                let z = if st == types::F64 {
+                    self.b.ins().f64const(0.0)
+                } else {
+                    self.b.ins().f32const(0.0)
+                };
+                let x = self.b.ins().fadd(x, z);
+                let it = if st == types::F64 {
+                    types::I64
+                } else {
+                    types::I32
+                };
+                let bits = self
+                    .b
+                    .ins()
+                    .bitcast(it, cranelift_codegen::ir::MemFlags::new(), x);
+                let bits = if it == types::I64 {
+                    bits
+                } else {
+                    self.b.ins().uextend(types::I64, bits)
+                };
+                self.call_rt("kn_hash_u64", &[h, bits]);
+            }
+            _ if self.cg.scalar(t).is_some()
+                && !self.cg.is_lang(t, "Box")
+                && !matches!(t, Ty::Adt(..)) =>
+            {
+                let st = self.cg.scalar(t).unwrap();
+                let x = self.load(st, a, 0);
+                let x = if st == types::I64 {
+                    x
+                } else if Self::is_signed(t) {
+                    self.b.ins().sextend(types::I64, x)
+                } else {
+                    self.b.ins().uextend(types::I64, x)
+                };
+                self.call_rt("kn_hash_u64", &[h, x]);
+            }
+            Ty::Tuple(ts) => {
+                for (i, et) in ts.clone().iter().enumerate() {
+                    let (off, _) = self.cg.field(t, &i.to_string());
+                    let x = self.b.ins().iadd_imm(a, off as i64);
+                    self.hash_into(x, et, h);
+                }
+            }
+            Ty::Array(et, n) => {
+                let n = self.iconst(*n as i64);
+                let et = (**et).clone();
+                self.hash_seq(a, n, &et, h);
+            }
+            Ty::Adt(_, args) if self.cg.is_lang(t, "Box") => {
+                let p = self.load(types::I64, a, 0);
+                let inner = args[0].clone();
+                self.hash_into(p, &inner, h);
+            }
+            Ty::Adt(_, args) if self.cg.is_lang(t, "Vec") => {
+                let (p, n) = (self.load(types::I64, a, 0), self.load(types::I64, a, 16));
+                let et = args[0].clone();
+                self.hash_seq(p, n, &et, h);
+            }
+            Ty::Adt(..) => {
+                if let Some(id) = self.cg.user_impl(t, "Hash", "hash") {
+                    let out = self.slot(1, 1);
+                    let sa = self.slot(8, 8);
+                    self.store(a, sa, 0);
+                    let sh = self.slot(8, 8);
+                    self.store(h, sh, 0);
+                    self.call_fn(id, &[out, sa, sh]);
+                    return;
+                }
+                let id = self.cg.hash_glue_for(t);
+                self.call_fn(id, &[h, a]);
+            }
+            _ => {
+                let n = self.cg.typed.fmt_ty(t);
+                self.error(format!("cannot hash values of type `{n}`"));
+            }
+        }
+    }
+
+    /// Field-by-field hash of an ADT (the body of its hash glue).
+    fn hash_fields(&mut self, a: Value, t: &Ty, h: Value) {
+        let variants = self.cg.variants_of(t);
+        let is_enum = variants.first().is_some_and(|v| v.is_some());
+        if !is_enum {
+            for (n, ft) in self.cg.typed.adt_fields(t, None) {
+                let (off, _) = self.cg.field(t, &n);
+                let x = self.b.ins().iadd_imm(a, off as i64);
+                self.hash_into(x, &ft, h);
+            }
+            return;
+        }
+        let tag = self.load(types::I32, a, 0);
+        let tag64 = self.b.ins().uextend(types::I64, tag);
+        self.call_rt("kn_hash_u64", &[h, tag64]);
+        let t = t.clone();
+        for (vi, v) in variants.into_iter().enumerate() {
+            let fields = self.cg.typed.adt_fields(&t, v);
+            if fields.is_empty() {
+                continue;
+            }
+            let prefix = v
+                .map(|v| format!("{}.", self.cg.r.def(v).name))
+                .unwrap_or_default();
+            let is = self.b.ins().icmp_imm(IntCC::Equal, tag, vi as i64);
+            self.when(is, |cx| {
+                for (n, ft) in &fields {
+                    let (off, _) = cx.cg.field(&t, &format!("{prefix}{n}"));
+                    let x = cx.b.ins().iadd_imm(a, off as i64);
+                    cx.hash_into(x, ft, h);
+                }
+            });
         }
     }
 }

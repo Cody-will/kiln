@@ -35,6 +35,8 @@ pub const STD_MODULES: &[(&str, &str)] = &[
     ("unicode", include_str!("../std/unicode.kn")),
     ("utf8", include_str!("../std/utf8.kn")),
     ("strings", include_str!("../std/strings.kn")),
+    ("cmp", include_str!("../std/cmp.kn")),
+    ("hash", include_str!("../std/hash.kn")),
     ("ptr", include_str!("../std/ptr.kn")),
     ("time", include_str!("../std/time.kn")),
     ("sync", include_str!("../std/sync.kn")),

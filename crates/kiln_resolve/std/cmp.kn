@@ -1,0 +1,52 @@
+// Comparing and ordering values. `Eq`, `Ord`, and `Ordering` are in the
+// prelude; this module has helpers that use them.
+//
+//	cmp::max(3, 7)                 // 7
+//	cmp::clamp(x, 0, 100)
+//	people.sort_by_key(|p| cmp::Reverse(p.age))
+
+pub import Ordering
+
+// The larger of `a` and `b` (`b` if they are equal).
+pub fn max<T: Ord>(a: T, b: T) -> T {
+	if b.cmp(&a) == Ordering::Less {
+		return a
+	}
+	return b
+}
+
+// The smaller of `a` and `b` (`a` if they are equal).
+pub fn min<T: Ord>(a: T, b: T) -> T {
+	if b.cmp(&a) == Ordering::Less {
+		return b
+	}
+	return a
+}
+
+// `v` limited to the range `lo..=hi`.
+pub fn clamp<T: Ord>(v: T, lo: T, hi: T) -> T {
+	if v.cmp(&lo) == Ordering::Less {
+		return lo
+	}
+	if v.cmp(&hi) == Ordering::Greater {
+		return hi
+	}
+	return v
+}
+
+// Wraps a value to reverse its ordering (for descending sorts).
+#[derive(Clone, Copy, Eq, Hash, Debug)]
+pub struct Reverse<T>(pub T)
+
+impl<T: Ord> Ord for Reverse<T> {
+	fn cmp(&self, other: &Reverse<T>) -> Ordering {
+		return other.0.cmp(&self.0)
+	}
+}
+
+// Field-by-field equality, ignoring any hand-written `eq` of `T` itself
+// (fields still use theirs). This is the default `Eq::eq`.
+pub fn derived_eq<T>(a: &T, b: &T) -> bool
+
+// Field-by-field ordering: the default `Ord::cmp`.
+pub fn derived_cmp<T>(a: &T, b: &T) -> Ordering

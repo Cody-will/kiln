@@ -1961,3 +1961,62 @@ int64_t kn_os_kind(void) {
 static int64_t log_level = -1;
 int64_t kn_log_level_get(void) { return kn_atomic_load(&log_level); }
 void kn_log_level_set(int64_t l) { kn_atomic_store(&log_level, l); }
+
+/* ----- randomness ---------------------------------------------------------- */
+
+#ifdef _WIN32
+#include <bcrypt.h>
+#pragma comment(lib, "bcrypt.lib")
+#elif defined(__APPLE__)
+#include <sys/random.h>
+#elif defined(__linux__)
+#include <sys/random.h>
+#endif
+
+/* Fills buf with n bytes from the operating system's secure random source.
+ * Returns 1 on success, 0 on failure. */
+int32_t kn_random_bytes(uint8_t *buf, size_t n) {
+#ifdef _WIN32
+    return BCryptGenRandom(NULL, buf, (ULONG)n, BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
+#else
+    while (n > 0) {
+        size_t k = n > 256 ? 256 : n;
+#if defined(__APPLE__)
+        if (getentropy(buf, k) != 0) return 0;
+#else
+        ssize_t r = getrandom(buf, k, 0);
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            return 0;
+        }
+        k = (size_t)r;
+#endif
+        buf += k;
+        n -= k;
+    }
+    return 1;
+#endif
+}
+
+/* The per-process seed for std::hash::Hasher (random, never zero). */
+static uint64_t kn_seed_value;
+uint64_t kn_hash_seed(void) {
+#ifdef _WIN32
+    uint64_t s = (uint64_t)InterlockedCompareExchange64((volatile LONG64 *)&kn_seed_value, 0, 0);
+#else
+    uint64_t s = __atomic_load_n(&kn_seed_value, __ATOMIC_RELAXED);
+#endif
+    if (s) return s;
+    uint64_t r = 0;
+    if (!kn_random_bytes((uint8_t *)&r, sizeof r))
+        r = (uint64_t)time(NULL) ^ (uint64_t)(uintptr_t)&r;
+    r |= 1;
+#ifdef _WIN32
+    InterlockedCompareExchange64((volatile LONG64 *)&kn_seed_value, (LONG64)r, 0);
+    return (uint64_t)InterlockedCompareExchange64((volatile LONG64 *)&kn_seed_value, 0, 0);
+#else
+    uint64_t zero = 0;
+    __atomic_compare_exchange_n(&kn_seed_value, &zero, r, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+    return __atomic_load_n(&kn_seed_value, __ATOMIC_RELAXED);
+#endif
+}

@@ -158,7 +158,10 @@ impl Checker<'_, '_> {
         };
         for &(d, i) in &self.r.statics.clone() {
             let def = self.r.def(d);
-            if matches!(def.item.map(|it| &it.kind), Some(ItemKind::Static { mutable: true, .. })) {
+            if matches!(
+                def.item.map(|it| &it.kind),
+                Some(ItemKind::Static { mutable: true, .. })
+            ) {
                 continue;
             }
             let (name, span) = (def.name.clone(), self.r.fns[i].decl.name.span);
@@ -323,7 +326,11 @@ impl Body<'_, '_, '_> {
                 })
                 .collect(),
             bounds: self.bounds.clone(),
-            iter_items: self.iter_items.iter().map(|(k, v)| (*k, z(self.c, v))).collect(),
+            iter_items: self
+                .iter_items
+                .iter()
+                .map(|(k, v)| (*k, z(self.c, v)))
+                .collect(),
         }
     }
 
@@ -846,6 +853,25 @@ impl Body<'_, '_, '_> {
                         return Some(self.instantiate_sig(i, subst));
                     }
                 }
+            }
+        }
+        // Built-in and derived implementations of `Eq`, `Ord`, and `Hash`
+        // have no impl block; their methods are the traits' defaults. (On a
+        // reference, autoderef finds them on the referent.)
+        for tn in ["Eq", "Ord", "Hash"] {
+            if matches!(t, Ty::Ref(..)) {
+                break;
+            }
+            let Some(tr) = self.c.r.prelude_type(tn) else {
+                continue;
+            };
+            let Some(&i) = self.c.traits.get(&tr).and_then(|ti| ti.methods.get(name)) else {
+                continue;
+            };
+            if self.implements(&t, tr) {
+                let mut subst = HashMap::new();
+                subst.insert("Self".to_string(), t.clone());
+                return Some(self.instantiate_sig(i, subst));
             }
         }
         None
