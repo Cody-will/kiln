@@ -6,8 +6,9 @@
 //! - `kiln parse <file>`: print the AST.
 //! - `kiln check <file>`: parse, resolve names, type-check, and borrow-check; print diagnostics.
 //! - `kiln mir <file>`: print the lowered MIR (for compiler debugging).
-//! - `kiln build <file> [-o <output>]`: compile to a native executable.
-//! - `kiln run <file> [args...]`: build to a temporary executable and run it.
+//! - `kiln build [--release] <file> [-o <output>]`: compile to a native executable
+//!   (debug builds panic on integer overflow; release builds wrap).
+//! - `kiln run [--release] <file> [args...]`: build to a temporary executable and run it.
 //!
 //! Exit status is 0 on success, 1 when the file has errors, and 2 on usage errors
 //! (`kiln run` exits with the program's status).
@@ -23,10 +24,12 @@ USAGE:
     kiln parse <file.kn>    Print the syntax tree
     kiln check <file.kn>    Resolve names, type-check, and borrow-check
     kiln mir <file.kn>      Print the mid-level IR (compiler debugging)
-    kiln build <file.kn> [-o <output>]
+    kiln build [--release] <file.kn> [-o <output>]
                             Compile to a native executable
-    kiln run <file.kn> [args...]
+    kiln run [--release] <file.kn> [args...]
                             Build and run
+
+    Debug builds (the default) panic on integer overflow; --release builds wrap.
     kiln help               Show this message
     kiln --version          Show the version";
 
@@ -36,15 +39,36 @@ fn main() -> ExitCode {
         [cmd, file] if cmd == "lex" || cmd == "parse" || cmd == "check" || cmd == "mir" => {
             run(cmd, file)
         }
-        [cmd, file, rest @ ..] if cmd == "build" => match rest {
-            [] => build(file, None),
-            [o, out] if o == "-o" => build(file, Some(out)),
-            _ => {
-                eprintln!("{USAGE}");
-                ExitCode::from(2)
+        [cmd, rest @ ..] if cmd == "build" => {
+            let mut opts = kiln_codegen::Options::default();
+            let (mut file, mut out) = (None, None);
+            let mut it = rest.iter();
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--release" => opts.release = true,
+                    "-o" => out = it.next(),
+                    _ if file.is_none() && !a.starts_with('-') => file = Some(a),
+                    _ => return usage_error(),
+                }
             }
-        },
-        [cmd, file, rest @ ..] if cmd == "run" => run_program(file, rest),
+            match (file, rest.iter().any(|a| a == "-o") == out.is_some()) {
+                (Some(f), true) => build(f, out, opts),
+                _ => usage_error(),
+            }
+        }
+        [cmd, rest @ ..] if cmd == "run" => {
+            // Options come before the file; everything after it goes to the program.
+            let mut opts = kiln_codegen::Options::default();
+            let mut i = 0;
+            while i < rest.len() && rest[i] == "--release" {
+                opts.release = true;
+                i += 1;
+            }
+            match rest.get(i) {
+                Some(f) if !f.starts_with('-') => run_program(f, &rest[i + 1..], opts),
+                _ => usage_error(),
+            }
+        }
         [flag] if flag == "--version" || flag == "-V" => {
             println!("kiln {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -110,8 +134,18 @@ fn default_output(file: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{stem}{}", std::env::consts::EXE_SUFFIX))
 }
 
-fn build_to(file: &str, src: &str, out: &std::path::Path) -> Result<(), ExitCode> {
-    match kiln_codegen::build_source(src, out) {
+fn usage_error() -> ExitCode {
+    eprintln!("{USAGE}");
+    ExitCode::from(2)
+}
+
+fn build_to(
+    file: &str,
+    src: &str,
+    out: &std::path::Path,
+    opts: kiln_codegen::Options,
+) -> Result<(), ExitCode> {
+    match kiln_codegen::build_source(src, out, opts) {
         Ok(()) => Ok(()),
         Err(kiln_codegen::BuildError::Diagnostics(errs)) => Err(report(file, src, &errs)),
         Err(kiln_codegen::BuildError::Other(msg)) => {
@@ -121,14 +155,14 @@ fn build_to(file: &str, src: &str, out: &std::path::Path) -> Result<(), ExitCode
     }
 }
 
-fn build(file: &str, out: Option<&String>) -> ExitCode {
+fn build(file: &str, out: Option<&String>, opts: kiln_codegen::Options) -> ExitCode {
     let Some(src) = read(file) else {
         return ExitCode::from(2);
     };
     let out = out
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| default_output(file));
-    match build_to(file, &src, &out) {
+    match build_to(file, &src, &out, opts) {
         Ok(()) => {
             println!("built {}", out.display());
             ExitCode::SUCCESS
@@ -137,7 +171,7 @@ fn build(file: &str, out: Option<&String>) -> ExitCode {
     }
 }
 
-fn run_program(file: &str, args: &[String]) -> ExitCode {
+fn run_program(file: &str, args: &[String], opts: kiln_codegen::Options) -> ExitCode {
     let Some(src) = read(file) else {
         return ExitCode::from(2);
     };
@@ -147,7 +181,7 @@ fn run_program(file: &str, args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
     let exe = dir.join(default_output(file));
-    if let Err(c) = build_to(file, &src, &exe) {
+    if let Err(c) = build_to(file, &src, &exe, opts) {
         let _ = std::fs::remove_dir_all(&dir);
         return c;
     }

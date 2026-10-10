@@ -144,6 +144,13 @@ impl Codegen<'_, '_> {
                 }
             },
             Ty::Prim(PrimTy::Str) | Ty::Slice(_) | Ty::Dyn(_) => Layout { size: 0, align: 1 },
+            Ty::Array(x, n) => {
+                let e = self.layout(x);
+                Layout {
+                    size: e.size.saturating_mul(*n as u32),
+                    align: e.align,
+                }
+            }
             _ => {
                 self.layout_error(t);
                 word
@@ -269,6 +276,7 @@ impl Codegen<'_, '_> {
                 }
             }
             Ty::Tuple(ts) => ts.iter().any(|x| self.needs_drop(x)),
+            Ty::Array(x, n) => *n > 0 && self.needs_drop(x),
             _ => false,
         };
         self.needs_drop_cache.insert(key, b);

@@ -9,8 +9,8 @@ box holds boxed
 hello hello
 hello
 end of main
-loop defer
-loop defer
+loop defer 1
+loop defer 0
 deferred 2
 deferred 1
 drop boxed

@@ -1,0 +1,11 @@
+x is 2
+end of main
+deferred show 9
+drop 9
+deferred read hi
+deferred show 7
+drop 7
+x was 1
+loop defer 2
+loop defer 1
+loop defer 0

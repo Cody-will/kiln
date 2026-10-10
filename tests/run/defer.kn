@@ -1,0 +1,35 @@
+struct N {
+	id: i32,
+}
+
+impl Drop for N {
+	fn drop(&mut self) {
+		println("drop {self.id}")
+	}
+}
+
+fn show(n: N) {
+	println("deferred show {n.id}")
+}
+
+fn read(s: &String) {
+	println("deferred read {s}")
+}
+
+fn main() {
+	for i in 0..3 {
+		defer println("loop defer {i}")
+	}
+	x mut := 1
+	defer println("x was {x}")
+	x = 2
+	println("x is {x}")
+	n := N { id: 7 }
+	defer show(n)
+	s := String::from("hi")
+	defer read(&s)
+	if x == 2 {
+		defer show(N { id: 9 })
+	}
+	println("end of main")
+}

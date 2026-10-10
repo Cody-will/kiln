@@ -2,7 +2,8 @@
 //! run it, and compare its output with the matching `.out` file.
 //!
 //! The expected file holds the program's stdout, then its stderr, then
-//! `[exit N]` when the exit status is not 0. Set `KILN_BLESS=1` to rewrite the
+//! `[exit N]` when the exit status is not 0. A first line `// flags: ...` passes
+//! extra `kiln build` flags (e.g. `--release`). Set `KILN_BLESS=1` to rewrite the
 //! expected files from the actual output.
 
 use std::path::{Path, PathBuf};
@@ -26,8 +27,17 @@ fn scratch(name: &str) -> PathBuf {
 fn build_and_run(src: &Path, dir: &Path) -> Result<String, String> {
     let stem = src.file_stem().unwrap().to_str().unwrap();
     let exe = dir.join(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
+    // A first line `// flags: --release` passes build flags.
+    let text = std::fs::read_to_string(src).unwrap();
+    let flags: Vec<&str> = text
+        .lines()
+        .next()
+        .and_then(|l| l.strip_prefix("// flags:"))
+        .map(|f| f.split_whitespace().collect())
+        .unwrap_or_default();
     let b = Command::new(kiln())
         .arg("build")
+        .args(&flags)
         .arg(src)
         .arg("-o")
         .arg(&exe)

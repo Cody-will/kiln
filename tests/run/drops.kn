@@ -1,0 +1,67 @@
+struct N {
+	id: i32,
+}
+
+impl Drop for N {
+	fn drop(&mut self) {
+		println("drop {self.id}")
+	}
+}
+
+struct Pair {
+	a: N,
+	b: N,
+}
+
+fn take(n: N) {
+	println("took {n.id}")
+}
+
+fn find(v: Vec<N>, want: i32) -> Option<N> {
+	for n in v {
+		if n.id == want {
+			return Some(n)
+		}
+	}
+	return None
+}
+
+fn early(flag: bool) -> i32 {
+	{
+		inner := N { id: 50 }
+		if flag {
+			return 1
+		}
+		println("not early {inner.id}")
+	}
+	return 0
+}
+
+fn main() {
+	println("-- early return from a by-value loop")
+	v mut := Vec::new()
+	v.push(N { id: 1 })
+	v.push(N { id: 2 })
+	v.push(N { id: 3 })
+	r := find(v, 2)
+	println("-- partial moves")
+	p := Pair { a: N { id: 10 }, b: N { id: 11 } }
+	take(p.a)
+	q mut := Pair { a: N { id: 20 }, b: N { id: 21 } }
+	take(q.b)
+	q.b = N { id: 22 }
+	println("-- early return from a block")
+	early(true)
+	println("-- break and continue")
+	for i in 0..3 {
+		n := N { id: 30 + i }
+		if i == 0 {
+			continue
+		}
+		if i == 2 {
+			break
+		}
+		println("body {n.id}")
+	}
+	println("-- end")
+}

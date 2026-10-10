@@ -288,6 +288,11 @@ impl FnCx<'_, '_, '_, '_> {
                 let t = self.op_ty(&args[0]);
                 let a = self.op_addr(&args[0]);
                 let n = match &t {
+                    Ty::Array(_, n) => self.iconst(*n as i64),
+                    Ty::Ref(_, x) if matches!(**x, Ty::Array(..)) => match &**x {
+                        Ty::Array(_, n) => self.iconst(*n as i64),
+                        _ => unreachable!(),
+                    },
                     Ty::Ref(_, x) if matches!(**x, Ty::Slice(_)) => self.load(types::I64, a, 8),
                     Ty::Ref(..) => {
                         let p = self.load(types::I64, a, 0);
@@ -307,6 +312,45 @@ impl FnCx<'_, '_, '_, '_> {
                 let off = self.b.ins().imul_imm(i, size as i64);
                 let src = self.b.ins().iadd(data, off);
                 self.copy(dest, src, size);
+            }
+            (_, "array_iter_view") => {
+                // A non-owning view of an array's storage (which stays in place).
+                let t = self.op_ty(&args[0]);
+                let Some(p) = args[0].place() else { return };
+                let (a, _) = self.place_addr(p);
+                let n = match t {
+                    Ty::Array(_, n) => n,
+                    _ => 0,
+                };
+                let not_owned = self.iconst(-1);
+                let len = self.iconst(n as i64);
+                self.store(a, dest, 0);
+                self.store(not_owned, dest, 8);
+                self.store(len, dest, 16);
+                self.moved(p);
+            }
+            (_, "vec_iter_view") => {
+                let Some(p) = args[0].place() else { return };
+                let (a, _) = self.place_addr(p);
+                let data = self.load(types::I64, a, 0);
+                let len = self.load(types::I64, a, 16);
+                let not_owned = self.iconst(-1);
+                self.store(data, dest, 0);
+                self.store(not_owned, dest, 8);
+                self.store(len, dest, 16);
+            }
+            (_, "vec_take_front") => {
+                let t = self.op_ty(&args[0]);
+                let (_, size, _) = self.vec_elem(t);
+                let Some(p) = args[0].place() else { return };
+                let (a, _) = self.place_addr(p);
+                let data = self.load(types::I64, a, 0);
+                self.copy(dest, data, size);
+                let next = self.b.ins().iadd_imm(data, size as i64);
+                self.store(next, a, 0);
+                let len = self.load(types::I64, a, 16);
+                let len1 = self.b.ins().iadd_imm(len, -1);
+                self.store(len1, a, 16);
             }
             (_, "vec_forget_elems") => {
                 let Some(p) = args[0].place() else { return };

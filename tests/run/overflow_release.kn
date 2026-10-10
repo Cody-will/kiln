@@ -1,0 +1,11 @@
+// flags: --release
+fn add(a: u8, b: u8) -> u8 {
+	return a + b
+}
+
+fn main() {
+	println("{add(200, 55)}")
+	let big: i64 = 9223372036854775807
+	println("{big - 1}")
+	println("{add(200, 56)}")
+}

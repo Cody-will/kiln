@@ -1,0 +1,4 @@
+255
+9223372036854775806
+panic: attempt to add with overflow
+[exit 101]

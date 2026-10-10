@@ -38,7 +38,7 @@ fn main() {
 	defer println("deferred 1")
 	defer println("deferred 2")
 	for i in 0..2 {
-		defer println("loop defer")
+		defer println("loop defer {i}")
 	}
 	println("end of main")
 }

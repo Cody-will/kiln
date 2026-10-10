@@ -19,7 +19,22 @@ use std::collections::HashMap;
 pub(crate) struct LocalInfo {
     pub addr: Value,
     pub ty: Ty,
+    /// Whether the local holds a value (absent for types without drop glue).
     pub flag: Option<StackSlot>,
+    /// Field paths moved out somewhere in the body, each with a flag saying
+    /// whether that part is still present (meaningful while `flag` is set).
+    pub paths: Vec<(Vec<String>, StackSlot)>,
+}
+
+/// The field path of a place with only field projections (`x.a.b` → `["a", "b"]`).
+fn field_path(p: &Place) -> Option<Vec<String>> {
+    p.proj
+        .iter()
+        .map(|x| match x {
+            Proj::Field(f) => Some(f.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// What a call resolves to after monomorphization.
@@ -336,6 +351,27 @@ impl FnCx<'_, '_, '_, '_> {
                 env_offsets.insert(*l, (off, *m));
             }
         }
+        // Field paths moved out of each local (partial moves).
+        let mut moved_paths: HashMap<u32, Vec<Vec<String>>> = HashMap::new();
+        for blk in &self.body.blocks {
+            for st in &blk.stmts {
+                let ops: Vec<&Operand> = match &st.kind {
+                    StmtKind::Assign(_, rv) | StmtKind::Eval(rv) => rv.operands(),
+                    StmtKind::Spawn { operands, .. } => operands.iter().collect(),
+                    _ => vec![],
+                };
+                for o in ops {
+                    if let Operand::Move(p) = o {
+                        if let Some(path) = field_path(p).filter(|x| !x.is_empty()) {
+                            let e = moved_paths.entry(p.local.0).or_default();
+                            if !e.contains(&path) {
+                                e.push(path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         for i in 0..self.body.locals.len() {
             let decl = self.body.locals[i].clone();
             let ty = self.subst(&decl.ty);
@@ -366,17 +402,35 @@ impl FnCx<'_, '_, '_, '_> {
                 self.b.ins().stack_store(v, s, 0);
                 Some(s)
             };
-            self.locals.push(LocalInfo { addr, ty, flag });
+            let mut paths = Vec::new();
+            if flag.is_some() {
+                for path in moved_paths.get(&(i as u32)).into_iter().flatten() {
+                    let s = self.b.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        1,
+                        0,
+                    ));
+                    let v = self.b.ins().iconst(types::I8, 1);
+                    self.b.ins().stack_store(v, s, 0);
+                    paths.push((path.clone(), s));
+                }
+            }
+            self.locals.push(LocalInfo {
+                addr,
+                ty,
+                flag,
+                paths,
+            });
         }
         let uses_defer = self.body.blocks.iter().any(|b| matches!(b.term, Terminator::DeferDispatch { ref targets, .. } if !targets.is_empty()));
         if uses_defer {
             let s = self.b.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
-                24,
+                32,
                 3,
             ));
             let z = self.iconst(0);
-            for off in [0, 8, 16] {
+            for off in [0, 8, 16, 24] {
                 self.b.ins().stack_store(z, s, off);
             }
             self.defer_stack = Some(s);
@@ -416,16 +470,68 @@ impl FnCx<'_, '_, '_, '_> {
                 let info = &self.locals[l.0 as usize];
                 if let Some(f) = info.flag {
                     let (addr, ty) = (info.addr, info.ty.clone());
+                    let li = l.0 as usize;
                     let v = self.b.ins().stack_load(types::I8, f, 0);
-                    self.when(v, |cx| cx.drop_value(addr, &ty));
+                    self.when(v, |cx| cx.drop_elab(addr, &ty, li, &[]));
                     self.set_flag(f, 0);
                 }
             }
-            StmtKind::DeferPush(n) => {
+            StmtKind::DeferPush(n, rec) => {
                 let s = self.defer_stack.expect("defer stack");
+                let args = match rec {
+                    Some(r) => {
+                        // Move the saved arguments to the heap.
+                        let (addr, ty) = {
+                            let i = &self.locals[r.0 as usize];
+                            (i.addr, i.ty.clone())
+                        };
+                        let l = self.cg.layout(&ty);
+                        let (sz, al) = (
+                            self.iconst(l.size.max(1) as i64),
+                            self.iconst(l.align as i64),
+                        );
+                        let p = self.call_rt("kn_alloc", &[sz, al]).unwrap();
+                        self.copy(p, addr, l.size);
+                        if let Some(f) = self.locals[r.0 as usize].flag {
+                            self.set_flag(f, 0);
+                        }
+                        p
+                    }
+                    None => self.iconst(0),
+                };
                 let a = self.b.ins().stack_addr(types::I64, s, 0);
                 let id = self.b.ins().iconst(types::I32, *n as i64);
-                self.call_rt("kn_defer_push", &[a, id]);
+                self.call_rt("kn_defer_push", &[a, id, args]);
+            }
+            StmtKind::DeferLoad(r) => {
+                let s = self.defer_stack.expect("defer stack");
+                let p = self.b.ins().stack_load(types::I64, s, 24);
+                let li = r.0 as usize;
+                let (addr, ty, flag, paths) = {
+                    let i = &self.locals[li];
+                    (
+                        i.addr,
+                        i.ty.clone(),
+                        i.flag,
+                        i.paths.iter().map(|x| x.1).collect::<Vec<_>>(),
+                    )
+                };
+                let l = self.cg.layout(&ty);
+                if let Some(f) = flag {
+                    // Arguments kept from an earlier run of the same `defer` (printing borrows them).
+                    let v = self.b.ins().stack_load(types::I8, f, 0);
+                    self.when(v, |cx| cx.drop_elab(addr, &ty, li, &[]));
+                    self.set_flag(f, 1);
+                }
+                for ps in paths {
+                    self.set_flag(ps, 1);
+                }
+                self.copy(addr, p, l.size);
+                let (sz, al) = (
+                    self.iconst(l.size.max(1) as i64),
+                    self.iconst(l.align as i64),
+                );
+                self.call_rt("kn_free", &[p, sz, al]);
             }
             StmtKind::Spawn { .. } => self.error("code generation does not support tasks yet"),
         }
@@ -445,7 +551,9 @@ impl FnCx<'_, '_, '_, '_> {
             match self.flag_of(p) {
                 Some(f) if !has_deref => {
                     let v = self.b.ins().stack_load(types::I8, f, 0);
-                    self.when(v, |cx| cx.drop_value(dest, &pty));
+                    let li = p.local.0 as usize;
+                    let path = field_path(p).unwrap_or_default();
+                    self.when(v, |cx| cx.drop_elab(dest, &pty, li, &path));
                 }
                 _ if has_deref => self.drop_value(dest, &pty),
                 _ => {}
@@ -455,6 +563,18 @@ impl FnCx<'_, '_, '_, '_> {
         if p.proj.is_empty() {
             if let Some(f) = self.locals[p.local.0 as usize].flag {
                 self.set_flag(f, 1);
+            }
+        }
+        // The assigned part (and everything inside it) is present again.
+        if let Some(path) = field_path(p) {
+            let restored: Vec<StackSlot> = self.locals[p.local.0 as usize]
+                .paths
+                .iter()
+                .filter(|(q, _)| q.starts_with(&path))
+                .map(|(_, s)| *s)
+                .collect();
+            for s in restored {
+                self.set_flag(s, 1);
             }
         }
     }
@@ -523,7 +643,7 @@ impl FnCx<'_, '_, '_, '_> {
     fn elem_of(&self, t: &Ty) -> Ty {
         match t {
             Ty::Adt(_, a) if self.cg.is_lang(t, "Vec") => a[0].clone(),
-            Ty::Slice(x) | Ty::Array(x) => (**x).clone(),
+            Ty::Slice(x) | Ty::Array(x, _) => (**x).clone(),
             _ => Ty::Unit,
         }
     }
@@ -569,6 +689,8 @@ impl FnCx<'_, '_, '_, '_> {
                         )
                     } else if let (Ty::Slice(_), Some(m)) = (&t, meta) {
                         (addr, m)
+                    } else if let Ty::Array(_, n) = &t {
+                        (addr, self.iconst(*n as i64))
                     } else {
                         self.error("code generation does not support indexing this type yet");
                         (addr, self.iconst(0))
@@ -597,9 +719,94 @@ impl FnCx<'_, '_, '_, '_> {
         }
     }
 
-    fn moved(&mut self, p: &Place) {
-        if let Some(f) = self.flag_of(p) {
-            self.set_flag(f, 0);
+    pub(crate) fn moved(&mut self, p: &Place) {
+        if p.through_ref() {
+            return;
+        }
+        match field_path(p) {
+            Some(path) if !path.is_empty() => {
+                let s = self.locals[p.local.0 as usize]
+                    .paths
+                    .iter()
+                    .find(|(q, _)| *q == path)
+                    .map(|(_, s)| *s);
+                if let Some(s) = s {
+                    self.set_flag(s, 0);
+                }
+            }
+            _ => {
+                if let Some(f) = self.flag_of(p) {
+                    self.set_flag(f, 0);
+                }
+            }
+        }
+    }
+
+    /// Drops the part of local `l` at field path `prefix` (stored at `addr`),
+    /// skipping parts that were moved out (drop elaboration for partial moves).
+    pub(crate) fn drop_elab(&mut self, addr: Value, t: &Ty, l: usize, prefix: &[String]) {
+        let own = self.locals[l]
+            .paths
+            .iter()
+            .find(|(q, _)| q.as_slice() == prefix)
+            .map(|(_, s)| *s);
+        match own {
+            Some(f) => {
+                let v = self.b.ins().stack_load(types::I8, f, 0);
+                self.when(v, |cx| cx.drop_elab_children(addr, t, l, prefix));
+            }
+            None => self.drop_elab_children(addr, t, l, prefix),
+        }
+    }
+
+    fn drop_elab_children(&mut self, addr: Value, t: &Ty, l: usize, prefix: &[String]) {
+        let deeper = self.locals[l]
+            .paths
+            .iter()
+            .any(|(q, _)| q.len() > prefix.len() && q.starts_with(prefix));
+        if !deeper {
+            self.drop_value(addr, t);
+            return;
+        }
+        let sub = |n: String| {
+            let mut v = prefix.to_vec();
+            v.push(n);
+            v
+        };
+        match t {
+            Ty::Tuple(ts) => {
+                for (i, et) in ts.clone().iter().enumerate() {
+                    let (off, _) = self.cg.field(t, &i.to_string());
+                    let a = self.b.ins().iadd_imm(addr, off as i64);
+                    self.drop_elab(a, et, l, &sub(i.to_string()));
+                }
+            }
+            Ty::Adt(..) => {
+                let variants = self.cg.variants_of(t);
+                let is_enum = variants.first().is_some_and(|v| v.is_some());
+                for (vi, v) in variants.into_iter().enumerate() {
+                    let fields = self.cg.typed.adt_fields(t, v);
+                    let pfx = v
+                        .map(|v| format!("{}.", self.cg.r.def(v).name))
+                        .unwrap_or_default();
+                    let body = |cx: &mut Self| {
+                        for (n, ft) in &fields {
+                            let name = format!("{pfx}{n}");
+                            let (off, _) = cx.cg.field(t, &name);
+                            let a = cx.b.ins().iadd_imm(addr, off as i64);
+                            cx.drop_elab(a, ft, l, &sub(name));
+                        }
+                    };
+                    if is_enum {
+                        let tag = self.load(types::I32, addr, 0);
+                        let is = self.b.ins().icmp_imm(IntCC::Equal, tag, vi as i64);
+                        self.when(is, body);
+                    } else {
+                        body(self);
+                    }
+                }
+            }
+            _ => self.drop_value(addr, t),
         }
     }
 
@@ -780,7 +987,24 @@ impl FnCx<'_, '_, '_, '_> {
             AggKind::Range { .. } => {
                 self.error("code generation supports only `a..b` and `a..=b` ranges")
             }
-            AggKind::Array => self.error("code generation does not support arrays yet"),
+            AggKind::Array => {
+                let size = self.cg.layout(&self.elem_of(dt)).size;
+                for (i, o) in ops.iter().enumerate() {
+                    let a = self.b.ins().iadd_imm(dest, (i as u32 * size) as i64);
+                    self.store_op(o, a);
+                }
+            }
+            AggKind::ArrayRepeat(n) => {
+                // The element is `Copy` (checked by typeck) unless n <= 1.
+                let et = self.elem_of(dt);
+                let size = self.cg.layout(&et).size;
+                let tmp = self.slot_for(&et);
+                self.store_op(&ops[0], tmp);
+                self.for_each_index(dest, *n, size, |cx, e| cx.copy(e, tmp, size));
+                if *n == 0 {
+                    self.drop_value(tmp, &et);
+                }
+            }
             AggKind::Closure(span) => {
                 let bi = self
                     .cg
@@ -832,6 +1056,11 @@ impl FnCx<'_, '_, '_, '_> {
                 let d = self.load(types::I64, p, 0);
                 let n = self.load(types::I64, p, 16);
                 self.store(d, dest, 0);
+                self.store(n, dest, 8);
+            }
+            (Ty::Array(_, n), Ty::Slice(_)) => {
+                let n = self.iconst(*n as i64);
+                self.store(p, dest, 0);
                 self.store(n, dest, 8);
             }
             (f, Ty::Slice(_)) if self.cg.is_lang(f, "Vec") => {
@@ -1056,6 +1285,10 @@ impl FnCx<'_, '_, '_, '_> {
                 let (v, t) = self.scalar_through_refs(&ops[0]);
                 let r = if matches!(t, Ty::Prim(PrimTy::F32 | PrimTy::F64)) {
                     self.b.ins().fneg(v)
+                } else if self.cg.checked && Self::is_signed(&t) && t != Ty::Prim(PrimTy::I128) {
+                    let it = self.cg.scalar(&t).unwrap();
+                    let z = self.b.ins().iconst(it, 0);
+                    self.checked_arith(BinOpKind::Sub, z, v, it, true)
                 } else {
                     self.b.ins().ineg(v)
                 };
@@ -1275,6 +1508,84 @@ impl FnCx<'_, '_, '_, '_> {
         }
     }
 
+    /// `a op b` for `+`, `-`, `*` on integers of type `it`, panicking on overflow
+    /// (debug builds).
+    fn checked_arith(
+        &mut self,
+        op: BinOpKind,
+        a: Value,
+        b: Value,
+        it: ir::Type,
+        signed: bool,
+    ) -> Value {
+        use BinOpKind::*;
+        let what = match op {
+            Add => "add",
+            Sub => "subtract",
+            _ => "multiply",
+        };
+        let msg = format!("attempt to {what} with overflow");
+        let (res, overflow) = if it.bits() < 64 {
+            // Compute exactly in 64 bits, then check the result fits.
+            let ext = |cx: &mut Self, v| {
+                if signed {
+                    cx.b.ins().sextend(types::I64, v)
+                } else {
+                    cx.b.ins().uextend(types::I64, v)
+                }
+            };
+            let (x, y) = (ext(self, a), ext(self, b));
+            let wide = match op {
+                Add => self.b.ins().iadd(x, y),
+                Sub => self.b.ins().isub(x, y),
+                _ => self.b.ins().imul(x, y),
+            };
+            let res = self.b.ins().ireduce(it, wide);
+            let back = ext(self, res);
+            let ov = self.b.ins().icmp(IntCC::NotEqual, back, wide);
+            (res, ov)
+        } else {
+            match (op, signed) {
+                (Add, false) => {
+                    let r = self.b.ins().iadd(a, b);
+                    (r, self.b.ins().icmp(IntCC::UnsignedLessThan, r, a))
+                }
+                (Sub, false) => {
+                    let r = self.b.ins().isub(a, b);
+                    (r, self.b.ins().icmp(IntCC::UnsignedLessThan, a, b))
+                }
+                (Add, true) => {
+                    // Overflow iff both operands have the sign opposite to the result.
+                    let r = self.b.ins().iadd(a, b);
+                    let x = self.b.ins().bxor(a, r);
+                    let y = self.b.ins().bxor(b, r);
+                    let m = self.b.ins().band(x, y);
+                    (r, self.b.ins().icmp_imm(IntCC::SignedLessThan, m, 0))
+                }
+                (Sub, true) => {
+                    let r = self.b.ins().isub(a, b);
+                    let x = self.b.ins().bxor(a, b);
+                    let y = self.b.ins().bxor(a, r);
+                    let m = self.b.ins().band(x, y);
+                    (r, self.b.ins().icmp_imm(IntCC::SignedLessThan, m, 0))
+                }
+                (_, false) => {
+                    let r = self.b.ins().imul(a, b);
+                    let hi = self.b.ins().umulhi(a, b);
+                    (r, self.b.ins().icmp_imm(IntCC::NotEqual, hi, 0))
+                }
+                (_, true) => {
+                    let r = self.b.ins().imul(a, b);
+                    let hi = self.b.ins().smulhi(a, b);
+                    let sign = self.b.ins().sshr_imm(r, 63);
+                    (r, self.b.ins().icmp(IntCC::NotEqual, hi, sign))
+                }
+            }
+        };
+        self.when(overflow, |cx| cx.panic_msg(&msg));
+        res
+    }
+
     fn binary(&mut self, op: BinOpKind, l: &Operand, r: &Operand) -> Option<Value> {
         use BinOpKind::*;
         let lt = self.op_ty(l);
@@ -1360,7 +1671,11 @@ impl FnCx<'_, '_, '_, '_> {
         let icmp = |s: &mut Self, sc: IntCC, uc: IntCC| {
             Some(s.b.ins().icmp(if signed { sc } else { uc }, a, b))
         };
+        let it = self.cg.scalar(&t).unwrap();
         match op {
+            Add | Sub | Mul if self.cg.checked && it != types::I128 => {
+                Some(self.checked_arith(op, a, b, it, signed))
+            }
             Add => Some(self.b.ins().iadd(a, b)),
             Sub => Some(self.b.ins().isub(a, b)),
             Mul => Some(self.b.ins().imul(a, b)),
@@ -1372,6 +1687,26 @@ impl FnCx<'_, '_, '_, '_> {
                     "attempt to calculate the remainder with a divisor of zero"
                 };
                 self.when(zero, |cx| cx.panic_msg(msg));
+                if signed {
+                    // MIN / -1 overflows (and traps in hardware): panic in all builds.
+                    let min = match it.bits() {
+                        8 => i8::MIN as i64,
+                        16 => i16::MIN as i64,
+                        32 => i32::MIN as i64,
+                        _ => i64::MIN,
+                    };
+                    if it != types::I128 {
+                        let neg1 = self.b.ins().icmp_imm(IntCC::Equal, b, -1);
+                        let is_min = self.b.ins().icmp_imm(IntCC::Equal, a, min);
+                        let both = self.b.ins().band(neg1, is_min);
+                        let msg = if op == Div {
+                            "attempt to divide with overflow"
+                        } else {
+                            "attempt to calculate the remainder with overflow"
+                        };
+                        self.when(both, |cx| cx.panic_msg(msg));
+                    }
+                }
                 Some(match (op, signed) {
                     (Div, true) => self.b.ins().sdiv(a, b),
                     (Div, false) => self.b.ins().udiv(a, b),

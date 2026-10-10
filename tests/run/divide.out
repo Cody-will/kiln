@@ -1,0 +1,3 @@
+3 -3 -1
+panic: attempt to divide with overflow
+[exit 101]

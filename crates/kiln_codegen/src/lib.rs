@@ -70,6 +70,8 @@ pub(crate) enum Work {
 
 /// The code generator for one program.
 pub struct Codegen<'r, 'a> {
+    /// Panic on integer overflow (debug builds).
+    pub(crate) checked: bool,
     pub(crate) typed: Typed<'r, 'a>,
     pub(crate) r: &'r Resolved<'a>,
     pub(crate) module: ObjectModule,
@@ -159,18 +161,25 @@ const RUNTIME: &[(&str, &[Type], Option<Type>)] = &[
         &[types::I64, types::I64, types::I64, types::I64],
         Some(types::I32),
     ),
-    ("kn_defer_push", &[types::I64, types::I32], None),
+    ("kn_defer_push", &[types::I64, types::I32, types::I64], None),
     ("kn_defer_pop", &[types::I64], Some(types::I64)),
     ("kn_round", &[types::F64], Some(types::F64)),
     ("kn_powi", &[types::F64, types::I32], Some(types::F64)),
     ("kn_fmod", &[types::F64, types::F64], Some(types::F64)),
 ];
 
+/// Build settings.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Options {
+    /// Release build: integer arithmetic wraps on overflow instead of panicking.
+    pub release: bool,
+}
+
 /// Compiles a type-checked, borrow-checked program to an object file.
 ///
 /// Returns the object file bytes, or diagnostics for constructs the code
 /// generator doesn't support yet.
-pub fn compile(typed: Typed<'_, '_>) -> Result<Vec<u8>, Vec<Diagnostic>> {
+pub fn compile(typed: Typed<'_, '_>, opts: Options) -> Result<Vec<u8>, Vec<Diagnostic>> {
     let mut flags = settings::builder();
     flags.set("is_pic", "true").expect("is_pic");
     flags.set("opt_level", "speed").expect("opt_level");
@@ -204,6 +213,7 @@ pub fn compile(typed: Typed<'_, '_>) -> Result<Vec<u8>, Vec<Diagnostic>> {
     })?;
     let r = typed.resolved();
     let mut cg = Codegen {
+        checked: !opts.release,
         typed,
         r,
         module: ObjectModule::new(builder),
@@ -411,7 +421,7 @@ pub enum BuildError {
 
 /// Checks `src` (parse, resolve, type-check, borrow-check), generates code, and
 /// links an executable at `out`.
-pub fn build_source(src: &str, out: &std::path::Path) -> Result<(), BuildError> {
+pub fn build_source(src: &str, out: &std::path::Path, opts: Options) -> Result<(), BuildError> {
     let parsed = kiln_parser::parse(src);
     if !parsed.errors.is_empty() {
         return Err(BuildError::Diagnostics(parsed.errors));
@@ -429,7 +439,7 @@ pub fn build_source(src: &str, out: &std::path::Path) -> Result<(), BuildError> 
     if !errs.is_empty() {
         return Err(BuildError::Diagnostics(errs));
     }
-    let obj = compile(typed).map_err(BuildError::Diagnostics)?;
+    let obj = compile(typed, opts).map_err(BuildError::Diagnostics)?;
     let dir = std::env::temp_dir().join(format!("kiln-build-{}-{}", std::process::id(), unique()));
     std::fs::create_dir_all(&dir)
         .map_err(|e| BuildError::Other(format!("cannot create {}: {e}", dir.display())))?;

@@ -1,0 +1,20 @@
+-- early return from a by-value loop
+drop 1
+drop 3
+-- partial moves
+took 10
+drop 10
+took 21
+drop 21
+-- early return from a block
+drop 50
+-- break and continue
+drop 30
+body 31
+drop 31
+drop 32
+-- end
+drop 20
+drop 22
+drop 11
+drop 2

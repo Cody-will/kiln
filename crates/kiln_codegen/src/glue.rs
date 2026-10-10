@@ -88,7 +88,7 @@ impl<'r, 'a> Codegen<'r, 'a> {
         }
     }
 
-    fn variants_of(&self, t: &Ty) -> Vec<Option<DefId>> {
+    pub(crate) fn variants_of(&self, t: &Ty) -> Vec<Option<DefId>> {
         match t {
             Ty::Adt(d, _) if self.r.def(*d).kind == DefKind::Enum => {
                 self.r.variants(*d).into_iter().map(Some).collect()
@@ -216,6 +216,11 @@ impl FnCx<'_, '_, '_, '_> {
             }
         }
         match t {
+            Ty::Array(et, n) => {
+                let size = self.cg.layout(et).size;
+                let et = (**et).clone();
+                self.for_each_index(p, *n, size, |cx, e| cx.drop_value(e, &et));
+            }
             Ty::Tuple(ts) => {
                 for (i, et) in ts.clone().iter().enumerate() {
                     let (off, _) = self.cg.field(t, &i.to_string());
@@ -252,6 +257,44 @@ impl FnCx<'_, '_, '_, '_> {
             }
             _ => {}
         }
+    }
+
+    /// Loops over the `n` elements (each `size` bytes) of the array at `base`.
+    pub(crate) fn for_each_index(
+        &mut self,
+        base: Value,
+        n: u64,
+        size: u32,
+        f: impl Fn(&mut Self, Value),
+    ) {
+        if n <= 4 {
+            for i in 0..n {
+                let e = self.b.ins().iadd_imm(base, (i * size as u64) as i64);
+                f(self, e);
+            }
+            return;
+        }
+        let i = self.slot(8, 8);
+        let z = self.iconst(0);
+        self.store(z, i, 0);
+        let (head, body, done) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        self.b.ins().jump(head, &[]);
+        self.b.switch_to_block(head);
+        let iv = self.load(types::I64, i, 0);
+        let more = self.b.ins().icmp_imm(IntCC::UnsignedLessThan, iv, n as i64);
+        self.b.ins().brif(more, body, &[], done, &[]);
+        self.b.switch_to_block(body);
+        let off = self.b.ins().imul_imm(iv, size as i64);
+        let e = self.b.ins().iadd(base, off);
+        f(self, e);
+        let next = self.b.ins().iadd_imm(iv, 1);
+        self.store(next, i, 0);
+        self.b.ins().jump(head, &[]);
+        self.b.switch_to_block(done);
     }
 
     /// Loops over the elements of the `Vec` at `v`.
@@ -332,6 +375,15 @@ impl FnCx<'_, '_, '_, '_> {
             }
         }
         match t {
+            Ty::Array(et, n) => {
+                let size = self.cg.layout(et).size;
+                let et = (**et).clone();
+                self.for_each_index(dst, *n, size, |cx, d| {
+                    let off = cx.b.ins().isub(d, dst);
+                    let s = cx.b.ins().iadd(src, off);
+                    cx.clone_into(s, d, &et);
+                });
+            }
             Ty::Tuple(ts) => {
                 for (i, et) in ts.clone().iter().enumerate() {
                     let (off, _) = self.cg.field(t, &i.to_string());
