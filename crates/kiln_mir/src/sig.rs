@@ -107,7 +107,9 @@ fn walk(t: &Type, generics: &[String], r: &Resolved<'_>, out: &mut TyLifetimes) 
         TypeKind::ChanSend(inner) | TypeKind::ChanRecv(inner) => walk(inner, generics, r, out),
         TypeKind::Tuple(ts) => ts.iter().for_each(|x| walk(x, generics, r, out)),
         TypeKind::Fn { params, ret, .. } => {
-            out.set_generic();
+            // A function value may hold borrows (its captures), but a result
+            // can only get them through a signature that mentions a generic.
+            out.generic = true;
             params.iter().for_each(|x| walk(x, generics, r, out));
             if let Some(x) = ret {
                 walk(x, generics, r, out);

@@ -45,6 +45,7 @@ pub const STD_MODULES: &[(&str, &str)] = &[
     ("ptr", include_str!("../std/ptr.kn")),
     ("time", include_str!("../std/time.kn")),
     ("sync", include_str!("../std/sync.kn")),
+    ("rand", include_str!("../std/rand.kn")),
     ("fmt", include_str!("../std/fmt.kn")),
     ("io", include_str!("../std/io.kn")),
     ("path", include_str!("../std/path.kn")),
