@@ -575,6 +575,7 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 
 ### 8.2 Modules
 
+- **`std::regexp` follows Go's RE2 semantics**: no backreferences or lookaround, so matching is always linear in the input. Offsets are byte offsets. Case-insensitive matching (`(?i)`) folds ASCII letters only for now; `\d`, `\w`, `\s`, and `\b` are ASCII, as in Go. Patterns are compiled at run time with `Regex::new` (returns `Result`) or `Regex::must` (panics), Go's `MustCompile`.
 - **`std::flag` returns values by name**: Go's `flag.String(...)` hands back a pointer that parsing fills in later. That pattern needs shared mutable aliasing, so Kiln defines flags on a `FlagSet` and reads them after parsing with `get_string("addr")`, `get_int(...)`, and so on. Asking for an undefined flag or the wrong type panics, since that is a programming error. Command-line syntax, usage text, and exit codes (2 for bad flags, 0 for `-h`) match Go.
 
 | Module | Contents | Status |
@@ -600,7 +601,8 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 | `std::context` | | 🚧 phase 2 |
 | `std::encoding` | `json` (`Value`, `#[derive(Json)]`), `base64`, `hex`, `csv` (RFC 4180 `Reader`/`Writer`, `parse`/`format`, custom delimiter, comments, field-count checks) | ✅ |
 | `std::crypto` | `sha256`, `sha1`, `md5` (one-shot `sum`/`hex`, streaming hashers that implement `io::Write`, digests are fixed arrays like `[u8; 32]`), `hmac` (SHA-256/SHA-1, `verify_sha256`), `constant_time_eq` | ✅ |
-| `std::regexp`, `std::testing` (`kiln test`) | | 🚧 phase 2 |
+| `std::regexp` | RE2-style `Regex` (Pike VM, linear time, leftmost-first): `find`/`find_all`/`captures`/`captures_all`, named groups, `replace_all` with `$1`/`${name}`, `replace_all_fn`, `split`, `quote_meta`; flags `i`, `m`, `s` | ✅ |
+| `std::testing` (`kiln test`) | | 🚧 phase 2 |
 | `std::compress`, `std::mime`, `std::url`, templates | | 🚧 phase 3 |
 
 ## 9. Open Questions for the User

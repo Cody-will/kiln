@@ -54,6 +54,7 @@ pub const STD_MODULES: &[(&str, &str)] = &[
     ("crypto::hmac", include_str!("../std/hmac.kn")),
     ("math", include_str!("../std/math.kn")),
     ("collections", include_str!("../std/collections.kn")),
+    ("regexp", include_str!("../std/regexp.kn")),
     ("ptr", include_str!("../std/ptr.kn")),
     ("time", include_str!("../std/time.kn")),
     ("sync", include_str!("../std/sync.kn")),

@@ -20,6 +20,7 @@ The standard library is written in Kiln, on top of a small C runtime for system 
 | [`std::crypto`](#stdcrypto) | SHA-256, SHA-1, MD5, HMAC |
 | [`std::encoding::csv`](#stdencodingcsv) | reading and writing CSV |
 | [`std::flag`](#stdflag) | command-line flags |
+| [`std::regexp`](#stdregexp) | regular expressions |
 | [`std::fs`](#stdfs) | files and directories |
 | [`std::path`](#stdpath) | path manipulation |
 | [`std::os`](#stdos) | arguments, environment, exit, running programs |
@@ -223,6 +224,31 @@ fn main() {
 	for _ in 0..fs.get_int("times") {
 		println("hello, {fs.get_string("name")}")
 	}
+}
+```
+
+## std::regexp
+
+Regular expressions with Go's RE2 semantics: matching always takes time linear in the input, because there are no backreferences or lookaround. Offsets are byte offsets.
+
+| Item | Description |
+|---|---|
+| `Regex::new(pattern)`, `Regex::must(pattern)` | compile (`Result`), or panic on a bad pattern |
+| `is_match(text)`, `find(text)`, `find_at(text, i)`, `find_str(text)` | the first match (`Match { start, end }`) |
+| `find_all`, `find_all_str` | all non-overlapping matches |
+| `captures(text)`, `captures_all(text)` | groups: `get(i)`, `name("year")`, `pos(i)`, `len()` |
+| `replace_all(text, "$2-$1")`, `replace_all_fn(text, \|c\| ...)`, `replace_all_literal` | replacements (`$1`, `${name}`, `$$`); write `${name}` templates as raw strings (`r"..."`), since `{...}` in a normal string is interpolation |
+| `split(text)`, `num_groups()`, `group_names()`, `as_str()` | other helpers |
+| `regexp::quote_meta(s)`, `regexp::is_match(pattern, text)` | escape a literal; one-off matching |
+
+Syntax: `.` `[a-z]` `[^...]` `\d \w \s` (and `\D \W \S`) `^ $ \A \z \b \B` `( )` `(?: )` `(?P<name> )` `|` `* + ? {n} {n,} {n,m}` (add `?` for lazy), and the flags `(?i)`, `(?m)`, `(?s)`.
+
+```kiln
+import std::regexp::Regex
+
+fn main() {
+	date := Regex::must(r"(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})")
+	println(date.replace_all("due 2026-10-10", r"${d}/${m}/${y}"))   // due 10/10/2026
 }
 ```
 

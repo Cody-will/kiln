@@ -1,0 +1,1120 @@
+// Regular expressions with RE2 semantics, like Go's `regexp`: matching
+// takes time linear in the input (no backtracking), and when several
+// matches start at the same place the leftmost-first alternative wins,
+// as in Perl.
+//
+//	re := regexp::Regex::new(r"(\w+)@(\w+)\.com")?
+//	re.is_match("mail bob@example.com")           // true
+//	m := re.find("mail bob@example.com")          // Some(Match { start: 5, end: 20 })
+//	caps := re.captures("bob@example.com").unwrap()
+//	caps.get(1)                                    // Some("bob")
+//	re.replace_all("bob@example.com", "$2:$1")     // "example:bob"
+//
+// Syntax: literals; `.`; classes `[a-z]`, `[^0-9]`; `\d \w \s` and their
+// negations `\D \W \S`; anchors `^ $ \A \z`; word boundaries `\b \B`;
+// groups `(...)`, non-capturing `(?:...)`, named `(?P<name>...)` or
+// `(?<name>...)`; alternation `|`; repetition `* + ? {n} {n,} {n,m}`, each
+// lazy with a trailing `?`; flags `(?i)` (ASCII case-insensitive),
+// `(?m)` (`^`/`$` match at line breaks), `(?s)` (`.` matches `\n`), also
+// scoped as `(?i:...)`. Escapes: `\n \t \r \f \v \xHH \x{HHHH}` and
+// backslash before any punctuation. Offsets are byte offsets into the text.
+
+// A syntax error in a pattern, with the byte offset where it was found.
+#[derive(Debug, Clone, Eq)]
+pub struct Error {
+	msg: String,
+	pos: usize,
+}
+
+impl Error {
+	// What is wrong.
+	pub fn message(&self) -> &str {
+		return &self.msg
+	}
+
+	// Byte offset in the pattern.
+	pub fn offset(&self) -> usize {
+		return self.pos
+	}
+}
+
+impl Display for Error {
+	fn to_string(&self) -> String {
+		return "regexp: {self.msg} at offset {self.pos}"
+	}
+}
+
+impl ErrorTrait for Error {}
+
+import super::super::Error as ErrorTrait
+
+const NONE: usize = 18446744073709551615
+
+#[derive(Clone, Debug)]
+enum Node {
+	Empty,
+	Lit(char),
+	// Ranges and negation.
+	Class(Vec<(char, char)>, bool),
+	// `.`; true when it also matches `\n`.
+	Any(bool),
+	// 0 `^` text start, 1 `$` text end, 2 line start, 3 line end, 4 `\b`, 5 `\B`.
+	Assert(u8),
+	Group(Box<Node>, usize),
+	Concat(Vec<Node>),
+	Alt(Vec<Node>),
+	// node, min, max (NONE = unbounded), greedy
+	Repeat(Box<Node>, usize, usize, bool),
+}
+
+struct Flags {
+	fold: bool,
+	multi: bool,
+	dotall: bool,
+}
+
+struct Parser<'a> {
+	p: &'a [u8],
+	i: usize,
+	ncap: usize,
+	names: Vec<(String, usize)>,
+}
+
+fn perl_class(c: u8) -> Option<(Vec<(char, char)>, bool)> {
+	if c == 100 || c == 68 {
+		return Some(([('0', '9')].to_vec(), c == 68))
+	}
+	if c == 119 || c == 87 {
+		return Some(([('0', '9'), ('A', 'Z'), ('_', '_'), ('a', 'z')].to_vec(), c == 87))
+	}
+	if c == 115 || c == 83 {
+		return Some(([('\t', '\n'), ('\u{c}', '\r'), (' ', ' ')].to_vec(), c == 83))
+	}
+	return None
+}
+
+fn hexval(c: u8) -> Option<u32> {
+	if c >= 48 && c <= 57 {
+		return Some((c - 48) as u32)
+	}
+	if c >= 97 && c <= 102 {
+		return Some((c - 87) as u32)
+	}
+	if c >= 65 && c <= 70 {
+		return Some((c - 55) as u32)
+	}
+	return None
+}
+
+// Adds the other ASCII case of each letter range.
+fn fold_ranges(r: &Vec<(char, char)>) -> Vec<(char, char)> {
+	out mut := r.clone()
+	for x in r.iter() {
+		(lo, hi) := *x
+		// Intersect with a-z and A-Z and add the counterpart.
+		l1 := if lo < 'a' { 'a' } else { lo }
+		h1 := if hi > 'z' { 'z' } else { hi }
+		if l1 <= h1 {
+			out.push((l1.to_ascii_uppercase(), h1.to_ascii_uppercase()))
+		}
+		l2 := if lo < 'A' { 'A' } else { lo }
+		h2 := if hi > 'Z' { 'Z' } else { hi }
+		if l2 <= h2 {
+			out.push((l2.to_ascii_lowercase(), h2.to_ascii_lowercase()))
+		}
+	}
+	return out
+}
+
+impl<'a> Parser<'a> {
+	fn err(&self, msg: &str) -> Error {
+		return Error { msg: msg.to_string(), pos: self.i }
+	}
+
+	fn peek(&self) -> Option<u8> {
+		if self.i < self.p.len() {
+			return Some(self.p[self.i])
+		}
+		return None
+	}
+
+	fn eat(&mut self, c: u8) -> bool {
+		if self.peek() == Some(c) {
+			self.i += 1
+			return true
+		}
+		return false
+	}
+
+	// One UTF-8 character of the pattern.
+	fn next_char(&mut self) -> char {
+		(c, n) := std::utf8::decode(&self.p[self.i..])
+		self.i += n
+		return c
+	}
+
+	fn alt(&mut self, f: &mut Flags) -> Result<Node, Error> {
+		branches mut := Vec::new()
+		branches.push(self.concat(f)?)
+		while self.eat(124) {
+			branches.push(self.concat(f)?)
+		}
+		if branches.len() == 1 {
+			return Ok(branches.pop().unwrap())
+		}
+		return Ok(Node::Alt(branches))
+	}
+
+	fn concat(&mut self, f: &mut Flags) -> Result<Node, Error> {
+		items mut := Vec::new()
+		loop {
+			match self.peek() {
+				None => break,
+				Some(c) => {
+					if c == 124 || c == 41 {
+						break
+					}
+				},
+			}
+			atom := match self.atom(f)? {
+				Some(a) => a,
+				None => continue,
+			}
+			items.push(self.repeat(atom)?)
+		}
+		if items.len() == 1 {
+			return Ok(items.pop().unwrap())
+		}
+		if items.len() == 0 {
+			return Ok(Node::Empty)
+		}
+		return Ok(Node::Concat(items))
+	}
+
+	fn number(&mut self) -> Option<usize> {
+		start := self.i
+		n mut := 0 as usize
+		while self.i < self.p.len() && self.p[self.i] >= 48 && self.p[self.i] <= 57 {
+			n = n * 10 + (self.p[self.i] - 48) as usize
+			if n > 1000 {
+				return None
+			}
+			self.i += 1
+		}
+		if self.i == start {
+			return None
+		}
+		return Some(n)
+	}
+
+	fn repeat(&mut self, atom: Node) -> Result<Node, Error> {
+		node mut := atom
+		loop {
+			at := self.i
+			(min, max) := match self.peek() {
+				Some(42) => {
+					self.i += 1
+					(0, NONE)
+				},
+				Some(43) => {
+					self.i += 1
+					(1, NONE)
+				},
+				Some(63) => {
+					self.i += 1
+					(0, 1)
+				},
+				Some(123) => {
+					self.i += 1
+					lo := match self.number() {
+						Some(n) => n,
+						None => {
+							// Not a repetition: `{` is a literal, as in Go.
+							self.i = at
+							return Ok(node)
+						},
+					}
+					hi mut := lo
+					if self.eat(44) {
+						hi = match self.number() {
+							Some(n) => n,
+							None => NONE,
+						}
+					}
+					if !self.eat(125) {
+						self.i = at
+						return Ok(node)
+					}
+					if hi != NONE && hi < lo {
+						self.i = at
+						return Err(self.err("invalid repeat count"))
+					}
+					(lo, hi)
+				},
+				_ => return Ok(node),
+			}
+			if let Node::Assert(_) = node {
+				self.i = at
+				return Err(self.err("missing argument to repetition operator"))
+			}
+			if let Node::Repeat(_, _, _, _) = node {
+				self.i = at
+				return Err(self.err("invalid nested repetition operator"))
+			}
+			greedy := !self.eat(63)
+			node = Node::Repeat(Box::new(node), min, max, greedy)
+		}
+	}
+
+	fn lit(&self, c: char, f: &Flags) -> Node {
+		if f.fold && c.is_ascii_alphabetic() {
+			return Node::Class([(c.to_ascii_lowercase(), c.to_ascii_lowercase()), (c.to_ascii_uppercase(), c.to_ascii_uppercase())].to_vec(), false)
+		}
+		return Node::Lit(c)
+	}
+
+	// An escape after `\`, as a single character (classes handled by callers).
+	fn escape_char(&mut self) -> Result<char, Error> {
+		c := match self.peek() {
+			Some(c) => c,
+			None => return Err(self.err("trailing backslash at end of expression")),
+		}
+		self.i += 1
+		if c == 110 {
+			return Ok('\n')
+		}
+		if c == 116 {
+			return Ok('\t')
+		}
+		if c == 114 {
+			return Ok('\r')
+		}
+		if c == 102 {
+			return Ok('\u{c}')
+		}
+		if c == 118 {
+			return Ok('\u{b}')
+		}
+		if c == 120 {
+			v mut := 0 as u32
+			if self.eat(123) {
+				digits mut := 0
+				while !self.eat(125) {
+					d := match self.peek() {
+						Some(x) => hexval(x),
+						None => None,
+					}
+					match d {
+						Some(x) => {
+							v = v * 16 + x
+							if v > 1114111 {
+								return Err(self.err("invalid escape sequence"))
+							}
+						},
+						None => return Err(self.err("invalid escape sequence")),
+					}
+					self.i += 1
+					digits += 1
+				}
+				if digits == 0 {
+					return Err(self.err("invalid escape sequence"))
+				}
+			} else {
+				for _ in 0..2 {
+					d := match self.peek() {
+						Some(x) => hexval(x),
+						None => None,
+					}
+					match d {
+						Some(x) => {
+							v = v * 16 + x
+						},
+						None => return Err(self.err("invalid escape sequence")),
+					}
+					self.i += 1
+				}
+			}
+			match char::from_u32(v) {
+				Some(ch) => return Ok(ch),
+				None => return Err(self.err("invalid escape sequence")),
+			}
+		}
+		if c < 128 && !((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)) {
+			return Ok(c as char)
+		}
+		self.i -= 1
+		return Err(self.err("invalid escape sequence"))
+	}
+
+	fn atom(&mut self, f: &mut Flags) -> Result<Option<Node>, Error> {
+		c := self.peek().unwrap()
+		if c == 40 {
+			return self.group(f)
+		}
+		self.i += 1
+		if c == 46 {
+			return Ok(Some(Node::Any(f.dotall)))
+		}
+		if c == 94 {
+			return Ok(Some(Node::Assert(if f.multi { 2 } else { 0 })))
+		}
+		if c == 36 {
+			return Ok(Some(Node::Assert(if f.multi { 3 } else { 1 })))
+		}
+		if c == 91 {
+			return Ok(Some(self.class(f)?))
+		}
+		if c == 42 || c == 43 || c == 63 {
+			self.i -= 1
+			return Err(self.err("missing argument to repetition operator"))
+		}
+		if c == 92 {
+			e := match self.peek() {
+				Some(e) => e,
+				None => return Err(self.err("trailing backslash at end of expression")),
+			}
+			match perl_class(e) {
+				Some((r, neg)) => {
+					self.i += 1
+					return Ok(Some(Node::Class(r, neg)))
+				},
+				None => {},
+			}
+			if e == 98 || e == 66 {
+				self.i += 1
+				return Ok(Some(Node::Assert(if e == 98 { 4 } else { 5 })))
+			}
+			if e == 65 {
+				self.i += 1
+				return Ok(Some(Node::Assert(0)))
+			}
+			if e == 122 {
+				self.i += 1
+				return Ok(Some(Node::Assert(1)))
+			}
+			ch := self.escape_char()?
+			return Ok(Some(self.lit(ch, f)))
+		}
+		self.i -= 1
+		ch := self.next_char()
+		return Ok(Some(self.lit(ch, f)))
+	}
+
+	fn group(&mut self, f: &mut Flags) -> Result<Option<Node>, Error> {
+		open := self.i
+		self.i += 1
+		if self.eat(63) {
+			// Named group?
+			named := if self.eat(80) {
+				if !self.eat(60) {
+					return Err(self.err("invalid named capture"))
+				}
+				true
+			} else {
+				self.peek() == Some(60) && self.i + 1 < self.p.len() && self.p[self.i + 1] != 61 && self.p[self.i + 1] != 33 && self.eat(60)
+			}
+			if named {
+				s := self.i
+				while self.i < self.p.len() && self.p[self.i] != 62 {
+					b := self.p[self.i]
+					if !((b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95) {
+						return Err(self.err("invalid named capture"))
+					}
+					self.i += 1
+				}
+				if self.i >= self.p.len() || self.i == s {
+					return Err(self.err("invalid named capture"))
+				}
+				name := String::from_utf8_lossy(&self.p[s..self.i])
+				for n in self.names.iter() {
+					if n.0 == name {
+						return Err(self.err("duplicate capture group name"))
+					}
+				}
+				self.i += 1
+				self.ncap += 1
+				idx := self.ncap
+				self.names.push((name, idx))
+				return Ok(Some(self.group_body(f, idx, open)?))
+			}
+			// Flags: (?ims) or (?ims-ims:...)
+			on mut := true
+			fold mut := f.fold
+			multi mut := f.multi
+			dotall mut := f.dotall
+			loop {
+				c := match self.peek() {
+					Some(c) => c,
+					None => return Err(self.err("missing closing )")),
+				}
+				self.i += 1
+				if c == 105 {
+					fold = on
+				} else if c == 109 {
+					multi = on
+				} else if c == 115 {
+					dotall = on
+				} else if c == 45 && on {
+					on = false
+				} else if c == 41 {
+					// Applies to the rest of the enclosing group.
+					f.fold = fold
+					f.multi = multi
+					f.dotall = dotall
+					return Ok(None)
+				} else if c == 58 {
+					inner mut := Flags { fold: fold, multi: multi, dotall: dotall }
+					n := self.alt(&mut inner)?
+					if !self.eat(41) {
+						return Err(Error { msg: "missing closing )".to_string(), pos: open })
+					}
+					return Ok(Some(n))
+				} else {
+					self.i -= 1
+					return Err(self.err("invalid or unsupported Perl syntax"))
+				}
+			}
+		}
+		self.ncap += 1
+		idx := self.ncap
+		return Ok(Some(self.group_body(f, idx, open)?))
+	}
+
+	fn group_body(&mut self, f: &mut Flags, idx: usize, open: usize) -> Result<Node, Error> {
+		inner mut := Flags { fold: f.fold, multi: f.multi, dotall: f.dotall }
+		n := self.alt(&mut inner)?
+		if !self.eat(41) {
+			return Err(Error { msg: "missing closing )".to_string(), pos: open })
+		}
+		return Ok(Node::Group(Box::new(n), idx))
+	}
+
+	fn class(&mut self, f: &Flags) -> Result<Node, Error> {
+		open := self.i - 1
+		neg := self.eat(94)
+		ranges mut := Vec::new()
+		first mut := true
+		loop {
+			c := match self.peek() {
+				Some(c) => c,
+				None => return Err(Error { msg: "missing closing ]".to_string(), pos: open }),
+			}
+			if c == 93 && !first {
+				self.i += 1
+				break
+			}
+			first = false
+			lo := if c == 92 {
+				self.i += 1
+				e := match self.peek() {
+					Some(e) => e,
+					None => return Err(self.err("trailing backslash at end of expression")),
+				}
+				match perl_class(e) {
+					Some((r, n)) => {
+						self.i += 1
+						if n {
+							// Complement of r within the whole range.
+							prev mut := 0 as u32
+							for x in r.iter() {
+								if (x.0 as u32) > prev {
+									ranges.push((char::from_u32(prev).unwrap(), char::from_u32(x.0 as u32 - 1).unwrap()))
+								}
+								prev = x.1 as u32 + 1
+							}
+							ranges.push((char::from_u32(prev).unwrap(), '\u{10ffff}'))
+						} else {
+							ranges.extend(r.into_iter())
+						}
+						continue
+					},
+					None => {},
+				}
+				self.escape_char()?
+			} else {
+				self.next_char()
+			}
+			hi mut := lo
+			if self.peek() == Some(45) && self.i + 1 < self.p.len() && self.p[self.i + 1] != 93 {
+				self.i += 1
+				if self.peek() == Some(92) {
+					self.i += 1
+					hi = self.escape_char()?
+				} else {
+					hi = self.next_char()
+				}
+				if hi < lo {
+					return Err(self.err("invalid character class range"))
+				}
+			}
+			ranges.push((lo, hi))
+		}
+		if f.fold {
+			return Ok(Node::Class(fold_ranges(&ranges), neg))
+		}
+		return Ok(Node::Class(ranges, neg))
+	}
+}
+
+#[derive(Clone, Debug)]
+enum Inst {
+	Char(char),
+	Class(usize),
+	Any(bool),
+	Assert(u8),
+	Split(usize, usize),
+	Jmp(usize),
+	Save(usize),
+	Match,
+}
+
+struct Compiler {
+	prog: Vec<Inst>,
+	classes: Vec<(Vec<(char, char)>, bool)>,
+}
+
+impl Compiler {
+	fn emit(&mut self, i: Inst) -> usize {
+		self.prog.push(i)
+		return self.prog.len() - 1
+	}
+
+	fn node(&mut self, n: &Node) -> Result<(), Error> {
+		if self.prog.len() > 100000 {
+			return Err(Error { msg: "expression too large".to_string(), pos: 0 })
+		}
+		match n {
+			Node::Empty => {},
+			Node::Lit(c) => {
+				self.emit(Inst::Char(*c))
+			},
+			Node::Class(r, neg) => {
+				self.classes.push((r.clone(), *neg))
+				k := self.classes.len() - 1
+				self.emit(Inst::Class(k))
+			},
+			Node::Any(nl) => {
+				self.emit(Inst::Any(*nl))
+			},
+			Node::Assert(k) => {
+				self.emit(Inst::Assert(*k))
+			},
+			Node::Group(inner, idx) => {
+				self.emit(Inst::Save(2 * *idx))
+				self.node(inner)?
+				self.emit(Inst::Save(2 * *idx + 1))
+			},
+			Node::Concat(items) => {
+				for it in items.iter() {
+					self.node(it)?
+				}
+			},
+			Node::Alt(bs) => {
+				jumps mut := Vec::new()
+				for k in 0..bs.len() {
+					if k + 1 < bs.len() {
+						split := self.emit(Inst::Split(0, 0))
+						self.node(&bs[k])?
+						jumps.push(self.emit(Inst::Jmp(0)))
+						next := self.prog.len()
+						self.prog[split] = Inst::Split(split + 1, next)
+					} else {
+						self.node(&bs[k])?
+					}
+				}
+				end := self.prog.len()
+				for j in jumps.iter() {
+					self.prog[*j] = Inst::Jmp(end)
+				}
+			},
+			Node::Repeat(inner, min, max, greedy) => {
+				for _ in 0..*min {
+					self.node(inner)?
+				}
+				if *max == NONE {
+					// x*: L: split body, out; body; jmp L
+					l := self.emit(Inst::Split(0, 0))
+					self.node(inner)?
+					self.emit(Inst::Jmp(l))
+					out := self.prog.len()
+					self.prog[l] = if *greedy { Inst::Split(l + 1, out) } else { Inst::Split(out, l + 1) }
+				} else {
+					// (x(x(x)?)?)? for the optional copies.
+					splits mut := Vec::new()
+					for _ in *min..*max {
+						splits.push(self.emit(Inst::Split(0, 0)))
+						self.node(inner)?
+					}
+					out := self.prog.len()
+					for s in splits.iter() {
+						self.prog[*s] = if *greedy { Inst::Split(*s + 1, out) } else { Inst::Split(out, *s + 1) }
+					}
+				}
+			},
+		}
+		return Ok(())
+	}
+}
+
+// A compiled regular expression. Safe to share between tasks.
+#[derive(Clone)]
+pub struct Regex {
+	src: String,
+	prog: Vec<Inst>,
+	classes: Vec<(Vec<(char, char)>, bool)>,
+	ncap: usize,
+	names: Vec<(String, usize)>,
+	anchored: bool,
+}
+
+// A match: byte offsets `start..end` into the searched text.
+#[derive(Clone, Copy, Debug, Eq)]
+pub struct Match {
+	pub start: usize,
+	pub end: usize,
+}
+
+impl Match {
+	// The matched text.
+	pub fn as_str<'a>(&self, text: &'a str) -> &'a str {
+		return &text[self.start..self.end]
+	}
+}
+
+// Capture groups of one match. Group 0 is the whole match.
+pub struct Captures<'t> {
+	text: &'t str,
+	locs: Vec<usize>,
+	names: Vec<(String, usize)>,
+}
+
+impl<'t> Captures<'t> {
+	// The text of group `i`, if it took part in the match.
+	pub fn get(&self, i: usize) -> Option<&str> {
+		match self.pos(i) {
+			Some(m) => return Some(&self.text[m.start..m.end]),
+			None => return None,
+		}
+	}
+
+	// The offsets of group `i`.
+	pub fn pos(&self, i: usize) -> Option<Match> {
+		if 2 * i + 1 >= self.locs.len() || self.locs[2 * i] == NONE || self.locs[2 * i + 1] == NONE {
+			return None
+		}
+		return Some(Match { start: self.locs[2 * i], end: self.locs[2 * i + 1] })
+	}
+
+	// The text of the group named `name`.
+	pub fn name(&self, name: &str) -> Option<&str> {
+		for n in self.names.iter() {
+			if n.0 == name {
+				return self.get(n.1)
+			}
+		}
+		return None
+	}
+
+	// Number of groups, including group 0.
+	pub fn len(&self) -> usize {
+		return self.locs.len() / 2
+	}
+}
+
+fn is_word(c: Option<char>) -> bool {
+	match c {
+		Some(ch) => return ch.is_ascii_alphanumeric() || ch == '_',
+		None => return false,
+	}
+}
+
+fn class_has(cls: &(Vec<(char, char)>, bool), c: char) -> bool {
+	inside mut := false
+	for r in cls.0.iter() {
+		if c >= r.0 && c <= r.1 {
+			inside = true
+			break
+		}
+	}
+	return inside != cls.1
+}
+
+struct Thread {
+	pc: usize,
+	caps: Vec<usize>,
+}
+
+impl Regex {
+	// Compiles `pattern`.
+	pub fn new(pattern: &str) -> Result<Regex, Error> {
+		ps mut := Parser { p: pattern.as_bytes(), i: 0, ncap: 0, names: Vec::new() }
+		flags mut := Flags { fold: false, multi: false, dotall: false }
+		ast := ps.alt(&mut flags)?
+		if ps.i < ps.p.len() {
+			return Err(ps.err("unexpected )"))
+		}
+		c mut := Compiler { prog: Vec::new(), classes: Vec::new() }
+		c.emit(Inst::Save(0))
+		c.node(&ast)?
+		c.emit(Inst::Save(1))
+		c.emit(Inst::Match)
+		anchored := match &ast {
+			Node::Assert(0) => true,
+			Node::Concat(items) => match items.first() {
+				Some(Node::Assert(0)) => true,
+				_ => false,
+			},
+			_ => false,
+		}
+		return Ok(Regex { src: pattern.to_string(), prog: c.prog, classes: c.classes, ncap: ps.ncap, names: ps.names, anchored: anchored })
+	}
+
+	// Compiles `pattern`, panicking if it is invalid (for constant patterns).
+	pub fn must(pattern: &str) -> Regex {
+		match Regex::new(pattern) {
+			Ok(r) => return r,
+			Err(e) => panic("{e}"),
+		}
+	}
+
+	// The source pattern.
+	pub fn as_str(&self) -> &str {
+		return &self.src
+	}
+
+	// Number of capture groups, not counting group 0.
+	pub fn num_groups(&self) -> usize {
+		return self.ncap
+	}
+
+	// Names of the groups: index i holds group i's name, or "" (group 0 is "").
+	pub fn group_names(&self) -> Vec<String> {
+		out mut := Vec::new()
+		for _ in 0..(self.ncap + 1) {
+			out.push(String::new())
+		}
+		for n in self.names.iter() {
+			out[n.1] = n.0.clone()
+		}
+		return out
+	}
+
+	fn add(&self, list: &mut Vec<Thread>, seen: &mut Vec<usize>, gen: usize, pc: usize, caps: Vec<usize>, b: &[u8], at: usize) {
+		if seen[pc] == gen {
+			return
+		}
+		seen[pc] = gen
+		match &self.prog[pc] {
+			Inst::Jmp(t) => self.add(list, seen, gen, *t, caps, b, at),
+			Inst::Split(x, y) => {
+				self.add(list, seen, gen, *x, caps.clone(), b, at)
+				self.add(list, seen, gen, *y, caps, b, at)
+			},
+			Inst::Save(k) => {
+				c mut := caps
+				if *k < c.len() {
+					c[*k] = at
+				}
+				self.add(list, seen, gen, pc + 1, c, b, at)
+			},
+			Inst::Assert(k) => {
+				prev := if at == 0 { None } else { Some(std::utf8::decode_last(&b[0..at]).0) }
+				next := if at >= b.len() { None } else { Some(std::utf8::decode(&b[at..]).0) }
+				ok := match *k {
+					0 => at == 0,
+					1 => at == b.len(),
+					2 => at == 0 || prev == Some('\n'),
+					3 => at == b.len() || next == Some('\n'),
+					4 => is_word(prev) != is_word(next),
+					_ => is_word(prev) == is_word(next),
+				}
+				if ok {
+					self.add(list, seen, gen, pc + 1, caps, b, at)
+				}
+			},
+			_ => list.push(Thread { pc: pc, caps: caps }),
+		}
+	}
+
+	// Pike VM: the leftmost-first match starting at or after `from`.
+	fn exec(&self, text: &str, from: usize) -> Option<Vec<usize>> {
+		b := text.as_bytes()
+		ncaps := 2 * (self.ncap + 1)
+		clist mut := Vec::new()
+		nlist mut := Vec::new()
+		seen mut := Vec::with_capacity(self.prog.len())
+		for _ in 0..self.prog.len() {
+			seen.push(NONE)
+		}
+		gen mut := 0 as usize
+		best mut := None
+		at mut := from
+		loop {
+			if best.is_none() && (!self.anchored || at == 0) && (at == from || !self.anchored) {
+				empty mut := Vec::with_capacity(ncaps)
+				for _ in 0..ncaps {
+					empty.push(NONE)
+				}
+				// The new thread has the lowest priority.
+				self.add(&mut clist, &mut seen, gen, 0, empty, b, at)
+			}
+			if clist.len() == 0 && (best.is_some() || self.anchored) {
+				break
+			}
+			(c, n) := if at < b.len() { std::utf8::decode(&b[at..]) } else { ('\0', 0) }
+			gen += 1
+			next := at + n
+			for t in clist.drain(0, clist.len()).into_iter() {
+				matched := match &self.prog[t.pc] {
+					Inst::Match => {
+						best = Some(t.caps)
+						// Lower-priority threads are cut off.
+						break
+					},
+					Inst::Char(ch) => n > 0 && c == *ch,
+					Inst::Class(k) => n > 0 && class_has(&self.classes[*k], c),
+					Inst::Any(nl) => n > 0 && (*nl || c != '\n'),
+					_ => false,
+				}
+				if matched {
+					self.add(&mut nlist, &mut seen, gen, t.pc + 1, t.caps, b, next)
+				}
+			}
+			if at >= b.len() {
+				// Threads in nlist were added at `next` == `at`; only Match can fire.
+				for t in nlist.drain(0, nlist.len()).into_iter() {
+					if let Inst::Match = self.prog[t.pc] {
+						best = Some(t.caps)
+						break
+					}
+				}
+				break
+			}
+			mem_swap(&mut clist, &mut nlist)
+			gen += 1
+			at = next
+		}
+		return best
+	}
+
+	// Whether `text` contains a match.
+	pub fn is_match(&self, text: &str) -> bool {
+		return self.exec(text, 0).is_some()
+	}
+
+	// The leftmost-first match in `text`.
+	pub fn find(&self, text: &str) -> Option<Match> {
+		return self.find_at(text, 0)
+	}
+
+	// The first match starting at or after byte offset `start`.
+	pub fn find_at(&self, text: &str, start: usize) -> Option<Match> {
+		match self.exec(text, start) {
+			Some(c) => return Some(Match { start: c[0], end: c[1] }),
+			None => return None,
+		}
+	}
+
+	// The matched text of the first match.
+	pub fn find_str<'a>(&self, text: &'a str) -> Option<&'a str> {
+		match self.find(text) {
+			Some(m) => return Some(&text[m.start..m.end]),
+			None => return None,
+		}
+	}
+
+	// Capture groups of the first match.
+	pub fn captures<'t>(&self, text: &'t str) -> Option<Captures<'t>> {
+		match self.exec(text, 0) {
+			Some(c) => return Some(Captures { text: text, locs: c, names: self.names.clone() }),
+			None => return None,
+		}
+	}
+
+	fn all_locs(&self, text: &str) -> Vec<Vec<usize>> {
+		out mut := Vec::new()
+		at mut := 0
+		last_end mut := NONE
+		while at <= text.len() {
+			c := match self.exec(text, at) {
+				Some(c) => c,
+				None => break,
+			}
+			s := c[0]
+			e := c[1]
+			if e == s && s == last_end {
+				// An empty match right after the previous match is skipped, as in Go.
+				if s >= text.len() {
+					break
+				}
+				at = s + std::utf8::decode(&text.as_bytes()[s..]).1
+				continue
+			}
+			last_end = e
+			out.push(c)
+			if e > s {
+				at = e
+			} else if e >= text.len() {
+				break
+			} else {
+				at = e + std::utf8::decode(&text.as_bytes()[e..]).1
+			}
+		}
+		return out
+	}
+
+	// All successive non-overlapping matches.
+	pub fn find_all(&self, text: &str) -> Vec<Match> {
+		out mut := Vec::new()
+		for c in self.all_locs(text).iter() {
+			out.push(Match { start: c[0], end: c[1] })
+		}
+		return out
+	}
+
+	// The text of all successive non-overlapping matches.
+	pub fn find_all_str<'a>(&self, text: &'a str) -> Vec<&'a str> {
+		out mut := Vec::new()
+		for m in self.find_all(text).iter() {
+			out.push(&text[m.start..m.end])
+		}
+		return out
+	}
+
+	// Capture groups of all successive non-overlapping matches.
+	pub fn captures_all<'t>(&self, text: &'t str) -> Vec<Captures<'t>> {
+		out mut := Vec::new()
+		for c in self.all_locs(text).into_iter() {
+			out.push(Captures { text: text, locs: c, names: self.names.clone() })
+		}
+		return out
+	}
+
+	// `text` split around matches, as Go's `Split(s, -1)`.
+	pub fn split<'a>(&self, text: &'a str) -> Vec<&'a str> {
+		out mut := Vec::new()
+		beg mut := 0
+		end mut := 0
+		for m in self.find_all(text).iter() {
+			end = m.start
+			if m.end != 0 {
+				out.push(&text[beg..end])
+			}
+			beg = m.end
+		}
+		if end != text.len() {
+			out.push(&text[beg..])
+		}
+		return out
+	}
+
+	// Appends `template` to `out` with `$1`, `${1}`, `${name}`, `$name`
+	// replaced by groups of `caps`; `$$` is a literal `$`.
+	pub fn expand(&self, caps: &Captures, template: &str, out: &mut String) {
+		t := template.as_bytes()
+		i mut := 0
+		while i < t.len() {
+			if t[i] != 36 || i + 1 >= t.len() {
+				s := i
+				i += 1
+				while i < t.len() && t[i] != 36 {
+					i += 1
+				}
+				out.push(&template[s..i])
+				continue
+			}
+			if t[i + 1] == 36 {
+				out.push("$")
+				i += 2
+				continue
+			}
+			braced := t[i + 1] == 123
+			s := if braced { i + 2 } else { i + 1 }
+			j mut := s
+			while j < t.len() && ((t[j] >= 48 && t[j] <= 57) || (t[j] >= 65 && t[j] <= 90) || (t[j] >= 97 && t[j] <= 122) || t[j] == 95) {
+				j += 1
+			}
+			if j == s || (braced && (j >= t.len() || t[j] != 125)) {
+				// Not a reference: copy the `$` literally.
+				out.push("$")
+				i += 1
+				continue
+			}
+			name := &template[s..j]
+			val := match usize::parse(name) {
+				Ok(k) => caps.get(k),
+				Err(_) => caps.name(name),
+			}
+			match val {
+				Some(v) => out.push(v),
+				None => {},
+			}
+			i = if braced { j + 1 } else { j }
+		}
+	}
+
+	// `text` with every match replaced by `template` (see `expand`).
+	pub fn replace_all(&self, text: &str, template: &str) -> String {
+		out mut := String::new()
+		last mut := 0
+		for c in self.captures_all(text).iter() {
+			m := c.pos(0).unwrap()
+			out.push(&text[last..m.start])
+			self.expand(c, template, &mut out)
+			last = m.end
+		}
+		out.push(&text[last..])
+		return out
+	}
+
+	// `text` with every match replaced by `f(match)`.
+	pub fn replace_all_fn(&self, text: &str, f: fn mut(&Captures) -> String) -> String {
+		out mut := String::new()
+		last mut := 0
+		for c in self.captures_all(text).iter() {
+			m := c.pos(0).unwrap()
+			out.push(&text[last..m.start])
+			out.push(&f(c))
+			last = m.end
+		}
+		out.push(&text[last..])
+		return out
+	}
+
+	// `text` with every match replaced by `lit`, taken literally.
+	pub fn replace_all_literal(&self, text: &str, lit: &str) -> String {
+		out mut := String::new()
+		last mut := 0
+		for m in self.find_all(text).iter() {
+			out.push(&text[last..m.start])
+			out.push(lit)
+			last = m.end
+		}
+		out.push(&text[last..])
+		return out
+	}
+}
+
+fn mem_swap(a: &mut Vec<Thread>, b: &mut Vec<Thread>) {
+	std::mem::swap(a, b)
+}
+
+// `s` with every regexp metacharacter escaped, so it matches literally.
+pub fn quote_meta(s: &str) -> String {
+	out mut := String::new()
+	for c in s.chars() {
+		one mut := String::new()
+		one.push_char(c)
+		if r"\.+*?()|[]{}^$".contains(&one) {
+			out.push_char('\\')
+		}
+		out.push_char(c)
+	}
+	return out
+}
+
+// Whether `pattern` matches anywhere in `text` (compiles each call).
+pub fn is_match(pattern: &str, text: &str) -> Result<bool, Error> {
+	re := Regex::new(pattern)?
+	return Ok(re.is_match(text))
+}

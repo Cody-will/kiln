@@ -1,0 +1,88 @@
+import std::regexp
+import std::regexp::Regex
+
+fn main() {
+	api()
+	show("a+", "baaab aa")
+	show("a*", "baaab")
+	show("a*?b", "aaab")
+	show("(a|ab)(c|bcd)(d*)", "abcd")
+	show("\\d{{2,3}}", "1 12 1234 12345")
+	show("x{{2}}", "xxxxx")
+	show("[a-c]+", "xxabcabzz")
+	show("[^a-c]+", "abxyzc")
+	show("\\bfoo\\b", "foo foobar barfoo foo")
+	show("\\Bo\\B", "foo boo")
+	show("^\\w+", "hello world")
+	show("\\w+$", "hello world")
+	show("(?m)^\\w+", "one\ntwo\nthree")
+	show("(?i)hello", "HeLLo hello HELLO")
+	show("(?i:[a-c])x", "Ax bx CX")
+	show("a.c", "abc a\nc")
+	show("(?s)a.c", "abc a\nc")
+	show("(\\w+)\\s(\\w+)", "hello big world")
+	show("(a)|(b)", "xbxa")
+	show("(?P<y>\\d{{4}})-(?P<m>\\d{{2}})", "on 2026-10 and 1999-01")
+	show("", "abc")
+	show("x*", "abc")
+	show("[\\d\\s]+", "a1 2 3b")
+	show("[\\D]+", "12ab34")
+	show("\\x41\\x{{42}}", "zABz")
+	show("é+", "café éé")
+	show("[à-ÿ]+", "voilà été")
+	show("a{{,2}}", "a{{,2}}")
+	show("(a+)+b", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaac")
+	show("(?:ab)+", "ababab")
+	show("\\.\\*", "a.*b")
+	show("a|b|c", "cab")
+	show("(a*)*", "b")
+	show("(a?)((ab)?)(b?)", "ab")
+	show("[a-]+", "a-a-b")
+	show("[]a]+", "]a]b")
+	show("\\$\\d+\\.\\d\\d", "cost $12.50 now")
+}
+
+fn show(p: &str, t: &str) {
+	re := Regex::must(p)
+	out mut := String::new()
+	for c in re.captures_all(t).iter() {
+		out.push("[")
+		for i in 0..c.len() {
+			match c.pos(i) {
+				Some(m) => out.push("({m.start},{m.end})"),
+				None => out.push("-"),
+			}
+		}
+		out.push("]")
+	}
+	println(out)
+}
+
+fn api() {
+	re := Regex::must(r"(?P<user>\w+)@(?P<host>[\w.]+)")
+	text := "contact: bob@example.com, al@test.org"
+	println("{re.find_all_str(text):?} {re.num_groups()} {re.group_names():?}")
+	c := re.captures(text).unwrap()
+	println("{c.name("user"):?} {c.name("host"):?} {c.name("nope"):?} {c.pos(2):?}")
+	println(re.replace_all(text, r"${host}/$user $$ $9 $"))
+	println(re.replace_all_literal(text, "$1"))
+	println(re.replace_all_fn(text, |c| c.get(1).unwrap().to_upper()))
+	println("{Regex::must(r",\s*").split("a, b,c ,  d"):?}")
+	println("{Regex::must("").split("abc"):?}")
+	println(regexp::quote_meta(r"1+1=2? [yes] {ok} $5.00"))
+	q := Regex::must(&regexp::quote_meta("a.b*c"))
+	println("{q.is_match("a.b*c")} {q.is_match("axbbc")}")
+	println("{regexp::is_match(r"^\d+$", "12345"):?} {regexp::is_match(r"^\d+$", "12a45"):?}")
+	for bad in ["a(b", "a)b", "[a-", "x**", "*a", r"\q", r"a{3,2}", "(?P<n>a)(?P<n>b)", "[z-a]", r"a\"].iter() {
+		match Regex::new(bad) {
+			Ok(_) => println("unexpected ok {bad}"),
+			Err(e) => println("{e}"),
+		}
+	}
+	// Linear time: this would take ages with a backtracking engine.
+	long mut := String::new()
+	for _ in 0..5000 {
+		long.push("a")
+	}
+	println("{Regex::must("(a|aa)*(a|aa)*(a|aa)*c").is_match(&long)}")
+}
