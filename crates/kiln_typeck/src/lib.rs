@@ -102,6 +102,87 @@ impl<'r, 'a> Typed<'r, 'a> {
         self.c.fmt_ty(t)
     }
 
+    /// Declared generic parameter names of function `i`: `(its own, enclosing impl/trait's)`.
+    pub fn fn_generics(&self, i: usize) -> (Vec<String>, Vec<String>) {
+        let s = &self.c.sigs[i];
+        (s.generics.clone(), s.outer_generics.clone())
+    }
+
+    /// Methods of trait `tr` (indices into `Resolved::fns`), in declaration order.
+    pub fn trait_methods(&self, tr: DefId) -> Vec<usize> {
+        let r = self.c.r;
+        (0..r.fns.len())
+            .filter(|i| r.fns[*i].trait_def == Some(tr))
+            .collect()
+    }
+
+    /// Whether function `i` has a body.
+    pub fn has_body(&self, i: usize) -> bool {
+        self.c.sigs[i].has_body
+    }
+
+    /// Resolves a call of trait method `trait_fn` (an index into `Resolved::fns`)
+    /// for the concrete types in `substs` (which must contain `Self` and the
+    /// trait's generic parameters). Returns the implementing function and its
+    /// substitution, or the trait's default method.
+    pub fn resolve_trait_method(
+        &mut self,
+        trait_fn: usize,
+        substs: &std::collections::HashMap<String, Ty>,
+    ) -> Option<(usize, std::collections::HashMap<String, Ty>)> {
+        use std::collections::HashMap;
+        let r = self.c.r;
+        let tr = r.fns[trait_fn].trait_def?;
+        let name = r.fns[trait_fn].decl.name.name.clone();
+        let self_ty = substs.get("Self")?.clone();
+        let tgen = self
+            .c
+            .traits
+            .get(&tr)
+            .map(|t| t.generics.clone())
+            .unwrap_or_default();
+        let targs: Vec<Ty> = tgen
+            .iter()
+            .map(|g| substs.get(g).cloned().unwrap_or(Ty::Unknown))
+            .collect();
+        let (own_generics, _) = self.fn_generics(trait_fn);
+        for imp in self.c.impls.clone() {
+            let Some((itr, iargs)) = &imp.trait_ref else {
+                continue;
+            };
+            if *itr != tr {
+                continue;
+            }
+            let snap = self.c.infer.snapshot();
+            let map: HashMap<String, Ty> = imp
+                .generics
+                .iter()
+                .map(|g| (g.clone(), self.c.infer.fresh(ty::VarKind::General)))
+                .collect();
+            let ok = self.c.infer.unify(&imp.self_ty.subst(&map), &self_ty)
+                && iargs.iter().zip(&targs).all(|(a, b)| {
+                    matches!(b, Ty::Unknown) || self.c.infer.unify(&a.subst(&map), b)
+                });
+            if ok {
+                let mut out: HashMap<String, Ty> = map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), self.c.infer.zonk(v)))
+                    .collect();
+                self.c.infer.restore(snap);
+                let mi = *imp.methods.get(&name)?;
+                let (impl_own, _) = self.fn_generics(mi);
+                for (a, b) in own_generics.iter().zip(impl_own) {
+                    if let Some(t) = substs.get(a) {
+                        out.insert(b, t.clone());
+                    }
+                }
+                return Some((mi, out));
+            }
+            self.c.infer.restore(snap);
+        }
+        self.has_body(trait_fn).then(|| (trait_fn, substs.clone()))
+    }
+
     /// Field types of a struct type, or of enum variant `variant` of an enum type.
     pub fn adt_fields(&self, t: &Ty, variant: Option<DefId>) -> Vec<(String, Ty)> {
         let Ty::Adt(d, args) = t else { return vec![] };

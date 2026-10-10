@@ -12,7 +12,9 @@ impl fmt::Display for Place {
                 Proj::Field(n) => {
                     let _ = write!(s, ".{n}");
                 }
-                Proj::Index => s.push_str("[_]"),
+                Proj::Index(l) => {
+                    let _ = write!(s, "[_{}]", l.0);
+                }
             }
         }
         f.write_str(&s)
@@ -24,7 +26,15 @@ impl fmt::Display for Operand {
         match self {
             Operand::Copy(p) => write!(f, "copy {p}"),
             Operand::Move(p) => write!(f, "move {p}"),
-            Operand::Const => f.write_str("const"),
+            Operand::Const(c) => match &c.kind {
+                ConstKind::Int(v) => write!(f, "const {v}"),
+                ConstKind::Float(v) => write!(f, "const {v:?}"),
+                ConstKind::Bool(v) => write!(f, "const {v}"),
+                ConstKind::Char(v) => write!(f, "const {v:?}"),
+                ConstKind::Str(v) => write!(f, "const {v:?}"),
+                ConstKind::Unit => f.write_str("const ()"),
+                ConstKind::Fn(i, _) => write!(f, "const fn#{i}"),
+            },
         }
     }
 }
@@ -43,9 +53,38 @@ impl fmt::Display for Rvalue {
             Rvalue::Ref { mutable, place } => {
                 write!(f, "&{}{place}", if *mutable { "mut " } else { "" })
             }
-            Rvalue::Aggregate(ops) => write!(f, "aggregate({})", list(ops)),
-            Rvalue::Call { args, flows } => write!(f, "call({}) flows {flows:?}", list(args)),
-            Rvalue::Pure(ops) => write!(f, "op({})", list(ops)),
+            Rvalue::Aggregate(k, ops) => {
+                let k = match k {
+                    AggKind::Tuple => "tuple".to_string(),
+                    AggKind::Array => "array".to_string(),
+                    AggKind::Struct(_, fs) => format!("struct{{{}}}", fs.join(",")),
+                    AggKind::Variant { index, .. } => format!("variant#{index}"),
+                    AggKind::Range { .. } => "range".to_string(),
+                    AggKind::Closure(_) => "closure".to_string(),
+                };
+                write!(f, "{k}({})", list(ops))
+            }
+            Rvalue::Call {
+                callee,
+                args,
+                flows,
+            } => {
+                let c = match callee {
+                    Callee::Fn(i, _) => format!("fn#{i}"),
+                    Callee::Value => "value".to_string(),
+                    Callee::Intrinsic(n) => n.clone(),
+                };
+                write!(f, "call {c}({}) flows {flows:?}", list(args))
+            }
+            Rvalue::Coerce(o, t) => write!(f, "coerce({o} to {t:?})"),
+            Rvalue::Pure(op, ops) => {
+                let o = match op {
+                    Op::Bin(b) => format!("{b:?}"),
+                    Op::Interp(_) => "interp".into(),
+                    o => format!("{o:?}"),
+                };
+                write!(f, "op {o}({})", list(ops))
+            }
         }
     }
 }
@@ -98,6 +137,9 @@ impl fmt::Display for Body {
             }
             let t = match &b.term {
                 Terminator::Goto(t) => format!("goto bb{}", t.0),
+                Terminator::SwitchBool { cond, t, f } => {
+                    format!("if {cond} goto bb{} else bb{}", t.0, f.0)
+                }
                 Terminator::Branch(ts) => {
                     format!(
                         "branch [{}]",

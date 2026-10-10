@@ -25,6 +25,8 @@ struct Method {
     obligations: Vec<(Ty, DefId)>,
     /// Index into `Resolved::fns` of the callee, when it is a declared function.
     fn_idx: Option<usize>,
+    /// Generic substitution used to instantiate the callee (including `Self` for trait methods).
+    subst: HashMap<String, Ty>,
 }
 
 /// How a method call was resolved (exported for MIR lowering).
@@ -38,6 +40,8 @@ pub struct MethodInfo {
     pub recv_ty: Ty,
     /// Index into `Resolved::fns` of the callee, if it is a declared method.
     pub fn_idx: Option<usize>,
+    /// Generic substitution for the callee (fully resolved).
+    pub substs: HashMap<String, Ty>,
 }
 
 /// Type information for one function body, exported for later phases.
@@ -51,6 +55,10 @@ pub struct FnResults {
     pub methods: HashMap<Span, MethodInfo>,
     /// Callee function index for path expressions naming a function.
     pub callees: HashMap<Span, usize>,
+    /// Generic substitutions for those callees.
+    pub callee_substs: HashMap<Span, HashMap<String, Ty>>,
+    /// Implicit coercions: expression span → the type it was coerced to.
+    pub coercions: HashMap<Span, Ty>,
     /// Trait bounds in scope (`(param, trait)`).
     pub bounds: Vec<(String, DefId)>,
 }
@@ -69,6 +77,8 @@ pub struct Body<'c, 'r, 'a> {
     declared: Vec<(LocalId, Span)>,
     methods: HashMap<Span, MethodInfo>,
     callees: HashMap<Span, usize>,
+    callee_substs: HashMap<Span, HashMap<String, Ty>>,
+    coercions: Vec<(Span, Ty, Ty)>,
     /// ADTs whose auto-trait impls are being computed (cycle guard).
     auto_stack: Vec<DefId>,
     /// The expected type of the closure being checked, from the call it is passed to.
@@ -93,6 +103,8 @@ impl<'c, 'r, 'a> Body<'c, 'r, 'a> {
             declared: vec![],
             methods: HashMap::new(),
             callees: HashMap::new(),
+            callee_substs: HashMap::new(),
+            coercions: vec![],
             auto_stack: vec![],
             expected_fn: None,
             deferred_init: Default::default(),
@@ -166,6 +178,8 @@ impl Checker<'_, '_> {
             declared: Vec::new(),
             methods: HashMap::new(),
             callees: HashMap::new(),
+            callee_substs: HashMap::new(),
+            coercions: vec![],
             auto_stack: Vec::new(),
             expected_fn: None,
             deferred_init: Default::default(),
@@ -230,10 +244,33 @@ impl Body<'_, '_, '_> {
                 .map(|(k, m)| {
                     let mut m = m.clone();
                     m.recv_ty = z(self.c, &m.recv_ty);
+                    m.substs = m
+                        .substs
+                        .iter()
+                        .map(|(n, t)| (n.clone(), z(self.c, t)))
+                        .collect();
                     (*k, m)
                 })
                 .collect(),
             callees: self.callees.clone(),
+            callee_substs: self
+                .callee_substs
+                .iter()
+                .map(|(k, m)| {
+                    (
+                        *k,
+                        m.iter().map(|(n, t)| (n.clone(), z(self.c, t))).collect(),
+                    )
+                })
+                .collect(),
+            coercions: self
+                .coercions
+                .iter()
+                .filter_map(|(sp, f, e)| {
+                    let (f, e) = (z(self.c, f), z(self.c, e));
+                    (f != e && f != Ty::Never).then_some((*sp, e))
+                })
+                .collect(),
             bounds: self.bounds.clone(),
         }
     }
@@ -310,6 +347,7 @@ impl Body<'_, '_, '_> {
     /// (`&String → &str`, `&Vec<T> → &[T]`, `&[T; N] → &[T]`, `&Box<T> → &T`, `&T → &dyn Trait`).
     fn coerce(&mut self, found: &Ty, expected: &Ty, span: Span) -> bool {
         if self.coerces(found, expected) {
+            self.coercions.push((span, found.clone(), expected.clone()));
             return true;
         }
         let (e, f) = (self.fmt(expected), self.fmt(found));
@@ -578,6 +616,7 @@ impl Body<'_, '_, '_> {
             ret: sig.ret.subst(&subst),
             obligations,
             fn_idx: Some(i),
+            subst,
         }
     }
 
@@ -1444,6 +1483,7 @@ impl Body<'_, '_, '_> {
     fn method_fn_ty(&mut self, m: Method, span: Span) -> Ty {
         if let Some(i) = m.fn_idx {
             self.callees.insert(span, i);
+            self.callee_substs.insert(span, m.subst.clone());
         }
         for (t, tr) in m.obligations {
             self.obligations.push((t, tr, span));
@@ -1655,6 +1695,7 @@ impl Body<'_, '_, '_> {
                     self_param,
                     recv_ty: c.clone(),
                     fn_idx: None,
+                    substs: HashMap::new(),
                 };
                 self.methods.insert(span, info);
                 return t;
@@ -1665,6 +1706,7 @@ impl Body<'_, '_, '_> {
                     self_param: m.self_param.clone(),
                     recv_ty: c.clone(),
                     fn_idx: m.fn_idx,
+                    substs: m.subst.clone(),
                 };
                 self.methods.insert(span, info);
                 if let Some(SelfParam::Ref { mutable: true, .. }) = m.self_param {

@@ -5,14 +5,16 @@
 //! are addressed with [`Place`]s (a local plus field/deref/index projections).
 //! Operands say whether a place is *copied* (read) or *moved*.
 //!
-//! The IR is designed for borrow checking: it records every read, move,
-//! borrow, write, and end of storage, together with how borrows flow from
-//! call arguments into results ([`Rvalue::Call::flows`]).
+//! MIR serves two clients: the borrow checker (which needs every read, move,
+//! borrow, write, and end of storage, plus how borrows flow from call
+//! arguments into results via [`Rvalue::Call::flows`]) and the code generator
+//! (which needs constants, operators, callees with generic substitutions,
+//! aggregate kinds, and conditional branches).
 
 #![allow(missing_docs)] // field names are self-describing; see the module docs
 
 use kiln_lexer::Span;
-use kiln_resolve::LocalId;
+use kiln_resolve::{DefId, LocalId};
 use kiln_typeck::ty::Ty;
 
 /// A local slot in a body. `_0` is the return place.
@@ -62,17 +64,6 @@ pub enum DerefKind {
     Box,
 }
 
-/// One step of a place projection.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Proj {
-    /// `*p`
-    Deref(DerefKindKey),
-    /// `p.name`, `p.0`, or `p.Variant.0` (enum fields are prefixed with the variant name).
-    Field(String),
-    /// `p[i]` (any index).
-    Index,
-}
-
 /// [`DerefKind`] in a hashable/orderable form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DerefKindKey {
@@ -91,6 +82,17 @@ impl From<DerefKind> for DerefKindKey {
             DerefKind::Box => DerefKindKey::Box,
         }
     }
+}
+
+/// One step of a place projection.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Proj {
+    /// `*p`
+    Deref(DerefKindKey),
+    /// `p.name`, `p.0`, or `p.Variant.0` (enum fields are prefixed with the variant name).
+    Field(String),
+    /// `p[i]`, with the index in the given local.
+    Index(Local),
 }
 
 /// A memory location: a local plus projections.
@@ -119,6 +121,11 @@ impl Place {
         }
     }
 
+    /// This place with a field projection.
+    pub fn field(&self, name: impl Into<String>) -> Place {
+        self.project(Proj::Field(name.into()))
+    }
+
     /// Whether the place goes through a reference or raw pointer (so it is
     /// not storage owned by its local).
     pub fn through_ref(&self) -> bool {
@@ -130,7 +137,8 @@ impl Place {
         })
     }
 
-    /// Whether one place contains the other (same local, one projection list is a prefix of the other).
+    /// Whether one place contains the other (same local, one projection list is
+    /// a prefix of the other; any two indexes may alias).
     pub fn overlaps(&self, other: &Place) -> bool {
         if self.local != other.local {
             return false;
@@ -138,8 +146,30 @@ impl Place {
         self.proj
             .iter()
             .zip(&other.proj)
-            .all(|(a, b)| a == b || *a == Proj::Index || *b == Proj::Index)
+            .all(|(a, b)| a == b || matches!((a, b), (Proj::Index(_), Proj::Index(_))))
     }
+}
+
+/// A constant value.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConstKind {
+    Int(i128),
+    Float(f64),
+    Bool(bool),
+    Char(char),
+    /// A string literal (`&'static str`).
+    Str(String),
+    /// `()`, or a value with no runtime representation.
+    Unit,
+    /// A function item used as a value, with its generic substitution.
+    Fn(usize, Vec<(String, Ty)>),
+}
+
+/// A constant operand with its type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Constant {
+    pub kind: ConstKind,
+    pub ty: Ty,
 }
 
 /// A value used by an rvalue.
@@ -149,8 +179,8 @@ pub enum Operand {
     Copy(Place),
     /// Move out of the place.
     Move(Place),
-    /// A constant (literals, function items, unit variants).
-    Const,
+    /// A constant.
+    Const(Box<Constant>),
 }
 
 impl Operand {
@@ -158,9 +188,85 @@ impl Operand {
     pub fn place(&self) -> Option<&Place> {
         match self {
             Operand::Copy(p) | Operand::Move(p) => Some(p),
-            Operand::Const => None,
+            Operand::Const(_) => None,
         }
     }
+
+    /// The unit constant.
+    pub fn unit() -> Operand {
+        Operand::constant(ConstKind::Unit, Ty::Unit)
+    }
+
+    /// A constant of type `ty`.
+    pub fn constant(kind: ConstKind, ty: Ty) -> Operand {
+        Operand::Const(Box::new(Constant { kind, ty }))
+    }
+}
+
+/// Operations whose results hold no borrows.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Op {
+    Bin(kiln_parser::ast::BinOp),
+    Neg,
+    Not,
+    /// `as` cast to the given type.
+    Cast(Ty),
+    /// The variant index of an enum place (operand is a `copy` of the place).
+    Discriminant,
+    /// `print`/`println`/`eprint`/`eprintln` of one string-like operand.
+    Print {
+        newline: bool,
+        stderr: bool,
+    },
+    /// String interpolation: literal segments and operand indices.
+    Interp(Vec<InterpSeg>),
+    /// Evaluate the operands only (a read, for the borrow checker).
+    Touch,
+    /// Something without a code generator yet (channels, ...).
+    Unsupported(String),
+}
+
+/// One piece of an interpolated string.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InterpSeg {
+    Text(String),
+    /// Format operand `i`.
+    Arg(usize),
+}
+
+/// What an aggregate builds.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AggKind {
+    Tuple,
+    Array,
+    /// A struct, with the field names in operand order.
+    Struct(DefId, Vec<String>),
+    /// Enum variant `index` of enum `def`, with field names in operand order.
+    Variant {
+        def: DefId,
+        index: usize,
+        fields: Vec<String>,
+    },
+    /// `start..end` (`inclusive` for `..=`); missing bounds are omitted from the operands.
+    Range {
+        has_start: bool,
+        has_end: bool,
+        inclusive: bool,
+    },
+    /// A closure value; the operands are its captures. The closure's body has this span.
+    Closure(Span),
+}
+
+/// What a call calls.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Callee {
+    /// A declared function (user or prelude) with its generic substitution.
+    /// For trait methods, the implementation is chosen during monomorphization.
+    Fn(usize, Vec<(String, Ty)>),
+    /// A function value (closure or fn pointer): `args[0]`.
+    Value,
+    /// A compiler-provided operation (`clone`, `drop`, `vec_take`, ...).
+    Intrinsic(String),
 }
 
 /// The right-hand side of an assignment.
@@ -172,24 +278,28 @@ pub enum Rvalue {
     Ref { mutable: bool, place: Place },
     /// A struct, tuple, array, enum variant, range, or closure value built from
     /// operands. The result holds any borrows the operands hold.
-    Aggregate(Vec<Operand>),
+    Aggregate(AggKind, Vec<Operand>),
     /// A call. The result holds the borrows held by `args[i]` for each `i` in `flows`
     /// (computed from the callee's signature and lifetime elision).
     Call {
+        callee: Callee,
         args: Vec<Operand>,
         flows: Vec<usize>,
     },
-    /// Arithmetic, comparisons, casts, channel operations: the result holds no borrows.
-    Pure(Vec<Operand>),
+    /// Arithmetic, comparisons, casts, printing: the result holds no borrows.
+    Pure(Op, Vec<Operand>),
+    /// An implicit coercion (`&T → &dyn Trait`, `&String → &str`, `Box<T> → Box<dyn Trait>`, ...).
+    /// The result holds the operand's borrows.
+    Coerce(Operand, Ty),
 }
 
 impl Rvalue {
     /// All operands.
     pub fn operands(&self) -> Vec<&Operand> {
         match self {
-            Rvalue::Use(o) => vec![o],
+            Rvalue::Use(o) | Rvalue::Coerce(o, _) => vec![o],
             Rvalue::Ref { .. } => vec![],
-            Rvalue::Aggregate(os) | Rvalue::Call { args: os, .. } | Rvalue::Pure(os) => {
+            Rvalue::Aggregate(_, os) | Rvalue::Call { args: os, .. } | Rvalue::Pure(_, os) => {
                 os.iter().collect()
             }
         }
@@ -214,6 +324,12 @@ pub struct Capture {
     pub span: Span,
 }
 
+impl PartialEq for Capture {
+    fn eq(&self, o: &Self) -> bool {
+        self.name == o.name && self.mode == o.mode && self.span == o.span
+    }
+}
+
 /// Which kind of task a [`StmtKind::Spawn`] starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpawnKind {
@@ -230,7 +346,7 @@ pub enum SpawnKind {
 pub enum StmtKind {
     /// `place = rvalue`
     Assign(Place, Rvalue),
-    /// A non-consuming read of a place (match scrutinees, comparisons, printing).
+    /// A non-consuming read of a place (match scrutinees).
     Read(Place),
     /// Evaluate an rvalue and discard the result.
     Eval(Rvalue),
@@ -246,12 +362,6 @@ pub enum StmtKind {
     },
 }
 
-impl PartialEq for Capture {
-    fn eq(&self, o: &Self) -> bool {
-        self.name == o.name && self.mode == o.mode && self.span == o.span
-    }
-}
-
 /// A statement with its source span.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Statement {
@@ -263,7 +373,14 @@ pub struct Statement {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Terminator {
     Goto(BlockId),
-    /// Branch to any of the targets (conditions are evaluated by preceding statements).
+    /// `if cond { goto t } else { goto f }`.
+    SwitchBool {
+        cond: Operand,
+        t: BlockId,
+        f: BlockId,
+    },
+    /// Branch to any of the targets with no condition the code generator knows
+    /// (`select`); bodies containing it are reported as unsupported by codegen.
     Branch(Vec<BlockId>),
     Return,
     Unreachable,
@@ -283,6 +400,7 @@ impl Terminator {
     pub fn successors(&self) -> Vec<BlockId> {
         match self {
             Terminator::Goto(b) => vec![*b],
+            Terminator::SwitchBool { t, f, .. } => vec![*t, *f],
             Terminator::Branch(bs) => bs.clone(),
             Terminator::Return | Terminator::Unreachable => vec![],
             Terminator::DeferDispatch { targets, done } => {
@@ -322,10 +440,15 @@ pub struct Body {
     /// Parameter indices (0-based, `self` first) that the return value may borrow
     /// from, according to the signature. `None` means unchecked (closures).
     pub return_flows: Option<Vec<usize>>,
+    pub span: Span,
     /// Errors found during lowering (e.g. a deferred call using a variable
     /// that is dropped before the function returns).
     pub errors: Vec<(String, Span)>,
-    pub span: Span,
+    /// Constructs the code generator does not support yet.
+    pub unsupported: Vec<(String, Span)>,
+    /// For closures and `go` blocks: the upvar locals and how each is captured,
+    /// in the order of the capture operands.
+    pub captures: Vec<(Local, CaptureMode)>,
 }
 
 impl Body {
@@ -351,7 +474,7 @@ impl Body {
                     let f = f.rsplit('.').next().unwrap_or(f);
                     s = format!("{s}.{f}");
                 }
-                Proj::Index => s = format!("{s}[..]"),
+                Proj::Index(_) => s = format!("{s}[..]"),
             }
         }
         s

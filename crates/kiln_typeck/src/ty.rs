@@ -231,6 +231,16 @@ impl InferTable {
         }
     }
 
+    /// Saves the variable table (for speculative unification).
+    pub(crate) fn snapshot(&self) -> Vec<(Option<Ty>, VarKind)> {
+        self.vars.clone()
+    }
+
+    /// Restores a [`InferTable::snapshot`].
+    pub(crate) fn restore(&mut self, s: Vec<(Option<Ty>, VarKind)>) {
+        self.vars = s;
+    }
+
     /// Unifies without keeping any bindings if it fails.
     pub fn try_unify(&mut self, a: &Ty, b: &Ty) -> bool {
         let snapshot = self.vars.clone();

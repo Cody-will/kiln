@@ -4,13 +4,17 @@ use crate::ir::*;
 use crate::sig;
 use kiln_lexer::Span;
 use kiln_parser::ast::{
-    self, Block, Expr, ExprKind, GoTarget, Pattern, PatternKind, SelectOp, StmtKind as AstStmt,
+    self, BinOp, Block, Expr, ExprKind, GoTarget, Lit, Pattern, PatternKind, SelectOp,
+    StmtKind as AstStmt,
 };
-use kiln_resolve::{Builtin, DefKind, LocalId, Res, Resolved};
+use kiln_resolve::{Builtin, DefId, DefKind, LocalId, PrimTy, Res, Resolved};
 use kiln_typeck::ty::Ty;
 use kiln_typeck::{FnResults, Typed};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+
+/// Field-name prefix, field types, and `(enum, variant index)` of a constructor.
+type CtorFields = (String, Vec<(String, Ty)>, Option<(DefId, usize)>);
 
 struct LoopCx {
     label: Option<String>,
@@ -39,9 +43,9 @@ pub(crate) struct Lower<'t, 'r, 'a> {
     pub(crate) extra: Vec<Body>,
     last_captures: Option<Vec<Capture>>,
     /// Locals holding closures that move a captured variable out (callable once).
-    once: std::collections::HashSet<Local>,
+    once: HashSet<Local>,
     /// Locals whose scope has ended.
-    dead: std::collections::HashSet<Local>,
+    dead: HashSet<Local>,
     /// Set while lowering deferred calls in the exit block.
     in_defer: bool,
     /// Whether the closure just lowered moves a captured variable.
@@ -50,6 +54,20 @@ pub(crate) struct Lower<'t, 'r, 'a> {
 
 fn dummy_span() -> Span {
     Span::new(0, 0)
+}
+
+fn sorted(m: &HashMap<String, Ty>) -> Vec<(String, Ty)> {
+    let mut v: Vec<(String, Ty)> = m.iter().map(|(k, t)| (k.clone(), t.clone())).collect();
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v
+}
+
+fn usize_ty() -> Ty {
+    Ty::Prim(PrimTy::Usize)
+}
+
+fn bool_ty() -> Ty {
+    Ty::Prim(PrimTy::Bool)
 }
 
 impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
@@ -68,8 +86,10 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             blocks: vec![],
             arg_count: 0,
             return_flows: None,
-            errors: vec![],
             span,
+            errors: vec![],
+            unsupported: vec![],
+            captures: vec![],
         };
         let mut l = Lower {
             typed,
@@ -86,14 +106,18 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             upvars: vec![],
             extra: vec![],
             last_captures: None,
-            once: Default::default(),
-            dead: Default::default(),
+            once: HashSet::new(),
+            dead: HashSet::new(),
             in_defer: false,
             last_consumes: false,
         };
         l.new_block(); // entry
         l.new_block(); // exit
         l
+    }
+
+    fn unsupported(&mut self, what: impl Into<String>, span: Span) {
+        self.body.unsupported.push((what.into(), span));
     }
 
     // ----- building blocks ---------------------------------------------------------
@@ -112,6 +136,10 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         self.body.blocks[b].stmts.push(Statement { kind, span });
     }
 
+    fn assign(&mut self, p: Place, rv: Rvalue, span: Span) {
+        self.push(StmtKind::Assign(p, rv), span);
+    }
+
     fn terminate(&mut self, term: Terminator, span: Span) {
         let b = self.cur.0 as usize;
         self.body.blocks[b].term = term;
@@ -120,6 +148,11 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
 
     fn goto(&mut self, target: BlockId, span: Span) {
         self.terminate(Terminator::Goto(target), span);
+    }
+
+    /// Ends the current block with `if cond { t } else { f }`.
+    fn switch(&mut self, cond: Operand, t: BlockId, f: BlockId, span: Span) {
+        self.terminate(Terminator::SwitchBool { cond, t, f }, span);
     }
 
     fn new_local(
@@ -223,6 +256,10 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         }
     }
 
+    fn lang(&self, d: DefId, name: &str) -> bool {
+        self.r.prelude_type(name) == Some(d)
+    }
+
     // ----- entry points --------------------------------------------------------------
 
     fn finish(mut self, end: Span) -> (Body, Vec<(LocalId, Local)>, Vec<Body>) {
@@ -252,8 +289,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         while self.scopes.len() > 1 {
             self.pop_scope(end);
         }
-        let outer = self.scopes.pop().unwrap();
-        let mut all: Vec<Local> = outer;
+        let mut all: Vec<Local> = self.scopes.pop().unwrap();
         for (i, d) in self.body.locals.iter().enumerate() {
             if d.kind == LocalKind::Arg && !all.contains(&Local(i as u32)) {
                 all.insert(0, Local(i as u32));
@@ -341,12 +377,8 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     };
                     let l = self.declare(id);
                     let et = elems.get(i).cloned().unwrap_or(Ty::Unknown);
-                    let op =
-                        self.operand_of(Place::local(t).project(Proj::Field(i.to_string())), &et);
-                    self.push(
-                        StmtKind::Assign(Place::local(l), Rvalue::Use(op)),
-                        name.span,
-                    );
+                    let op = self.operand_of(Place::local(t).field(i.to_string()), &et);
+                    self.assign(Place::local(l), Rvalue::Use(op), name.span);
                 }
             }
             AstStmt::Assign { target, op, value } => {
@@ -357,14 +389,18 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 };
                 let rv = match op {
                     None => Rvalue::Use(v),
-                    Some(_) => Rvalue::Pure(vec![Operand::Copy(tp.clone()), v]),
+                    Some(bop) => Rvalue::Pure(Op::Bin(*bop), vec![Operand::Copy(tp.clone()), v]),
                 };
-                self.push(StmtKind::Assign(tp, rv), s.span);
+                self.assign(tp, rv, s.span);
             }
             AstStmt::Send { chan, value } => {
                 let c = self.read(chan);
                 let v = self.expr(value);
-                self.push(StmtKind::Eval(Rvalue::Pure(vec![c, v])), s.span);
+                self.unsupported("channel send", s.span);
+                self.push(
+                    StmtKind::Eval(Rvalue::Pure(Op::Unsupported("send".into()), vec![c, v])),
+                    s.span,
+                );
             }
             AstStmt::Defer(e) => {
                 self.push(StmtKind::DeferPush(self.defers.len() as u32), s.span);
@@ -372,10 +408,11 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 self.defers.push((e.clone(), in_loop));
             }
             AstStmt::Go(GoTarget::Call(e)) => {
+                self.unsupported("`go` (the task runtime is not implemented yet)", s.span);
                 let operands = match &e.kind {
-                    ExprKind::Call(f, args) => self.call_operands(f, args).0,
+                    ExprKind::Call(f, args) => self.call_operands(f, args).1,
                     ExprKind::MethodCall { receiver, args, .. } => {
-                        self.method_operands(e, receiver, args).0
+                        self.method_operands(e, receiver, args).1
                     }
                     _ => vec![self.expr(e)],
                 };
@@ -389,6 +426,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 );
             }
             AstStmt::Go(GoTarget::Block { is_move, body }) => {
+                self.unsupported("`go` (the task runtime is not implemented yet)", s.span);
                 let (operands, captures) = self.nested(
                     &[],
                     None,
@@ -418,10 +456,8 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         }
     }
 
-    // ----- patterns --------------------------------------------------------------------
+    // ----- patterns ----------------------------------------------------------------------
 
-    /// Binds the variables in `pat` to parts of `place` (of type `ty`). `mode` is
-    /// the default binding mode when matching through a reference.
     fn bind_pattern(&mut self, pat: &Pattern, place: Place, ty: &Ty, mode: Option<bool>) {
         let destructures = matches!(
             pat.kind,
@@ -448,64 +484,55 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                         },
                         None => Rvalue::Use(self.operand_of(place.clone(), ty)),
                     };
-                    self.push(StmtKind::Assign(Place::local(l), rv), name.span);
+                    self.assign(Place::local(l), rv, name.span);
                 }
                 if let Some(s) = sub {
                     self.bind_pattern(s, place, ty, mode);
                 }
             }
             PatternKind::Tuple(ps) => {
-                let ts = match ty {
-                    Ty::Tuple(ts) => ts.clone(),
-                    _ => vec![],
-                };
-                let rest = ps.iter().position(|p| matches!(p.kind, PatternKind::Rest));
-                for (i, p) in ps.iter().enumerate() {
-                    let idx = match rest {
-                        Some(r) if i > r => ts.len().saturating_sub(ps.len() - i),
-                        _ => i,
-                    };
-                    let et = ts.get(idx).cloned().unwrap_or(Ty::Unknown);
-                    self.bind_pattern(p, place.project(Proj::Field(idx.to_string())), &et, mode);
+                for (p, idx, et) in self.tuple_elems(ps, ty) {
+                    self.bind_pattern(p, place.field(idx.to_string()), &et, mode);
                 }
             }
             PatternKind::TupleStruct(path, ps) => {
-                let (prefix, fields) = self.ctor_fields(path.span, ty);
+                let (prefix, fields, _) = self.ctor_fields(path.span, ty);
                 for (i, p) in ps.iter().enumerate() {
                     let (n, ft) = fields
                         .get(i)
                         .cloned()
                         .unwrap_or((i.to_string(), Ty::Unknown));
-                    self.bind_pattern(
-                        p,
-                        place.project(Proj::Field(format!("{prefix}{n}"))),
-                        &ft,
-                        mode,
-                    );
+                    self.bind_pattern(p, place.field(format!("{prefix}{n}")), &ft, mode);
                 }
             }
             PatternKind::Struct {
                 path, fields: fps, ..
             } => {
-                let (prefix, fields) = self.ctor_fields(path.span, ty);
+                let (prefix, fields, _) = self.ctor_fields(path.span, ty);
                 for fp in fps {
                     let ft = fields
                         .iter()
                         .find(|(n, _)| *n == fp.name.name)
                         .map(|(_, t)| t.clone())
                         .unwrap_or(Ty::Unknown);
-                    let p = place.project(Proj::Field(format!("{prefix}{}", fp.name.name)));
-                    self.bind_pattern(&fp.pat, p, &ft, mode);
+                    self.bind_pattern(
+                        &fp.pat,
+                        place.field(format!("{prefix}{}", fp.name.name)),
+                        &ft,
+                        mode,
+                    );
                 }
             }
             PatternKind::Slice(ps) => {
+                self.unsupported("slice patterns", pat.span);
                 let et = match ty {
                     Ty::Array(t) | Ty::Slice(t) => (**t).clone(),
                     Ty::Adt(_, args) if !args.is_empty() => args[0].clone(),
                     _ => Ty::Unknown,
                 };
+                let i = self.temp(usize_ty(), pat.span);
                 for p in ps {
-                    self.bind_pattern(p, place.project(Proj::Index), &et, mode);
+                    self.bind_pattern(p, place.project(Proj::Index(i)), &et, mode);
                 }
             }
             PatternKind::Ref { mutable, inner } => {
@@ -521,6 +548,9 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 );
             }
             PatternKind::Or(alts) => {
+                if alts.len() > 1 && !pattern_bindings(self.r, pat).is_empty() {
+                    self.unsupported("`|` patterns that bind variables", pat.span);
+                }
                 if let Some(first) = alts.first() {
                     self.bind_pattern(first, place, ty, mode);
                 }
@@ -533,24 +563,223 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         }
     }
 
-    /// Field-name prefix and field types for a constructor pattern path.
-    fn ctor_fields(&self, path_span: Span, ty: &Ty) -> (String, Vec<(String, Ty)>) {
-        let variant = match self.r.path(path_span) {
-            Res::Def(d) if matches!(self.r.def(d).kind, DefKind::Variant { .. }) => Some(d),
+    /// Sub-patterns of a tuple pattern with their element index and type (handling `..`).
+    fn tuple_elems<'p>(&self, ps: &'p [Pattern], ty: &Ty) -> Vec<(&'p Pattern, usize, Ty)> {
+        let ts = match ty {
+            Ty::Tuple(ts) => ts.clone(),
+            _ => vec![],
+        };
+        let rest = ps.iter().position(|p| matches!(p.kind, PatternKind::Rest));
+        let mut out = vec![];
+        for (i, p) in ps.iter().enumerate() {
+            if matches!(p.kind, PatternKind::Rest) {
+                continue;
+            }
+            let idx = match rest {
+                Some(r) if i > r => ts.len().saturating_sub(ps.len() - i),
+                _ => i,
+            };
+            out.push((p, idx, ts.get(idx).cloned().unwrap_or(Ty::Unknown)));
+        }
+        out
+    }
+
+    /// The variant a path names, given the scrutinee type: `(enum, variant, index)`.
+    fn variant_of(&self, res: &Res, ty: &Ty) -> Option<(DefId, DefId, usize)> {
+        match res {
+            Res::Def(d) => match self.r.def(*d).kind {
+                DefKind::Variant { parent, index } => Some((parent, *d, index)),
+                _ => None,
+            },
             Res::Assoc { name, .. } => match ty {
-                Ty::Adt(e, _) => self
-                    .r
-                    .variants(*e)
-                    .into_iter()
-                    .find(|v| self.r.def(*v).name == name),
+                Ty::Adt(e, _) => {
+                    let vs = self.r.variants(*e);
+                    let i = vs.iter().position(|v| self.r.def(*v).name == *name)?;
+                    Some((*e, vs[i], i))
+                }
                 _ => None,
             },
             _ => None,
-        };
-        let prefix = variant
-            .map(|v| format!("{}.", self.r.def(v).name))
+        }
+    }
+
+    /// Field-name prefix, field types, and variant for a constructor pattern path.
+    fn ctor_fields(&mut self, path_span: Span, ty: &Ty) -> CtorFields {
+        let v = self.variant_of(&self.r.path(path_span), ty);
+        let prefix = v
+            .map(|(_, v, _)| format!("{}.", self.r.def(v).name))
             .unwrap_or_default();
-        (prefix, self.typed.adt_fields(ty, variant))
+        (
+            prefix,
+            self.typed.adt_fields(ty, v.map(|x| x.1)),
+            v.map(|(e, _, i)| (e, i)),
+        )
+    }
+
+    /// Jumps to `fail` unless the variant of enum place `place` is `index`.
+    fn test_variant(&mut self, place: &Place, index: usize, fail: BlockId, span: Span) {
+        let d = self.temp_of(
+            usize_ty(),
+            Rvalue::Pure(Op::Discriminant, vec![Operand::Copy(place.clone())]),
+            span,
+        );
+        let k = Operand::constant(ConstKind::Int(index as i128), usize_ty());
+        let c = self.temp_of(
+            bool_ty(),
+            Rvalue::Pure(Op::Bin(BinOp::Eq), vec![d, k]),
+            span,
+        );
+        let ok = self.new_block();
+        self.switch(c, ok, fail, span);
+        self.cur = ok;
+    }
+
+    /// Jumps to `fail` unless `cond` holds.
+    fn test_cond(&mut self, op: BinOp, a: Operand, b: Operand, fail: BlockId, span: Span) {
+        let c = self.temp_of(bool_ty(), Rvalue::Pure(Op::Bin(op), vec![a, b]), span);
+        let ok = self.new_block();
+        self.switch(c, ok, fail, span);
+        self.cur = ok;
+    }
+
+    /// Emits tests that continue in the current block when `pat` matches the
+    /// value at `place`, and jump to `fail` otherwise. Binds nothing.
+    fn test_pattern(&mut self, pat: &Pattern, place: Place, ty: &Ty, fail: BlockId) {
+        let span = pat.span;
+        let refutable_inner = !matches!(
+            pat.kind,
+            PatternKind::Wild
+                | PatternKind::Rest
+                | PatternKind::Ident { sub: None, .. }
+                | PatternKind::Ref { .. }
+        );
+        if refutable_inner {
+            if let Ty::Ref(m, inner) = ty {
+                // Match ergonomics: look through references.
+                let p = place.project(Proj::Deref(DerefKind::Ref(*m).into()));
+                return self.test_pattern(pat, p, inner, fail);
+            }
+        }
+        match &pat.kind {
+            PatternKind::Wild | PatternKind::Rest => {}
+            PatternKind::Ident { name, sub, .. } => {
+                if self.r.bindings.contains_key(&name.span) {
+                    if let Some(s) = sub {
+                        self.test_pattern(s, place, ty, fail);
+                    }
+                } else if let Some((_, _, i)) = self.variant_of(&self.r.path(name.span), ty) {
+                    self.test_variant(&place, i, fail, span);
+                }
+            }
+            PatternKind::Lit(l) => {
+                let k = self.lit(l, ty.clone());
+                self.test_cond(BinOp::Eq, Operand::Copy(place), k, fail, span);
+            }
+            PatternKind::Range { lo, hi, inclusive } => {
+                if let PatternKind::Lit(l) = &lo.kind {
+                    let k = self.lit(l, ty.clone());
+                    self.test_cond(BinOp::Ge, Operand::Copy(place.clone()), k, fail, span);
+                }
+                if let PatternKind::Lit(l) = &hi.kind {
+                    let k = self.lit(l, ty.clone());
+                    let op = if *inclusive { BinOp::Le } else { BinOp::Lt };
+                    self.test_cond(op, Operand::Copy(place), k, fail, span);
+                }
+            }
+            PatternKind::Tuple(ps) => {
+                for (p, idx, et) in self.tuple_elems(ps, ty) {
+                    self.test_pattern(p, place.field(idx.to_string()), &et, fail);
+                }
+            }
+            PatternKind::TupleStruct(path, ps) => {
+                let (prefix, fields, v) = self.ctor_fields(path.span, ty);
+                if let Some((_, i)) = v {
+                    self.test_variant(&place, i, fail, span);
+                }
+                for (i, p) in ps.iter().enumerate() {
+                    let (n, ft) = fields
+                        .get(i)
+                        .cloned()
+                        .unwrap_or((i.to_string(), Ty::Unknown));
+                    self.test_pattern(p, place.field(format!("{prefix}{n}")), &ft, fail);
+                }
+            }
+            PatternKind::Struct {
+                path, fields: fps, ..
+            } => {
+                let (prefix, fields, v) = self.ctor_fields(path.span, ty);
+                if let Some((_, i)) = v {
+                    self.test_variant(&place, i, fail, span);
+                }
+                for fp in fps {
+                    let ft = fields
+                        .iter()
+                        .find(|(n, _)| *n == fp.name.name)
+                        .map(|(_, t)| t.clone())
+                        .unwrap_or(Ty::Unknown);
+                    self.test_pattern(
+                        &fp.pat,
+                        place.field(format!("{prefix}{}", fp.name.name)),
+                        &ft,
+                        fail,
+                    );
+                }
+            }
+            PatternKind::Path(p) => {
+                if let Some((_, _, i)) = self.variant_of(&self.r.path(p.span), ty) {
+                    self.test_variant(&place, i, fail, span);
+                }
+            }
+            PatternKind::Ref { mutable, inner } => {
+                let it = match ty {
+                    Ty::Ref(_, t) => (**t).clone(),
+                    _ => Ty::Unknown,
+                };
+                self.test_pattern(
+                    inner,
+                    place.project(Proj::Deref(DerefKind::Ref(*mutable).into())),
+                    &it,
+                    fail,
+                );
+            }
+            PatternKind::Slice(_) => self.unsupported("slice patterns", span),
+            PatternKind::Or(alts) => {
+                let ok = self.new_block();
+                for alt in alts {
+                    let next = self.new_block();
+                    self.test_pattern(alt, place.clone(), ty, next);
+                    self.goto(ok, span);
+                    self.cur = next;
+                }
+                self.goto(fail, span);
+                self.cur = ok;
+            }
+        }
+    }
+
+    fn lit(&self, l: &Lit, ty: Ty) -> Operand {
+        let ty = match ty {
+            Ty::Ref(_, t) if !matches!(*t, Ty::Prim(PrimTy::Str)) => *t,
+            t => t,
+        };
+        let kind = match l {
+            Lit::Int {
+                value, negative, ..
+            } => {
+                if matches!(ty, Ty::Prim(PrimTy::F32 | PrimTy::F64)) {
+                    let v = *value as f64;
+                    ConstKind::Float(if *negative { -v } else { v })
+                } else {
+                    let v = *value as i128;
+                    ConstKind::Int(if *negative { -v } else { v })
+                }
+            }
+            Lit::Float { value, .. } => ConstKind::Float(*value),
+            Lit::Str(s) => ConstKind::Str(s.clone()),
+            Lit::Char(c) => ConstKind::Char(*c),
+            Lit::Bool(b) => ConstKind::Bool(*b),
+        };
+        Operand::constant(kind, ty)
     }
 
     // ----- places ----------------------------------------------------------------------
@@ -567,7 +796,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     p = p.project(Proj::Deref(DerefKind::Ptr.into()));
                     ty = *inner;
                 }
-                Ty::Adt(d, args) if self.r.prelude_type("Box") == Some(d) => {
+                Ty::Adt(d, args) if self.lang(d, "Box") => {
                     p = p.project(Proj::Deref(DerefKind::Box.into()));
                     ty = args[0].clone();
                 }
@@ -599,21 +828,23 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 let bt = self.ty(base);
                 let bp = self.place_or_temp(base);
                 let (p, _) = self.autoderef(bp, bt, 8);
-                Some(p.project(Proj::Field(name.name.clone())))
+                Some(p.field(name.name.clone()))
             }
             ExprKind::TupleIndex(base, i) => {
                 let bt = self.ty(base);
                 let bp = self.place_or_temp(base);
                 let (p, _) = self.autoderef(bp, bt, 8);
-                Some(p.project(Proj::Field(i.to_string())))
+                Some(p.field(i.to_string()))
             }
             ExprKind::Index(base, idx) => {
-                let i = self.expr(idx);
-                self.push(StmtKind::Eval(Rvalue::Pure(vec![i])), idx.span);
+                let iv = self.expr(idx);
+                let it = self.ty(idx);
+                let i = self.temp(it, idx.span);
+                self.assign(Place::local(i), Rvalue::Use(iv), idx.span);
                 let bt = self.ty(base);
                 let bp = self.place_or_temp(base);
                 let (p, _) = self.autoderef(bp, bt, 8);
-                Some(p.project(Proj::Index))
+                Some(p.project(Proj::Index(i)))
             }
             ExprKind::Unary(ast::UnOp::Deref, x) => {
                 let xt = self.ty(x);
@@ -646,32 +877,53 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
 
     fn temp_of(&mut self, ty: Ty, rv: Rvalue, span: Span) -> Operand {
         let t = self.temp(ty.clone(), span);
-        self.push(StmtKind::Assign(Place::local(t), rv), span);
+        self.assign(Place::local(t), rv, span);
         self.operand_of(Place::local(t), &ty)
     }
 
-    /// Lowers `e` to an operand.
+    /// Lowers `e` to an operand, applying any implicit coercion recorded by the type checker.
     fn expr(&mut self, e: &Expr) -> Operand {
+        let op = self.expr_inner(e);
+        if let Some(target) = self.res.coercions.get(&e.span).cloned() {
+            if !matches!(&op, Operand::Const(c) if c.kind == ConstKind::Unit) {
+                return self.temp_of(target.clone(), Rvalue::Coerce(op, target), e.span);
+            }
+        }
+        op
+    }
+
+    fn expr_inner(&mut self, e: &Expr) -> Operand {
         let ty = self.ty(e);
         match &e.kind {
-            ExprKind::Paren(x) => self.expr(x),
-            ExprKind::Path(_)
-            | ExprKind::Field(..)
+            ExprKind::Paren(x) => self.expr_inner(x),
+            ExprKind::Path(p) => {
+                if let Some(pl) = self.place(e) {
+                    return self.operand_of(pl, &ty);
+                }
+                self.path_value(e, p, ty)
+            }
+            ExprKind::Field(..)
             | ExprKind::TupleIndex(..)
             | ExprKind::Index(..)
             | ExprKind::Unary(ast::UnOp::Deref, _) => match self.place(e) {
                 Some(p) => self.operand_of(p, &ty),
-                None => Operand::Const,
+                None => Operand::unit(),
             },
-            ExprKind::Lit(_) | ExprKind::Error => Operand::Const,
+            ExprKind::Lit(l) => self.lit(l, ty),
+            ExprKind::Error => Operand::unit(),
             ExprKind::Interp(parts) => {
+                let mut segs = vec![];
+                let mut ops = vec![];
                 for part in parts {
-                    if let ast::InterpPart::Expr(x) = part {
-                        let op = self.read(x);
-                        self.push(StmtKind::Eval(Rvalue::Pure(vec![op])), x.span);
+                    match part {
+                        ast::InterpPart::Text(t) => segs.push(InterpSeg::Text(t.clone())),
+                        ast::InterpPart::Expr(x) => {
+                            segs.push(InterpSeg::Arg(ops.len()));
+                            ops.push(self.read(x));
+                        }
                     }
                 }
-                Operand::Const
+                self.temp_of(ty, Rvalue::Pure(Op::Interp(segs), ops), e.span)
             }
             ExprKind::Unary(op, x) => match op {
                 ast::UnOp::Ref | ast::UnOp::RefMut => {
@@ -684,13 +936,44 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 }
                 ast::UnOp::Recv => {
                     let o = self.read(x);
-                    self.temp_of(ty, Rvalue::Pure(vec![o]), e.span)
+                    self.unsupported("channel receive", e.span);
+                    self.temp_of(
+                        ty,
+                        Rvalue::Pure(Op::Unsupported("recv".into()), vec![o]),
+                        e.span,
+                    )
+                }
+                ast::UnOp::Neg => {
+                    let o = self.expr(x);
+                    self.temp_of(ty, Rvalue::Pure(Op::Neg, vec![o]), e.span)
                 }
                 _ => {
                     let o = self.expr(x);
-                    self.temp_of(ty, Rvalue::Pure(vec![o]), e.span)
+                    self.temp_of(ty, Rvalue::Pure(Op::Not, vec![o]), e.span)
                 }
             },
+            ExprKind::Binary(op @ (BinOp::And | BinOp::Or), l, r) => {
+                // Short-circuit: `a && b` is `if a { b } else { false }`.
+                let t = self.temp(bool_ty(), e.span);
+                let a = self.expr(l);
+                let (rhs, short) = (self.new_block(), self.new_block());
+                let join = self.new_block();
+                if *op == BinOp::And {
+                    self.switch(a, rhs, short, l.span);
+                } else {
+                    self.switch(a, short, rhs, l.span);
+                }
+                self.cur = short;
+                let k = Operand::constant(ConstKind::Bool(*op == BinOp::Or), bool_ty());
+                self.assign(Place::local(t), Rvalue::Use(k), e.span);
+                self.goto(join, e.span);
+                self.cur = rhs;
+                let b = self.expr(r);
+                self.assign(Place::local(t), Rvalue::Use(b), e.span);
+                self.goto(join, e.span);
+                self.cur = join;
+                Operand::Copy(Place::local(t))
+            }
             ExprKind::Binary(op, l, r) => {
                 use ast::BinOp::*;
                 let (a, b) = if matches!(op, Eq | Ne | Lt | Le | Gt | Ge) {
@@ -698,68 +981,79 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 } else {
                     (self.expr(l), self.expr(r))
                 };
-                self.temp_of(ty, Rvalue::Pure(vec![a, b]), e.span)
+                self.temp_of(ty, Rvalue::Pure(Op::Bin(*op), vec![a, b]), e.span)
             }
             ExprKind::Cast(x, _) => {
                 let o = self.expr(x);
-                self.temp_of(ty, Rvalue::Pure(vec![o]), e.span)
+                self.temp_of(ty.clone(), Rvalue::Pure(Op::Cast(ty), vec![o]), e.span)
             }
             ExprKind::Call(f, args) => self.call(e, f, args),
             ExprKind::MethodCall { receiver, args, .. } => {
-                let (args, flows) = self.method_operands(e, receiver, args);
-                self.finish_call(e, args, flows)
+                let (callee, args, flows) = self.method_operands(e, receiver, args);
+                self.finish_call(e, callee, args, flows)
             }
-            ExprKind::Try(x) => {
-                let xt = self.ty(x);
-                let inner = self.expr(x);
-                let t = self.temp(xt.clone(), x.span);
-                self.push(
-                    StmtKind::Assign(Place::local(t), Rvalue::Use(inner)),
-                    x.span,
-                );
-                let ok = self.new_block();
-                let err = self.new_block();
-                self.terminate(Terminator::Branch(vec![ok, err]), e.span);
-                self.cur = err;
-                let rv = Rvalue::Call {
-                    args: vec![Operand::Copy(Place::local(t))],
-                    flows: vec![0],
-                };
-                self.push(StmtKind::Assign(Place::local(Local(0)), rv), e.span);
-                self.goto(self.exit, e.span);
-                self.cur = ok;
-                let rv = Rvalue::Call {
-                    args: vec![self.operand_of(Place::local(t), &xt)],
-                    flows: vec![0],
-                };
-                self.temp_of(ty, rv, e.span)
-            }
-            ExprKind::Range { start, end, .. } => {
+            ExprKind::Try(x) => self.try_expr(e, x, ty),
+            ExprKind::Range {
+                start,
+                end,
+                inclusive,
+            } => {
                 let ops = [start, end]
                     .into_iter()
                     .flatten()
                     .map(|x| self.expr(x))
                     .collect();
-                self.temp_of(ty, Rvalue::Aggregate(ops), e.span)
+                let kind = AggKind::Range {
+                    has_start: start.is_some(),
+                    has_end: end.is_some(),
+                    inclusive: *inclusive,
+                };
+                self.temp_of(ty, Rvalue::Aggregate(kind, ops), e.span)
             }
-            ExprKind::Tuple(xs) | ExprKind::Array(xs) => {
-                if xs.is_empty() {
-                    return Operand::Const;
-                }
+            ExprKind::Tuple(xs) if xs.is_empty() => Operand::unit(),
+            ExprKind::Tuple(xs) => {
                 let ops = xs.iter().map(|x| self.expr(x)).collect();
-                self.temp_of(ty, Rvalue::Aggregate(ops), e.span)
+                self.temp_of(ty, Rvalue::Aggregate(AggKind::Tuple, ops), e.span)
+            }
+            ExprKind::Array(xs) => {
+                self.unsupported("arrays", e.span);
+                let ops = xs.iter().map(|x| self.expr(x)).collect();
+                self.temp_of(ty, Rvalue::Aggregate(AggKind::Array, ops), e.span)
             }
             ExprKind::ArrayRepeat(x, n) => {
+                self.unsupported("arrays", e.span);
                 let a = self.expr(x);
                 let b = self.expr(n);
-                self.temp_of(ty, Rvalue::Aggregate(vec![a, b]), e.span)
+                self.temp_of(ty, Rvalue::Aggregate(AggKind::Array, vec![a, b]), e.span)
             }
-            ExprKind::StructLit { fields, base, .. } => {
-                let mut ops: Vec<Operand> = fields.iter().map(|f| self.expr(&f.value)).collect();
-                if let Some(b) = base {
-                    ops.push(self.expr(b));
+            ExprKind::StructLit { path, fields, base } => {
+                let v = self.variant_of(&self.r.path(path.span), &ty);
+                let mut ops = vec![];
+                let mut names = vec![];
+                for f in fields {
+                    ops.push(self.expr(&f.value));
+                    names.push(f.name.name.clone());
                 }
-                self.temp_of(ty, Rvalue::Aggregate(ops), e.span)
+                if let Some(b) = base {
+                    // `S { a: x, ..base }`: copy/move `base`, then overwrite the listed fields.
+                    let bo = self.expr(b);
+                    let t = self.temp(ty.clone(), e.span);
+                    self.assign(Place::local(t), Rvalue::Use(bo), e.span);
+                    for (n, o) in names.into_iter().zip(ops) {
+                        self.assign(Place::local(t).field(n), Rvalue::Use(o), e.span);
+                    }
+                    return self.operand_of(Place::local(t), &ty);
+                }
+                let kind = match (v, &ty) {
+                    (Some((def, _, index)), _) => AggKind::Variant {
+                        def,
+                        index,
+                        fields: names,
+                    },
+                    (None, Ty::Adt(d, _)) => AggKind::Struct(*d, names),
+                    _ => AggKind::Tuple,
+                };
+                self.temp_of(ty, Rvalue::Aggregate(kind, ops), e.span)
             }
             ExprKind::Closure {
                 is_move,
@@ -783,8 +1077,9 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 let consumes = std::mem::take(&mut self.last_consumes);
                 self.last_captures = Some(caps);
                 let t = self.temp(ty.clone(), e.span);
-                self.push(
-                    StmtKind::Assign(Place::local(t), Rvalue::Aggregate(ops)),
+                self.assign(
+                    Place::local(t),
+                    Rvalue::Aggregate(AggKind::Closure(e.span), ops),
                     e.span,
                 );
                 if consumes {
@@ -795,7 +1090,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             _ => {
                 if matches!(ty, Ty::Unit | Ty::Never | Ty::Unknown) {
                     self.expr_into(e, None);
-                    Operand::Const
+                    Operand::unit()
                 } else {
                     let t = self.temp(ty.clone(), e.span);
                     self.expr_into(e, Some(Place::local(t)));
@@ -805,74 +1100,247 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         }
     }
 
+    /// A path used as a value that is not a local: function items, unit variants,
+    /// unit structs, constants.
+    fn path_value(&mut self, e: &Expr, p: &ast::Path, ty: Ty) -> Operand {
+        let res = self.r.path(p.span);
+        if let Some(i) = self.res.callees.get(&e.span).copied() {
+            let substs = self
+                .res
+                .callee_substs
+                .get(&e.span)
+                .map(sorted)
+                .unwrap_or_default();
+            return Operand::constant(ConstKind::Fn(i, substs), ty);
+        }
+        if let Some((def, _, index)) = self.variant_of(&res, &ty) {
+            let kind = AggKind::Variant {
+                def,
+                index,
+                fields: vec![],
+            };
+            return self.temp_of(ty, Rvalue::Aggregate(kind, vec![]), e.span);
+        }
+        if let Res::Def(d) = res {
+            let def = self.r.def(d);
+            match def.kind {
+                DefKind::Struct => {
+                    return self.temp_of(
+                        ty,
+                        Rvalue::Aggregate(AggKind::Struct(d, vec![]), vec![]),
+                        e.span,
+                    )
+                }
+                DefKind::Const => {
+                    if let Some(ast::ItemKind::Const { value: Some(v), .. }) =
+                        def.item.map(|i| &i.kind)
+                    {
+                        if let ExprKind::Lit(l) = &v.kind {
+                            return self.lit(l, ty);
+                        }
+                    }
+                    self.unsupported("constants with non-literal values", e.span);
+                }
+                DefKind::Static => self.unsupported("statics", e.span),
+                _ => {}
+            }
+        }
+        Operand::unit()
+    }
+
+    /// `x?`: on `Err(e)`/`None`, return `Err(From::from(e))`/`None`; otherwise unwrap.
+    fn try_expr(&mut self, e: &Expr, x: &Expr, ty: Ty) -> Operand {
+        let xt = self.ty(x);
+        let inner = self.expr(x);
+        let t = self.temp(xt.clone(), x.span);
+        self.assign(Place::local(t), Rvalue::Use(inner), x.span);
+        let Ty::Adt(d, args) = xt.clone() else {
+            return Operand::unit();
+        };
+        let is_result = self.lang(d, "Result");
+        let vs = self.r.variants(d);
+        let (ok_name, err_index) = if is_result { ("Ok", 1) } else { ("Some", 1) };
+        let ok = self.new_block();
+        let err = self.new_block();
+        let disc = self.temp_of(
+            usize_ty(),
+            Rvalue::Pure(Op::Discriminant, vec![Operand::Copy(Place::local(t))]),
+            e.span,
+        );
+        let zero = Operand::constant(ConstKind::Int(0), usize_ty());
+        let c = self.temp_of(
+            bool_ty(),
+            Rvalue::Pure(Op::Bin(BinOp::Eq), vec![disc, zero]),
+            e.span,
+        );
+        self.switch(c, ok, err, e.span);
+        self.cur = err;
+        let ret_ty = self.body.locals[0].ty.clone();
+        let (rd, rargs) = match &ret_ty {
+            Ty::Adt(rd, ra) => (*rd, ra.clone()),
+            _ => (d, args.clone()),
+        };
+        let rvs = self.r.variants(rd);
+        if is_result {
+            let e1 = args.get(1).cloned().unwrap_or(Ty::Unknown);
+            let e2 = rargs.get(1).cloned().unwrap_or(Ty::Unknown);
+            let mut payload = self.operand_of(Place::local(t).field("Err.0"), &e1);
+            if e1 != e2 {
+                if let Some(from) = self.r.prelude_type("From") {
+                    if let Some(&f) = self.typed.trait_methods(from).first() {
+                        let substs = vec![
+                            ("Self".to_string(), e2.clone()),
+                            ("T".to_string(), e1.clone()),
+                        ];
+                        payload = self.temp_of(
+                            e2.clone(),
+                            Rvalue::Call {
+                                callee: Callee::Fn(f, substs),
+                                args: vec![payload],
+                                flows: vec![0],
+                            },
+                            e.span,
+                        );
+                    }
+                }
+            }
+            let kind = AggKind::Variant {
+                def: rd,
+                index: err_index,
+                fields: vec!["0".into()],
+            };
+            self.assign(
+                Place::local(Local(0)),
+                Rvalue::Aggregate(kind, vec![payload]),
+                e.span,
+            );
+        } else {
+            let kind = AggKind::Variant {
+                def: rd,
+                index: err_index,
+                fields: vec![],
+            };
+            self.assign(
+                Place::local(Local(0)),
+                Rvalue::Aggregate(kind, vec![]),
+                e.span,
+            );
+        }
+        let _ = (vs, rvs);
+        self.goto(self.exit, e.span);
+        self.cur = ok;
+        self.operand_of(Place::local(t).field(format!("{ok_name}.0")), &ty)
+    }
+
     /// A call argument. Passing a `&mut` place reborrows it (`&mut *r`) instead
     /// of moving the reference, so `r` stays usable after the call.
     fn arg(&mut self, a: &Expr) -> Operand {
         let ty = self.ty(a);
         if let Ty::Ref(true, _) = ty {
-            if let Some(p) = self.place(a) {
-                let inner = p.project(Proj::Deref(DerefKind::Ref(true).into()));
-                return self.temp_of(
-                    ty,
-                    Rvalue::Ref {
-                        mutable: true,
-                        place: inner,
-                    },
-                    a.span,
-                );
+            if !self.res.coercions.contains_key(&a.span) {
+                if let Some(p) = self.place(a) {
+                    let inner = p.project(Proj::Deref(DerefKind::Ref(true).into()));
+                    return self.temp_of(
+                        ty,
+                        Rvalue::Ref {
+                            mutable: true,
+                            place: inner,
+                        },
+                        a.span,
+                    );
+                }
             }
         }
         self.expr(a)
     }
 
-    fn is_print_or_builtin(&self, f: &Expr) -> Option<&'static str> {
+    fn print_kind(&self, f: &Expr) -> Option<Op> {
         let ExprKind::Path(p) = &f.kind else {
             return None;
         };
-        match self.r.path(p.span) {
-            Res::Builtin(Builtin::Chan) => Some("chan"),
-            Res::Builtin(Builtin::Drop) => Some("drop"),
-            Res::Def(d) => {
-                let def = self.r.def(d);
-                (def.is_prelude
-                    && matches!(
-                        def.name.as_str(),
-                        "print" | "println" | "eprint" | "eprintln"
-                    ))
-                .then_some("print")
-            }
+        let Res::Def(d) = self.r.path(p.span) else {
+            return None;
+        };
+        let def = self.r.def(d);
+        if !def.is_prelude {
+            return None;
+        }
+        match def.name.as_str() {
+            "print" => Some(Op::Print {
+                newline: false,
+                stderr: false,
+            }),
+            "println" => Some(Op::Print {
+                newline: true,
+                stderr: false,
+            }),
+            "eprint" => Some(Op::Print {
+                newline: false,
+                stderr: true,
+            }),
+            "eprintln" => Some(Op::Print {
+                newline: true,
+                stderr: true,
+            }),
             _ => None,
         }
     }
 
-    /// Lowers callee and arguments; returns the operands and borrow flows.
-    fn call_operands(&mut self, f: &Expr, args: &[Expr]) -> (Vec<Operand>, Vec<usize>) {
-        match self.is_print_or_builtin(f) {
-            Some("print") => return (args.iter().map(|a| self.read(a)).collect(), vec![]),
-            Some(_) => return (args.iter().map(|a| self.expr(a)).collect(), vec![]),
-            None => {}
+    /// Lowers callee and arguments; returns the callee, operands, and borrow flows.
+    fn call_operands(&mut self, f: &Expr, args: &[Expr]) -> (Callee, Vec<Operand>, Vec<usize>) {
+        if let ExprKind::Path(p) = &f.kind {
+            match self.r.path(p.span) {
+                Res::Builtin(Builtin::Chan) => {
+                    return (
+                        Callee::Intrinsic("chan".into()),
+                        args.iter().map(|a| self.expr(a)).collect(),
+                        vec![],
+                    );
+                }
+                Res::Builtin(Builtin::Drop) => {
+                    return (
+                        Callee::Intrinsic("drop".into()),
+                        args.iter().map(|a| self.expr(a)).collect(),
+                        vec![],
+                    );
+                }
+                _ => {}
+            }
         }
-        let callee = self.res.callees.get(&f.span).copied();
+        let callee_idx = self.res.callees.get(&f.span).copied();
         let is_item = matches!(&f.kind, ExprKind::Path(p) if matches!(self.r.path(p.span), Res::Def(_) | Res::Assoc { .. }));
         let mut ops = Vec::new();
-        if !is_item {
-            let callee = match self.place(f) {
-                Some(p) if p.proj.is_empty() && self.once.contains(&p.local) => Operand::Move(p),
-                Some(p) => Operand::Copy(p),
-                None => self.expr(f),
-            };
-            ops.push(callee);
-        }
+        let callee = match callee_idx {
+            Some(i) if is_item => Callee::Fn(
+                i,
+                self.res
+                    .callee_substs
+                    .get(&f.span)
+                    .map(sorted)
+                    .unwrap_or_default(),
+            ),
+            _ => {
+                let c = match self.place(f) {
+                    Some(p) if p.proj.is_empty() && self.once.contains(&p.local) => {
+                        Operand::Move(p)
+                    }
+                    Some(p) => Operand::Copy(p),
+                    None => self.expr(f),
+                };
+                ops.push(c);
+                Callee::Value
+            }
+        };
         let offset = ops.len();
         for a in args {
             let o = self.arg(a);
             ops.push(o);
         }
-        let flows = match callee {
+        let flows = match callee_idx {
             Some(i) => self.fn_flows(i).into_iter().map(|x| x + offset).collect(),
             None => (0..ops.len()).collect(),
         };
-        (ops, flows)
+        (callee, ops, flows)
     }
 
     fn fn_flows(&self, i: usize) -> Vec<usize> {
@@ -883,24 +1351,60 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
     }
 
     fn call(&mut self, e: &Expr, f: &Expr, args: &[Expr]) -> Operand {
-        let (ops, flows) = self.call_operands(f, args);
-        if self.is_print_or_builtin(f) == Some("print") {
-            self.push(StmtKind::Eval(Rvalue::Pure(ops)), e.span);
-            return Operand::Const;
+        let ty = self.ty(e);
+        if let Some(op) = self.print_kind(f) {
+            let ops = args.iter().map(|a| self.read(a)).collect();
+            self.push(StmtKind::Eval(Rvalue::Pure(op, ops)), e.span);
+            return Operand::unit();
         }
-        self.finish_call(e, ops, flows)
+        // Tuple-struct and tuple-variant constructors.
+        if let ExprKind::Path(p) = &f.kind {
+            if !self.res.callees.contains_key(&f.span) {
+                let res = self.r.path(p.span);
+                let ctor = match (self.variant_of(&res, &ty), &res) {
+                    (Some((def, _, index)), _) => Some(AggKind::Variant {
+                        def,
+                        index,
+                        fields: (0..args.len()).map(|i| i.to_string()).collect(),
+                    }),
+                    (None, Res::Def(d)) if self.r.def(*d).kind == DefKind::Struct => Some(
+                        AggKind::Struct(*d, (0..args.len()).map(|i| i.to_string()).collect()),
+                    ),
+                    _ => None,
+                };
+                if let Some(kind) = ctor {
+                    let ops = args.iter().map(|a| self.expr(a)).collect();
+                    return self.temp_of(ty, Rvalue::Aggregate(kind, ops), e.span);
+                }
+            }
+        }
+        let (callee, ops, flows) = self.call_operands(f, args);
+        if callee == Callee::Intrinsic("chan".into()) {
+            self.unsupported("channels", e.span);
+        }
+        self.finish_call(e, callee, ops, flows)
     }
 
-    fn finish_call(&mut self, e: &Expr, args: Vec<Operand>, flows: Vec<usize>) -> Operand {
+    fn finish_call(
+        &mut self,
+        e: &Expr,
+        callee: Callee,
+        args: Vec<Operand>,
+        flows: Vec<usize>,
+    ) -> Operand {
         let ty = self.ty(e);
-        let rv = Rvalue::Call { args, flows };
+        let rv = Rvalue::Call {
+            callee,
+            args,
+            flows,
+        };
         if matches!(ty, Ty::Unit | Ty::Never) {
             self.push(StmtKind::Eval(rv), e.span);
             if ty == Ty::Never {
                 self.terminate(Terminator::Unreachable, e.span);
                 self.cur = self.new_block();
             }
-            return Operand::Const;
+            return Operand::unit();
         }
         self.temp_of(ty, rv, e.span)
     }
@@ -912,7 +1416,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         e: &Expr,
         recv: &Expr,
         args: &[Expr],
-    ) -> (Vec<Operand>, Vec<usize>) {
+    ) -> (Callee, Vec<Operand>, Vec<usize>) {
         let info = self.res.methods.get(&e.span).cloned();
         let base = match self.place(recv) {
             Some(p) => p,
@@ -927,7 +1431,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             let mut ops = vec![Operand::Copy(base)];
             ops.extend(arg_ops);
             let n = ops.len();
-            return (ops, (0..n).collect());
+            return (Callee::Intrinsic("unknown".into()), ops, (0..n).collect());
         };
         let (p, _) = self.autoderef(base, self.ty(recv), info.steps);
         let self_op = match &info.self_param {
@@ -945,6 +1449,10 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             Some(ast::SelfParam::Value { .. }) => self.operand_of(p, &info.recv_ty),
             None => Operand::Copy(p),
         };
+        let name = match &e.kind {
+            ExprKind::MethodCall { method, .. } => method.name.clone(),
+            _ => String::new(),
+        };
         let scoped = info.fn_idx.is_some_and(|i| {
             let f = &self.r.fns[i];
             f.is_prelude && f.decl.name.name == "spawn"
@@ -956,6 +1464,10 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             None => (0..ops.len()).collect(),
         };
         if scoped {
+            self.unsupported(
+                "scoped tasks (the task runtime is not implemented yet)",
+                e.span,
+            );
             let captures = self.last_captures.take().unwrap_or_default();
             self.push(
                 StmtKind::Spawn {
@@ -966,7 +1478,16 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 e.span,
             );
         }
-        (ops, flows)
+        let callee = match info.fn_idx {
+            Some(i) => Callee::Fn(i, sorted(&info.substs)),
+            None => {
+                if matches!(info.recv_ty, Ty::ChanSend(_) | Ty::ChanRecv(_)) {
+                    self.unsupported("channel methods", e.span);
+                }
+                Callee::Intrinsic(name)
+            }
+        };
+        (callee, ops, flows)
     }
 
     /// Lowers `e`, storing its value in `dest` (or discarding it).
@@ -976,8 +1497,17 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             ExprKind::Block(b) | ExprKind::Unsafe(b) => self.block_into(b, dest),
             ExprKind::If { cond, then, els } => {
                 let c = self.expr(cond);
-                self.push(StmtKind::Eval(Rvalue::Pure(vec![c])), cond.span);
-                self.branches(e.span, then, None, els.as_deref(), dest);
+                let (tb, eb, join) = (self.new_block(), self.new_block(), self.new_block());
+                self.switch(c, tb, eb, cond.span);
+                self.cur = tb;
+                self.block_into(then, dest.clone());
+                self.goto(join, e.span);
+                self.cur = eb;
+                if let Some(x) = els {
+                    self.expr_into(x, dest);
+                }
+                self.goto(join, e.span);
+                self.cur = join;
             }
             ExprKind::IfLet {
                 pat,
@@ -988,31 +1518,45 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 let ty = self.ty(expr);
                 let p = self.place_or_temp(expr);
                 self.push(StmtKind::Read(p.clone()), expr.span);
-                self.branches(e.span, then, Some((pat, p, ty)), els.as_deref(), dest);
+                let (eb, join) = (self.new_block(), self.new_block());
+                self.test_pattern(pat, p.clone(), &ty, eb);
+                self.push_scope();
+                self.bind_pattern(pat, p, &ty, None);
+                self.block_into(then, dest.clone());
+                self.pop_scope(Self::end_span(then));
+                self.goto(join, e.span);
+                self.cur = eb;
+                if let Some(x) = els {
+                    self.expr_into(x, dest);
+                }
+                self.goto(join, e.span);
+                self.cur = join;
             }
             ExprKind::Match(scrut, arms) => {
                 let ty = self.ty(scrut);
                 let sp = self.place_or_temp(scrut);
                 self.push(StmtKind::Read(sp.clone()), scrut.span);
                 let join = self.new_block();
-                let targets: Vec<BlockId> = arms.iter().map(|_| self.new_block()).collect();
-                if targets.is_empty() {
-                    self.terminate(Terminator::Unreachable, e.span);
-                } else {
-                    self.terminate(Terminator::Branch(targets.clone()), e.span);
-                }
-                for (arm, bb) in arms.iter().zip(targets) {
-                    self.cur = bb;
+                let mut next = self.new_block();
+                self.goto(next, e.span);
+                for arm in arms {
+                    self.cur = next;
+                    next = self.new_block();
+                    self.test_pattern(&arm.pat, sp.clone(), &ty, next);
                     self.push_scope();
                     self.bind_pattern(&arm.pat, sp.clone(), &ty, None);
                     if let Some(g) = &arm.guard {
                         let o = self.expr(g);
-                        self.push(StmtKind::Eval(Rvalue::Pure(vec![o])), g.span);
+                        let body = self.new_block();
+                        self.switch(o, body, next, g.span);
+                        self.cur = body;
                     }
                     self.expr_into(&arm.body, dest.clone());
                     self.pop_scope(arm.span);
                     self.goto(join, arm.span);
                 }
+                self.cur = next;
+                self.terminate(Terminator::Unreachable, e.span);
                 self.cur = join;
             }
             ExprKind::Loop { label, body } => {
@@ -1038,8 +1582,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 self.goto(head, e.span);
                 self.cur = head;
                 let c = self.expr(cond);
-                self.push(StmtKind::Eval(Rvalue::Pure(vec![c])), cond.span);
-                self.terminate(Terminator::Branch(vec![bodyb, after]), cond.span);
+                self.switch(c, bodyb, after, cond.span);
                 self.cur = bodyb;
                 self.loops.push(LoopCx {
                     label: label.as_ref().map(|l| l.name.clone()),
@@ -1059,16 +1602,15 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 body,
             } => {
                 let head = self.new_block();
-                let bodyb = self.new_block();
                 let after = self.new_block();
                 self.goto(head, e.span);
                 self.cur = head;
+                self.push_scope();
                 let ty = self.ty(expr);
                 let p = self.place_or_temp(expr);
                 self.push(StmtKind::Read(p.clone()), expr.span);
-                self.terminate(Terminator::Branch(vec![bodyb, after]), expr.span);
-                self.cur = bodyb;
-                self.push_scope();
+                let fail = self.new_block();
+                self.test_pattern(pat, p.clone(), &ty, fail);
                 self.bind_pattern(pat, p, &ty, None);
                 self.loops.push(LoopCx {
                     label: label.as_ref().map(|l| l.name.clone()),
@@ -1078,8 +1620,16 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 });
                 self.block_into(body, None);
                 self.loops.pop();
-                self.pop_scope(Self::end_span(body));
+                let end = Self::end_span(body);
+                let scope = self.scopes.last().unwrap().clone();
+                self.pop_scope(end);
                 self.goto(head, e.span);
+                // The scrutinee temporaries also die when the loop ends.
+                self.cur = fail;
+                for l in scope.into_iter().rev() {
+                    self.push(StmtKind::StorageDead(l), end);
+                }
+                self.goto(after, e.span);
                 self.cur = after;
             }
             ExprKind::For {
@@ -1087,42 +1637,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 pat,
                 iter,
                 body,
-            } => {
-                let it_ty = self.ty(iter);
-                let it_op = self.expr(iter);
-                let it = self.temp(it_ty.clone(), iter.span);
-                self.push(
-                    StmtKind::Assign(Place::local(it), Rvalue::Use(it_op)),
-                    iter.span,
-                );
-                let head = self.new_block();
-                let bodyb = self.new_block();
-                let after = self.new_block();
-                self.goto(head, e.span);
-                self.cur = head;
-                self.terminate(Terminator::Branch(vec![bodyb, after]), iter.span);
-                self.cur = bodyb;
-                self.push_scope();
-                let elem_ty = self.elem_ty(&it_ty);
-                let el = self.temp(elem_ty.clone(), pat.span);
-                let rv = Rvalue::Call {
-                    args: vec![Operand::Copy(Place::local(it))],
-                    flows: vec![0],
-                };
-                self.push(StmtKind::Assign(Place::local(el), rv), pat.span);
-                self.bind_pattern(pat, Place::local(el), &elem_ty, None);
-                self.loops.push(LoopCx {
-                    label: label.as_ref().map(|l| l.name.clone()),
-                    brk: after,
-                    cont: head,
-                    result: None,
-                });
-                self.block_into(body, None);
-                self.loops.pop();
-                self.pop_scope(Self::end_span(body));
-                self.goto(head, e.span);
-                self.cur = after;
-            }
+            } => self.for_loop(e, label, pat, iter, body),
             ExprKind::Break(label, val) => {
                 let idx = match label {
                     Some(l) => self
@@ -1162,12 +1677,14 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 self.cur = self.new_block();
             }
             ExprKind::Select(arms) => {
+                self.unsupported("`select`", e.span);
                 let join = self.new_block();
                 let targets: Vec<BlockId> = arms.iter().map(|_| self.new_block()).collect();
                 self.terminate(Terminator::Branch(targets.clone()), e.span);
                 for (arm, bb) in arms.iter().zip(targets) {
                     self.cur = bb;
                     self.push_scope();
+                    let un = || Op::Unsupported("select".into());
                     match &arm.op {
                         SelectOp::Recv { bind, chan } => {
                             let c = self.read(chan);
@@ -1178,18 +1695,20 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                             {
                                 Some(&id) => {
                                     let l = self.declare(id);
-                                    self.push(
-                                        StmtKind::Assign(Place::local(l), Rvalue::Pure(vec![c])),
+                                    self.assign(
+                                        Place::local(l),
+                                        Rvalue::Pure(un(), vec![c]),
                                         chan.span,
                                     );
                                 }
-                                None => self.push(StmtKind::Eval(Rvalue::Pure(vec![c])), chan.span),
+                                None => self
+                                    .push(StmtKind::Eval(Rvalue::Pure(un(), vec![c])), chan.span),
                             }
                         }
                         SelectOp::Send { chan, value } => {
                             let c = self.read(chan);
                             let v = self.expr(value);
-                            self.push(StmtKind::Eval(Rvalue::Pure(vec![c, v])), arm.span);
+                            self.push(StmtKind::Eval(Rvalue::Pure(un(), vec![c, v])), arm.span);
                         }
                         SelectOp::Default => {}
                     }
@@ -1211,10 +1730,10 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                                 self.once.insert(d.local);
                             }
                         }
-                        self.push(StmtKind::Assign(d, Rvalue::Use(op)), e.span)
+                        self.assign(d, Rvalue::Use(op), e.span)
                     }
                     None => {
-                        if !matches!(op, Operand::Const) {
+                        if !matches!(op, Operand::Const(_)) {
                             self.push(StmtKind::Eval(Rvalue::Use(op)), e.span)
                         }
                     }
@@ -1223,42 +1742,224 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         }
     }
 
-    /// `if` / `if let` branches.
-    fn branches(
+    /// `for pat in iter { body }` over ranges, `&Vec<T>`/`&[T]` (by reference), and `Vec<T>` (by value).
+    fn for_loop(
         &mut self,
-        span: Span,
-        then: &Block,
-        pat: Option<(&Pattern, Place, Ty)>,
-        els: Option<&Expr>,
-        dest: Option<Place>,
+        e: &Expr,
+        label: &Option<ast::Ident>,
+        pat: &Pattern,
+        iter: &Expr,
+        body: &Block,
     ) {
-        let tb = self.new_block();
-        let eb = self.new_block();
-        let join = self.new_block();
-        self.terminate(Terminator::Branch(vec![tb, eb]), span);
-        self.cur = tb;
-        self.push_scope();
-        if let Some((p, place, ty)) = pat {
-            self.bind_pattern(p, place, &ty, None);
+        let it_ty = self.ty(iter);
+        let it_op = self.expr(iter);
+        let it = self.temp(it_ty.clone(), iter.span);
+        self.assign(Place::local(it), Rvalue::Use(it_op), iter.span);
+        let head = self.new_block();
+        let bodyb = self.new_block();
+        let after = self.new_block();
+        let exit_loop = self.new_block();
+        self.goto(head, e.span);
+        self.cur = head;
+        let sp = iter.span;
+        let one = |t: Ty| Operand::constant(ConstKind::Int(1), t);
+        let mut cleanup: Option<Rvalue> = None;
+        // Emits the condition and element; returns the element local and type.
+        let (el, elem_ty) = match &it_ty {
+            Ty::Adt(d, a) if self.lang(*d, "Range") => {
+                let t = a[0].clone();
+                let inclusive = matches!(
+                    &iter.kind,
+                    ExprKind::Range {
+                        inclusive: true,
+                        ..
+                    }
+                );
+                let start = Place::local(it).field("start");
+                let end = Place::local(it).field("end");
+                let op = if inclusive { BinOp::Le } else { BinOp::Lt };
+                let c = self.temp_of(
+                    bool_ty(),
+                    Rvalue::Pure(
+                        Op::Bin(op),
+                        vec![Operand::Copy(start.clone()), Operand::Copy(end)],
+                    ),
+                    sp,
+                );
+                self.switch(c, bodyb, exit_loop, sp);
+                self.cur = bodyb;
+                self.push_scope();
+                let el = self.temp(t.clone(), pat.span);
+                self.assign(
+                    Place::local(el),
+                    Rvalue::Use(Operand::Copy(start.clone())),
+                    sp,
+                );
+                self.assign(
+                    start.clone(),
+                    Rvalue::Pure(
+                        Op::Bin(BinOp::Add),
+                        vec![Operand::Copy(start), one(t.clone())],
+                    ),
+                    sp,
+                );
+                (el, t)
+            }
+            _ => {
+                // Index-based iteration.
+                let (by_ref, inner) = match &it_ty {
+                    Ty::Ref(m, inner) => (Some(*m), (**inner).clone()),
+                    t => (None, t.clone()),
+                };
+                let et = match &inner {
+                    Ty::Adt(d, a) if self.lang(*d, "Vec") => Some(a[0].clone()),
+                    Ty::Slice(t) if by_ref.is_some() => Some((**t).clone()),
+                    _ => None,
+                };
+                let Some(et) = et else {
+                    self.unsupported("this kind of `for` loop", iter.span);
+                    self.terminate(Terminator::Branch(vec![bodyb, exit_loop]), sp);
+                    self.cur = bodyb;
+                    self.push_scope();
+                    let et = self.elem_ty(&it_ty);
+                    let el = self.temp(et.clone(), pat.span);
+                    let rv = Rvalue::Call {
+                        callee: Callee::Intrinsic("iter_next".into()),
+                        args: vec![Operand::Copy(Place::local(it))],
+                        flows: vec![0],
+                    };
+                    self.assign(Place::local(el), rv, pat.span);
+                    return self
+                        .finish_for(label, pat, body, e, el, et, head, after, exit_loop, None);
+                };
+                let idx = self.temp(usize_ty(), sp);
+                self.assign_before_head(
+                    idx,
+                    Operand::constant(ConstKind::Int(0), usize_ty()),
+                    sp,
+                    head,
+                );
+                let len = self.temp_of(
+                    usize_ty(),
+                    Rvalue::Call {
+                        callee: Callee::Intrinsic("len".into()),
+                        args: vec![Operand::Copy(Place::local(it))],
+                        flows: vec![],
+                    },
+                    sp,
+                );
+                let c = self.temp_of(
+                    bool_ty(),
+                    Rvalue::Pure(
+                        Op::Bin(BinOp::Lt),
+                        vec![Operand::Copy(Place::local(idx)), len],
+                    ),
+                    sp,
+                );
+                self.switch(c, bodyb, exit_loop, sp);
+                self.cur = bodyb;
+                self.push_scope();
+                let (el, ety) = match by_ref {
+                    Some(m) => {
+                        let ety = Ty::Ref(m, Box::new(et.clone()));
+                        let place = Place::local(it)
+                            .project(Proj::Deref(DerefKind::Ref(m).into()))
+                            .project(Proj::Index(idx));
+                        let el = self.temp(ety.clone(), pat.span);
+                        self.assign(Place::local(el), Rvalue::Ref { mutable: m, place }, sp);
+                        (el, ety)
+                    }
+                    None => {
+                        let el = self.temp(et.clone(), pat.span);
+                        let rv = Rvalue::Call {
+                            callee: Callee::Intrinsic("vec_take".into()),
+                            args: vec![
+                                Operand::Copy(Place::local(it)),
+                                Operand::Copy(Place::local(idx)),
+                            ],
+                            flows: vec![0],
+                        };
+                        self.assign(Place::local(el), rv, sp);
+                        cleanup = Some(Rvalue::Call {
+                            callee: Callee::Intrinsic("vec_forget_elems".into()),
+                            args: vec![Operand::Copy(Place::local(it))],
+                            flows: vec![],
+                        });
+                        (el, et)
+                    }
+                };
+                self.assign(
+                    Place::local(idx),
+                    Rvalue::Pure(
+                        Op::Bin(BinOp::Add),
+                        vec![Operand::Copy(Place::local(idx)), one(usize_ty())],
+                    ),
+                    sp,
+                );
+                (el, ety)
+            }
+        };
+        self.finish_for(
+            label, pat, body, e, el, elem_ty, head, after, exit_loop, cleanup,
+        )
+    }
+
+    /// Inserts `l = v` at the end of the block that jumps to `head` (the loop preheader).
+    fn assign_before_head(&mut self, l: Local, v: Operand, span: Span, head: BlockId) {
+        // The current block is `head`; the preheader is the block whose terminator is `goto head`
+        // and that was current just before. Find it (the most recent such block).
+        let pre = (0..self.body.blocks.len())
+            .rev()
+            .find(|&b| b as u32 != head.0 && self.body.blocks[b].term == Terminator::Goto(head));
+        if let Some(b) = pre {
+            self.body.blocks[b].stmts.push(Statement {
+                kind: StmtKind::Assign(Place::local(l), Rvalue::Use(v)),
+                span,
+            });
         }
-        self.block_into(then, dest.clone());
-        self.pop_scope(Self::end_span(then));
-        self.goto(join, span);
-        self.cur = eb;
-        if let Some(e) = els {
-            self.expr_into(e, dest);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_for(
+        &mut self,
+        label: &Option<ast::Ident>,
+        pat: &Pattern,
+        body: &Block,
+        e: &Expr,
+        el: Local,
+        elem_ty: Ty,
+        head: BlockId,
+        after: BlockId,
+        exit_loop: BlockId,
+        cleanup: Option<Rvalue>,
+    ) {
+        self.bind_pattern(pat, Place::local(el), &elem_ty, None);
+        self.loops.push(LoopCx {
+            label: label.as_ref().map(|l| l.name.clone()),
+            brk: after,
+            cont: head,
+            result: None,
+        });
+        self.block_into(body, None);
+        self.loops.pop();
+        self.pop_scope(Self::end_span(body));
+        self.goto(head, e.span);
+        self.cur = exit_loop;
+        self.goto(after, e.span);
+        self.cur = after;
+        if let Some(rv) = cleanup {
+            self.push(StmtKind::Eval(rv), e.span);
         }
-        self.goto(join, span);
-        self.cur = join;
     }
 
     fn elem_ty(&self, t: &Ty) -> Ty {
-        let is = |d: kiln_resolve::DefId, n: &str| self.r.prelude_type(n) == Some(d);
         match t {
-            Ty::Adt(d, a) if (is(*d, "Range") || is(*d, "Vec")) && !a.is_empty() => a[0].clone(),
+            Ty::Adt(d, a) if (self.lang(*d, "Range") || self.lang(*d, "Vec")) && !a.is_empty() => {
+                a[0].clone()
+            }
             Ty::Array(x) | Ty::Slice(x) | Ty::ChanRecv(x) => (**x).clone(),
             Ty::Ref(m, inner) => match &**inner {
-                Ty::Adt(d, a) if is(*d, "Vec") => Ty::Ref(*m, Box::new(a[0].clone())),
+                Ty::Adt(d, a) if self.lang(*d, "Vec") => Ty::Ref(*m, Box::new(a[0].clone())),
                 Ty::Array(x) | Ty::Slice(x) => Ty::Ref(*m, x.clone()),
                 _ => Ty::Unknown,
             },
@@ -1320,7 +2021,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 Span::new(e.span.end.saturating_sub(1), e.span.end)
             }
         };
-        let (nb, upvars, extra) = inner.finish(end);
+        let (mut nb, upvars, extra) = inner.finish(end);
         let mut ops = vec![];
         let mut caps = vec![];
         self.last_consumes = false;
@@ -1330,6 +2031,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 self.last_consumes = true;
             }
             let mode = if is_move { CaptureMode::Move } else { inferred };
+            nb.captures.push((*ul, mode));
             let decl = nb.local(*ul).clone();
             let pl = Place::local(self.lookup(*id, span));
             let op = match mode {
@@ -1399,6 +2101,15 @@ fn capture_mode(b: &Body, u: Local) -> CaptureMode {
                         return CaptureMode::Move;
                     }
                 }
+            }
+        }
+        if let Terminator::SwitchBool {
+            cond: Operand::Move(p),
+            ..
+        } = &bb.term
+        {
+            if roots(p) {
+                return CaptureMode::Move;
             }
         }
     }

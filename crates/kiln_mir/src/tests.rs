@@ -20,7 +20,7 @@ fn dump(src: &str) -> String {
 #[test]
 fn moves_and_copies() {
     let d = dump("fn take(s: String) {}\nfn main() {\n s := String::from(\"a\")\n n := 1\n m := n\n take(s)\n}");
-    assert!(d.contains("call(move _"), "{d}");
+    assert!(d.contains("(move _"), "{d}");
     assert!(d.contains("= copy _"), "{d}");
 }
 
@@ -79,7 +79,7 @@ fn defer_runs_in_exit_block() {
     assert!(run
         .stmts
         .iter()
-        .any(|s| matches!(s.kind, StmtKind::Eval(Rvalue::Pure(_)))));
+        .any(|s| matches!(s.kind, StmtKind::Eval(Rvalue::Pure(..)))));
     // Locals die after the deferred calls.
     let done = &b[0].blocks[done.0 as usize];
     assert!(done

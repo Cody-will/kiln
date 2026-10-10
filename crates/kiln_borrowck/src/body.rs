@@ -285,15 +285,16 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                         }
                         s
                     }
-                    Rvalue::Aggregate(ops) => {
+                    Rvalue::Aggregate(_, ops) => {
                         ops.iter().flat_map(|o| Self::op_holds_in(st, o)).collect()
                     }
-                    Rvalue::Call { args, flows } => flows
+                    Rvalue::Call { args, flows, .. } => flows
                         .iter()
                         .filter_map(|i| args.get(*i))
                         .flat_map(|o| Self::op_holds_in(st, o))
                         .collect(),
-                    Rvalue::Pure(_) => BTreeSet::new(),
+                    Rvalue::Pure(..) => BTreeSet::new(),
+                    Rvalue::Coerce(o, _) => Self::op_holds_in(st, o),
                 };
                 if dest.proj.is_empty() {
                     st[root] = add;
@@ -656,7 +657,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
             }
             return;
         }
-        if p.proj.contains(&Proj::Index) {
+        if p.proj.iter().any(|x| matches!(x, Proj::Index(_))) {
             if report {
                 let name = self.b.describe(p);
                 self.report(
@@ -693,7 +694,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                 match o {
                     Operand::Copy(p) => out.push((p.clone(), Access::Read)),
                     Operand::Move(p) => out.push((p.clone(), Access::Move)),
-                    Operand::Const => {}
+                    Operand::Const(_) => {}
                 }
             }
             if let Rvalue::Ref { mutable, place } = rv {
@@ -721,7 +722,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                     match o {
                         Operand::Copy(p) => out.push((p.clone(), Access::Read)),
                         Operand::Move(p) => out.push((p.clone(), Access::Move)),
-                        Operand::Const => {}
+                        Operand::Const(_) => {}
                     }
                 }
             }
