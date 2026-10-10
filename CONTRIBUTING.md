@@ -24,6 +24,7 @@ cargo test --workspace
 
 - **Tests:** every lexer or parser change needs unit tests (`crates/*/src/tests.rs`). New syntax should also show up in an `examples/*.kn` file, since those are parsed in tests.
 - **Docs:** public items need doc comments (`missing_docs` is enabled).
+- **End-to-end tests:** codegen and runtime changes need a program in `tests/run/` with its expected output in a matching `.out` file (stdout, then stderr, then `[exit N]` if the status isn't 0). `KILN_BLESS=1 cargo test -p kiln_cli --test run` regenerates the `.out` files; review the diff. Building programs needs a C linker (`cc`, or the Visual Studio build tools on Windows).
 - **Diagnostics:** error messages should say what was expected and what was found, and point at a precise span. Add a test asserting the exact message.
 - **Dependencies:** the front end has zero external dependencies. Discuss before adding one.
 - **Language changes:** open an issue first. Update `docs/SPEC.md` in the same PR as the implementation.

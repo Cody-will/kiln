@@ -11,11 +11,14 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 | VS Code (TextMate) and Tree-sitter grammars | ✅ Implemented |
 | Ownership and borrow checking: moves, borrows (non-lexical lifetimes), lifetimes and elision, `Drop` order, `defer`, closure captures | ✅ Implemented (`kiln check`) |
 | `Send`/`Sync` and `'static` checks for `go` and scoped tasks | ✅ Implemented (`kiln check`) |
-| Code generation (LLVM) | 🚧 Not yet: programs cannot run |
+| Code generation (Cranelift): functions, structs/enums/`match`, generics (monomorphized), traits and `dyn`, closures, `Result`/`?`, `defer`, `Drop`, `String`, `Vec`, `Box` | ✅ Implemented (`kiln build`, `kiln run`) |
+| Fixed-size arrays, slice patterns, `\|` patterns with bindings | 🚧 Not yet in codegen (reported as errors) |
+| Panics | ✅ Print a message and exit with status 101; 🚧 no unwinding (destructors and `defer` don't run on panic) |
 | Runtime: tasks, channels, `select`, scheduler | 🚧 Not yet: type-checked only |
 | Standard library (`std::fs`, `std::net`, `std::time`, ...) | 🚧 Not yet: `std` imports resolve, but their items are opaque to the type checker |
 | Multi-file packages, `kiln.toml`, registry | 🚧 Not yet: `kiln check` works on a single file (inline `mod` blocks are supported) |
-| `kiln fmt`, `kiln build/run/test`, language server | 🚧 Not yet |
+| `kiln build`, `kiln run` | ✅ Implemented (single file) |
+| `kiln fmt`, `kiln test`, language server | 🚧 Not yet |
 
 ## What `kiln check` catches today
 

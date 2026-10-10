@@ -3,7 +3,7 @@
 This is the part of Kiln that comes from Rust. It is how Kiln is memory-safe with **no garbage collector and no manual freeing**.
 
 <div class="status">
-✅ <strong>The borrow checker is implemented.</strong> <code>kiln check</code> enforces everything in this chapter: moves, borrows, lifetimes, and drop order. (Programs can't run yet: code generation is the next milestone.)
+✅ <strong>The borrow checker is implemented.</strong> <code>kiln check</code> enforces everything in this chapter: moves, borrows, lifetimes, and drop order. Compiled programs run destructors and deferred calls in exactly this order.
 </div>
 
 ## The three rules
@@ -190,5 +190,5 @@ Deferred calls run after the return value is computed and before local variables
 When values with a `Drop` impl hold references, the borrow checker uses drop order: a value declared *before* the thing it borrows would be dropped *after* it, which is reported as "does not live long enough".
 
 <div class="status">
-🚧 <code>defer</code> and <code>Drop</code> are checked; they will run once code generation exists.
+✅ <code>defer</code> and <code>Drop</code> are checked and run in compiled programs. 🚧 A panic exits immediately: deferred calls and destructors do not run on panic yet.
 </div>

@@ -18,9 +18,9 @@ resolved AST (path → Res, binding → LocalId side tables)
   │  kiln_typeck       type inference, traits/impls, `?`, explicit returns, mutability
   │  kiln_mir          MIR lowering: CFG with explicit moves, borrows, storage ends, defer, captures
   │  kiln_borrowck     moves/initialization, NLL borrow conflicts, lifetimes, go/Send/Sync
-  │  kiln_codegen_llvm (planned) LLVM IR via inkwell, monomorphization
+  │  kiln_codegen      MIR → Cranelift IR, monomorphization, drop glue, vtables, object file
   ▼
-native binary + kiln_runtime (planned M:N scheduler, channels, netpoller)
+object file ── system linker + kiln_runtime (C: allocation, panics, printing, strings, Vec) ──► native executable
 ```
 
 ## Crates
@@ -108,9 +108,34 @@ Loan sets are flow-sensitive: assigning a whole variable replaces the loans it h
 
 Known gaps: partial moves are diagnosed, but drops of the remaining fields are not elaborated per field; the checker treats channel and `std` types as opaque; lifetime variance and higher-ranked lifetimes (`for<'a>`) are not modelled.
 
+### `kiln_runtime`
+
+A small C library (`runtime/kiln_rt.c`) compiled by `build.rs` with the `cc` crate. The static library's bytes are embedded in the compiler (`kiln_runtime::LIB`), so an installed `kiln` binary needs only a system linker. It provides allocation (`kn_alloc`/`kn_free`), panics (`kn_panic`: flush stdout, print `panic: ...` to stderr, exit 101), printing, `String` building and formatting of numbers, string comparison and the `str` methods, `Vec` growth, and the `defer` stack. The concurrency runtime (scheduler, channels, `select`) will live here too.
+
+Data layout shared with codegen: `String` and `Vec<T>` are `{ ptr, cap, len }` (three words); `&str` and `&[T]` are `{ ptr, len }`; `Box<T>` is one pointer; `&dyn Trait` and `Box<dyn Trait>` are `{ data, vtable }`, where the vtable is `[drop_glue, size, align, methods...]` in trait declaration order.
+
+### `kiln_codegen`
+
+Lowers MIR to native code with [Cranelift](https://cranelift.dev).
+
+**Why Cranelift instead of LLVM:** the inkwell/llvm-sys bindings need a system LLVM of one exact major version with `llvm-config` and development libraries. That is not installed on the development box, and on CI it means a different install per OS (apt on Linux, Homebrew on macOS, and on Windows no official package ships `llvm-config`, so it would need a custom LLVM build). Cranelift is pure Rust: it builds with `cargo` everywhere, keeps `cargo test` self-contained on all three CI platforms, and compiles quickly, which suits debug builds. The cost is weaker optimization than LLVM. MIR is the boundary, so an LLVM backend for release builds can be added later without touching the front end.
+
+- `lib.rs`: the driver. A work queue of monomorphized instances: each `(function, body, substitution)` becomes one Cranelift function, declared on first use and defined when popped from the queue. It also declares the runtime functions, emits the C `main` wrapper (which prints `Error: <e>` and exits 1 when `main` returns `Err`), and `build_source` runs the whole pipeline down to a linked executable.
+- `layout.rs`: sizes, alignments, and field offsets. Enums are a 4-byte tag followed by the largest payload. Every MIR local lives in a stack slot; values move with `memcpy`-style copies and Cranelift's optimizer promotes what it can.
+- `func.rs`: MIR → Cranelift IR for one body: statements, terminators (including the `DeferDispatch` loop over the runtime defer stack), places with bounds-checked indexing, operands and constants, aggregates, coercions (unsizing to `dyn`, `&String` → `&str`, `&Vec<T>` → `&[T]`), calls (direct, through function pointers and closures, and virtual calls through vtables), operators, casts, and string interpolation. Drop flags track conditionally moved locals.
+- `glue.rs`: drop glue per type (user `Drop` first, then fields), vtables, and inline clone code for `String`, `Vec`, `Box`, tuples, and ADTs.
+- `intrinsics.rs`: the prelude functions that have no Kiln body (`String`, `str`, `Vec`, `Box`, float math, `panic`, `assert`, `drop`, `clone`) and the MIR intrinsics used by `for` loops.
+- `link.rs`: writes the embedded runtime next to the object file and links with `cc` (or `$KILN_CC`/`$CC`) on Unix and `link.exe` (found via the `cc` crate's Visual Studio lookup) on Windows.
+
+Constructs codegen does not support yet are reported as errors at their source location, never miscompiled: fixed-size arrays (the type checker does not track lengths yet), `go`, channels, `select`, scoped tasks, `std` library items, slice patterns, `|` patterns that bind variables, and non-literal `const`/`static` values.
+
+Known codegen gaps: panics abort the process (no unwinding, so destructors don't run on panic); integer arithmetic wraps on overflow instead of panicking; no debug info; drops of the remaining fields after a partial move are not elaborated (those fields leak).
+
 ### `kiln_cli`
 
-This builds the `kiln` binary. Today it has the `lex`, `parse`, `check`, and `mir` subcommands. `kiln check` runs parsing, resolution, type checking, and borrow checking. `build`, `run`, `fmt`, and `test` will be added as the matching phases land.
+This builds the `kiln` binary: `lex`, `parse`, `check`, `mir`, `build`, and `run`. `kiln check` runs parsing, resolution, type checking, and borrow checking. `kiln build <file> [-o out]` adds code generation and linking; `kiln run <file> [args...]` builds into a temporary directory and runs the program, exiting with its status. `fmt` and `test` will be added as the matching phases land.
+
+End-to-end tests live in `crates/kiln_cli/tests/run.rs`: each `tests/run/*.kn` program is built and run, and its stdout, stderr, and exit status are compared with the matching `.out` file (`KILN_BLESS=1` rewrites them). They run on Linux, macOS, and Windows in CI.
 
 ## Design principles for the codebase
 
@@ -124,7 +149,7 @@ This builds the `kiln` binary. Today it has the `lex`, `parse`, `check`, and `mi
 ```
 crates/
   kiln_lexer  kiln_parser  kiln_resolve  kiln_typeck  kiln_mir  kiln_borrowck
-  kiln_codegen_llvm  kiln_runtime  kiln_fmt  kiln_pkg  kiln_ls  kiln_cli
+  kiln_codegen  kiln_runtime  kiln_fmt  kiln_pkg  kiln_ls  kiln_cli
 std/                     the standard library, in Kiln
 editors/tree-sitter-kiln/  editors/vscode-kiln/
 ```

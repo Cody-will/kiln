@@ -7,7 +7,7 @@ Kiln is a compiled systems and backend programming language with **syntax as sim
 - Traits and generics.
 - Goroutine-style tasks with `go`, channels using `<-`, and `select`.
 
-> **Status:** early development. The lexer, parser, name resolution, and type checker work (`kiln check`), and there are VS Code and Tree-sitter grammars. Borrow checking and code generation are not started yet. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status:** early development. The compiler type-checks and borrow-checks programs (`kiln check`) and compiles them to native executables with a Cranelift backend (`kiln build`, `kiln run`): functions, structs, enums and `match`, generics, traits including `dyn`, closures, `Result` and `?`, `defer`, and `Drop` all work. The concurrency runtime (`go`, channels, `select`) and the standard library are next. There are VS Code and Tree-sitter grammars. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ```kiln
 fn main() -> Result<(), io::Error> {

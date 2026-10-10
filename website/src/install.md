@@ -6,6 +6,7 @@ There are no release binaries yet. Kiln builds from source with a Rust toolchain
 
 - [Rust](https://rustup.rs) 1.82 or newer (`rustup` installs `cargo`)
 - `git`
+- A C toolchain for linking compiled programs: `cc` (gcc or clang) on Linux and macOS (`xcode-select --install`), or the Visual Studio C++ build tools on Windows
 - Optional: Node.js 18+ for the editor grammars, and [mdBook](https://rust-lang.github.io/mdBook/) to build this site
 
 ## Build the compiler
@@ -28,6 +29,8 @@ kiln --version
 ```sh
 kiln check examples/hello.kn
 # examples/hello.kn: ok
+kiln run examples/hello.kn
+# Hello, Kiln!
 ```
 
 The `kiln` binary has these commands today:
@@ -36,10 +39,12 @@ The `kiln` binary has these commands today:
 |---|---|
 | `kiln lex <file.kn>` | Print the token stream (including inserted semicolons) |
 | `kiln parse <file.kn>` | Print the syntax tree |
-| `kiln check <file.kn>` | Resolve names and type-check, printing diagnostics |
+| `kiln check <file.kn>` | Resolve names, type-check, and borrow-check, printing diagnostics |
+| `kiln build <file.kn> [-o out]` | Compile to a native executable |
+| `kiln run <file.kn>` | Compile and run |
 
 <div class="status">
-🚧 <code>kiln build</code>, <code>kiln run</code>, <code>kiln test</code>, <code>kiln fmt</code>, and <code>kiln new</code> are specified but not implemented yet. Programs cannot be compiled to executables yet.
+🚧 <code>kiln test</code>, <code>kiln fmt</code>, and <code>kiln new</code> are specified but not implemented yet. <code>kiln build</code> and <code>kiln run</code> work on single files; programs that use <code>go</code>, channels, or <code>std</code> modules don't compile to executables yet.
 </div>
 
 ## Editor support

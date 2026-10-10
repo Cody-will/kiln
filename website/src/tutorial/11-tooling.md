@@ -9,6 +9,9 @@ Kiln ships one `kiln` command for everything, like `go` and `cargo`.
 | `kiln check <file.kn>` | Parse, resolve names, and type-check. Exit status 1 if there are errors. |
 | `kiln parse <file.kn>` | Print the syntax tree (for debugging the compiler). |
 | `kiln lex <file.kn>` | Print tokens, including the semicolons inserted at line ends. |
+| `kiln build <file.kn> [-o out]` | Compile to a native executable (needs a C linker: `cc`, or the Visual Studio build tools on Windows). |
+| `kiln run <file.kn> [args...]` | Build into a temporary directory and run; exits with the program's status. |
+| `kiln mir <file.kn>` | Print the mid-level IR (for debugging the compiler). |
 | `kiln --version` | Print the version. |
 
 Diagnostics look like this:
@@ -31,7 +34,6 @@ error: mismatched types: expected `i32`, found `bool`
 | Command | Description |
 |---|---|
 | 🚧 `kiln new <name>` | Create a package with `kiln.toml` and `src/main.kn` |
-| 🚧 `kiln build` / `kiln run` | Compile (LLVM) and run |
 | 🚧 `kiln test` | Run `#[test]` functions and the `tests/` directory |
 | 🚧 `kiln fmt` | The canonical formatter: tabs, Go-style braces, trailing commas on multi-line lists, and no configuration |
 | 🚧 `kiln lint`, `kiln doc`, `kiln bench` | Linting, documentation, benchmarks |

@@ -20,10 +20,12 @@ Things to notice:
 ```sh
 kiln check hello.kn
 # hello.kn: ok
+kiln run hello.kn
+# Hello, Kiln!
 ```
 
 <div class="status">
-🚧 <strong>Running programs is not implemented yet.</strong> When code generation lands, <code>kiln run hello.kn</code> will compile and run the file. For now, <code>kiln check</code> reports every name and type error a full build would catch before code generation.
+✅ <strong>Programs compile and run.</strong> <code>kiln run hello.kn</code> compiles the file to a native executable and runs it; <code>kiln build hello.kn</code> leaves the executable (<code>hello</code>, or <code>hello.exe</code> on Windows) in the current directory. You need a C toolchain for linking: <code>cc</code> on Linux and macOS, or the Visual Studio C++ build tools on Windows.
 </div>
 
 ## Making a mistake on purpose

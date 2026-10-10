@@ -11,7 +11,7 @@ Kiln is a compiled, statically typed language for systems programming and backen
 3. **Expressive types**: generics, traits, sum types (enums), and pattern matching.
 4. **Cheap concurrency**: `go` spawns lightweight tasks; channels and `select` are part of the language. Data races are compile errors.
 5. **Explicit errors**: `Result<T, E>` plus `?`. No exceptions and no `if err != nil`.
-6. **Predictable performance**: zero-cost abstractions, monomorphized generics, an LLVM backend, and C ABI interop.
+6. **Predictable performance**: zero-cost abstractions, monomorphized generics, a native-code backend, and C ABI interop.
 7. **First-class tooling**: compiler, formatter, package manager, language server, and highlighting ship together.
 
 Non-goals for 1.0: inheritance, implicit numeric conversions, macros that rewrite syntax arbitrarily, and async/await coloring.
@@ -556,7 +556,7 @@ The compiler is written in Rust as a Cargo workspace:
 kiln/
   crates/
     kiln_lexer/   kiln_parser/   kiln_ast/    kiln_resolve/
-    kiln_types/   kiln_borrowck/ kiln_mir/    kiln_codegen_llvm/
+    kiln_types/   kiln_borrowck/ kiln_mir/    kiln_codegen/
     kiln_runtime/ kiln_driver/   kiln_fmt/    kiln_pkg/
     kiln_ls/      kiln_diagnostics/
   std/            (the Kiln standard library, written in Kiln)
@@ -584,10 +584,10 @@ kiln/
 7. **Borrow check**: on MIR, using NLL (liveness plus region inference). It also checks moves, initialization, and missing `return` on non-unit functions.
 8. **MIR optimizations**: constant propagation, inlining small functions, and drop elaboration.
 9. **Codegen**:
-   - Uses LLVM through `inkwell`.
+   - Uses Cranelift (pure Rust) today; an optional LLVM backend for optimized release builds may be added later behind the same MIR boundary. See ARCHITECTURE.md for why.
    - Monomorphization happens at this stage.
-   - Emits debug info (DWARF).
-   - Links with system `lld` or `cc`.
+   - Emits debug info (DWARF) (planned).
+   - Links with the system C toolchain (`cc` on Unix, `link.exe` on Windows).
 10. **Incremental and query-based**: a `salsa` database so the compiler and language server share one engine.
 
 ### Runtime (`kiln_runtime`, written in Rust then ported over time)
@@ -618,7 +618,7 @@ kiln/
 | Phase | Deliverable |
 |---|---|
 | M0 | Spec frozen for v0.1; lexer and parser with error recovery; TextMate and Tree-sitter grammars |
-| M1 | Name resolution and type checking for functions, structs, enums, and match; LLVM codegen; "hello world" and fib run |
+| M1 | Name resolution and type checking for functions, structs, enums, and match; native codegen; "hello world" and fib run |
 | M2 | Traits, generics (monomorphization), `Result`, `?`, and `Drop` |
 | M3 | MIR and borrow checker (NLL), with lifetimes and elision |
 | M4 | Runtime: `go`, channels, `select`, scoped tasks, netpoller; `Send` and `Sync` enforcement |
