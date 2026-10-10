@@ -6,8 +6,11 @@
 //! - `kiln parse <file>`: print the AST.
 //! - `kiln check <file>`: parse, resolve names, type-check, and borrow-check; print diagnostics.
 //! - `kiln mir <file>`: print the lowered MIR (for compiler debugging).
+//! - `kiln build <file> [-o <output>]`: compile to a native executable.
+//! - `kiln run <file> [args...]`: build to a temporary executable and run it.
 //!
-//! Exit status is 0 on success, 1 when the file has errors, and 2 on usage errors.
+//! Exit status is 0 on success, 1 when the file has errors, and 2 on usage errors
+//! (`kiln run` exits with the program's status).
 
 use kiln_lexer::{lex, Diagnostic, LineIndex, TokenKind};
 use std::process::ExitCode;
@@ -20,6 +23,10 @@ USAGE:
     kiln parse <file.kn>    Print the syntax tree
     kiln check <file.kn>    Resolve names, type-check, and borrow-check
     kiln mir <file.kn>      Print the mid-level IR (compiler debugging)
+    kiln build <file.kn> [-o <output>]
+                            Compile to a native executable
+    kiln run <file.kn> [args...]
+                            Build and run
     kiln help               Show this message
     kiln --version          Show the version";
 
@@ -29,6 +36,15 @@ fn main() -> ExitCode {
         [cmd, file] if cmd == "lex" || cmd == "parse" || cmd == "check" || cmd == "mir" => {
             run(cmd, file)
         }
+        [cmd, file, rest @ ..] if cmd == "build" => match rest {
+            [] => build(file, None),
+            [o, out] if o == "-o" => build(file, Some(out)),
+            _ => {
+                eprintln!("{USAGE}");
+                ExitCode::from(2)
+            }
+        },
+        [cmd, file, rest @ ..] if cmd == "run" => run_program(file, rest),
         [flag] if flag == "--version" || flag == "-V" => {
             println!("kiln {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -74,6 +90,82 @@ fn run(cmd: &str, file: &str) -> ExitCode {
         parsed.errors
     };
     report(file, &src, &errors)
+}
+
+fn read(file: &str) -> Option<String> {
+    match std::fs::read_to_string(file) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!("error: cannot read `{file}`: {e}");
+            None
+        }
+    }
+}
+
+fn default_output(file: &str) -> std::path::PathBuf {
+    let stem = std::path::Path::new(file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("a");
+    std::path::PathBuf::from(format!("{stem}{}", std::env::consts::EXE_SUFFIX))
+}
+
+fn build_to(file: &str, src: &str, out: &std::path::Path) -> Result<(), ExitCode> {
+    match kiln_codegen::build_source(src, out) {
+        Ok(()) => Ok(()),
+        Err(kiln_codegen::BuildError::Diagnostics(errs)) => Err(report(file, src, &errs)),
+        Err(kiln_codegen::BuildError::Other(msg)) => {
+            eprintln!("error: {msg}");
+            Err(ExitCode::from(1))
+        }
+    }
+}
+
+fn build(file: &str, out: Option<&String>) -> ExitCode {
+    let Some(src) = read(file) else {
+        return ExitCode::from(2);
+    };
+    let out = out
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| default_output(file));
+    match build_to(file, &src, &out) {
+        Ok(()) => {
+            println!("built {}", out.display());
+            ExitCode::SUCCESS
+        }
+        Err(c) => c,
+    }
+}
+
+fn run_program(file: &str, args: &[String]) -> ExitCode {
+    let Some(src) = read(file) else {
+        return ExitCode::from(2);
+    };
+    let dir = std::env::temp_dir().join(format!("kiln-run-{}", std::process::id()));
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("error: cannot create {}: {e}", dir.display());
+        return ExitCode::from(1);
+    }
+    let exe = dir.join(default_output(file));
+    if let Err(c) = build_to(file, &src, &exe) {
+        let _ = std::fs::remove_dir_all(&dir);
+        return c;
+    }
+    let status = std::process::Command::new(&exe).args(args).status();
+    let _ = std::fs::remove_dir_all(&dir);
+    match status {
+        Ok(s) => match s.code() {
+            Some(c) => ExitCode::from(c.clamp(0, 255) as u8),
+            None => {
+                eprintln!("error: the program was terminated abnormally ({s})");
+                ExitCode::from(1)
+            }
+        },
+        Err(e) => {
+            eprintln!("error: cannot run {}: {e}", exe.display());
+            ExitCode::from(1)
+        }
+    }
 }
 
 fn describe(kind: &TokenKind) -> String {

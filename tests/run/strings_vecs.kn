@@ -1,0 +1,55 @@
+enum List {
+	Cons(i32, Box<List>),
+	Nil,
+}
+
+fn sum(l: &List) -> i32 {
+	return match l {
+		List::Cons(v, rest) => v + sum(rest),
+		List::Nil => 0,
+	}
+}
+
+fn classify(s: &str) -> &'static str {
+	return match s {
+		"apple" | "pear" => "fruit",
+		"carrot" => "vegetable",
+		_ => "unknown",
+	}
+}
+
+fn main() {
+	s mut := String::from("Hello")
+	s.push(", world")
+	println("{s} has {s.len()} bytes")
+	println("{s.to_upper()} / {s.to_lower()}")
+	t := "  padded  "
+	println("[{t.trim()}]")
+	println("{s.as_str().starts_with("Hell")} {s.as_str().contains("xyz")}")
+	println(classify("pear"))
+	println(classify("rock"))
+	v mut := Vec::new()
+	for i in 1..=5 {
+		v.push(i * i)
+	}
+	println("len {v.len()}, v[2] = {v[2]}")
+	match v.get(10) {
+		Some(x) => println("got {x}"),
+		None => println("index 10 is out of range"),
+	}
+	while let Some(x) = v.pop() {
+		print("{x} ")
+	}
+	println("")
+	list := List::Cons(1, Box::new(List::Cons(2, Box::new(List::Cons(3, Box::new(List::Nil))))))
+	println("list sum {sum(&list)}")
+	words mut := Vec::new()
+	words.push(String::from("a"))
+	words.push(String::from("b"))
+	copy := words.clone()
+	words.clear()
+	println("{words.len()} {copy.len()} {copy[1]}")
+	let big: u64 = 18446744073709551615
+	small := -42i64
+	println("{big} {small} {255u8} {3.0f32 / 2.0f32} {true || false}")
+}

@@ -1,0 +1,63 @@
+enum ParseError {
+	Empty,
+	Bad(String),
+}
+
+struct AppError {
+	msg: String,
+}
+
+impl From<ParseError> for AppError {
+	fn from(e: ParseError) -> AppError {
+		return match e {
+			ParseError::Empty => AppError { msg: String::from("empty input") },
+			ParseError::Bad(s) => AppError { msg: "bad input: {s}" },
+		}
+	}
+}
+
+fn parse_digit(s: &str) -> Result<i32, ParseError> {
+	if s.is_empty() {
+		return Err(ParseError::Empty)
+	}
+	if s == "1" {
+		return Ok(1)
+	}
+	if s == "2" {
+		return Ok(2)
+	}
+	return Err(ParseError::Bad(s.to_string()))
+}
+
+fn sum(a: &str, b: &str) -> Result<i32, AppError> {
+	x := parse_digit(a)?
+	y := parse_digit(b)?
+	return Ok(x + y)
+}
+
+fn half(n: i32) -> Option<i32> {
+	if n % 2 == 0 {
+		return Some(n / 2)
+	}
+	return None
+}
+
+fn quarter(n: i32) -> Option<i32> {
+	h := half(n)?
+	return half(h)
+}
+
+fn report(r: Result<i32, AppError>) {
+	match r {
+		Ok(v) => println("ok: {v}"),
+		Err(e) => println("error: {e.msg}"),
+	}
+}
+
+fn main() {
+	report(sum("1", "2"))
+	report(sum("", "2"))
+	report(sum("1", "x"))
+	println("{quarter(8).unwrap_or(-1)} {quarter(6).unwrap_or(-1)}")
+	println("{parse_digit("2").is_ok()} {parse_digit("9").is_err()}")
+}

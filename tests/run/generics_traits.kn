@@ -1,0 +1,98 @@
+trait Shape {
+	fn area(&self) -> f64
+	fn name(&self) -> String {
+		return String::from("shape")
+	}
+}
+
+struct Square {
+	side: f64,
+}
+
+struct Circle {
+	r: f64,
+}
+
+impl Shape for Square {
+	fn area(&self) -> f64 {
+		return self.side * self.side
+	}
+
+	fn name(&self) -> String {
+		return String::from("square")
+	}
+}
+
+impl Shape for Circle {
+	fn area(&self) -> f64 {
+		return 3.0 * self.r * self.r
+	}
+}
+
+fn largest<T: Shape>(items: &Vec<T>) -> f64 {
+	best mut := 0.0
+	for it in items {
+		a := it.area()
+		if a > best {
+			best = a
+		}
+	}
+	return best
+}
+
+struct Pair<T> {
+	a: T,
+	b: T,
+}
+
+impl<T: Copy> Pair<T> {
+	fn swap(&self) -> Pair<T> {
+		return Pair { a: self.b, b: self.a }
+	}
+}
+
+fn first<T>(v: Vec<T>) -> Option<T> {
+	for x in v {
+		return Some(x)
+	}
+	return None
+}
+
+fn total(shapes: &Vec<Box<dyn Shape>>) -> f64 {
+	t mut := 0.0
+	for s in shapes {
+		t += s.area()
+	}
+	return t
+}
+
+fn main() {
+	sq mut := Vec::new()
+	sq.push(Square { side: 2.0 })
+	sq.push(Square { side: 5.0 })
+	println("largest square: {largest(&sq)}")
+	p := Pair { a: 1, b: 2 }
+	q := p.swap()
+	println("swapped: {q.a} {q.b}")
+	f := first(vec_of_strings())
+	match f {
+		Some(s) => println("first: {s}"),
+		None => println("none"),
+	}
+	let mut shapes: Vec<Box<dyn Shape>> = Vec::new()
+	shapes.push(Box::new(Square { side: 3.0 }))
+	shapes.push(Box::new(Circle { r: 1.0 }))
+	println("total area: {total(&shapes)}")
+	for s in &shapes {
+		println("{s.name()}: {s.area()}")
+	}
+	let d: &dyn Shape = &Circle { r: 2.0 }
+	println("by reference: {d.area()}")
+}
+
+fn vec_of_strings() -> Vec<String> {
+	v mut := Vec::new()
+	v.push(String::from("alpha"))
+	v.push(String::from("beta"))
+	return v
+}

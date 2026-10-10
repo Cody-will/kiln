@@ -1,0 +1,7 @@
+fn main() {
+	v mut := Vec::new()
+	v.push(1)
+	println("before")
+	x := v[3]
+	println("unreachable {x}")
+}

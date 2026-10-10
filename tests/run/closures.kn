@@ -1,0 +1,31 @@
+fn apply(f: fn(i32) -> i32, x: i32) -> i32 {
+	return f(x)
+}
+
+fn double(x: i32) -> i32 {
+	return x * 2
+}
+
+fn make_adder(n: i32) -> fn(i32) -> i32 {
+	return move |x: i32| x + n
+}
+
+fn main() {
+	offset := 10
+	add := |x: i32| x + offset
+	println("{add(5)}")
+	println("{apply(double, 21)}")
+	println("{apply(|x: i32| x * x, 7)}")
+	add3 := make_adder(3)
+	println("{add3(4)}")
+	count mut := 0
+	inc := || {
+		count += 1
+	}
+	inc()
+	inc()
+	println("count = {count}")
+	name := String::from("kiln")
+	greet := move || println("hello, {name}")
+	greet()
+}

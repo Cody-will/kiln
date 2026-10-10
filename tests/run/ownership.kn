@@ -1,0 +1,51 @@
+struct Noisy {
+	name: String,
+}
+
+impl Drop for Noisy {
+	fn drop(&mut self) {
+		println("drop {self.name}")
+	}
+}
+
+fn make(name: &str) -> Noisy {
+	return Noisy { name: String::from(name) }
+}
+
+fn consume(n: Noisy) {
+	println("consuming {n.name}")
+}
+
+fn main() {
+	a := make("a")
+	{
+		b := make("b")
+		println("inner scope")
+	}
+	consume(a)
+	c mut := make("c1")
+	c = make("c2")
+	println("reassigned")
+	v := vec_of(make("v1"), make("v2"))
+	println("vec has {v.len()} items")
+	boxed := Box::new(make("boxed"))
+	println("box holds {boxed.name}")
+	s := String::from("hello")
+	t := s.clone()
+	println("{s} {t}")
+	moved := s
+	println("{moved}")
+	defer println("deferred 1")
+	defer println("deferred 2")
+	for i in 0..2 {
+		defer println("loop defer")
+	}
+	println("end of main")
+}
+
+fn vec_of(x: Noisy, y: Noisy) -> Vec<Noisy> {
+	v mut := Vec::new()
+	v.push(x)
+	v.push(y)
+	return v
+}

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/kiln_lexer", "crates/kiln_parser", "crates/kiln_cli", "crates/kiln_resolve", "crates/kiln_typeck", "crates/kiln_mir", "crates/kiln_borrowck"]
+members = ["crates/kiln_lexer", "crates/kiln_parser", "crates/kiln_cli", "crates/kiln_resolve", "crates/kiln_typeck", "crates/kiln_mir", "crates/kiln_borrowck", "crates/kiln_runtime", "crates/kiln_codegen"]
 
 [workspace.package]
 version = "0.1.0"

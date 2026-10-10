@@ -1,0 +1,19 @@
+inner scope
+drop b
+consuming a
+drop a
+drop c1
+reassigned
+vec has 2 items
+box holds boxed
+hello hello
+hello
+end of main
+loop defer
+loop defer
+deferred 2
+deferred 1
+drop boxed
+drop v1
+drop v2
+drop c2

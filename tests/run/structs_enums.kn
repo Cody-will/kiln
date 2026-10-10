@@ -1,0 +1,70 @@
+struct Point {
+	x: f64,
+	y: f64,
+}
+
+impl Point {
+	fn new(x: f64, y: f64) -> Point {
+		return Point { x: x, y: y }
+	}
+
+	fn dist2(&self) -> f64 {
+		return self.x * self.x + self.y * self.y
+	}
+
+	fn shift(&mut self, dx: f64) {
+		self.x += dx
+	}
+}
+
+enum Shape {
+	Circle(f64),
+	Rect { w: f64, h: f64 },
+	Empty,
+}
+
+fn area(s: &Shape) -> f64 {
+	return match s {
+		Shape::Circle(r) => 3.0 * r * r,
+		Shape::Rect { w, h } => w * h,
+		Shape::Empty => 0.0,
+	}
+}
+
+fn describe(n: i32) -> &'static str {
+	return match n {
+		0 => "zero",
+		1 | 2 | 3 => "small",
+		4..=9 => "medium",
+		_ => "large",
+	}
+}
+
+fn main() {
+	p mut := Point::new(3.0, 4.0)
+	println("dist2 = {p.dist2()}")
+	p.shift(1.0)
+	println("x = {p.x}")
+	shapes := vec_of_shapes()
+	for s in &shapes {
+		println("area {area(s)}")
+	}
+	for n in 0..13 {
+		if n == 0 || n == 2 || n == 7 || n == 12 {
+			println(describe(n))
+		}
+	}
+	pair := (1, "one")
+	println("{pair.0} is {pair.1}")
+	if let Shape::Circle(r) = &shapes[0] {
+		println("first is a circle of radius {r}")
+	}
+}
+
+fn vec_of_shapes() -> Vec<Shape> {
+	v mut := Vec::new()
+	v.push(Shape::Circle(1.0))
+	v.push(Shape::Rect { w: 2.0, h: 3.0 })
+	v.push(Shape::Empty)
+	return v
+}
