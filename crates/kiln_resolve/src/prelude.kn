@@ -20,7 +20,11 @@ pub struct Box<T>
 pub struct Range<T>
 
 pub trait Copy {}
-pub trait Clone {}
+// An explicit copy. `#[derive(Clone)]` clones field by field; implement it
+// by hand for types that manage resources (like `Arc`).
+pub trait Clone {
+	fn clone(&self) -> Self
+}
 pub trait Eq {}
 pub trait Ord {}
 pub trait Hash {}
@@ -183,15 +187,114 @@ impl<T, E> Result<T, E> {
 
 impl String {
 	pub fn new() -> String
+	pub fn with_capacity(n: usize) -> String
 	pub fn from(s: &str) -> String
 	pub fn len(&self) -> usize
+	pub fn capacity(&self) -> usize
+	pub fn reserve(&mut self, additional: usize)
 	pub fn is_empty(&self) -> bool
 	pub fn push(&mut self, s: &str)
 	pub fn as_str(&self) -> &str
+	pub fn as_bytes(&self) -> &[u8]
 	pub fn to_upper(&self) -> String
 	pub fn to_lower(&self) -> String
 	pub fn trim(&self) -> &str
+
+	// The bytes, without copying.
+	pub fn into_bytes(self) -> Vec<u8>
+
+	// A string from bytes the caller knows are valid UTF-8.
+	pub unsafe fn from_utf8_unchecked(bytes: Vec<u8>) -> String
+
+	// The underlying bytes; the caller must keep them valid UTF-8.
+	pub unsafe fn as_mut_vec(&mut self) -> &mut Vec<u8>
+
+	// A string from UTF-8 bytes, or an error saying where they stop being valid.
+	pub fn from_utf8(bytes: Vec<u8>) -> Result<String, Utf8Error> {
+		n := kn_utf8_valid_up_to(bytes.as_slice()) as usize
+		if n != bytes.len() {
+			return Err(Utf8Error { valid_up_to: n })
+		}
+		return Ok(unsafe { String::from_utf8_unchecked(bytes) })
+	}
+
+	// A string from bytes, replacing invalid UTF-8 with U+FFFD.
+	pub fn from_utf8_lossy(bytes: &[u8]) -> String {
+		out mut := String::with_capacity(bytes.len())
+		rest mut := bytes
+		while rest.len() > 0 {
+			n := kn_utf8_valid_up_to(rest) as usize
+			unsafe {
+				out.push(std::ptr::str_from_raw(std::ptr::slice_ptr(rest), n))
+			}
+			if n == rest.len() {
+				break
+			}
+			out.push("\u{FFFD}")
+			rest = &rest[n + 1..]
+		}
+		return out
+	}
+
+	// Appends one character.
+	pub fn push_char(&mut self, c: char) {
+		v := c as u32
+		buf mut := [0 as u8; 4]
+		n mut := 0
+		if v < 0x80 {
+			buf[0] = v as u8
+			n = 1
+		} else if v < 0x800 {
+			buf[0] = (0xC0 | (v >> 6)) as u8
+			buf[1] = (0x80 | (v & 0x3F)) as u8
+			n = 2
+		} else if v < 0x10000 {
+			buf[0] = (0xE0 | (v >> 12)) as u8
+			buf[1] = (0x80 | ((v >> 6) & 0x3F)) as u8
+			buf[2] = (0x80 | (v & 0x3F)) as u8
+			n = 3
+		} else {
+			buf[0] = (0xF0 | (v >> 18)) as u8
+			buf[1] = (0x80 | ((v >> 12) & 0x3F)) as u8
+			buf[2] = (0x80 | ((v >> 6) & 0x3F)) as u8
+			buf[3] = (0x80 | (v & 0x3F)) as u8
+			n = 4
+		}
+		unsafe {
+			self.as_mut_vec().extend_from_slice(&buf[0..n])
+		}
+	}
+
+	// Removes all contents, keeping the allocation.
+	pub fn clear(&mut self) {
+		unsafe {
+			self.as_mut_vec().set_len(0)
+		}
+	}
+
+	// Shortens the string to `n` bytes. Panics if `n` is not on a character boundary.
+	pub fn truncate(&mut self, n: usize) {
+		if n < self.len() {
+			x := &self[0..n]
+			unsafe {
+				self.as_mut_vec().set_len(n)
+			}
+		}
+	}
 }
+
+// `String::from_utf8` failed: the bytes are valid only up to `valid_up_to`.
+pub struct Utf8Error {
+	pub valid_up_to: usize,
+}
+
+impl Display for Utf8Error {
+	fn to_string(&self) -> String {
+		return "invalid UTF-8 after byte {self.valid_up_to}"
+	}
+}
+
+fn kn_utf8_valid_up_to(b: &[u8]) -> i64
 
 impl str {
 	pub fn len(&self) -> usize
@@ -203,6 +306,155 @@ impl str {
 	pub fn starts_with(&self, prefix: &str) -> bool
 	pub fn ends_with(&self, suffix: &str) -> bool
 	pub fn contains(&self, needle: &str) -> bool
+	pub fn as_bytes(&self) -> &[u8]
+
+	// Byte index of the first occurrence of `needle`.
+	pub fn find(&self, needle: &str) -> Option<usize> {
+		h := self.as_bytes()
+		n := needle.as_bytes()
+		if n.len() > h.len() {
+			return None
+		}
+		for i in 0..h.len() - n.len() + 1 {
+			j mut := 0
+			while j < n.len() && h[i + j] == n[j] {
+				j += 1
+			}
+			if j == n.len() {
+				return Some(i)
+			}
+		}
+		return None
+	}
+
+	// The parts before and after the first `sep`.
+	pub fn split_once(&self, sep: &str) -> Option<(&str, &str)> {
+		match self.find(sep) {
+			Some(i) => return Some((&self[0..i], &self[i + sep.len()..])),
+			None => return None,
+		}
+	}
+
+	// The pieces between occurrences of `sep` (like Go's strings.Split).
+	pub fn split(&self, sep: &str) -> Vec<&str> {
+		out mut := Vec::new()
+		rest mut := self
+		if sep.is_empty() {
+			out.push(self)
+			return out
+		}
+		loop {
+			match rest.find(sep) {
+				Some(i) => {
+					out.push(&rest[0..i])
+					rest = &rest[i + sep.len()..]
+				},
+				None => {
+					out.push(rest)
+					return out
+				},
+			}
+		}
+	}
+
+	// The lines, without their `\n` or `\r\n` endings.
+	pub fn lines(&self) -> Vec<&str> {
+		out mut := Vec::new()
+		if self.is_empty() {
+			return out
+		}
+		for line in self.split("\n") {
+			out.push(line.strip_suffix("\r").unwrap_or(line))
+		}
+		if self.ends_with("\n") {
+			out.pop()
+		}
+		return out
+	}
+
+	// The string without `prefix`, if it starts with it.
+	pub fn strip_prefix(&self, prefix: &str) -> Option<&str> {
+		if self.starts_with(prefix) {
+			return Some(&self[prefix.len()..])
+		}
+		return None
+	}
+
+	// The string without `suffix`, if it ends with it.
+	pub fn strip_suffix(&self, suffix: &str) -> Option<&str> {
+		if self.ends_with(suffix) {
+			return Some(&self[0..self.len() - suffix.len()])
+		}
+		return None
+	}
+
+	// The string without leading whitespace.
+	pub fn trim_start(&self) -> &str {
+		b := self.as_bytes()
+		i mut := 0
+		while i < b.len() && is_space(b[i]) {
+			i += 1
+		}
+		return &self[i..]
+	}
+
+	// The string without trailing whitespace.
+	pub fn trim_end(&self) -> &str {
+		b := self.as_bytes()
+		n mut := b.len()
+		while n > 0 && is_space(b[n - 1]) {
+			n -= 1
+		}
+		return &self[0..n]
+	}
+
+	// A copy with every `from` replaced by `to`.
+	pub fn replace(&self, from: &str, to: &str) -> String {
+		out mut := String::with_capacity(self.len())
+		parts := self.split(from)
+		for i in 0..parts.len() {
+			if i > 0 {
+				out.push(to)
+			}
+			out.push(parts[i])
+		}
+		return out
+	}
+
+	// The string repeated `n` times.
+	pub fn repeat(&self, n: usize) -> String {
+		out mut := String::with_capacity(self.len() * n)
+		for _ in 0..n {
+			out.push(self)
+		}
+		return out
+	}
+
+	// Whether two strings are equal ignoring ASCII case.
+	pub fn eq_ignore_ascii_case(&self, other: &str) -> bool {
+		a := self.as_bytes()
+		b := other.as_bytes()
+		if a.len() != b.len() {
+			return false
+		}
+		for i in 0..a.len() {
+			if ascii_lower(a[i]) != ascii_lower(b[i]) {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+fn is_space(b: u8) -> bool {
+	return b == 32 || b == 9 || b == 10 || b == 13 || b == 11 || b == 12
+}
+
+fn ascii_lower(b: u8) -> u8 {
+	if b >= 65 && b <= 90 {
+		return b + 32
+	}
+	return b
 }
 
 impl<T> Vec<T> {
@@ -216,6 +468,88 @@ impl<T> Vec<T> {
 	pub fn first(&self) -> Option<&T>
 	pub fn last(&self) -> Option<&T>
 	pub fn clear(&mut self)
+	pub fn capacity(&self) -> usize
+	pub fn reserve(&mut self, additional: usize)
+
+	// The address of the first element.
+	pub fn as_ptr(&self) -> *mut T
+
+	// Sets the length without touching the elements.
+	pub unsafe fn set_len(&mut self, n: usize)
+
+	// The elements as a slice.
+	pub fn as_slice(&self) -> &[T] {
+		return unsafe { std::ptr::slice_from_raw(self.as_ptr(), self.len()) }
+	}
+
+	// The elements as a mutable slice.
+	pub fn as_mut_slice(&mut self) -> &mut [T] {
+		return unsafe { std::ptr::slice_from_raw(self.as_ptr(), self.len()) }
+	}
+
+	// Drops the elements after the first `n`.
+	pub fn truncate(&mut self, n: usize) {
+		while self.len() > n {
+			self.pop()
+		}
+	}
+
+	// Inserts `value` at `index`, shifting later elements right.
+	pub fn insert(&mut self, index: usize, value: T) {
+		n := self.len()
+		if index > n {
+			panic("insertion index is out of bounds")
+		}
+		self.reserve(1)
+		unsafe {
+			p := std::ptr::add(self.as_ptr(), index)
+			std::ptr::copy(p, std::ptr::add(p, 1), n - index)
+			std::ptr::write(p, value)
+			self.set_len(n + 1)
+		}
+	}
+
+	// Removes and returns the element at `index`, shifting later elements left.
+	pub fn remove(&mut self, index: usize) -> T {
+		n := self.len()
+		if index >= n {
+			panic("removal index is out of bounds")
+		}
+		unsafe {
+			p := std::ptr::add(self.as_ptr(), index)
+			v := std::ptr::read(p)
+			std::ptr::copy(std::ptr::add(p, 1), p, n - index - 1)
+			self.set_len(n - 1)
+			return v
+		}
+	}
+
+	// Swaps the elements at `a` and `b`.
+	pub fn swap(&mut self, a: usize, b: usize) {
+		if a >= self.len() || b >= self.len() {
+			panic("swap index is out of bounds")
+		}
+		if a != b {
+			unsafe {
+				std::mem::swap(&mut *std::ptr::add(self.as_ptr(), a), &mut *std::ptr::add(self.as_ptr(), b))
+			}
+		}
+	}
+}
+
+impl<T: Clone> Vec<T> {
+	// Appends clones of the elements of `s`.
+	pub fn extend_from_slice(&mut self, s: &[T]) {
+		n := self.len()
+		self.reserve(s.len())
+		unsafe {
+			p := self.as_ptr()
+			for i in 0..s.len() {
+				std::ptr::write(std::ptr::add(p, n + i), s[i].clone())
+			}
+			self.set_len(n + s.len())
+		}
+	}
 }
 
 impl<T> Box<T> {

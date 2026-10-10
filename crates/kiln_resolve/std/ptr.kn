@@ -21,3 +21,15 @@ pub unsafe fn drop_in_place<T>(p: *mut T)
 
 // Copies `n` elements from `src` to `dst` (the ranges may overlap).
 pub unsafe fn copy<T>(src: *mut T, dst: *mut T, n: usize)
+
+// The address of a slice's first element.
+pub fn slice_ptr<T>(s: &[T]) -> *mut T
+
+// The address of a string's first byte.
+pub fn str_ptr(s: &str) -> *mut u8
+
+// The slice of `n` elements starting at `p`.
+pub unsafe fn slice_from_raw<T>(p: *mut T, n: usize) -> &mut [T]
+
+// The string of `n` bytes starting at `p` (which must be valid UTF-8).
+pub unsafe fn str_from_raw(p: *mut u8, n: usize) -> &str

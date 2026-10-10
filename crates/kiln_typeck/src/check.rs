@@ -579,8 +579,26 @@ impl Body<'_, '_, '_> {
             if self.c.impls[idx].trait_ref.as_ref().map(|x| x.0) != Some(tr) {
                 continue;
             }
-            let (st, _) = self.instantiate_impl(idx);
-            if self.c.infer.can_unify(&st, t) {
+            let (st, map) = self.instantiate_impl(idx);
+            if !self.c.infer.can_unify(&st, t) {
+                continue;
+            }
+            // `impl<T: Bound> Trait for X<T>` applies only when the bounds hold.
+            let bounds = self.c.impls[idx].bounds.clone();
+            if bounds.is_empty() {
+                return true;
+            }
+            let snap = self.c.infer.snapshot();
+            self.c.infer.unify(&st, t);
+            let ok = bounds.iter().all(|(g, b)| match map.get(g) {
+                Some(v) => {
+                    let v = self.c.infer.zonk(v);
+                    matches!(v, Ty::Var(_)) || self.implements(&v, *b)
+                }
+                None => true,
+            });
+            self.c.infer.restore(snap);
+            if ok {
                 return true;
             }
         }
@@ -1903,6 +1921,12 @@ impl Body<'_, '_, '_> {
                 Ty::Adt(..) | Ty::Prim(_) | Ty::Tuple(_) | Ty::Unit | Ty::Param(_) | Ty::Array(..),
                 "clone",
             ) => {
+                // A hand-written `impl Clone` is an ordinary method.
+                if let (Ty::Adt(..), Some(cl)) = (c, self.c.r.prelude_type("Clone")) {
+                    if self.has_impl(c, cl) {
+                        return None;
+                    }
+                }
                 if let Some(cl) = self.c.r.prelude_type("Clone") {
                     self.obligations.push((c.clone(), cl, span));
                 }
@@ -2293,6 +2317,7 @@ impl Body<'_, '_, '_> {
                 true
             }
             (Ty::Ref(..) | Ty::Ptr(..), Ty::Ptr(..)) => true,
+            (Ty::Ptr(..), _) if self.is_integral(&t) => true,
             (Ty::Prim(_) | Ty::Var(_), Ty::Ptr(..)) => true,
             _ => self.c.infer.can_unify(&f, &t),
         };

@@ -51,6 +51,8 @@ pub(crate) struct ImplInfo {
     pub generics: Vec<String>,
     pub self_ty: Ty,
     pub trait_ref: Option<(DefId, Vec<Ty>)>,
+    /// Bounds on the impl's generic parameters (`impl<T: Send> ...`).
+    pub bounds: Vec<(String, DefId)>,
     /// Method name → index into [`Checker::sigs`] / `Resolved::fns`.
     pub methods: HashMap<String, usize>,
 }
@@ -414,10 +416,13 @@ impl<'r, 'a> Checker<'r, 'a> {
                     "remove `unsafe`",
                 );
             }
+            let mut bounds = Vec::new();
+            self.push_bounds(&imp.decl.generics, None, &mut bounds);
             self.impls.push(ImplInfo {
                 generics,
                 self_ty,
                 trait_ref,
+                bounds,
                 methods: HashMap::new(),
             });
         }

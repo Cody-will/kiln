@@ -1,0 +1,320 @@
+// Time: durations, monotonic instants, the wall clock, and sleeping.
+//
+// Sleeping parks only the calling task; other tasks keep running.
+//
+//	start := time::Instant::now()
+//	time::sleep(time::millis(50))
+//	println("took {start.elapsed()}")
+
+fn kn_time_mono() -> i64
+fn kn_time_unix() -> i64
+fn kn_time_sleep(ns: i64)
+
+// A span of time with nanosecond precision (it may be negative).
+#[derive(Copy, Clone, Eq, Ord, Debug)]
+pub struct Duration {
+	nanos: i64,
+}
+
+// A duration of `n` nanoseconds.
+pub fn nanos(n: i64) -> Duration {
+	return Duration { nanos: n }
+}
+
+// A duration of `n` microseconds.
+pub fn micros(n: i64) -> Duration {
+	return Duration { nanos: n * 1000 }
+}
+
+// A duration of `n` milliseconds.
+pub fn millis(n: i64) -> Duration {
+	return Duration { nanos: n * 1000000 }
+}
+
+// A duration of `n` seconds.
+pub fn secs(n: i64) -> Duration {
+	return Duration { nanos: n * 1000000000 }
+}
+
+// A duration of `n` minutes.
+pub fn minutes(n: i64) -> Duration {
+	return Duration { nanos: n * 60000000000 }
+}
+
+// A duration of `n` hours.
+pub fn hours(n: i64) -> Duration {
+	return Duration { nanos: n * 3600000000000 }
+}
+
+// A duration of `s` seconds, rounded to the nearest nanosecond.
+pub fn secs_f64(s: f64) -> Duration {
+	return Duration { nanos: (s * 1000000000.0).round() as i64 }
+}
+
+impl Duration {
+	// The zero duration.
+	pub fn zero() -> Duration {
+		return Duration { nanos: 0 }
+	}
+
+	// Whole nanoseconds.
+	pub fn as_nanos(&self) -> i64 {
+		return self.nanos
+	}
+
+	// Whole microseconds (truncated).
+	pub fn as_micros(&self) -> i64 {
+		return self.nanos / 1000
+	}
+
+	// Whole milliseconds (truncated).
+	pub fn as_millis(&self) -> i64 {
+		return self.nanos / 1000000
+	}
+
+	// Whole seconds (truncated).
+	pub fn as_secs(&self) -> i64 {
+		return self.nanos / 1000000000
+	}
+
+	// Seconds as a float.
+	pub fn as_secs_f64(&self) -> f64 {
+		return self.nanos as f64 / 1000000000.0
+	}
+
+	// Whether the duration is zero.
+	pub fn is_zero(&self) -> bool {
+		return self.nanos == 0
+	}
+
+	// The sum of two durations.
+	pub fn add(&self, other: Duration) -> Duration {
+		return Duration { nanos: self.nanos + other.nanos }
+	}
+
+	// The difference of two durations.
+	pub fn sub(&self, other: Duration) -> Duration {
+		return Duration { nanos: self.nanos - other.nanos }
+	}
+
+	// The duration times `n`.
+	pub fn mul(&self, n: i64) -> Duration {
+		return Duration { nanos: self.nanos * n }
+	}
+
+	// The duration divided by `n`.
+	pub fn div(&self, n: i64) -> Duration {
+		return Duration { nanos: self.nanos / n }
+	}
+}
+
+// Formats like Go: `1.5s`, `250ms`, `42µs`, `7ns`, `1h2m3.5s`.
+impl Display for Duration {
+	fn to_string(&self) -> String {
+		n := self.nanos
+		out mut := String::new()
+		if n < 0 {
+			out.push("-")
+		}
+		u := if n < 0 { (0 - n) as u64 } else { n as u64 }
+		if u == 0 {
+			return "0s".to_string()
+		}
+		if u < 1000 {
+			out.push(&"{u}ns")
+			return out
+		}
+		if u < 1000000 {
+			out.push(&fraction(u, 1000))
+			out.push("µs")
+			return out
+		}
+		if u < 1000000000 {
+			out.push(&fraction(u, 1000000))
+			out.push("ms")
+			return out
+		}
+		h := u / 3600000000000
+		m := (u / 60000000000) % 60
+		rest := u % 60000000000
+		if h > 0 {
+			out.push(&"{h}h")
+		}
+		if h > 0 || m > 0 {
+			out.push(&"{m}m")
+		}
+		out.push(&fraction(rest, 1000000000))
+		out.push("s")
+		return out
+	}
+}
+
+// `v / unit` with up to 9 decimals, trailing zeros removed.
+fn fraction(v: u64, unit: u64) -> String {
+	whole := v / unit
+	frac mut := v % unit
+	if frac == 0 {
+		return "{whole}"
+	}
+	digits mut := 0
+	u mut := unit
+	while u > 1 {
+		u = u / 10
+		digits += 1
+	}
+	// Zero-pad the fraction to `digits` places, then drop trailing zeros.
+	s mut := "{frac}"
+	while s.len() < digits {
+		s = "0{s}"
+	}
+	end mut := s.len()
+	while end > 0 && s.ends_with("0") {
+		end -= 1
+		s = s[0..end].to_string()
+	}
+	return "{whole}.{s}"
+}
+
+// A point on the monotonic clock, for measuring elapsed time.
+#[derive(Copy, Clone, Eq, Ord, Debug)]
+pub struct Instant {
+	nanos: i64,
+}
+
+impl Instant {
+	// The current instant.
+	pub fn now() -> Instant {
+		return Instant { nanos: kn_time_mono() }
+	}
+
+	// Time since this instant.
+	pub fn elapsed(&self) -> Duration {
+		return Duration { nanos: kn_time_mono() - self.nanos }
+	}
+
+	// Time from `earlier` to this instant.
+	pub fn since(&self, earlier: Instant) -> Duration {
+		return Duration { nanos: self.nanos - earlier.nanos }
+	}
+
+	// This instant moved by `d`.
+	pub fn add(&self, d: Duration) -> Instant {
+		return Instant { nanos: self.nanos + d.nanos }
+	}
+}
+
+// A wall-clock time: nanoseconds since 1970-01-01 00:00:00 UTC.
+#[derive(Copy, Clone, Eq, Ord, Debug)]
+pub struct SystemTime {
+	nanos: i64,
+}
+
+impl SystemTime {
+	// The current wall-clock time.
+	pub fn now() -> SystemTime {
+		return SystemTime { nanos: kn_time_unix() }
+	}
+
+	// The time `nanos` nanoseconds after the Unix epoch.
+	pub fn from_unix_nanos(nanos: i64) -> SystemTime {
+		return SystemTime { nanos: nanos }
+	}
+
+	// Seconds since the Unix epoch.
+	pub fn unix(&self) -> i64 {
+		return self.nanos / 1000000000
+	}
+
+	// Milliseconds since the Unix epoch.
+	pub fn unix_millis(&self) -> i64 {
+		return self.nanos / 1000000
+	}
+
+	// Nanoseconds since the Unix epoch.
+	pub fn unix_nanos(&self) -> i64 {
+		return self.nanos
+	}
+
+	// Time from `earlier` to this time.
+	pub fn since(&self, earlier: SystemTime) -> Duration {
+		return Duration { nanos: self.nanos - earlier.nanos }
+	}
+
+	// This time moved by `d`.
+	pub fn add(&self, d: Duration) -> SystemTime {
+		return SystemTime { nanos: self.nanos + d.nanos }
+	}
+
+	// The UTC date and time as (year, month 1-12, day 1-31, hour, minute, second).
+	pub fn utc(&self) -> (i64, i64, i64, i64, i64, i64) {
+		secs mut := self.nanos / 1000000000
+		if self.nanos < 0 && self.nanos % 1000000000 != 0 {
+			secs -= 1
+		}
+		days mut := secs / 86400
+		rem mut := secs % 86400
+		if rem < 0 {
+			rem += 86400
+			days -= 1
+		}
+		// Civil-from-days (Howard Hinnant's algorithm).
+		z := days + 719468
+		era := (if z >= 0 { z } else { z - 146096 }) / 146097
+		doe := z - era * 146097
+		yoe := (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+		doy := doe - (365 * yoe + yoe / 4 - yoe / 100)
+		mp := (5 * doy + 2) / 153
+		d := doy - (153 * mp + 2) / 5 + 1
+		m := if mp < 10 { mp + 3 } else { mp - 9 }
+		y := yoe + era * 400 + (if m <= 2 { 1 } else { 0 })
+		return (y, m, d, rem / 3600, (rem / 60) % 60, rem % 60)
+	}
+}
+
+// RFC 3339 in UTC: `2026-10-10T15:24:05Z`.
+impl Display for SystemTime {
+	fn to_string(&self) -> String {
+		(y, mo, d, h, mi, s) := self.utc()
+		return "{y}-{pad2(mo)}-{pad2(d)}T{pad2(h)}:{pad2(mi)}:{pad2(s)}Z"
+	}
+}
+
+fn pad2(n: i64) -> String {
+	if n < 10 {
+		return "0{n}"
+	}
+	return "{n}"
+}
+
+// Parks the current task for `d` (other tasks keep running).
+pub fn sleep(d: Duration) {
+	kn_time_sleep(d.nanos)
+}
+
+// A channel that receives the current instant once, after `d`.
+pub fn after(d: Duration) -> <-chan Instant {
+	(tx, rx) := chan::<Instant>(1)
+	go move {
+		kn_time_sleep(d.nanos)
+		tx.try_send(Instant::now())
+	}
+	return rx
+}
+
+// A channel that receives the current instant every `d`. Ticks are dropped
+// if the receiver falls behind; the ticker stops when the receiver is dropped.
+pub fn tick(d: Duration) -> <-chan Instant {
+	(tx, rx) := chan::<Instant>(1)
+	go move {
+		next mut := kn_time_mono() + d.nanos
+		loop {
+			kn_time_sleep(next - kn_time_mono())
+			next += d.nanos
+			match tx.try_send(Instant::now()) {
+				Err(TrySendError::Closed(_)) => return,
+				_ => {},
+			}
+		}
+	}
+	return rx
+}

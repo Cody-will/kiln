@@ -265,6 +265,73 @@ impl FnCx<'_, '_, '_, '_> {
                 let bytes = self.b.ins().imul_imm(n, size);
                 self.call_rt("kn_memmove", &[dst, src, bytes]);
             }
+            // Raw parts of vectors, strings, and slices. A `String` has the
+            // layout of a `Vec<u8>`: (data, capacity, length).
+            "Vec::as_ptr" => {
+                let v = self.op_scalar(&args[0]);
+                let d = self.load(types::I64, v, 0);
+                self.store(d, dest, 0);
+            }
+            "Vec::capacity" | "String::capacity" => {
+                let v = self.op_scalar(&args[0]);
+                let c = self.load(types::I64, v, 8);
+                self.store(c, dest, 0);
+            }
+            "Vec::set_len" => {
+                let v = self.op_scalar(&args[0]);
+                let n = self.op_scalar(&args[1]);
+                self.store(n, v, 16);
+            }
+            "Vec::reserve" | "String::reserve" => {
+                let vt = self.op_ty(&args[0]);
+                let v = self.op_scalar(&args[0]);
+                let n = self.op_scalar(&args[1]);
+                let (size, align) = if name == "String::reserve" {
+                    (1, 1)
+                } else {
+                    let (_, s, a) = self.vec_elem(vt);
+                    (s, a)
+                };
+                let (s, a) = (self.iconst(size as i64), self.iconst(align as i64));
+                self.call_rt("kn_vec_reserve", &[v, n, s, a]);
+            }
+            "String::from_utf8_unchecked" | "String::into_bytes" => {
+                let src = self.op_addr(&args[0]);
+                self.copy(dest, src, 24);
+                if let Operand::Move(p) = &args[0] {
+                    self.moved(p);
+                }
+            }
+            "String::as_mut_vec" => {
+                let v = self.op_scalar(&args[0]);
+                self.store(v, dest, 0);
+            }
+            "String::with_capacity" => {
+                let one = self.iconst(1);
+                let z = self.iconst(0);
+                self.store(one, dest, 0);
+                self.store(z, dest, 8);
+                self.store(z, dest, 16);
+                let n = self.op_scalar(&args[0]);
+                let (s, a) = (self.iconst(1), self.iconst(1));
+                self.call_rt("kn_vec_reserve", &[dest, n, s, a]);
+            }
+            "String::as_bytes" | "str::as_bytes" => {
+                let (p, n) = self.str_of(&args[0]);
+                self.store(p, dest, 0);
+                self.store(n, dest, 8);
+            }
+            "ptr::slice_ptr" | "ptr::str_ptr" => {
+                let a = self.op_addr(&args[0]);
+                let p = self.load(types::I64, a, 0);
+                self.store(p, dest, 0);
+            }
+            "ptr::slice_from_raw" | "ptr::str_from_raw" => {
+                let p = self.op_scalar(&args[0]);
+                let n = self.op_scalar(&args[1]);
+                self.store(p, dest, 0);
+                self.store(n, dest, 8);
+            }
             "Box::into_raw" | "Box::from_raw" => {
                 let p = self.op_scalar(&args[0]);
                 self.store(p, dest, 0);

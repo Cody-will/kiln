@@ -909,6 +909,22 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         inclusive: bool,
         mutable: bool,
     ) -> Operand {
+        let ty = self.ty(e);
+        self.slice_range_typed(base, start, end, inclusive, mutable, ty, e.span)
+    }
+
+    /// [`Self::slice_range`] with the result type and span given.
+    #[allow(clippy::too_many_arguments)]
+    fn slice_range_typed(
+        &mut self,
+        base: &Expr,
+        start: &Option<Box<Expr>>,
+        end: &Option<Box<Expr>>,
+        inclusive: bool,
+        mutable: bool,
+        ty: Ty,
+        span: Span,
+    ) -> Operand {
         let usize_ty = Ty::Prim(kiln_resolve::PrimTy::Usize);
         let s = match start {
             Some(x) => self.expr(x),
@@ -930,14 +946,13 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         }
         let (p, pt) = self.autoderef(bp, bt, n);
         let rt = Ty::Ref(mutable, Box::new(pt));
-        let r = self.temp_of(rt, Rvalue::Ref { mutable, place: p }, e.span);
-        let ty = self.ty(e);
+        let r = self.temp_of(rt, Rvalue::Ref { mutable, place: p }, span);
         let rv = Rvalue::Call {
             callee: Callee::Intrinsic("slice_range".into()),
             args: vec![r, s, en, Operand::constant(ConstKind::Int(flags), usize_ty)],
             flows: vec![0],
         };
-        self.temp_of(ty, rv, e.span)
+        self.temp_of(ty, rv, span)
     }
 
     /// The place an expression denotes, if it is a place expression.
@@ -971,6 +986,24 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 let n = i.to_string();
                 let (p, _) = self.autoderef_until(bp, bt, e.span, |s, t| s.has_field(t, &n));
                 Some(p.field(i.to_string()))
+            }
+            ExprKind::Index(base, idx) if matches!(idx.kind, ExprKind::Range { .. }) => {
+                // `x[a..b]` as a place: the sub-slice behind a fresh reference.
+                let ExprKind::Range {
+                    start,
+                    end,
+                    inclusive,
+                } = &idx.kind
+                else {
+                    unreachable!()
+                };
+                let m = self.want_mut;
+                let elem = self.ty(e);
+                let rt = Ty::Ref(m, Box::new(elem));
+                let r = self.slice_range_typed(base, start, end, *inclusive, m, rt.clone(), e.span);
+                let l = self.temp(rt, e.span);
+                self.assign(Place::local(l), Rvalue::Use(r), e.span);
+                Some(Place::local(l).project(Proj::Deref(DerefKind::Ref(m).into())))
             }
             ExprKind::Index(base, idx) => {
                 let saved = std::mem::replace(&mut self.want_mut, false);
@@ -1942,9 +1975,29 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             ),
         );
         let rt0 = self.ty(recv);
-        let (p, _) = self.autoderef(base, rt0, info.steps);
+        let (p, pt) = self.autoderef(base, rt0, info.steps);
         self.want_mut = saved;
+        // A `str` method on a `String` (or a slice method on a `Vec`): borrow
+        // the container, then coerce the reference.
+        let unsized_target = matches!(
+            info.recv_ty,
+            Ty::Prim(kiln_resolve::PrimTy::Str) | Ty::Slice(_)
+        );
+        let container =
+            matches!(&pt, Ty::Adt(d, _) if self.lang(*d, "String") || self.lang(*d, "Vec"));
         let self_op = match &info.self_param {
+            Some(ast::SelfParam::Ref { mutable, .. }) if unsized_target && container => {
+                let r1 = self.temp_of(
+                    Ty::Ref(*mutable, Box::new(pt.clone())),
+                    Rvalue::Ref {
+                        mutable: *mutable,
+                        place: p,
+                    },
+                    recv.span,
+                );
+                let rt = Ty::Ref(*mutable, Box::new(info.recv_ty.clone()));
+                self.temp_of(rt.clone(), Rvalue::Coerce(r1, rt), recv.span)
+            }
             Some(ast::SelfParam::Ref { mutable, .. }) => {
                 let rt = Ty::Ref(*mutable, Box::new(info.recv_ty.clone()));
                 self.temp_of(

@@ -106,6 +106,7 @@ typedef struct KnTask {
 
 typedef struct KnWorker {
 	kn_mutex lock;
+	int64_t slice_start; /* when the current task was switched in (ns) */
 	KnTask *head, *tail;
 	volatile int64_t count;
 	void *sched_sp;
@@ -126,6 +127,9 @@ static volatile int64_t gcount;
 static kn_mutex sched_lock;
 static kn_cond sched_cond;
 static volatile int64_t idle;
+/* Tasks parked on something outside the scheduler (a timer, the network
+ * poller): while any exist, all-workers-idle is not a deadlock. */
+static volatile int64_t external;
 static KN_TLS KnWorker *tls_worker;
 
 /* Not inlined, and with a compiler barrier, so the thread-local is re-read
@@ -478,7 +482,7 @@ static KnTask *find_work(KnWorker *w) {
 			mutex_unlock(&sched_lock);
 			continue;
 		}
-		if (now_idle == at_load(&nstarted))
+		if (now_idle == at_load(&nstarted) && at_load(&external) == 0)
 			deadlock();
 		cond_wait(&sched_cond, &sched_lock);
 		at_add(&idle, -1);
@@ -511,10 +515,46 @@ static void kn_park(void (*after)(void *), void *arg) {
 	switch_to_sched(t);
 }
 
+int64_t kn_time_mono(void);
+
+/* ----- internal API for the standard library (kiln_std.c) ---------------- */
+
+void *kn_sched_current(void) { return current_task(); }
+void kn_sched_park(void (*after)(void *), void *arg) { kn_park(after, arg); }
+void kn_sched_ready(void *t) { kn_ready((KnTask *)t); }
+void kn_sched_wait_begin(void) { at_add(&external, 1); }
+void kn_sched_wait_end(void) { at_add(&external, -1); }
+
+static void requeue(void *t) { g_push((KnTask *)t); }
+
+/* Lets other tasks run: the current task goes to the back of the global queue. */
+void kn_yield(void) {
+	KnTask *t = current_task();
+	if (!t)
+		return;
+	kn_park(requeue, t);
+}
+
+/* Called from loop back-edges every so often: yields if the current task
+ * has run for more than 10ms and other tasks are waiting. */
+void kn_maybe_yield(void) {
+	KnWorker *w = current_worker();
+	if (!w || !w->cur)
+		return;
+	if (kn_time_mono() - w->slice_start < 10000000)
+		return;
+	if (!any_work()) {
+		w->slice_start = kn_time_mono();
+		return;
+	}
+	kn_yield();
+}
+
 static void worker_loop(KnWorker *w) {
 	for (;;) {
 		KnTask *t = find_work(w);
 		w->cur = t;
+		w->slice_start = kn_time_mono();
 		switch_to_task(w, t);
 		w->cur = NULL;
 		if (w->after) {
@@ -1118,9 +1158,12 @@ static int64_t cpu_count(void) {
 
 /* The program's entry point: runs `main` as the first task, with the main
  * thread as worker 0. The program exits when `main` returns. */
+void kn_os_set_args(int argc, char **argv);
+
 int main(int argc, char **argv) {
 	g_argc = argc;
 	g_argv = argv;
+	kn_os_set_args(argc, argv);
 	nworkers = cpu_count();
 	const char *env = getenv("KILN_WORKERS");
 	if (env && atoi(env) > 0)

@@ -55,6 +55,10 @@ pub(crate) struct FnCx<'c, 'r, 'a, 'f> {
     pub substs: HashMap<String, Ty>,
     /// Generic arguments of the intrinsic being generated.
     pub intr_substs: HashMap<String, Ty>,
+    /// The MIR block being translated.
+    pub cur_block: usize,
+    /// Countdown to the next preemption check at loop back-edges.
+    pub preempt: Option<StackSlot>,
     pub fn_idx: usize,
     pub locals: Vec<LocalInfo>,
     pub blocks: Vec<ir::Block>,
@@ -105,6 +109,8 @@ impl Codegen<'_, '_> {
                 defer_stack: None,
                 last_task: None,
                 intr_substs: HashMap::new(),
+                cur_block: 0,
+                preempt: None,
                 span,
             };
             cx.translate(abi);
@@ -515,9 +521,28 @@ impl FnCx<'_, '_, '_, '_> {
         self.blocks = (0..self.body.blocks.len())
             .map(|_| self.b.create_block())
             .collect();
+        // Loops get a countdown: every 1024 back-edges they check whether the
+        // task has used up its time slice (cooperative preemption).
+        let has_loop = self
+            .body
+            .blocks
+            .iter()
+            .enumerate()
+            .any(|(i, b)| matches!(b.term, Terminator::Goto(t) if (t.0 as usize) <= i));
+        if has_loop {
+            let s = self.b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                8,
+                3,
+            ));
+            let n = self.iconst(1024);
+            self.b.ins().stack_store(n, s, 0);
+            self.preempt = Some(s);
+        }
         let first = self.blocks[0];
         self.b.ins().jump(first, &[]);
         for bi in 0..self.body.blocks.len() {
+            self.cur_block = bi;
             let blk = self.blocks[bi];
             self.b.switch_to_block(blk);
             let stmts = self.body.blocks[bi].stmts.clone();
@@ -721,7 +746,23 @@ impl FnCx<'_, '_, '_, '_> {
         match t {
             Terminator::Goto(b) => {
                 let blk = self.blocks[b.0 as usize];
-                self.b.ins().jump(blk, &[]);
+                match self.preempt {
+                    Some(s) if (b.0 as usize) <= self.cur_block => {
+                        let c = self.b.ins().stack_load(types::I64, s, 0);
+                        let c = self.b.ins().iadd_imm(c, -1);
+                        self.b.ins().stack_store(c, s, 0);
+                        let check = self.b.create_block();
+                        self.b.ins().brif(c, blk, &[], check, &[]);
+                        self.b.switch_to_block(check);
+                        let n = self.iconst(1024);
+                        self.b.ins().stack_store(n, s, 0);
+                        self.call_rt("kn_maybe_yield", &[]);
+                        self.b.ins().jump(blk, &[]);
+                    }
+                    _ => {
+                        self.b.ins().jump(blk, &[]);
+                    }
+                }
             }
             Terminator::SwitchBool { cond, t, f } => {
                 let c = self.op_scalar(cond);
@@ -1787,7 +1828,35 @@ impl FnCx<'_, '_, '_, '_> {
                     .iconst(types::I8, matches!(op, Eq | Le | Ge) as i64),
             );
         }
-        if self.cg.scalar(&t).is_none() {
+        let mut base = self.op_ty(l);
+        while let Ty::Ref(_, inner) = &base {
+            if self.cg.is_fat(&base) {
+                break;
+            }
+            base = (**inner).clone();
+        }
+        let structural = self.cg.scalar(&base).is_none() || self.cg.is_lang(&base, "Box");
+        if self.cg.scalar(&t).is_none() || structural {
+            if matches!(op, Eq | Ne) {
+                // Derived structural equality.
+                let mut t = self.op_ty(l);
+                let mut pa = self.op_addr(l);
+                let mut pb = self.op_addr(r);
+                while let Ty::Ref(_, inner) = &t {
+                    if self.cg.is_fat(&t) {
+                        break;
+                    }
+                    pa = self.load(types::I64, pa, 0);
+                    pb = self.load(types::I64, pb, 0);
+                    t = (**inner).clone();
+                }
+                let e = self.eq_at(pa, pb, &t);
+                return Some(if op == Eq {
+                    e
+                } else {
+                    self.b.ins().bxor_imm(e, 1)
+                });
+            }
             let n = self.cg.typed.fmt_ty(&t);
             self.error(format!(
                 "code generation does not support comparing or combining values of type `{n}` yet"

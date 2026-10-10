@@ -78,6 +78,8 @@ impl<'r, 'a> Codegen<'r, 'a> {
                 defer_stack: None,
                 last_task: None,
                 intr_substs: HashMap::new(),
+                cur_block: 0,
+                preempt: None,
                 span,
             };
             f(&mut cx, &ps);
@@ -97,6 +99,56 @@ impl<'r, 'a> Codegen<'r, 'a> {
             }
             _ => vec![None],
         }
+    }
+
+    /// The out-of-line equality function for `t` (handles recursive types).
+    pub(crate) fn eq_glue_for(&mut self, t: &Ty) -> FuncId {
+        let key = format!("{t:?}");
+        if let Some(id) = self.eq_glue.get(&key) {
+            return *id;
+        }
+        let sig = self.ptr_sig(3);
+        self.counter += 1;
+        let name = format!("kn_eq{}", self.counter);
+        let id = self
+            .module
+            .declare_function(&name, Linkage::Local, &sig)
+            .expect("declare glue");
+        self.eq_glue.insert(key, id);
+        self.queue.push_back(Work::EqGlue { id, ty: t.clone() });
+        id
+    }
+
+    /// The out-of-line structural clone for ADT `t` (handles recursive types).
+    pub(crate) fn clone_glue_for(&mut self, t: &Ty) -> FuncId {
+        let key = format!("{t:?}");
+        if let Some(id) = self.clone_glue.get(&key) {
+            return *id;
+        }
+        let sig = self.ptr_sig(2);
+        self.counter += 1;
+        let name = format!("kn_clone{}", self.counter);
+        let id = self
+            .module
+            .declare_function(&name, Linkage::Local, &sig)
+            .expect("declare glue");
+        self.clone_glue.insert(key, id);
+        self.queue.push_back(Work::CloneGlue { id, ty: t.clone() });
+        id
+    }
+
+    pub(crate) fn define_clone_glue(&mut self, id: FuncId, t: &Ty) {
+        let t = t.clone();
+        self.with_glue(id, 2, |cx, ps| cx.clone_fields(ps[1], ps[0], &t));
+    }
+
+    pub(crate) fn define_eq_glue(&mut self, id: FuncId, t: &Ty) {
+        let t = t.clone();
+        self.with_glue(id, 3, |cx, ps| {
+            let one = cx.b.ins().iconst(types::I8, 1);
+            cx.store(one, ps[0], 0);
+            cx.eq_fields(ps[1], ps[2], &t, ps[0]);
+        });
     }
 
     pub(crate) fn define_drop_glue(&mut self, id: FuncId, t: &Ty) {
@@ -340,6 +392,186 @@ impl FnCx<'_, '_, '_, '_> {
         self.b.switch_to_block(done);
     }
 
+    /// Calls a hand-written `impl Clone` for `t`, if there is one.
+    fn user_clone(&mut self, src: Value, dst: Value, t: &Ty) -> bool {
+        let r = self.cg.r;
+        let Some(cl) = r.prelude_type("Clone") else {
+            return false;
+        };
+        let Some(tf) = (0..r.fns.len())
+            .find(|&i| r.fns[i].trait_def == Some(cl) && r.fns[i].decl.name.name == "clone")
+        else {
+            return false;
+        };
+        let mut substs = HashMap::new();
+        substs.insert("Self".to_string(), t.clone());
+        match self.cg.typed.resolve_trait_method(tf, &substs) {
+            Some((i2, s2)) if i2 != tf => {
+                let id = self.cg.instance(i2, 0, s2, Abi::Plain);
+                let arg = self.slot(8, 8);
+                self.store(src, arg, 0);
+                self.call_fn(id, &[dst, arg]);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the values at `a` and `b` (type `t`) are equal (an `i8` 0/1).
+    /// Derived `Eq` is structural: fields, enum variants and payloads,
+    /// tuples, arrays, strings, vectors, and boxes, looking through references.
+    pub(crate) fn eq_at(&mut self, a: Value, b: Value, t: &Ty) -> Value {
+        let res = self.slot(1, 1);
+        let one = self.b.ins().iconst(types::I8, 1);
+        self.store(one, res, 0);
+        self.eq_into(a, b, t, res);
+        self.load(types::I8, res, 0)
+    }
+
+    /// Clears `*res` unless the values at `a` and `b` are equal.
+    fn eq_into(&mut self, a: Value, b: Value, t: &Ty, res: Value) {
+        let and = |cx: &mut Self, eq: Value| {
+            let r = cx.load(types::I8, res, 0);
+            let r = cx.b.ins().band(r, eq);
+            cx.store(r, res, 0);
+        };
+        if self.cg.is_lang(t, "String") || matches!(t, Ty::Prim(kiln_resolve::PrimTy::Str)) {
+            let (p, n) = if matches!(t, Ty::Prim(_)) {
+                return self.error("cannot compare unsized `str` values");
+            } else {
+                (self.load(types::I64, a, 0), self.load(types::I64, a, 16))
+            };
+            let (q, m) = (self.load(types::I64, b, 0), self.load(types::I64, b, 16));
+            let e = self.call_rt("kn_str_eq", &[p, n, q, m]).unwrap();
+            let e = self.b.ins().icmp_imm(IntCC::NotEqual, e, 0);
+            return and(self, e);
+        }
+        match t {
+            Ty::Unit | Ty::Never => {}
+            Ty::Ref(_, inner) | Ty::Ptr(_, inner)
+                if matches!(**inner, Ty::Prim(kiln_resolve::PrimTy::Str)) =>
+            {
+                let (p, n) = (self.load(types::I64, a, 0), self.load(types::I64, a, 8));
+                let (q, m) = (self.load(types::I64, b, 0), self.load(types::I64, b, 8));
+                let e = self.call_rt("kn_str_eq", &[p, n, q, m]).unwrap();
+                let e = self.b.ins().icmp_imm(IntCC::NotEqual, e, 0);
+                and(self, e);
+            }
+            Ty::Ref(_, inner) if !self.cg.is_fat(t) => {
+                let (pa, pb) = (self.load(types::I64, a, 0), self.load(types::I64, b, 0));
+                let inner = (**inner).clone();
+                self.eq_into(pa, pb, &inner, res);
+            }
+            Ty::Prim(kiln_resolve::PrimTy::F32 | kiln_resolve::PrimTy::F64) => {
+                let st = self.cg.scalar(t).unwrap();
+                let (x, y) = (self.load(st, a, 0), self.load(st, b, 0));
+                let e = self
+                    .b
+                    .ins()
+                    .fcmp(cranelift_codegen::ir::condcodes::FloatCC::Equal, x, y);
+                and(self, e);
+            }
+            _ if self.cg.scalar(t).is_some() && !self.cg.is_lang(t, "Box") => {
+                let st = self.cg.scalar(t).unwrap();
+                let (x, y) = (self.load(st, a, 0), self.load(st, b, 0));
+                let e = self.b.ins().icmp(IntCC::Equal, x, y);
+                and(self, e);
+            }
+            Ty::Tuple(ts) => {
+                for (i, et) in ts.clone().iter().enumerate() {
+                    let (off, _) = self.cg.field(t, &i.to_string());
+                    let x = self.b.ins().iadd_imm(a, off as i64);
+                    let y = self.b.ins().iadd_imm(b, off as i64);
+                    self.eq_into(x, y, et, res);
+                }
+            }
+            Ty::Array(et, n) => {
+                let size = self.cg.layout(et).size;
+                let et = (**et).clone();
+                self.for_each_index(a, *n, size, |cx, x| {
+                    let off = cx.b.ins().isub(x, a);
+                    let y = cx.b.ins().iadd(b, off);
+                    cx.eq_into(x, y, &et, res);
+                });
+            }
+            Ty::Adt(_, args) if self.cg.is_lang(t, "Box") => {
+                let (pa, pb) = (self.load(types::I64, a, 0), self.load(types::I64, b, 0));
+                let inner = args[0].clone();
+                self.eq_into(pa, pb, &inner, res);
+            }
+            Ty::Adt(_, args) if self.cg.is_lang(t, "Vec") => {
+                let et = args[0].clone();
+                let size = self.cg.layout(&et).size;
+                let (la, lb) = (self.load(types::I64, a, 16), self.load(types::I64, b, 16));
+                let same = self.b.ins().icmp(IntCC::Equal, la, lb);
+                and(self, same);
+                let db = self.load(types::I64, b, 0);
+                let da = self.load(types::I64, a, 0);
+                self.when(same, |cx| {
+                    cx.for_each_elem(a, size, |cx, x| {
+                        let off = cx.b.ins().isub(x, da);
+                        let y = cx.b.ins().iadd(db, off);
+                        cx.eq_into(x, y, &et, res);
+                    });
+                });
+            }
+            Ty::Adt(..) => {
+                // Out of line, so recursive types terminate.
+                let id = self.cg.eq_glue_for(t);
+                let out = self.slot(1, 1);
+                self.call_fn(id, &[out, a, b]);
+                let e = self.load(types::I8, out, 0);
+                and(self, e);
+            }
+            _ => {
+                let n = self.cg.typed.fmt_ty(t);
+                self.error(format!("cannot compare values of type `{n}`"));
+            }
+        }
+    }
+
+    /// Field-by-field equality of an ADT value (the body of its eq glue).
+    fn eq_fields(&mut self, a: Value, b: Value, t: &Ty, res: Value) {
+        let variants = self.cg.variants_of(t);
+        let is_enum = variants.first().is_some_and(|v| v.is_some());
+        if !is_enum {
+            for (n, ft) in self.cg.typed.adt_fields(t, None) {
+                let (off, _) = self.cg.field(t, &n);
+                let x = self.b.ins().iadd_imm(a, off as i64);
+                let y = self.b.ins().iadd_imm(b, off as i64);
+                self.eq_into(x, y, &ft, res);
+            }
+            return;
+        }
+        let ta = self.load(types::I32, a, 0);
+        let tb = self.load(types::I32, b, 0);
+        let same = self.b.ins().icmp(IntCC::Equal, ta, tb);
+        let r = self.load(types::I8, res, 0);
+        let r = self.b.ins().band(r, same);
+        self.store(r, res, 0);
+        self.when(same, |cx| {
+            for (vi, v) in variants.into_iter().enumerate() {
+                let fields = cx.cg.typed.adt_fields(t, v);
+                if fields.is_empty() {
+                    continue;
+                }
+                let prefix = v
+                    .map(|v| format!("{}.", cx.cg.r.def(v).name))
+                    .unwrap_or_default();
+                let tag = cx.load(types::I32, a, 0);
+                let is = cx.b.ins().icmp_imm(IntCC::Equal, tag, vi as i64);
+                cx.when(is, |cx| {
+                    for (n, ft) in &fields {
+                        let (off, _) = cx.cg.field(t, &format!("{prefix}{n}"));
+                        let x = cx.b.ins().iadd_imm(a, off as i64);
+                        let y = cx.b.ins().iadd_imm(b, off as i64);
+                        cx.eq_into(x, y, ft, res);
+                    }
+                });
+            }
+        });
+    }
+
     /// Writes a clone of the value at `src` (type `t`) to `dst`.
     pub(crate) fn clone_into(&mut self, src: Value, dst: Value, t: &Ty) {
         if !self.cg.needs_drop(t) {
@@ -418,7 +650,24 @@ impl FnCx<'_, '_, '_, '_> {
                     self.clone_into(s, d, et);
                 }
             }
+            Ty::Adt(..) if self.user_clone(src, dst, t) => {}
             Ty::Adt(..) => {
+                // Out of line, so recursive types terminate.
+                let id = self.cg.clone_glue_for(t);
+                self.call_fn(id, &[dst, src]);
+            }
+            _ => {
+                let l = self.cg.layout(t);
+                self.copy(dst, src, l.size);
+            }
+        }
+        let _ = flags();
+    }
+
+    /// Field-by-field clone of an ADT value (the body of its clone glue).
+    fn clone_fields(&mut self, src: Value, dst: Value, t: &Ty) {
+        {
+            {
                 let variants = self.cg.variants_of(t);
                 let is_enum = variants.first().is_some_and(|v| v.is_some());
                 if is_enum {
@@ -447,11 +696,6 @@ impl FnCx<'_, '_, '_, '_> {
                     }
                 }
             }
-            _ => {
-                let l = self.cg.layout(t);
-                self.copy(dst, src, l.size);
-            }
         }
-        let _ = flags();
     }
 }

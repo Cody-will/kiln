@@ -56,6 +56,16 @@ pub(crate) enum Work {
         substs: HashMap<String, Ty>,
         abi: Abi,
     },
+    /// Structural equality for a type: `(out: *mut bool, a, b)`.
+    EqGlue {
+        id: FuncId,
+        ty: Ty,
+    },
+    /// Structural clone for an ADT: `(dst, src)`.
+    CloneGlue {
+        id: FuncId,
+        ty: Ty,
+    },
     DropGlue {
         id: FuncId,
         ty: Ty,
@@ -81,6 +91,8 @@ pub struct Codegen<'r, 'a> {
     pub(crate) layouts: HashMap<String, Layout>,
     pub(crate) needs_drop_cache: HashMap<String, bool>,
     pub(crate) drop_glue: HashMap<String, FuncId>,
+    pub(crate) eq_glue: HashMap<String, FuncId>,
+    pub(crate) clone_glue: HashMap<String, FuncId>,
     pub(crate) vtables: HashMap<String, DataId>,
     pub(crate) shims: HashMap<FuncId, FuncId>,
     pub(crate) strings: HashMap<String, DataId>,
@@ -220,6 +232,7 @@ const RUNTIME: &[(&str, &[Type], Option<Type>)] = &[
         Some(types::I64),
     ),
     ("kn_memmove", &[types::I64, types::I64, types::I64], None),
+    ("kn_maybe_yield", &[], None),
     ("kn_round", &[types::F64], Some(types::F64)),
     ("kn_powi", &[types::F64, types::I32], Some(types::F64)),
     ("kn_fmod", &[types::F64, types::F64], Some(types::F64)),
@@ -280,6 +293,8 @@ pub fn compile(typed: Typed<'_, '_>, opts: Options) -> Result<Vec<u8>, Vec<Diagn
         layouts: HashMap::new(),
         needs_drop_cache: HashMap::new(),
         drop_glue: HashMap::new(),
+        eq_glue: HashMap::new(),
+        clone_glue: HashMap::new(),
         vtables: HashMap::new(),
         shims: HashMap::new(),
         strings: HashMap::new(),
@@ -462,6 +477,8 @@ impl Codegen<'_, '_> {
                     abi,
                 } => self.define_fn(id, fn_idx, body, substs, abi),
                 Work::DropGlue { id, ty } => self.define_drop_glue(id, &ty),
+                Work::EqGlue { id, ty } => self.define_eq_glue(id, &ty),
+                Work::CloneGlue { id, ty } => self.define_clone_glue(id, &ty),
                 Work::Shim { id, target, nargs } => self.define_shim(id, target, nargs),
             }
         }

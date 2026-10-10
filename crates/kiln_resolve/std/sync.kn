@@ -1,0 +1,402 @@
+// Synchronization: shared ownership, locks, wait groups, one-time
+// initialization, and atomics.
+//
+// Locks are task-aware: a task that waits for a lock parks, and the worker
+// thread runs other tasks meanwhile.
+//
+//	counter := Arc::new(Mutex::new(0))
+//	c := counter.clone()
+//	go move {
+//		n mut := c.lock()
+//		*n += 1
+//	}
+
+import std::ptr
+
+fn kn_mutex_new() -> i64
+fn kn_mutex_free(h: i64)
+fn kn_mutex_lock(h: i64)
+fn kn_mutex_try_lock(h: i64) -> bool
+fn kn_mutex_unlock(h: i64)
+fn kn_rwlock_new() -> i64
+fn kn_rwlock_free(h: i64)
+fn kn_rwlock_read(h: i64)
+fn kn_rwlock_write(h: i64)
+fn kn_rwlock_read_unlock(h: i64)
+fn kn_rwlock_write_unlock(h: i64)
+fn kn_wg_new() -> i64
+fn kn_wg_free(h: i64)
+fn kn_wg_add(h: i64, n: i64)
+fn kn_wg_wait(h: i64)
+fn kn_atomic_load(p: *mut i64) -> i64
+fn kn_atomic_store(p: *mut i64, v: i64)
+fn kn_atomic_add(p: *mut i64, v: i64) -> i64
+fn kn_atomic_swap(p: *mut i64, v: i64) -> i64
+fn kn_atomic_cas(p: *mut i64, old: i64, new: i64) -> bool
+
+// The address of an atomic's storage. Atomics mutate through `&self`.
+fn cell(v: &i64) -> *mut i64 {
+	return v as *const i64 as *mut i64
+}
+
+// ----- Arc ------------------------------------------------------------------
+
+struct ArcInner<T> {
+	count: i64,
+	value: T,
+}
+
+// A shared, reference-counted pointer that can cross tasks. Cloning an `Arc`
+// makes another handle to the same value; the value is dropped with the last
+// handle. Use `Arc<Mutex<T>>` for shared mutable state.
+pub struct Arc<T> {
+	p: *mut ArcInner<T>,
+}
+
+impl<T> Arc<T> {
+	// Moves `value` into a new shared allocation.
+	pub fn new(value: T) -> Arc<T> {
+		return Arc { p: Box::into_raw(Box::new(ArcInner { count: 1, value: value })) }
+	}
+
+	// How many handles share the value.
+	pub fn count(&self) -> i64 {
+		return unsafe { kn_atomic_load(&mut (*self.p).count as *mut i64) }
+	}
+
+	// Whether two handles share the same value.
+	pub fn ptr_eq(&self, other: &Arc<T>) -> bool {
+		return self.p as usize == other.p as usize
+	}
+}
+
+impl<T> Clone for Arc<T> {
+	fn clone(&self) -> Arc<T> {
+		unsafe {
+			kn_atomic_add(&mut (*self.p).count as *mut i64, 1)
+		}
+		return Arc { p: self.p }
+	}
+}
+
+impl<T> Deref<T> for Arc<T> {
+	fn deref(&self) -> &T {
+		return unsafe { &(*self.p).value }
+	}
+}
+
+impl<T> Drop for Arc<T> {
+	fn drop(&mut self) {
+		unsafe {
+			if kn_atomic_add(&mut (*self.p).count as *mut i64, -1) == 0 {
+				ptr::drop_in_place(self.p)
+				free_box(self.p)
+			}
+		}
+	}
+}
+
+// Frees a `Box` allocation whose contents were already dropped.
+unsafe fn free_box<T>(p: *mut T) {
+	b := Box::from_raw(p as *mut u8)
+}
+
+unsafe impl<T: Send + Sync> Send for Arc<T> {}
+unsafe impl<T: Send + Sync> Sync for Arc<T> {}
+
+// ----- Mutex ------------------------------------------------------------------
+
+// A mutual-exclusion lock protecting a value. `lock` waits until no other
+// task holds the lock and returns a guard; the lock is released when the
+// guard is dropped.
+pub struct Mutex<T> {
+	h: i64,
+	value: *mut T,
+}
+
+impl<T> Mutex<T> {
+	// A new, unlocked mutex holding `value`.
+	pub fn new(value: T) -> Mutex<T> {
+		return Mutex { h: kn_mutex_new(), value: Box::into_raw(Box::new(value)) }
+	}
+
+	// Waits for the lock.
+	pub fn lock(&self) -> MutexGuard<T> {
+		kn_mutex_lock(self.h)
+		return MutexGuard { m: self }
+	}
+
+	// Takes the lock if it is free right now.
+	pub fn try_lock(&self) -> Option<MutexGuard<T>> {
+		if kn_mutex_try_lock(self.h) {
+			return Some(MutexGuard { m: self })
+		}
+		return None
+	}
+
+	// Direct access when the mutex is not shared (no locking needed).
+	pub fn get_mut(&mut self) -> &mut T {
+		return unsafe { &mut *self.value }
+	}
+}
+
+impl<T> Drop for Mutex<T> {
+	fn drop(&mut self) {
+		unsafe {
+			b := Box::from_raw(self.value)
+		}
+		kn_mutex_free(self.h)
+	}
+}
+
+unsafe impl<T: Send> Send for Mutex<T> {}
+unsafe impl<T: Send> Sync for Mutex<T> {}
+
+// Access to a locked `Mutex`'s value; unlocks when dropped.
+pub struct MutexGuard<'a, T> {
+	m: &'a Mutex<T>,
+}
+
+impl<'a, T> Deref<T> for MutexGuard<'a, T> {
+	fn deref(&self) -> &T {
+		return unsafe { &*self.m.value }
+	}
+}
+
+impl<'a, T> DerefMut<T> for MutexGuard<'a, T> {
+	fn deref_mut(&mut self) -> &mut T {
+		return unsafe { &mut *self.m.value }
+	}
+}
+
+impl<'a, T> Drop for MutexGuard<'a, T> {
+	fn drop(&mut self) {
+		kn_mutex_unlock(self.m.h)
+	}
+}
+
+// ----- RwLock -------------------------------------------------------------------
+
+// A reader-writer lock: many readers or one writer at a time. Waiting
+// writers are not starved: once a writer waits, new readers queue behind it.
+pub struct RwLock<T> {
+	h: i64,
+	value: *mut T,
+}
+
+impl<T> RwLock<T> {
+	// A new, unlocked lock holding `value`.
+	pub fn new(value: T) -> RwLock<T> {
+		return RwLock { h: kn_rwlock_new(), value: Box::into_raw(Box::new(value)) }
+	}
+
+	// Waits for shared (read) access.
+	pub fn read(&self) -> RwLockReadGuard<T> {
+		kn_rwlock_read(self.h)
+		return RwLockReadGuard { l: self }
+	}
+
+	// Waits for exclusive (write) access.
+	pub fn write(&self) -> RwLockWriteGuard<T> {
+		kn_rwlock_write(self.h)
+		return RwLockWriteGuard { l: self }
+	}
+}
+
+impl<T> Drop for RwLock<T> {
+	fn drop(&mut self) {
+		unsafe {
+			b := Box::from_raw(self.value)
+		}
+		kn_rwlock_free(self.h)
+	}
+}
+
+unsafe impl<T: Send> Send for RwLock<T> {}
+unsafe impl<T: Send + Sync> Sync for RwLock<T> {}
+
+// Shared access to an `RwLock`'s value.
+pub struct RwLockReadGuard<'a, T> {
+	l: &'a RwLock<T>,
+}
+
+impl<'a, T> Deref<T> for RwLockReadGuard<'a, T> {
+	fn deref(&self) -> &T {
+		return unsafe { &*self.l.value }
+	}
+}
+
+impl<'a, T> Drop for RwLockReadGuard<'a, T> {
+	fn drop(&mut self) {
+		kn_rwlock_read_unlock(self.l.h)
+	}
+}
+
+// Exclusive access to an `RwLock`'s value.
+pub struct RwLockWriteGuard<'a, T> {
+	l: &'a RwLock<T>,
+}
+
+impl<'a, T> Deref<T> for RwLockWriteGuard<'a, T> {
+	fn deref(&self) -> &T {
+		return unsafe { &*self.l.value }
+	}
+}
+
+impl<'a, T> DerefMut<T> for RwLockWriteGuard<'a, T> {
+	fn deref_mut(&mut self) -> &mut T {
+		return unsafe { &mut *self.l.value }
+	}
+}
+
+impl<'a, T> Drop for RwLockWriteGuard<'a, T> {
+	fn drop(&mut self) {
+		kn_rwlock_write_unlock(self.l.h)
+	}
+}
+
+// ----- WaitGroup ------------------------------------------------------------------
+
+// Waits for a group of tasks to finish, as in Go: `add` before starting
+// work, `done` when a piece finishes, `wait` until the count is zero.
+pub struct WaitGroup {
+	h: i64,
+}
+
+impl WaitGroup {
+	// A wait group with a count of zero.
+	pub fn new() -> WaitGroup {
+		return WaitGroup { h: kn_wg_new() }
+	}
+
+	// Adds `n` to the count. Panics if the count goes negative.
+	pub fn add(&self, n: i64) {
+		kn_wg_add(self.h, n)
+	}
+
+	// Subtracts one from the count.
+	pub fn done(&self) {
+		kn_wg_add(self.h, -1)
+	}
+
+	// Waits until the count is zero.
+	pub fn wait(&self) {
+		kn_wg_wait(self.h)
+	}
+}
+
+impl Drop for WaitGroup {
+	fn drop(&mut self) {
+		kn_wg_free(self.h)
+	}
+}
+
+// ----- Once -------------------------------------------------------------------------
+
+// Runs a function exactly once, even when called from many tasks.
+pub struct Once {
+	done: i64,
+	m: Mutex<bool>,
+}
+
+impl Once {
+	// A `Once` that has not run yet.
+	pub fn new() -> Once {
+		return Once { done: 0, m: Mutex::new(false) }
+	}
+
+	// Calls `f` if no call has run yet; other callers wait until it finishes.
+	pub fn call(&self, f: fn()) {
+		if kn_atomic_load(cell(&self.done)) == 1 {
+			return
+		}
+		ran mut := self.m.lock()
+		if !*ran {
+			f()
+			*ran = true
+			kn_atomic_store(cell(&self.done), 1)
+		}
+	}
+
+	// Whether a call has completed.
+	pub fn is_done(&self) -> bool {
+		return kn_atomic_load(cell(&self.done)) == 1
+	}
+}
+
+// ----- atomics ------------------------------------------------------------------------
+
+// An integer that tasks can update without a lock. All operations are
+// sequentially consistent.
+pub struct AtomicI64 {
+	v: i64,
+}
+
+impl AtomicI64 {
+	// A new atomic holding `v`.
+	pub fn new(v: i64) -> AtomicI64 {
+		return AtomicI64 { v: v }
+	}
+
+	// The current value.
+	pub fn load(&self) -> i64 {
+		return kn_atomic_load(cell(&self.v))
+	}
+
+	// Sets the value.
+	pub fn store(&self, v: i64) {
+		kn_atomic_store(cell(&self.v), v)
+	}
+
+	// Adds `n` and returns the new value.
+	pub fn add(&self, n: i64) -> i64 {
+		return kn_atomic_add(cell(&self.v), n)
+	}
+
+	// Subtracts `n` and returns the new value.
+	pub fn sub(&self, n: i64) -> i64 {
+		return kn_atomic_add(cell(&self.v), 0 - n)
+	}
+
+	// Sets the value and returns the old one.
+	pub fn swap(&self, v: i64) -> i64 {
+		return kn_atomic_swap(cell(&self.v), v)
+	}
+
+	// Sets the value to `new` if it is `old`; reports whether it did.
+	pub fn compare_and_swap(&self, old: i64, new: i64) -> bool {
+		return kn_atomic_cas(cell(&self.v), old, new)
+	}
+}
+
+// A boolean that tasks can update without a lock.
+pub struct AtomicBool {
+	v: i64,
+}
+
+impl AtomicBool {
+	// A new atomic holding `v`.
+	pub fn new(v: bool) -> AtomicBool {
+		return AtomicBool { v: if v { 1 } else { 0 } }
+	}
+
+	// The current value.
+	pub fn load(&self) -> bool {
+		return kn_atomic_load(cell(&self.v)) != 0
+	}
+
+	// Sets the value.
+	pub fn store(&self, v: bool) {
+		kn_atomic_store(cell(&self.v), if v { 1 } else { 0 })
+	}
+
+	// Sets the value and returns the old one.
+	pub fn swap(&self, v: bool) -> bool {
+		return kn_atomic_swap(cell(&self.v), if v { 1 } else { 0 }) != 0
+	}
+
+	// Sets the value to `new` if it is `old`; reports whether it did.
+	pub fn compare_and_swap(&self, old: bool, new: bool) -> bool {
+		return kn_atomic_cas(cell(&self.v), if old { 1 } else { 0 }, if new { 1 } else { 0 })
+	}
+}

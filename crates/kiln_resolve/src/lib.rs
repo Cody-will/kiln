@@ -32,6 +32,8 @@ pub const PRELUDE_SRC: &str = include_str!("prelude.kn");
 pub const STD_MODULES: &[(&str, &str)] = &[
     ("mem", include_str!("../std/mem.kn")),
     ("ptr", include_str!("../std/ptr.kn")),
+    ("time", include_str!("../std/time.kn")),
+    ("sync", include_str!("../std/sync.kn")),
 ];
 
 /// The prelude and standard library as one source text, plus each file's
