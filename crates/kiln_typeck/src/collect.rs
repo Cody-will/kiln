@@ -152,7 +152,13 @@ impl<'r, 'a> Checker<'r, 'a> {
                 Ty::Ptr(*mutable, Box::new(self.lower_ty(inner, self_ty, infer)))
             }
             TypeKind::Slice(inner) => Ty::Slice(Box::new(self.lower_ty(inner, self_ty, infer))),
-            TypeKind::Array(inner, _) => Ty::Array(Box::new(self.lower_ty(inner, self_ty, infer))),
+            TypeKind::Array(inner, len) => {
+                let n = array_len(len).unwrap_or_else(|| {
+                    self.error("array lengths must be integer literals for now", len.span);
+                    0
+                });
+                Ty::Array(Box::new(self.lower_ty(inner, self_ty, infer)), n)
+            }
             TypeKind::Tuple(ts) if ts.is_empty() => Ty::Unit,
             TypeKind::Tuple(ts) => Ty::Tuple(
                 ts.iter()
@@ -648,4 +654,17 @@ fn derives(item: &ast::Item) -> Vec<String> {
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+/// The length in `[T; N]` or `[x; N]`: an integer literal (constants are not evaluated yet).
+pub(crate) fn array_len(e: &kiln_parser::ast::Expr) -> Option<u64> {
+    match &e.kind {
+        kiln_parser::ast::ExprKind::Lit(kiln_parser::ast::Lit::Int {
+            value,
+            negative: false,
+            ..
+        }) => u64::try_from(*value).ok(),
+        kiln_parser::ast::ExprKind::Paren(x) => array_len(x),
+        _ => None,
+    }
 }

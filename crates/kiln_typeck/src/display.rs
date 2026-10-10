@@ -22,7 +22,7 @@ impl Checker<'_, '_> {
             }
             Ty::Ref(m, x) => format!("&{}{}", if *m { "mut " } else { "" }, self.fmt_ty(x)),
             Ty::Ptr(m, x) => format!("*{} {}", if *m { "mut" } else { "const" }, self.fmt_ty(x)),
-            Ty::Array(x) => format!("[{}; _]", self.fmt_ty(x)),
+            Ty::Array(x, n) => format!("[{}; {n}]", self.fmt_ty(x)),
             Ty::Slice(x) => format!("[{}]", self.fmt_ty(x)),
             Ty::Adt(d, args) => {
                 let name = &self.r.def(*d).name;

@@ -19,7 +19,8 @@ pub enum Ty {
     /// `*const T` / `*mut T`
     Ptr(bool, Box<Ty>),
     /// `[T; N]` (the length is not tracked yet).
-    Array(Box<Ty>),
+    /// `[T; N]`.
+    Array(Box<Ty>, u64),
     /// `[T]`
     Slice(Box<Ty>),
     /// A struct or enum with generic arguments.
@@ -84,7 +85,7 @@ impl Ty {
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| t.subst(map)).collect()),
             Ty::Ref(m, t) => Ty::Ref(*m, s(t)),
             Ty::Ptr(m, t) => Ty::Ptr(*m, s(t)),
-            Ty::Array(t) => Ty::Array(s(t)),
+            Ty::Array(t, n) => Ty::Array(s(t), *n),
             Ty::Slice(t) => Ty::Slice(s(t)),
             Ty::Adt(d, args) => Ty::Adt(*d, args.iter().map(|t| t.subst(map)).collect()),
             Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(|t| t.subst(map)).collect(), s(r)),
@@ -144,7 +145,7 @@ impl InferTable {
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|x| self.zonk(x)).collect()),
             Ty::Ref(m, x) => Ty::Ref(*m, z(x)),
             Ty::Ptr(m, x) => Ty::Ptr(*m, z(x)),
-            Ty::Array(x) => Ty::Array(z(x)),
+            Ty::Array(x, n) => Ty::Array(z(x), *n),
             Ty::Slice(x) => Ty::Slice(z(x)),
             Ty::Adt(d, args) => Ty::Adt(*d, args.iter().map(|x| self.zonk(x)).collect()),
             Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(|x| self.zonk(x)).collect(), z(r)),
@@ -162,7 +163,7 @@ impl InferTable {
             Ty::Fn(ps, r) => ps.iter().any(|x| self.occurs(v, x)) || self.occurs(v, &r),
             Ty::Ref(_, x)
             | Ty::Ptr(_, x)
-            | Ty::Array(x)
+            | Ty::Array(x, _)
             | Ty::Slice(x)
             | Ty::ChanSend(x)
             | Ty::ChanRecv(x) => self.occurs(v, &x),
@@ -213,8 +214,8 @@ impl InferTable {
             (Ty::Ref(m1, x), Ty::Ref(m2, y)) | (Ty::Ptr(m1, x), Ty::Ptr(m2, y)) => {
                 m1 == m2 && self.unify(x, y)
             }
-            (Ty::Array(x), Ty::Array(y))
-            | (Ty::Slice(x), Ty::Slice(y))
+            (Ty::Array(x, n), Ty::Array(y, m)) => n == m && self.unify(x, y),
+            (Ty::Slice(x), Ty::Slice(y))
             | (Ty::ChanSend(x), Ty::ChanSend(y))
             | (Ty::ChanRecv(x), Ty::ChanRecv(y)) => self.unify(x, y),
             (Ty::Adt(d1, xs), Ty::Adt(d2, ys)) => {
@@ -280,7 +281,7 @@ impl InferTable {
             Ty::Fn(ps, r) => ps.iter().any(|x| self.has_unbound(x)) || self.has_unbound(&r),
             Ty::Ref(_, x)
             | Ty::Ptr(_, x)
-            | Ty::Array(x)
+            | Ty::Array(x, _)
             | Ty::Slice(x)
             | Ty::ChanSend(x)
             | Ty::ChanRecv(x) => self.has_unbound(&x),

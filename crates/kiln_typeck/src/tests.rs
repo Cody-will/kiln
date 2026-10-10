@@ -647,3 +647,20 @@ fn website_examples_type_check() {
     }
     assert!(checked > 20, "only {checked} website examples found");
 }
+
+#[test]
+fn array_lengths_are_part_of_the_type() {
+    ok("fn main() {\n let a: [i32; 3] = [1, 2, 3]\n z := [0u8; 16]\n n := a.len() + z.len()\n}");
+    has(
+        "fn main() {\n let a: [i32; 3] = [1, 2]\n}",
+        "expected `[i32; 3]`, found `[{integer}; 2]`",
+    );
+    has(
+        "fn main() {\n s := [String::from(\"a\"); 2]\n}",
+        "`[x; 2]` needs a `Copy` element type, found `String`",
+    );
+    has(
+        "const N: usize = 3\nfn main() {\n let a: [i32; N] = [1, 2, 3]\n}",
+        "array lengths must be integer literals for now",
+    );
+}

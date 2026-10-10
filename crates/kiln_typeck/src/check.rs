@@ -385,7 +385,7 @@ impl Body<'_, '_, '_> {
                 (Ty::Adt(d, args), Ty::Slice(t)) if self.c.is_lang(*d, "Vec") => {
                     return self.c.infer.unify(&args[0], t)
                 }
-                (Ty::Array(a), Ty::Slice(t)) => return self.c.infer.unify(a, t),
+                (Ty::Array(a, _), Ty::Slice(t)) => return self.c.infer.unify(a, t),
                 (Ty::Adt(d, args), _) if self.c.is_lang(*d, "Box") => {
                     return self.c.infer.try_unify(&args[0], &ei)
                 }
@@ -497,7 +497,7 @@ impl Body<'_, '_, '_> {
                 let ts = ts.clone();
                 ts.iter().all(|x| self.implements(x, tr))
             }
-            Ty::Array(x) | Ty::Slice(x) => {
+            Ty::Array(x, _) | Ty::Slice(x) => {
                 let x = (**x).clone();
                 self.implements(&x, tr)
             }
@@ -1021,13 +1021,37 @@ impl Body<'_, '_, '_> {
                     let t = self.expr(x);
                     self.coerce(&t, &elem, x.span);
                 }
-                Ty::Array(Box::new(elem))
+                Ty::Array(Box::new(elem), xs.len() as u64)
             }
             ExprKind::ArrayRepeat(x, n) => {
                 let t = self.expr(x);
                 let nt = self.expr(n);
                 self.coerce(&nt, &Ty::Prim(PrimTy::Usize), n.span);
-                Ty::Array(Box::new(t))
+                let len = crate::collect::array_len(n).unwrap_or_else(|| {
+                    self.error("array lengths must be integer literals for now", n.span);
+                    0
+                });
+                {
+                    // `[x; N]` copies `x`: it must be `Copy` when N > 1.
+                    let zt = self.c.infer.zonk(&t);
+                    if len > 1
+                        && !self.c.infer.has_unbound(&zt)
+                        && self
+                            .c
+                            .r
+                            .prelude_type("Copy")
+                            .is_some_and(|c| !self.implements(&zt, c))
+                    {
+                        self.error(
+                            format!(
+                                "`[x; {len}]` needs a `Copy` element type, found `{}`",
+                                self.fmt(&zt)
+                            ),
+                            x.span,
+                        );
+                    }
+                }
+                Ty::Array(Box::new(t), len)
             }
             ExprKind::Block(b) | ExprKind::Unsafe(b) => self.block(b, value),
             ExprKind::If { cond, then, els } => {
@@ -1331,13 +1355,13 @@ impl Body<'_, '_, '_> {
             Ty::Adt(d, args) if self.c.is_lang(d, "Range") || self.c.is_lang(d, "Vec") => {
                 args[0].clone()
             }
-            Ty::Array(x) | Ty::Slice(x) => *x,
+            Ty::Array(x, _) | Ty::Slice(x) => *x,
             Ty::ChanRecv(x) => *x,
             Ty::Ref(m, inner) => match self.shallow(&inner) {
                 Ty::Adt(d, args) if self.c.is_lang(d, "Vec") => {
                     Ty::Ref(m, Box::new(args[0].clone()))
                 }
-                Ty::Array(x) | Ty::Slice(x) => Ty::Ref(m, x),
+                Ty::Array(x, _) | Ty::Slice(x) => Ty::Ref(m, x),
                 Ty::Unknown => Ty::Unknown,
                 _ => self.not_iterable(t, span),
             },
@@ -1760,7 +1784,7 @@ impl Body<'_, '_, '_> {
             (Ty::ChanSend(_) | Ty::ChanRecv(_), "len" | "cap") => Ty::Prim(PrimTy::Usize),
             (Ty::ChanSend(_) | Ty::ChanRecv(_), "clone") => c.clone(),
             (
-                Ty::Adt(..) | Ty::Prim(_) | Ty::Tuple(_) | Ty::Unit | Ty::Param(_) | Ty::Array(_),
+                Ty::Adt(..) | Ty::Prim(_) | Ty::Tuple(_) | Ty::Unit | Ty::Param(_) | Ty::Array(..),
                 "clone",
             ) => {
                 if let Some(cl) = self.c.r.prelude_type("Clone") {
@@ -1779,11 +1803,11 @@ impl Body<'_, '_, '_> {
                 }
                 self.c.string_ty()
             }
-            (Ty::Slice(x) | Ty::Array(x), "len") => {
+            (Ty::Slice(x) | Ty::Array(x, _), "len") => {
                 let _ = x;
                 Ty::Prim(PrimTy::Usize)
             }
-            (Ty::Slice(_) | Ty::Array(_), "is_empty") => Ty::Prim(PrimTy::Bool),
+            (Ty::Slice(_) | Ty::Array(..), "is_empty") => Ty::Prim(PrimTy::Bool),
             _ => return None,
         };
         self.check_args(&[], args, span);
@@ -1856,7 +1880,7 @@ impl Body<'_, '_, '_> {
         let t = self.strip_refs(bt);
         let elem = match &t {
             Ty::Adt(d, args) if self.c.is_lang(*d, "Vec") => args[0].clone(),
-            Ty::Array(x) | Ty::Slice(x) => (**x).clone(),
+            Ty::Array(x, _) | Ty::Slice(x) => (**x).clone(),
             Ty::Adt(d, _) if self.c.is_lang(*d, "String") => {
                 return Ty::Prim(PrimTy::Str);
             }
@@ -2393,7 +2417,7 @@ impl Body<'_, '_, '_> {
             }
             PatternKind::Slice(ps) => {
                 let elem = match &t {
-                    Ty::Array(x) | Ty::Slice(x) => (**x).clone(),
+                    Ty::Array(x, _) | Ty::Slice(x) => (**x).clone(),
                     Ty::Adt(d, a) if self.c.is_lang(*d, "Vec") => a[0].clone(),
                     Ty::Unknown => Ty::Unknown,
                     _ => {
