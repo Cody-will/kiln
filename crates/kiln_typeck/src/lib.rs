@@ -74,7 +74,9 @@ impl<'r, 'a> Typed<'r, 'a> {
     /// Whether `t` implements the prelude trait `name` (e.g. `"Copy"`, `"Send"`),
     /// with `bounds` as the generic bounds in scope.
     pub fn implements(&mut self, t: &Ty, name: &str, bounds: &[(String, DefId)]) -> bool {
-        let Some(tr) = self.c.r.prelude_type(name) else { return false };
+        let Some(tr) = self.c.r.prelude_type(name) else {
+            return false;
+        };
         check::Body::detached(&mut self.c, bounds.to_vec()).implements(t, tr)
     }
 
@@ -89,7 +91,9 @@ impl<'r, 'a> Typed<'r, 'a> {
 
     /// Whether `t` has an explicit `impl Drop`.
     pub fn has_drop_impl(&mut self, t: &Ty) -> bool {
-        let Some(tr) = self.c.r.prelude_type("Drop") else { return false };
+        let Some(tr) = self.c.r.prelude_type("Drop") else {
+            return false;
+        };
         matches!(t, Ty::Adt(..)) && check::Body::detached(&mut self.c, vec![]).has_impl_pub(t, tr)
     }
 
@@ -101,8 +105,15 @@ impl<'r, 'a> Typed<'r, 'a> {
     /// Field types of a struct type, or of enum variant `variant` of an enum type.
     pub fn adt_fields(&self, t: &Ty, variant: Option<DefId>) -> Vec<(String, Ty)> {
         let Ty::Adt(d, args) = t else { return vec![] };
-        let Some(info) = self.c.adts.get(d) else { return vec![] };
-        let map = info.generics.iter().cloned().zip(args.iter().cloned()).collect();
+        let Some(info) = self.c.adts.get(d) else {
+            return vec![];
+        };
+        let map = info
+            .generics
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
         let shape = match variant {
             None => &info.shape,
             Some(v) => match info.variants.iter().find(|(id, _)| *id == v) {
@@ -111,10 +122,14 @@ impl<'r, 'a> Typed<'r, 'a> {
             },
         };
         match shape {
-            collect::Shape::Named(fs) => fs.iter().map(|(n, t)| (n.clone(), t.subst(&map))).collect(),
-            collect::Shape::Tuple(ts) => {
-                ts.iter().enumerate().map(|(i, t)| (i.to_string(), t.subst(&map))).collect()
+            collect::Shape::Named(fs) => {
+                fs.iter().map(|(n, t)| (n.clone(), t.subst(&map))).collect()
             }
+            collect::Shape::Tuple(ts) => ts
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (i.to_string(), t.subst(&map)))
+                .collect(),
             collect::Shape::Unit => vec![],
         }
     }
@@ -127,19 +142,33 @@ impl<'r, 'a> Typed<'r, 'a> {
             Some(ItemKind::Enum(e)) => &e.generics,
             _ => return false,
         };
-        generics.params.iter().any(|p| matches!(p, GenericParam::Lifetime { .. }))
+        generics
+            .params
+            .iter()
+            .any(|p| matches!(p, GenericParam::Lifetime { .. }))
     }
 
     /// Field types of a struct type (`(name or index, type)`), substituted.
     pub fn struct_fields(&self, t: &Ty) -> Vec<(String, Ty)> {
         let Ty::Adt(d, args) = t else { return vec![] };
-        let Some(info) = self.c.adts.get(d) else { return vec![] };
-        let map = info.generics.iter().cloned().zip(args.iter().cloned()).collect();
+        let Some(info) = self.c.adts.get(d) else {
+            return vec![];
+        };
+        let map = info
+            .generics
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
         match &info.shape {
-            collect::Shape::Named(fs) => fs.iter().map(|(n, t)| (n.clone(), t.subst(&map))).collect(),
-            collect::Shape::Tuple(ts) => {
-                ts.iter().enumerate().map(|(i, t)| (i.to_string(), t.subst(&map))).collect()
+            collect::Shape::Named(fs) => {
+                fs.iter().map(|(n, t)| (n.clone(), t.subst(&map))).collect()
             }
+            collect::Shape::Tuple(ts) => ts
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (i.to_string(), t.subst(&map)))
+                .collect(),
             collect::Shape::Unit => vec![],
         }
     }

@@ -3,17 +3,41 @@
 version = 3
 
 [[package]]
-name = "kiln_cli"
+name = "kiln_borrowck"
 version = "0.1.0"
 dependencies = [
  "kiln_lexer",
+ "kiln_mir",
  "kiln_parser",
+ "kiln_resolve",
+ "kiln_typeck",
+]
+
+[[package]]
+name = "kiln_cli"
+version = "0.1.0"
+dependencies = [
+ "kiln_borrowck",
+ "kiln_lexer",
+ "kiln_mir",
+ "kiln_parser",
+ "kiln_resolve",
  "kiln_typeck",
 ]
 
 [[package]]
 name = "kiln_lexer"
 version = "0.1.0"
+
+[[package]]
+name = "kiln_mir"
+version = "0.1.0"
+dependencies = [
+ "kiln_lexer",
+ "kiln_parser",
+ "kiln_resolve",
+ "kiln_typeck",
+]
 
 [[package]]
 name = "kiln_parser"

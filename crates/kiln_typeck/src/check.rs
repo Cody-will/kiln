@@ -71,6 +71,11 @@ pub struct Body<'c, 'r, 'a> {
     callees: HashMap<Span, usize>,
     /// ADTs whose auto-trait impls are being computed (cycle guard).
     auto_stack: Vec<DefId>,
+    /// The expected type of the closure being checked, from the call it is passed to.
+    expected_fn: Option<Ty>,
+    /// Immutable locals declared without an initializer (`let x: T`); their
+    /// first assignment is allowed and checked by the borrow checker.
+    deferred_init: std::collections::HashSet<LocalId>,
 }
 
 impl<'c, 'r, 'a> Body<'c, 'r, 'a> {
@@ -89,6 +94,8 @@ impl<'c, 'r, 'a> Body<'c, 'r, 'a> {
             methods: HashMap::new(),
             callees: HashMap::new(),
             auto_stack: vec![],
+            expected_fn: None,
+            deferred_init: Default::default(),
         }
     }
 }
@@ -160,6 +167,8 @@ impl Checker<'_, '_> {
             methods: HashMap::new(),
             callees: HashMap::new(),
             auto_stack: Vec::new(),
+            expected_fn: None,
+            deferred_init: Default::default(),
         };
         if let (Some(sl), Some(sp), Some(st)) = (f.self_local, &sig.self_param, &self_ty) {
             let t = match sp {
@@ -209,7 +218,11 @@ impl Body<'_, '_, '_> {
     fn export(&mut self) -> FnResults {
         let z = |c: &Checker, t: &Ty| c.infer.zonk(t);
         FnResults {
-            locals: self.locals.iter().map(|(k, v)| (*k, z(self.c, v))).collect(),
+            locals: self
+                .locals
+                .iter()
+                .map(|(k, v)| (*k, z(self.c, v)))
+                .collect(),
             tys: self.tys.iter().map(|(k, v)| (*k, z(self.c, v))).collect(),
             methods: self
                 .methods
@@ -478,8 +491,12 @@ impl Body<'_, '_, '_> {
                         return true;
                     }
                     let info = self.c.adts[&d].clone();
-                    let map: HashMap<String, Ty> =
-                        info.generics.iter().cloned().zip(args.iter().cloned()).collect();
+                    let map: HashMap<String, Ty> = info
+                        .generics
+                        .iter()
+                        .cloned()
+                        .zip(args.iter().cloned())
+                        .collect();
                     let mut fields: Vec<Ty> = Vec::new();
                     let mut push_shape = |sh: &Shape| match sh {
                         Shape::Unit => {}
@@ -672,6 +689,13 @@ impl Body<'_, '_, '_> {
     fn stmt(&mut self, s: &Stmt, value: bool) -> Ty {
         match &s.kind {
             StmtKind::Let { pat, ty, init } => {
+                if init.is_none() {
+                    if let PatternKind::Ident { name, .. } = &pat.kind {
+                        if let Some(&id) = self.c.r.bindings.get(&name.span) {
+                            self.deferred_init.insert(id);
+                        }
+                    }
+                }
                 let declared = ty.as_ref().map(|t| self.lower(t));
                 let t = match (&declared, init) {
                     (Some(d), Some(e)) => {
@@ -794,7 +818,8 @@ impl Body<'_, '_, '_> {
             ExprKind::Path(p) => match self.c.r.path(p.span) {
                 Res::Local(id) => {
                     let l = self.c.r.local(id).clone();
-                    if !l.mutable {
+                    let deferred = what == "assign to" && self.deferred_init.contains(&id);
+                    if !(l.mutable || deferred) {
                         let msg = if what == "assign to" {
                             format!("cannot assign twice to immutable variable `{}`", l.name)
                         } else {
@@ -1126,11 +1151,17 @@ impl Body<'_, '_, '_> {
             ExprKind::Closure {
                 params, ret, body, ..
             } => {
+                let expected = match self.expected_fn.take() {
+                    Some(Ty::Fn(ps, _)) if ps.len() == params.len() => Some(ps),
+                    _ => None,
+                };
                 let pts: Vec<Ty> = params
                     .iter()
-                    .map(|p| match &p.ty {
-                        Some(t) => self.lower(t),
-                        None => self.fresh(),
+                    .enumerate()
+                    .map(|(i, p)| match (&p.ty, &expected) {
+                        (Some(t), _) => self.lower(t),
+                        (None, Some(ps)) => ps[i].clone(),
+                        (None, None) => self.fresh(),
                     })
                     .collect();
                 for (p, t) in params.iter().zip(&pts) {
@@ -1573,6 +1604,12 @@ impl Body<'_, '_, '_> {
             );
         }
         for (i, a) in args.iter().enumerate() {
+            if let (ExprKind::Closure { .. }, Some(p)) = (&a.kind, params.get(i)) {
+                let p = self.shallow(p);
+                if matches!(p, Ty::Fn(..)) {
+                    self.expected_fn = Some(p);
+                }
+            }
             let t = self.expr(a);
             if let Some(p) = params.get(i) {
                 self.coerce(&t, p, a.span);
@@ -1600,8 +1637,16 @@ impl Body<'_, '_, '_> {
                 return Ty::Unknown;
             }
             if let Some(t) = self.builtin_method(&c, name, args, span) {
-                let self_param = Some(SelfParam::Ref { lifetime: None, mutable: false });
-                let info = MethodInfo { steps, self_param, recv_ty: c.clone(), fn_idx: None };
+                let self_param = Some(SelfParam::Ref {
+                    lifetime: None,
+                    mutable: false,
+                });
+                let info = MethodInfo {
+                    steps,
+                    self_param,
+                    recv_ty: c.clone(),
+                    fn_idx: None,
+                };
                 self.methods.insert(span, info);
                 return t;
             }
@@ -2052,6 +2097,7 @@ impl Body<'_, '_, '_> {
                 true
             }
             (Ty::Ref(..) | Ty::Ptr(..), Ty::Ptr(..)) => true,
+            (Ty::Prim(_) | Ty::Var(_), Ty::Ptr(..)) => true,
             _ => self.c.infer.can_unify(&f, &t),
         };
         if !ok {

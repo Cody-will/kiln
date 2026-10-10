@@ -1,0 +1,17 @@
+[package]
+name = "kiln_mir"
+description = "Mid-level IR (control-flow graph) for the Kiln programming language"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+kiln_lexer = { path = "../kiln_lexer" }
+kiln_parser = { path = "../kiln_parser" }
+kiln_resolve = { path = "../kiln_resolve" }
+kiln_typeck = { path = "../kiln_typeck" }
+
+[lints]
+workspace = true
