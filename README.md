@@ -55,6 +55,8 @@ Example programs are in [`examples/`](examples/). Kiln source files use the `.kn
 | `crates/kiln_resolve` | Name resolution: modules, imports, scopes, prelude |
 | `website/` | The website and tutorial book (mdBook); see `website/README.md` |
 | `crates/kiln_typeck` | Type checking: inference, traits/impls, generics, `?`, explicit returns |
+| `crates/kiln_mir` | Mid-level IR: control-flow graph lowered from the typed AST (`kiln mir`) |
+| `crates/kiln_borrowck` | Borrow checking: moves, NLL borrows, lifetimes, `Drop` order, `go`/`Send`/`Sync` |
 | `crates/kiln_cli` | The `kiln` binary |
 | `docs/` | Spec, architecture, roadmap |
 | `examples/` | Sample `.kn` programs (parsed in tests) |

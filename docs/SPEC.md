@@ -350,7 +350,8 @@ fn main() {
   - Captured values must be `Send + 'static`.
   - The task gets a value either by moving it in or by sharing it through `Arc<T>`.
 - `go` returns a `Task<T>` handle. `task.join()` returns `Result<T, Panic>`, and dropping the handle detaches the task.
-- `scope |s| { ... s.go(...) ... }` creates **scoped tasks**. These may borrow non-`'static` data and are joined before the scope returns.
+- `scope(|s| { ... s.spawn(|| ...) ... })` creates **scoped tasks**. These may borrow non-`'static` data and are joined before `scope` returns. (`go` is a keyword, so the method is named `spawn`; `scope` is an ordinary library function.) Tasks that borrow need `T: Sync` for each shared borrow and `T: Send` for each `&mut` borrow or moved value.
+- `go f(args)` moves its arguments into the task; an argument that borrows from the current function is an error. A `go { ... }` block without `move` may not borrow locals: use `go move { ... }`.
 - Types sent over a channel must be `Send`. Shared mutable state uses `Mutex<T>`, `RwLock<T>`, and atomics. `&T` crosses tasks only when `T: Sync`.
 - **Channel types (decided, Go's exact forms)**:
   - `chan<- T` is a send-only end, and `<-chan T` is a receive-only end.
@@ -446,9 +447,13 @@ Network I/O in a task never blocks an OS thread. The runtime parks the task on i
 - **Allocation**:
   - Values live on the stack by default.
   - Heap types are `Box<T>`, `Vec<T>`, `String`, `Rc<T>` (single task), and `Arc<T>` (shared across tasks).
-- **Destruction** is deterministic: `Drop` runs at the end of the owner's scope. `defer` runs a block at scope exit, which is useful for non-RAII cleanup and FFI.
+- **Destruction** is deterministic: `Drop` runs at the end of the owner's scope. `defer` runs a call when the enclosing *function* returns (Go semantics), after the return value is computed and before locals are dropped; multiple defers run last-in, first-out. Deferred code sees variables as they are at function exit, so using a variable that was moved after the `defer` is an error.
 - **Borrow checking**:
-  - Uses non-lexical lifetimes computed over the MIR control-flow graph.
+  - Uses non-lexical lifetimes computed over the MIR control-flow graph: a borrow lasts until the last use of the reference, not until the end of its scope.
+  - Passing a `&mut T` variable as a call argument reborrows it (`&mut *r`), so the variable stays usable after the call.
+  - Method-call arguments are evaluated before the receiver is borrowed (two-phase borrows), so `v.push(v.len())` is accepted.
+  - A function whose return type has an elided lifetime must have `&self`/`&mut self` or exactly one parameter with a lifetime; otherwise it needs explicit lifetimes (`'static` for borrowed constants such as string literals). Structs that hold references must declare lifetime parameters.
+  - `Send` and `Sync` are auto traits: a struct or enum implements them when all of its fields do. Raw pointers implement neither; `&T` is `Send` only when `T: Sync`. A manual `impl Send for T {}` overrides this (it will require `unsafe impl` once `unsafe` impls are parsed).
   - The design targets a Polonius-style analysis but starts with NLL.
 - **Interior mutability**: `Cell`, `RefCell`, `Mutex`, `RwLock`, and `Atomic*`.
 - **Concurrency memory model**: C++11/Rust atomics orderings. Safe code cannot cause data races.

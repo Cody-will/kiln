@@ -16,8 +16,8 @@ AST
   ▼
 resolved AST (path → Res, binding → LocalId side tables)
   │  kiln_typeck       type inference, traits/impls, `?`, explicit returns, mutability
-  │  kiln_mir          (planned) MIR lowering: CFG, explicit drops/moves
-  │  kiln_borrowck     (planned) NLL borrow checking, missing-return checks
+  │  kiln_mir          MIR lowering: CFG with explicit moves, borrows, storage ends, defer, captures
+  │  kiln_borrowck     moves/initialization, NLL borrow conflicts, lifetimes, go/Send/Sync
   │  kiln_codegen_llvm (planned) LLVM IR via inkwell, monomorphization
   ▼
 native binary + kiln_runtime (planned M:N scheduler, channels, netpoller)
@@ -75,11 +75,40 @@ Type checking on top of `Resolved`.
 - **`check.rs`:** checks each body: bidirectional-lite inference, coercions (`!`, `&mut T → &T`, `&String → &str`, `&Vec<T>`/`&[T; N]` → `&[T]`, `&Box<T> → &T`, `&T → &dyn Trait`), method lookup with autoderef (inherent impls, trait impls and default methods, generic bounds, `dyn`), trait-bound obligations solved at the end of each function, Rust-style match ergonomics, match exhaustiveness for enums and `bool`, `?` with `From` conversion, channel operations, and mutability of assignment targets and `&mut` borrows. The explicit-return rule (SPEC §3.1) is enforced here: a non-unit function whose body can fall off the end is an error, with a dedicated message when the last statement is a bare expression.
 - **`display.rs`:** renders types for diagnostics (`{integer}`, `<-chan T`, ...).
 
-Known gaps: lifetimes are parsed but ignored; no borrow checking or move checking; associated types (`T::Item`), `impl Trait` (treated as `dyn`), array lengths, `Send`/`Sync` field analysis, and std (external) items are opaque (`{unknown}` types that unify with anything). Exhaustiveness checks only top-level variants.
+It also exports per-function results (`Typed`, `FnResults`: expression and local types, method resolutions with autoderef steps, callees) and trait queries (`is_copy`, `implements`, `has_drop_impl`) for later phases. `Send`/`Sync` are auto traits computed structurally over fields (with a cycle guard); explicit impls override.
+
+Known gaps: associated types (`T::Item`), `impl Trait` (treated as `dyn`), array lengths, `Send`/`Sync` field analysis, and std (external) items are opaque (`{unknown}` types that unify with anything). Exhaustiveness checks only top-level variants.
+
+### `kiln_mir`
+
+Lowers each typed function body to a control-flow graph (`Body` of basic blocks). Places are a local plus field/deref/index projections; operands are `copy` (a non-consuming read) or `move`. Every `&`/`&mut` is an explicit `Ref` rvalue, and every variable's scope end is an explicit `StorageDead`, emitted in reverse declaration order. Lowering decisions that matter to the borrow checker:
+
+- Calls record `flows`: which arguments the result may borrow from, derived from the callee's signature with lifetime elision (`sig.rs`).
+- Method calls apply the type checker's autoderef steps as deref projections, then autoref the receiver *after* evaluating arguments (two-phase borrows). `&mut` arguments are reborrowed.
+- Match ergonomics are reproduced: destructuring through `&T` adds a deref and binds by reference.
+- `defer`red calls are lowered once into the shared exit block, before locals die.
+- Closures and `go` blocks become separate bodies; captures are inferred from how the nested body uses each variable (moved → by value, assigned/`&mut` → `&mut`, otherwise `&`), or all by value for `move`.
+- `go f(x)`, `go { }`, and `Scope::spawn` produce `Spawn` statements carrying the moved operands or capture list.
+
+`kiln mir <file>` prints the MIR.
+
+### `kiln_borrowck`
+
+Checks each MIR body (see the module docs in `body.rs`):
+
+1. **Moves and initialization** — a forward may-analysis of moved/uninitialized place paths. Reports use/borrow of moved values (with "value moved here" and loop notes), partial moves, uninitialized bindings, double assignment of immutable deferred-init variables, and moves out of references, indexes, or `Drop` types.
+2. **Liveness** — backward analysis of which locals are read later. A local whose type implements `Drop` is used by its own `StorageDead`, which is how destructor order is enforced.
+3. **Loans** — each `Ref` creates a loan; loans flow into the locals that hold them (copies, aggregates, call `flows`, reborrows through derefs). A loan is live while any holder is live (non-lexical lifetimes). Reads conflict with live mutable loans; writes, moves, and `&mut` conflict with any live loan of an overlapping place; `StorageDead` conflicts with live loans of that variable ("does not live long enough", with notes for where it was dropped and where the borrow is used later).
+4. **Return place** — loans of locals reaching the return value are errors; incoming parameter loans must be among those the signature allows.
+5. **Tasks** — `go` arguments and `go move` captures must not hold loans and must be `Send`; non-`move` `go` blocks may not borrow; scoped tasks require `Sync` for shared captures and `Send` otherwise.
+
+`sigcheck.rs` checks signatures and type definitions: undeclared lifetime names and elided lifetimes that elision cannot resolve.
+
+Known gaps: loans are tracked per local, flow-insensitively (a variable reassigned to a different reference keeps both loans, which can over-report in rare cases); closure bodies are checked separately, so moving a by-reference capture out of a closure isn't diagnosed; `defer` inside loops or branches is treated as running once; lifetime *bounds* (`'a: 'b`) and lifetimes in trait objects are not checked; borrows inside `std` (opaque) types aren't tracked.
 
 ### `kiln_cli`
 
-This builds the `kiln` binary. Today it has the `lex`, `parse`, and `check` subcommands. `build`, `run`, `fmt`, and `test` will be added as the matching phases land.
+This builds the `kiln` binary. Today it has the `lex`, `parse`, `check`, and `mir` subcommands. `kiln check` runs parsing, resolution, type checking, and borrow checking. `build`, `run`, `fmt`, and `test` will be added as the matching phases land.
 
 ## Design principles for the codebase
 
@@ -92,7 +121,7 @@ This builds the `kiln` binary. Today it has the `lex`, `parse`, and `check` subc
 
 ```
 crates/
-  kiln_lexer  kiln_parser  kiln_resolve  kiln_types  kiln_mir  kiln_borrowck
+  kiln_lexer  kiln_parser  kiln_resolve  kiln_typeck  kiln_mir  kiln_borrowck
   kiln_codegen_llvm  kiln_runtime  kiln_fmt  kiln_pkg  kiln_ls  kiln_cli
 std/                     the standard library, in Kiln
 editors/tree-sitter-kiln/  editors/vscode-kiln/

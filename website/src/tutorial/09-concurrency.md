@@ -3,7 +3,7 @@
 Kiln's concurrency model comes from Go: lightweight **tasks** that communicate over **channels**. Kiln adds compile-time safety from ownership: a value sent on a channel is *moved*, so two tasks can never race on the same data.
 
 <div class="status">
-🚧 <strong>The runtime does not exist yet.</strong> Everything in this chapter is parsed and type-checked today (channel element types, channel direction, <code>select</code> arms), but programs can't run until the code generator and scheduler land (milestone M4). <code>Send</code>/<code>Sync</code> checks on what crosses tasks are also part of M4.
+🚧 <strong>The runtime does not exist yet.</strong> Everything in this chapter is parsed and type-checked today (channel element types, channel direction, <code>select</code> arms) and borrow-checked (what tasks may capture, <code>Send</code>/<code>Sync</code>), but programs can't run until the code generator and scheduler land (milestone M4).
 </div>
 
 ## Starting tasks with `go`
@@ -15,14 +15,48 @@ fn say(msg: &str) {
 
 fn main() {
 	go say("from a task")
-	go {
+	go move {
 		println("from a block")
 	}
 	say("from main")
 }
 ```
 
-`go f(args)` runs a call in a new task, and `go { ... }` (or `go move { ... }`) runs a block. Tasks are cheap; you can start thousands.
+`go f(args)` runs a call in a new task, and `go move { ... }` runs a block. Tasks are cheap; you can start thousands.
+
+A task may keep running after the function that started it returns, so it must **own** everything it uses:
+
+- `go f(args)` moves the arguments into the task. Passing a reference to a local (`go f(&data)`) is an error; string literals (`&'static str`) are fine.
+- A `go` block that uses local variables must be `go move { ... }`, which moves them in. Clone first if you still need a value afterwards.
+- Everything moved into a task must be `Send`. Structs and enums are `Send` automatically when all their fields are; raw pointers are not.
+
+```text
+error: argument to `go` borrows `data`, which may not live as long as the task
+ --> main.kn:4:2
+  |
+4 | 	go report(&data)
+  | 	^^^^^^^^^^^^^^^^
+  = help: tasks started with `go` may outlive the current function: pass an owned value (e.g. `.clone()`), or use `scope(|s| { s.spawn(...) })` for tasks that borrow
+```
+
+### Scoped tasks
+
+When tasks only need to *borrow* data, start them inside `scope`. Every task spawned with `s.spawn` is joined before `scope` returns, so borrowing locals is safe. Shared borrows require the type to be `Sync`:
+
+```kiln
+fn main() {
+	data := Vec::<i32>::new()
+	scope(|s| {
+		s.spawn(|| {
+			println("{data.len()}")
+		})
+		s.spawn(|| {
+			println("{data.len()}")
+		})
+	})
+	println("{data.len()}")
+}
+```
 
 ## Channels
 

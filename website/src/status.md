@@ -9,7 +9,8 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 | Name resolution (modules within a file, imports, scopes) | ✅ Implemented |
 | Type checking: inference, structs/enums, traits/impls, generics, `?`, explicit returns, `:=`, mutability, channels | ✅ Implemented (`kiln check`) |
 | VS Code (TextMate) and Tree-sitter grammars | ✅ Implemented |
-| Lifetimes and the borrow checker | 🚧 Not yet: lifetimes are parsed but not checked, and moves are not tracked |
+| Ownership and borrow checking: moves, borrows (non-lexical lifetimes), lifetimes and elision, `Drop` order, `defer`, closure captures | ✅ Implemented (`kiln check`) |
+| `Send`/`Sync` and `'static` checks for `go` and scoped tasks | ✅ Implemented (`kiln check`) |
 | Code generation (LLVM) | 🚧 Not yet: programs cannot run |
 | Runtime: tasks, channels, `select`, scheduler | 🚧 Not yet: type-checked only |
 | Standard library (`std::fs`, `std::net`, `std::time`, ...) | 🚧 Not yet: `std` imports resolve, but their items are opaque to the type checker |
@@ -26,3 +27,8 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 - Non-exhaustive `match` on enums and `bool`
 - Assigning to, or taking `&mut` of, a variable not declared `mut`
 - Sending on a receive-only channel, or receiving on a send-only one
+- Using a value after it was moved (with a note showing where), including partial moves and moves in loops
+- Conflicting borrows: `&mut` while a `&` is still in use, two `&mut` at once, assigning to or moving a borrowed value
+- References that outlive what they point to, and returning references to locals
+- Missing or mismatched lifetimes in signatures (`fn f(a: &str, b: &str) -> &str`)
+- `go` tasks that borrow from the current function, or capture types that aren't `Send`
