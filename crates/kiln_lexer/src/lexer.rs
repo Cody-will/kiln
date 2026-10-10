@@ -56,7 +56,7 @@ fn is_ident_continue(c: char) -> bool {
     c == '_' || c.is_alphanumeric()
 }
 
-impl<'a> Lexer<'a> {
+impl Lexer<'_> {
     fn peek(&self) -> Option<char> {
         self.src[self.pos..].chars().next()
     }
@@ -76,9 +76,10 @@ impl<'a> Lexer<'a> {
     }
 
     fn error(&mut self, msg: impl Into<String>, start: usize, end: usize) {
-        self.out
-            .errors
-            .push(Diagnostic::error(msg, Span::new(self.base + start, self.base + end)));
+        self.out.errors.push(Diagnostic::error(
+            msg,
+            Span::new(self.base + start, self.base + end),
+        ));
     }
 
     fn push(&mut self, kind: TokenKind, start: usize) {
@@ -100,8 +101,7 @@ impl<'a> Lexer<'a> {
         }
         // Continuation: next non-blank line starting with a single `.`.
         let rest = &self.src[at..];
-        let next = rest
-            .trim_start_matches(|c: char| c.is_whitespace());
+        let next = rest.trim_start_matches(|c: char| c.is_whitespace());
         if next.starts_with('.') && !next.starts_with("..") {
             return;
         }
@@ -290,11 +290,22 @@ impl<'a> Lexer<'a> {
         if is_float || matches!(suffix.as_deref(), Some("f32" | "f64")) {
             if let Some(s) = &suffix {
                 if s != "f32" && s != "f64" {
-                    self.error(format!("invalid suffix `{s}` for float literal"), start, self.pos);
+                    self.error(
+                        format!("invalid suffix `{s}` for float literal"),
+                        start,
+                        self.pos,
+                    );
                 }
             }
             let value = text.parse::<f64>().unwrap_or(0.0);
-            self.push(TokenKind::Float { value, text, suffix }, start);
+            self.push(
+                TokenKind::Float {
+                    value,
+                    text,
+                    suffix,
+                },
+                start,
+            );
         } else {
             let value = text.parse::<u128>().unwrap_or_else(|_| {
                 self.error("integer literal is too large", start, self.pos);
@@ -307,12 +318,15 @@ impl<'a> Lexer<'a> {
 
     fn check_int_suffix(&mut self, suffix: &Option<String>, start: usize) {
         const OK: &[&str] = &[
-            "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128",
-            "usize",
+            "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize",
         ];
         if let Some(s) = suffix {
             if !OK.contains(&s.as_str()) {
-                self.error(format!("invalid suffix `{s}` for integer literal"), start, self.pos);
+                self.error(
+                    format!("invalid suffix `{s}` for integer literal"),
+                    start,
+                    self.pos,
+                );
             }
         }
     }
@@ -352,7 +366,10 @@ impl<'a> Lexer<'a> {
                 }
                 self.bump();
                 let s = self.pos;
-                while self.peek().is_some_and(|c| c.is_ascii_hexdigit() || c == '_') {
+                while self
+                    .peek()
+                    .is_some_and(|c| c.is_ascii_hexdigit() || c == '_')
+                {
                     self.bump();
                 }
                 let hex = self.src[s..self.pos].replace('_', "");
@@ -437,7 +454,11 @@ impl<'a> Lexer<'a> {
         loop {
             match self.peek() {
                 None | Some('\n') => {
-                    self.error("unterminated interpolation in string literal", open, open + 1);
+                    self.error(
+                        "unterminated interpolation in string literal",
+                        open,
+                        open + 1,
+                    );
                     return;
                 }
                 Some('{') => depth += 1,
@@ -462,7 +483,11 @@ impl<'a> Lexer<'a> {
         let src = self.src[s..self.pos].to_string();
         self.bump(); // closing brace
         if src.trim().is_empty() {
-            self.error("empty interpolation `{}` (use `{{}}` for literal braces)", open, self.pos);
+            self.error(
+                "empty interpolation `{}` (use `{{}}` for literal braces)",
+                open,
+                self.pos,
+            );
             return;
         }
         parts.push(StrPart::Interp {
@@ -485,7 +510,9 @@ impl<'a> Lexer<'a> {
         }
         self.bump();
         let body_start = self.pos;
-        let closing: String = std::iter::once('"').chain(std::iter::repeat_n('#', hashes)).collect();
+        let closing: String = std::iter::once('"')
+            .chain(std::iter::repeat_n('#', hashes))
+            .collect();
         match self.src[self.pos..].find(&closing) {
             Some(i) => {
                 let body = self.src[body_start..body_start + i].to_string();
@@ -517,7 +544,11 @@ impl<'a> Lexer<'a> {
             }
             // Multi-char content followed by `'`: an invalid char literal.
             self.bump();
-            self.error("character literal may only contain one character", start, self.pos);
+            self.error(
+                "character literal may only contain one character",
+                start,
+                self.pos,
+            );
             self.push(TokenKind::Char('\0'), start);
             return;
         }

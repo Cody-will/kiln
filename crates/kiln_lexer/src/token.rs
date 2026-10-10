@@ -103,12 +103,19 @@ impl Keyword {
 
     /// Looks up a keyword by its spelling.
     pub fn lookup(s: &str) -> Option<Keyword> {
-        Keyword::ALL.iter().find(|(k, _)| *k == s).map(|(_, kw)| *kw)
+        Keyword::ALL
+            .iter()
+            .find(|(k, _)| *k == s)
+            .map(|(_, kw)| *kw)
     }
 
     /// The source spelling of the keyword.
     pub fn as_str(self) -> &'static str {
-        Keyword::ALL.iter().find(|(_, k)| *k == self).map(|(s, _)| *s).unwrap()
+        Keyword::ALL
+            .iter()
+            .find(|(_, k)| *k == self)
+            .map(|(s, _)| *s)
+            .unwrap()
     }
 
     /// Whether this keyword is reserved for future use.
@@ -145,9 +152,16 @@ pub enum TokenKind {
     /// A lifetime or label, e.g. `'a` (stored without the quote).
     Lifetime(String),
     /// Integer literal with optional type suffix (`42u8`).
-    Int { value: u128, suffix: Option<String> },
+    Int {
+        value: u128,
+        suffix: Option<String>,
+    },
     /// Float literal with optional suffix (`1e9f32`).
-    Float { value: f64, text: String, suffix: Option<String> },
+    Float {
+        value: f64,
+        text: String,
+        suffix: Option<String>,
+    },
     /// String literal, possibly interpolated.
     Str(Vec<StrPart>),
     /// Raw string literal `r"..."`/`r#"..."#` (no escapes, no interpolation).
@@ -155,7 +169,9 @@ pub enum TokenKind {
     /// Character literal.
     Char(char),
     /// Statement terminator; `implicit` is true when inserted at a newline.
-    Semi { implicit: bool },
+    Semi {
+        implicit: bool,
+    },
 
     // Delimiters
     LParen,

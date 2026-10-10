@@ -58,7 +58,10 @@ impl Diagnostic {
         let _ = writeln!(out, "{:gutter$}--> {file}:{line}:{col}", "");
         let _ = writeln!(out, "{:gutter$} |", "");
         let _ = writeln!(out, "{line} | {text}");
-        let width = self.span.len().clamp(1, (le - ls + 1).saturating_sub(col - 1).max(1));
+        let width = self
+            .span
+            .len()
+            .clamp(1, (le - ls + 1).saturating_sub(col - 1).max(1));
         let pad: String = text
             .chars()
             .take(col - 1)
