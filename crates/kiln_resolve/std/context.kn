@@ -1,0 +1,212 @@
+// Cancellation and deadlines, like Go's `context`.
+//
+//	ctx := context::with_timeout(&context::background(), time::secs(2))
+//	go move { worker(&ctx) }
+//	select {
+//		_ := <-ctx.done() => println("stopped: {ctx.err().unwrap()}"),
+//		r := <-results => println("got {r}"),
+//	}
+//	ctx.cancel()                       // release it early
+//
+// A `Context` is a cheap handle (clone it to share between tasks).
+// Cancelling a context cancels every context derived from it. `done()`
+// returns a channel that receives one value when the context is cancelled,
+// so it works in `select`. For sockets, `ctx.remaining()` gives the time
+// left, ready for `set_read_timeout`, and `net::TcpStream::connect_ctx`
+// dials within the deadline. There are no context values (Go's
+// `WithValue`): pass data as ordinary arguments.
+
+import std::sync::{Arc, Mutex}
+import std::time
+import std::time::{Duration, Instant}
+import super::super::Error as ErrorTrait
+
+// Why a context ended.
+#[derive(Debug, Clone, Copy, Eq)]
+pub enum Error {
+	// `cancel()` was called (on it or a parent).
+	Canceled,
+	// Its deadline passed.
+	DeadlineExceeded,
+}
+
+impl Display for Error {
+	fn to_string(&self) -> String {
+		match self {
+			Error::Canceled => return "context canceled".to_string(),
+			Error::DeadlineExceeded => return "context deadline exceeded".to_string(),
+		}
+	}
+}
+
+impl ErrorTrait for Error {}
+
+type Waiter = chan<- Error
+
+struct State {
+	err: Option<Error>,
+	waiters: Vec<Waiter>,
+	children: Vec<Arc<Inner>>,
+}
+
+struct Inner {
+	state: Mutex<State>,
+	deadline: Option<Instant>,
+}
+
+// A cancellation scope. Clone it to hand to other tasks.
+#[derive(Clone)]
+pub struct Context {
+	inner: Arc<Inner>,
+}
+
+fn cancel_inner(inner: &Arc<Inner>, why: Error) {
+	kids mut := Vec::new()
+	{
+		st mut := inner.state.lock()
+		if st.err.is_some() {
+			return
+		}
+		st.err = Some(why)
+		for w in st.waiters.iter() {
+			w.try_send(why)
+		}
+		st.waiters.clear()
+		while let Some(c) = st.children.pop() {
+			kids.push(c)
+		}
+	}
+	for k in kids.iter() {
+		cancel_inner(k, why)
+	}
+}
+
+fn make(parent: Option<&Context>, deadline: Option<Instant>) -> Context {
+	// A child never outlives its parent's deadline.
+	d mut := deadline
+	if let Some(p) = parent {
+		if let Some(pd) = p.inner.deadline {
+			d = match d {
+				Some(x) => if pd.since(x).as_nanos() < 0 { Some(pd) } else { Some(x) },
+				None => Some(pd),
+			}
+		}
+	}
+	inner := Arc::new(Inner { state: Mutex::new(State { err: None, waiters: Vec::new(), children: Vec::new() }), deadline: d })
+	if let Some(p) = parent {
+		perr mut := None
+		{
+			st mut := p.inner.state.lock()
+			match st.err {
+				Some(e) => {
+					perr = Some(e)
+				},
+				None => st.children.push(inner.clone()),
+			}
+		}
+		if let Some(e) = perr {
+			cancel_inner(&inner, e)
+		}
+	}
+	if let Some(at) = d {
+		left := at.since(Instant::now())
+		if left.as_nanos() <= 0 {
+			cancel_inner(&inner, Error::DeadlineExceeded)
+		} else {
+			w := inner.clone()
+			done := Context { inner: inner.clone() }.done()
+			go move {
+				select {
+					_ := <-time::after(left) => cancel_inner(&w, Error::DeadlineExceeded),
+					_ := <-done => {},
+				}
+			}
+		}
+	}
+	return Context { inner: inner }
+}
+
+// The root context: never cancelled, no deadline.
+pub fn background() -> Context {
+	return make(None, None)
+}
+
+// A child of `parent` that is cancelled by `cancel()` or with its parent.
+pub fn with_cancel(parent: &Context) -> Context {
+	return make(Some(parent), None)
+}
+
+// A child of `parent` that is cancelled when `d` has passed.
+pub fn with_timeout(parent: &Context, d: Duration) -> Context {
+	return make(Some(parent), Some(Instant::now().add(d)))
+}
+
+// A child of `parent` that is cancelled at `at`.
+pub fn with_deadline(parent: &Context, at: Instant) -> Context {
+	return make(Some(parent), Some(at))
+}
+
+impl Context {
+	// Cancels this context and everything derived from it. Calling it again
+	// does nothing; parents are not affected.
+	pub fn cancel(&self) {
+		cancel_inner(&self.inner, Error::Canceled)
+	}
+
+	// A channel that receives the reason once the context is cancelled
+	// (right away if it already is). Each call returns a new channel.
+	pub fn done(&self) -> <-chan Error {
+		(tx, rx) := chan::<Error>(1)
+		st mut := self.inner.state.lock()
+		match st.err {
+			Some(e) => {
+				tx.try_send(e)
+			},
+			None => st.waiters.push(tx),
+		}
+		return rx
+	}
+
+	// Why the context ended, or `None` while it is still live.
+	pub fn err(&self) -> Option<Error> {
+		return self.inner.state.lock().err
+	}
+
+	// `Err(reason)` once cancelled: `ctx.check()?` in loops.
+	pub fn check(&self) -> Result<(), Error> {
+		match self.err() {
+			Some(e) => return Err(e),
+			None => return Ok(()),
+		}
+	}
+
+	// Whether it has been cancelled.
+	pub fn is_done(&self) -> bool {
+		return self.err().is_some()
+	}
+
+	// The deadline, if it (or a parent) has one.
+	pub fn deadline(&self) -> Option<Instant> {
+		return self.inner.deadline
+	}
+
+	// Time left before the deadline (at least 1 ns, so it can be used as a
+	// socket timeout), or `None` without a deadline.
+	pub fn remaining(&self) -> Option<Duration> {
+		match self.inner.deadline {
+			Some(at) => {
+				left := at.since(Instant::now())
+				if left.as_nanos() <= 0 {
+					return Some(time::nanos(1))
+				}
+				return Some(left)
+			},
+			None => return None,
+		}
+	}
+
+	// Waits until the context is cancelled; returns why.
+	pub fn wait(&self) -> Error {
+		return <-self.done()
+	}
+}

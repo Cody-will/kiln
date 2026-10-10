@@ -1,0 +1,73 @@
+import std::context
+import std::net::{TcpListener, TcpStream}
+import std::time
+
+fn worker(ctx: context::Context, out: chan<- String) {
+	n mut := 0
+	loop {
+		select {
+			e := <-ctx.done() => {
+				out <- "worker stopped after work: {n > 0}, reason: {e}"
+				return
+			},
+			_ := <-time::after(time::millis(5)) => {
+				n += 1
+			},
+		}
+	}
+}
+
+fn main() {
+	root := context::background()
+	println("{root.err():?} {root.deadline().is_some()}")
+
+	// Cancel propagates to children, not to parents.
+	parent := context::with_cancel(&root)
+	child := context::with_cancel(&parent)
+	grand := context::with_timeout(&child, time::secs(60))
+	child.cancel()
+	println("{parent.err():?} {child.err():?} {grand.err():?} {grand.wait()}")
+	late := context::with_cancel(&child)
+	println("child of cancelled: {late.check():?}")
+
+	// A deadline cancels a worker blocked in select.
+	(tx, rx) := chan::<String>(1)
+	ctx := context::with_timeout(&root, time::millis(40))
+	start := time::Instant::now()
+	w := ctx.clone()
+	go move {
+		worker(w, tx)
+	}
+	println(<-rx)
+	println("elapsed >= 40ms: {start.elapsed().as_millis() >= 40}, err: {ctx.err():?}")
+
+	// A child's deadline is capped by the parent's.
+	short := context::with_timeout(&root, time::millis(100))
+	long := context::with_timeout(&short, time::secs(10))
+	println("capped: {long.remaining().unwrap().as_millis() <= 100}")
+
+	// With sockets: read times out at the context deadline.
+	ln := TcpListener::bind("127.0.0.1:0").unwrap()
+	addr := ln.local_addr().unwrap()
+	nctx := context::with_timeout(&root, time::millis(30))
+	c := TcpStream::connect_ctx(&addr, &nctx).unwrap()
+	_s := ln.accept().unwrap()
+	c.set_read_timeout(nctx.remaining()).unwrap()
+	buf mut := [0 as u8; 4]
+	match c.read(&mut buf) {
+		Ok(_) => println("unexpected"),
+		Err(e) => println("read: {e.kind():?}"),
+	}
+	nctx.wait()
+	match TcpStream::connect_ctx(&addr, &nctx) {
+		Ok(_) => println("unexpected"),
+		Err(e) => println("dial after deadline: {e.kind():?}"),
+	}
+	cancelled := context::with_cancel(&root)
+	cancelled.cancel()
+	cancelled.cancel()
+	select {
+		e := <-cancelled.done() => println("done fires after cancel: {e}"),
+		_ => println("not ready"),
+	}
+}

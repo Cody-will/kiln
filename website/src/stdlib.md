@@ -9,7 +9,7 @@ Kiln's standard library covers the ground of Go's: time, concurrency, files, pro
 
 The standard library is written in Kiln, on top of a small C runtime for system calls, timers, and the network poller. You can read its source in `crates/kiln_resolve/std/`.
 
-🚧 Coming in the next phases: `strings`, `strconv`, `collections` (`HashMap`, ...), `sort`, `math`, `rand`, `encoding` (JSON, base64, hex, CSV), hashes, `regexp`, `context`, `kiln test`, then `compress`, `mime`, and `url`.
+Phase 2 added text and data modules: `strings`, `strconv`, `bytes`, `collections`, `math`, `rand`, `errors`, `flag`, `encoding` (JSON, base64, hex, CSV), `crypto` (SHA-256, SHA-1, MD5, HMAC), `regexp`, and `context`, plus `kiln test` and network timeouts. Some phase 2 modules (`strings`, `strconv`, `math`, `rand`, `errors`, JSON, base64, hex) are described in the language specification but don't have sections here yet. 🚧 Next: HTTPS, `compress`, `mime`, `url`, and templates.
 
 | Module | What it is for |
 |---|---|
@@ -21,6 +21,7 @@ The standard library is written in Kiln, on top of a small C runtime for system 
 | [`std::encoding::csv`](#stdencodingcsv) | reading and writing CSV |
 | [`std::flag`](#stdflag) | command-line flags |
 | [`std::regexp`](#stdregexp) | regular expressions |
+| [`std::context`](#stdcontext) | cancellation and deadlines |
 | [`std::fs`](#stdfs) | files and directories |
 | [`std::path`](#stdpath) | path manipulation |
 | [`std::os`](#stdos) | arguments, environment, exit, running programs |
@@ -249,6 +250,38 @@ import std::regexp::Regex
 fn main() {
 	date := Regex::must(r"(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})")
 	println(date.replace_all("due 2026-10-10", r"${d}/${m}/${y}"))   // due 10/10/2026
+}
+```
+
+## std::context
+
+Cancellation and deadlines across tasks, like Go's `context`. A `Context` is a cheap handle: clone it into tasks. Cancelling a context cancels every context derived from it.
+
+| Item | Description |
+|---|---|
+| `context::background()` | the root: never cancelled |
+| `with_cancel(&parent)`, `with_timeout(&parent, d)`, `with_deadline(&parent, at)` | derived contexts (a child's deadline never exceeds its parent's) |
+| `ctx.cancel()` | cancel it and its children (calling it again does nothing) |
+| `ctx.done()` | a channel that receives the reason (`Canceled` or `DeadlineExceeded`); use it in `select` |
+| `ctx.err()`, `ctx.check()?`, `ctx.is_done()`, `ctx.wait()` | inspect or wait |
+| `ctx.deadline()`, `ctx.remaining()` | for socket timeouts: `conn.set_read_timeout(ctx.remaining())?` |
+| `net::TcpStream::connect_ctx(addr, &ctx)` | dial within the deadline |
+
+```kiln
+import std::context
+import std::time
+
+fn main() {
+	ctx := context::with_timeout(&context::background(), time::millis(50))
+	(tx, rx) := chan::<i32>(1)
+	go move {
+		time::sleep(time::secs(1))
+		tx <- 42
+	}
+	select {
+		v := <-rx => println("result {v}"),
+		e := <-ctx.done() => println("gave up: {e}"),   // gave up: context deadline exceeded
+	}
 }
 ```
 

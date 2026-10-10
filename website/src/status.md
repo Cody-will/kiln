@@ -20,7 +20,7 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 | A panic inside a task | 🚧 Ends the whole program (exit 101); `join` never returns `Err` yet |
 | Preemption | ✅ Loops yield after a task has run 10 ms while others wait; tasks also switch at channels, `select`, `join`, locks, timers, and I/O |
 | Standard library phase 1: `time`, `sync`, `io`, `fs`, `path`, `os`, `net` (TCP/UDP on the netpoller), `net::http` (server and client), `log`, `fmt`, `mem`, `ptr` | ✅ Implemented on Linux, macOS, and Windows; written in Kiln on the C runtime ([reference](stdlib.md)) |
-| Standard library phase 2: `strings`, `strconv`, `collections`, `encoding`, `regexp`, `kiln test`, ... | 🚧 Next |
+| Standard library phase 2: `strings`, `strconv`, `bytes`, `collections`, `math`, `rand`, `errors`, `flag`, `encoding` (JSON with `#[derive(Json)]`, base64, hex, CSV), `crypto`, `regexp`, `context`, net timeouts | ✅ Implemented |
 | HTTPS (TLS) | 🚧 Not yet: `http::get("https://...")` returns an `Unsupported` error |
 | `static` items | 🚧 Type-checked but not yet compiled |
 | Multi-file packages, `kiln.toml`, registry | 🚧 Not yet: `kiln check` works on a single file (inline `mod` blocks are supported) |

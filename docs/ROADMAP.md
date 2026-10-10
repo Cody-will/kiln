@@ -16,13 +16,14 @@ Status key: ✅ done · 🚧 in progress · ⬜ not started
 
 ## Next up
 
-1. **Standard library phase 2:** `strings`, `strconv`, formatting options, `bytes`, `unicode/utf8`, `collections` (`HashMap`, `HashSet`, `BTreeMap`, `VecDeque`), `sort`, `math`, `rand`, `errors`, `flag`, `encoding` (JSON, base64, hex, CSV), SHA-256/MD5, `regexp`, `context`, and `kiln test`. This needs iterators (`for x in map`), `static` items in codegen, and integer/float parsing.
+1. **Standard library phase 2:** ✅ done (strings through `context`, `kiln test`, net timeouts). Leftovers: HTTP client/server timeouts built on `context`, DNS covered by connect timeouts, Unicode case folding in `regexp`, `std::flag` duration flags, and docs sections for the earlier phase 2 modules.
 2. **Standard library phase 3:** `compress`, `mime`, `url`, templates.
-3. **Runtime refinements:** growable task stacks, per-task panics that `join` reports as `Err(Panic)` instead of ending the program, IOCP on Windows, timeouts for connect/read/write.
+3. **Runtime refinements:** growable task stacks, per-task panics that `join` reports as `Err(Panic)` instead of ending the program, IOCP on Windows and stack overflow detection: a large local array currently crashes with SIGSEGV and no message.
 4. **Type checker gaps:** associated types, `impl Trait` as a distinct type, deeper exhaustiveness (nested patterns, integer ranges), method resolution on integer literals before defaulting.
 5. **Codegen gaps:** `static` items, unwinding (or at least running `defer` on panic), debug info, slice patterns, `|` patterns with bindings, an optimizing LLVM backend for release builds.
 6. **Lossless CST decision:** choose whether to build a lossless syntax tree (in the rowan style) before the formatter and language server depend on the AST.
-7. **Borrow checker refinements:** lifetime variance, higher-ranked lifetimes.
+7. **Borrow checker refinements:** lifetime variance, higher-ranked lifetimes; reading a `&'t` field through `&self` should keep lifetime `'t` (today it borrows `self`).
+8. **Parser:** `Vec<chan<- T>>` fails to parse (the `>>` after a channel type); use a `type` alias for now.
 
 ## Known parser gaps
 

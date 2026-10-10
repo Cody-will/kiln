@@ -1,0 +1,9 @@
+None false
+None Some(Canceled) Some(Canceled) context canceled
+child of cancelled: Err(Canceled)
+worker stopped after work: true, reason: context deadline exceeded
+elapsed >= 40ms: true, err: Some(DeadlineExceeded)
+capped: true
+read: TimedOut
+dial after deadline: TimedOut
+done fires after cancel: context canceled

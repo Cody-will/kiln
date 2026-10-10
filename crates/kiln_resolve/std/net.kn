@@ -180,6 +180,20 @@ impl TcpStream {
 		return Ok(TcpStream { h: h })
 	}
 
+	// Dials `addr` within `ctx`'s deadline; fails with the context's error
+	// (as `ErrorKind::TimedOut` or `Interrupted`) if it is already done.
+	pub fn connect_ctx(addr: &str, ctx: &std::context::Context) -> Result<TcpStream, io::Error> {
+		match ctx.err() {
+			Some(std::context::Error::DeadlineExceeded) => return Err(io::Error::new(io::ErrorKind::TimedOut, "dial tcp {addr}: context deadline exceeded")),
+			Some(std::context::Error::Canceled) => return Err(io::Error::new(io::ErrorKind::Interrupted, "dial tcp {addr}: context canceled")),
+			None => {},
+		}
+		match ctx.remaining() {
+			Some(d) => return TcpStream::connect_timeout(addr, d),
+			None => return TcpStream::connect(addr),
+		}
+	}
+
 	// Makes each read that waits longer than `d` fail with
 	// `ErrorKind::TimedOut` (`None`: wait forever, the default). The
 	// connection stays usable after a timeout.

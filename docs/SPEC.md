@@ -580,6 +580,7 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 ### 8.2 Modules
 
 - **`std::regexp` follows Go's RE2 semantics**: no backreferences or lookaround, so matching is always linear in the input. Offsets are byte offsets. Case-insensitive matching (`(?i)`) folds ASCII letters only for now; `\d`, `\w`, `\s`, and `\b` are ASCII, as in Go. Patterns are compiled at run time with `Regex::new` (returns `Result`) or `Regex::must` (panics), Go's `MustCompile`.
+- **`std::context` is a cloneable handle, and cancelling is explicit**: Go returns a separate `cancel` function. Kiln contexts are `Clone` handles with a `cancel()` method, and cancelling a context cancels everything derived from it. `done()` returns a fresh channel that receives the reason once, because a closed channel's arm is skipped in Kiln's `select`. There is no `WithValue`: pass request data as typed arguments. Deadlines run on a timer task that ends as soon as the context is cancelled. Sockets take the remaining time as a per-operation timeout (`stream.set_read_timeout(ctx.remaining())`). Cancelling a context does not interrupt a socket wait that is already in progress.
 - **`std::flag` returns values by name**: Go's `flag.String(...)` hands back a pointer that parsing fills in later. That pattern needs shared mutable aliasing, so Kiln defines flags on a `FlagSet` and reads them after parsing with `get_string("addr")`, `get_int(...)`, and so on. Asking for an undefined flag or the wrong type panics, since that is a programming error. Command-line syntax, usage text, and exit codes (2 for bad flags, 0 for `-h`) match Go.
 
 | Module | Contents | Status |
@@ -602,7 +603,7 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 | `std::rand` | shared generator (`rand::range`, `shuffle`, `choose`), seedable `Rng`, `secure_fill` from the OS | ✅ |
 | `std::errors` | `AnyError` (any error plus context; `?` converts), `errors::new`, `Result::context`, `Message` | ✅ |
 | `std::flag` | `FlagSet` with `bool`/`int`/`float`/`string` flags, Go's `-name value` / `-name=value` / `--name` forms, `get_*` accessors, `args()`, `is_set`, Go-format `usage()`, `parse_or_exit` | ✅ |
-| `std::context` | | 🚧 phase 2 |
+| `std::context` | `background`, `with_cancel`, `with_timeout`, `with_deadline`; `cancel`, `done()` (a channel for `select`), `err`, `check`, `wait`, `remaining()` (feeds socket timeouts), `net::TcpStream::connect_ctx`; no `WithValue` | ✅ |
 | `std::encoding` | `json` (`Value`, `#[derive(Json)]`), `base64`, `hex`, `csv` (RFC 4180 `Reader`/`Writer`, `parse`/`format`, custom delimiter, comments, field-count checks) | ✅ |
 | `std::crypto` | `sha256`, `sha1`, `md5` (one-shot `sum`/`hex`, streaming hashers that implement `io::Write`, digests are fixed arrays like `[u8; 32]`), `hmac` (SHA-256/SHA-1, `verify_sha256`), `constant_time_eq` | ✅ |
 | `std::regexp` | RE2-style `Regex` (Pike VM, linear time, leftmost-first): `find`/`find_all`/`captures`/`captures_all`, named groups, `replace_all` with `$1`/`${name}`, `replace_all_fn`, `split`, `quote_meta`; flags `i`, `m`, `s` | ✅ |
