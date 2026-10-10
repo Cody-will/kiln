@@ -9,7 +9,7 @@ Kiln's standard library covers the ground of Go's: time, concurrency, files, pro
 
 The standard library is written in Kiln, on top of a small C runtime for system calls, timers, and the network poller. You can read its source in `crates/kiln_resolve/std/`.
 
-Phase 2 added text and data modules: `strings`, `strconv`, `bytes`, `collections`, `math`, `rand`, `errors`, `flag`, `encoding` (JSON, base64, hex, CSV), `crypto` (SHA-256, SHA-1, MD5, HMAC), `regexp`, and `context`, plus `kiln test` and network timeouts. Some phase 2 modules (`strings`, `strconv`, `math`, `rand`, `errors`, JSON, base64, hex) are described in the language specification but don't have sections here yet. 🚧 Next: HTTPS, `compress`, `mime`, `url`, and templates.
+Phase 2 added text and data modules: `strings`, `strconv`, `bytes`, `collections`, `math`, `rand`, `errors`, `flag`, `encoding` (JSON, base64, hex, CSV), `crypto` (SHA-256, SHA-1, MD5, HMAC), `regexp`, and `context`, plus `kiln test` and network timeouts. 🚧 Next: HTTPS, `compress`, `mime`, `url`, and templates.
 
 | Module | What it is for |
 |---|---|
@@ -29,6 +29,13 @@ Phase 2 added text and data modules: `strings`, `strconv`, `bytes`, `collections
 | [`std::net::http`](#stdnethttp) | HTTP/1.1 server and client |
 | [`std::log`](#stdlog) | leveled logging |
 | [`std::fmt`](#stdfmt) | `Display` and `Debug` |
+| [`std::strings`](#stdstrings) | string building and joining (most operations are `str` methods) |
+| [`std::strconv`](#stdstrconv) | numbers to and from text |
+| [`std::math`](#stdmath) | floating-point math |
+| [`std::rand`](#stdrand) | random numbers, including cryptographic |
+| [`std::errors`](#stderrors) | `AnyError` and `.context(...)` |
+| [`std::encoding::json`](#stdencodingjson) | JSON values and `#[derive(Json)]` |
+| [`std::encoding::base64`, `hex`](#stdencodingbase64-and-stdencodinghex) | base64 and hex |
 | [`std::collections`](#stdcollections) | `HashMap`, `HashSet`, `BTreeMap`, `BTreeSet`, `VecDeque` |
 | [`std::mem`, `std::ptr`](#stdmem-and-stdptr) | low-level memory operations |
 
@@ -38,6 +45,7 @@ Phase 2 added text and data modules: `strings`, `strconv`, `bytes`, `collections
 |---|---|
 | `time::nanos(n)`, `micros`, `millis`, `secs`, `minutes`, `hours`, `secs_f64(x)` | make a `Duration` |
 | `Duration` | `as_millis()`, `as_secs()`, `as_secs_f64()`, `add`, `sub`, `mul`, `div`, `is_zero()`; displays as `1.5s`, `2h3m0s`, `250ms` |
+| `time::parse_duration(s)` | parse Go-style durations (`300ms`, `-1.5h`, `2h45m`, `1m30.5s`; units `ns` `us`/`µs` `ms` `s` `m` `h`); returns `Result<Duration, ParseDurationError>`; every displayed `Duration` parses back |
 | `Instant::now()` | a monotonic clock reading; `elapsed()`, `since(earlier)`, `add(d)` |
 | `SystemTime::now()` | the wall clock; `unix()`, `unix_millis()`, `unix_nanos()`, `utc()`; displays as RFC 3339 (`2026-10-10T15:24:05Z`) |
 | `time::sleep(d)` | park this task for `d` |
@@ -206,10 +214,10 @@ Command-line flags with Go's syntax: `-name value`, `-name=value`, `--name value
 | Item | Description |
 |---|---|
 | `FlagSet::new(name)` | an empty set; `name` appears in the usage text |
-| `bool`, `int`, `float`, `string` `(name, default, usage)` | define flags (integers accept `0x`, `0o`, `0b`) |
+| `bool`, `int`, `float`, `string`, `duration` `(name, default, usage)` | define flags (integers accept `0x`, `0o`, `0b`; durations use `time::parse_duration`, e.g. `-timeout 1m30s`) |
 | `parse(&args)` | returns `Result<(), flag::Error>` (`Help`, `Unknown`, `MissingValue`, `Invalid`) |
 | `parse_or_exit(&args)` | prints the error and usage and exits with status 2 (0 for `-h`) |
-| `get_bool`, `get_int`, `get_float`, `get_string` | values after parsing |
+| `get_bool`, `get_int`, `get_float`, `get_string`, `get_duration` | values after parsing |
 | `args()`, `is_set(name)`, `usage()` | positional arguments, whether a flag was given, the help text |
 
 ```kiln
@@ -479,6 +487,183 @@ impl fmt::Display for Point {
 fn main() {
 	p := Point { x: 1.5, y: -2.0 }
 	println("p = {p}")
+}
+```
+
+## std::strings
+
+Most string operations are methods on `str` and `String`: `len`, `is_empty`, `contains`, `starts_with`, `ends_with`, `find`, `split`, `split_once`, `lines`, `trim`, `trim_start`, `trim_end`, `strip_prefix`, `strip_suffix`, `replace`, `repeat`, `to_lower`, `to_upper`, `eq_ignore_ascii_case`, `chars`, `char_indices`, `as_bytes`. Slicing (`&s[2..5]`) works on byte offsets, which must fall on character boundaries. The `strings` module adds what isn't a method:
+
+| Item | Description |
+|---|---|
+| `strings::join(&parts, sep)` | joins a slice of strings with `sep` |
+| `strings::Builder::new()`, `with_capacity(n)` | builds a string piece by piece: `push(s)`, `push_char(c)`, `push_line(s)`, `len()`, `as_str()`, `clear()`, `finish()` |
+
+```kiln
+import std::strings
+
+fn main() {
+	words := "  the quick  brown fox ".trim().split(" ")
+	b mut := strings::Builder::new()
+	for w in words {
+		if !w.is_empty() {
+			b.push(&w.to_upper())
+			b.push_char('-')
+		}
+	}
+	println(b.finish())
+	println(strings::join(&["a", "b", "c"], ", "))
+}
+```
+
+## std::strconv
+
+Converting numbers and booleans to and from text. Every integer type also has `T::parse(s)` and `T::from_str_radix(s, radix)`. Parsing accepts an optional sign and `_` between digits, and rejects surrounding spaces.
+
+| Item | Description |
+|---|---|
+| `parse_int(s)`, `parse_uint(s)` | `Result<i64, ParseError>` / `Result<u64, ParseError>`; `0x`, `0o`, `0b` prefixes are not accepted here (use `from_str_radix`) |
+| `parse_float(s)` | the closest `f64`; accepts `1e-9`, `.5`, `inf`, `NaN` |
+| `parse_bool(s)` | exactly `true` or `false` |
+| `format_int(v, radix)`, `format_uint(v, radix)` | text in base 2 to 36 |
+| `format_float(v)` | the shortest text that parses back to exactly `v` |
+| `quote(s)` | `s` as a double-quoted literal with escapes |
+| `ParseError` | `kind()` is `Empty`, `InvalidDigit`, or `OutOfRange` |
+
+```kiln
+import std::strconv
+
+fn main() {
+	match strconv::parse_int("-42") {
+		Ok(n) => println("{n + 1}"),
+		Err(e) => println("bad: {e}"),
+	}
+	println("{strconv::format_int(255, 16)} {strconv::quote("a\"b")}")
+}
+```
+
+## std::math
+
+Floating-point math in the spirit of Go's `math`. Every function is also a method on `f64` (and `f32`): `math::sqrt(x)` is `x.sqrt()`.
+
+| Item | Description |
+|---|---|
+| constants | `PI`, `TAU`, `E`, `SQRT_2`, `LN_2`, `LN_10`, `LOG2_E`, `LOG10_E`, `INFINITY`, `NEG_INFINITY`, `NAN`, `MAX`, `MIN_POSITIVE`, `EPSILON` |
+| rounding | `floor`, `ceil`, `round`, `trunc`, `abs`, `copysign` |
+| powers and logs | `sqrt`, `cbrt`, `powi`, `powf`, `exp`, `exp2`, `exp_m1`, `ln`, `log`, `log2`, `log10`, `ln_1p`, `hypot`, `mul_add` |
+| trigonometry | `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, and the hyperbolic `sinh` … `atanh` |
+| special | `erf`, `erfc`, `gamma`, `ln_gamma`, `fmod`, `ieee_remainder`, `next_after` |
+| checks | `is_nan`, `is_infinite`, `is_finite` |
+
+Integer helpers (`checked_add`, `wrapping_mul`, `saturating_sub`, `pow`, `min`, `max`, `abs`, …) are methods on the integer types.
+
+## std::rand
+
+| Item | Description |
+|---|---|
+| `rand::range(lo, hi)` | a random integer in `lo..hi` |
+| `next_u64()`, `next_u32()`, `next_f64()` (in `[0, 1)`), `next_bool()`, `chance(p)` | random values from a shared generator seeded by the OS; safe from any task |
+| `shuffle(&mut v)`, `choose(&v)` | shuffle a slice; pick an element (`Option<&T>`) |
+| `Rng::new()`, `Rng::with_seed(n)` | a fast xoshiro256** generator for one task; a fixed seed repeats exactly. Same methods, plus `normal(mean, std_dev)`, `exponential(rate)`, `fill(&mut buf)` |
+| `secure_fill(&mut buf)`, `secure_u64()` | the operating system's cryptographic randomness: use these for keys and tokens, never the others |
+
+```kiln
+import std::rand
+
+fn main() {
+	die := rand::range(1, 7)
+	println("rolled {die}")
+	r mut := rand::Rng::with_seed(42)
+	println("{r.range(0, 100)} {r.range(0, 100)}")
+}
+```
+
+## std::errors
+
+`errors::AnyError` holds an error of any type plus context messages, like Go's wrapped errors. A function that can fail in several ways can return `Result<T, AnyError>` and use `?` on any error type; `.context(...)` says what was being done.
+
+| Item | Description |
+|---|---|
+| `errors::new(msg)` | an `AnyError` with just a message |
+| `result.context(msg)` | wraps the error with a message (works on any `Result` whose error implements `Error`) |
+| `AnyError` | displays as the chain, outermost first: `parsing app.toml: line 3: expected '='`; `chain()` lists the messages, `root_cause()` is the innermost |
+| `Error` trait | implement it (with `Display` and `Debug`) for your own error types |
+
+Library code with a fixed set of failures should define its own error enum so callers can match on it; `AnyError` is for applications and for passing errors along.
+
+```kiln
+import std::errors
+import std::errors::AnyError
+import std::fs
+
+fn port(path: &str) -> Result<u16, AnyError> {
+	text := fs::read_to_string(path).context("reading {path}")?
+	n := u16::parse(text.trim()).context("parsing {path}")?
+	if n == 0 {
+		return Err(errors::new("port must not be 0"))
+	}
+	return Ok(n)
+}
+
+fn main() {
+	match port("port.txt") {
+		Ok(p) => println("port {p}"),
+		Err(e) => println("error: {e}"),
+	}
+}
+```
+
+## std::encoding::json
+
+`json::parse(text)` gives a `json::Value` (`Null`, `Bool`, `Int`, `Float`, `String`, `Array`, `Object`); `#[derive(Json)]` converts your own types.
+
+| Item | Description |
+|---|---|
+| `json::parse(s)` | `Result<Value, json::Error>`; errors say where (`line 3, column 7`) |
+| `Value` | `get(key)`, `at(i)`, `pointer("/a/0/b")`, `as_str()`, `as_i64()`, `as_f64()`, `as_bool()`, `as_array()`, `as_object()` (and `_mut`), `kind()`; `encode()` (compact) and `pretty()` |
+| `json::Map` | an object: keys keep insertion order (parsing keeps document order); `get`, `get_mut`, `insert`, `remove`, `contains_key`, `iter`, `keys`, `len` |
+| `#[derive(Json)]` | implements `ToJson` and `FromJson`: structs are objects with fields in declaration order; tuple structs are arrays; unit enum variants are strings, other variants `{"Variant": payload}` |
+| `json::to_string(&v)`, `to_string_pretty(&v)`, `json::from_str::<T>(s)` | typed encoding and decoding |
+| missing fields | an error, except that a missing `Option` field reads as `None`; unknown fields are ignored |
+
+```kiln
+import std::encoding::json
+
+#[derive(Json, Debug)]
+struct User {
+	name: String,
+	age: i64,
+	email: Option<String>,
+}
+
+fn main() -> Result<(), json::Error> {
+	let u: User = json::from_str(r#"{"name": "Ada", "age": 36}"#)?
+	println("{u:?}")
+	println(json::to_string(&u))
+	v := json::parse(r#"{"tags": ["a", "b"]}"#)?
+	println("{v.pointer("/tags/1"):?}")
+	return Ok(())
+}
+```
+
+## std::encoding::base64 and std::encoding::hex
+
+| Item | Description |
+|---|---|
+| `base64::encode(bytes)`, `base64::decode(s)` | standard alphabet with padding (RFC 4648); decoding is strict (no whitespace, exact padding) |
+| `base64::STANDARD`, `STANDARD_NO_PAD`, `URL_SAFE`, `URL_SAFE_NO_PAD` | engines with `encode`, `decode`, `encoded_len`; `URL_SAFE_NO_PAD` is for URLs and JWTs |
+| `hex::encode(bytes)`, `encode_upper`, `hex::decode(s)` | lowercase/uppercase hex; decoding accepts either case |
+| `hex::dump(bytes)` | a `hexdump -C` style listing |
+| `DecodeError` | says which byte was wrong and where |
+
+```kiln
+import std::encoding::base64
+import std::encoding::hex
+
+fn main() {
+	s := base64::encode(b"hello")
+	println("{s} {base64::URL_SAFE_NO_PAD.encode(b"\xfb\xff")}")
+	println("{hex::encode(b"hi")} {hex::decode("6869"):?}")
 }
 ```
 
