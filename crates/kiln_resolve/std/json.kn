@@ -1,0 +1,1188 @@
+// JSON (RFC 8259).
+//
+// Typed: derive `Json` and convert directly.
+//
+//	#[derive(Json)]
+//	struct User {
+//		name: String,
+//		age: u32,
+//		email: Option<String>,   // missing or null -> None
+//	}
+//
+//	let u: User = json::from_str(text)?
+//	out := json::to_string(&u)      // {"age":36,"email":null,"name":"Ada"}
+//
+// Untyped: parse into a `Value` and look inside.
+//
+//	v := json::parse(text)?
+//	name := v.get("name").and_then(|n| n.as_str())
+//
+// A derived struct is an object with its field names as keys; a tuple
+// struct is an array (a one-field tuple struct is its field's value). An
+// enum's unit variants are strings ("Red"); other variants are an object
+// with one key, the variant name, holding the payload. Objects are kept
+// with sorted keys, so output is deterministic.
+
+import std::collections::{BTreeMap, HashMap}
+import super::super::super::Error as ErrorTrait
+
+// A JSON object.
+pub type Map = BTreeMap<String, Value>
+
+// Any JSON value. Integers that fit in i64 are kept exactly as `Int`.
+#[derive(Clone, Debug, Eq)]
+pub enum Value {
+	Null,
+	Bool(bool),
+	Int(i64),
+	Float(f64),
+	String(String),
+	Array(Vec<Value>),
+	Object(Map),
+}
+
+// A JSON syntax error (with its position) or a type mismatch.
+#[derive(Clone, Debug, Eq)]
+pub struct Error {
+	msg: String,
+	// 1-based position of a syntax error; 0 for conversion errors.
+	line: usize,
+	column: usize,
+}
+
+impl Error {
+	// A conversion error with a message.
+	pub fn new(msg: &str) -> Error {
+		return Error { msg: msg.to_string(), line: 0, column: 0 }
+	}
+
+	// "expected T, found <kind of v>".
+	pub fn mismatch(want: &str, v: &Value) -> Error {
+		return Error::new("expected {want}, found {v.kind()}")
+	}
+
+	// The message, without position.
+	pub fn message(&self) -> &str {
+		return &self.msg
+	}
+
+	// The line of a syntax error (1-based), or 0.
+	pub fn line(&self) -> usize {
+		return self.line
+	}
+
+	// The column of a syntax error (1-based), or 0.
+	pub fn column(&self) -> usize {
+		return self.column
+	}
+
+	// The same error, prefixed with where it happened: `field "user"`.
+	pub fn within(self, place: &str) -> Error {
+		return Error { msg: "{place}: {self.msg}", line: self.line, column: self.column }
+	}
+}
+
+impl Display for Error {
+	fn to_string(&self) -> String {
+		if self.line > 0 {
+			return "json: {self.msg} at line {self.line}, column {self.column}"
+		}
+		return "json: {self.msg}"
+	}
+}
+
+impl ErrorTrait for Error {}
+
+// ----- Value -----------------------------------------------------------------------
+
+impl Value {
+	// The kind of value, for messages: "null", "bool", "number", "string",
+	// "array", or "object".
+	pub fn kind(&self) -> &str {
+		match self {
+			Value::Null => return "null",
+			Value::Bool(_) => return "bool",
+			Value::Int(_) => return "number",
+			Value::Float(_) => return "number",
+			Value::String(_) => return "string",
+			Value::Array(_) => return "array",
+			Value::Object(_) => return "object",
+		}
+	}
+
+	// The member `key` of an object.
+	pub fn get(&self, key: &str) -> Option<&Value> {
+		match self {
+			Value::Object(m) => return m.get(key),
+			_ => return None,
+		}
+	}
+
+	// The element `i` of an array.
+	pub fn at(&self, i: usize) -> Option<&Value> {
+		match self {
+			Value::Array(a) => return a.get(i),
+			_ => return None,
+		}
+	}
+
+	// Follows a path of object keys and array indices: `v.pointer("/a/0/b")`
+	// (RFC 6901, with `~0` for `~` and `~1` for `/`).
+	pub fn pointer(&self, path: &str) -> Option<&Value> {
+		if path.len() == 0 {
+			return Some(self)
+		}
+		if !path.starts_with("/") {
+			return None
+		}
+		cur mut := self
+		for raw in path[1..].split("/") {
+			key := raw.replace("~1", "/").replace("~0", "~")
+			next := match cur {
+				Value::Object(m) => m.get(key.as_str()),
+				Value::Array(a) => match usize::parse(&key) {
+					Ok(i) => a.get(i),
+					Err(_) => None,
+				},
+				_ => None,
+			}
+			cur = next?
+		}
+		return Some(cur)
+	}
+
+	pub fn is_null(&self) -> bool {
+		match self {
+			Value::Null => return true,
+			_ => return false,
+		}
+	}
+
+	pub fn as_bool(&self) -> Option<bool> {
+		match self {
+			Value::Bool(b) => return Some(*b),
+			_ => return None,
+		}
+	}
+
+	// The number as i64, if it is an integer that fits.
+	pub fn as_i64(&self) -> Option<i64> {
+		match self {
+			Value::Int(n) => return Some(*n),
+			Value::Float(f) => {
+				if f.fract() == 0.0 && *f >= -9223372036854775808.0 && *f < 9223372036854775808.0 {
+					return Some(*f as i64)
+				}
+				return None
+			}
+			_ => return None,
+		}
+	}
+
+	// The number as f64.
+	pub fn as_f64(&self) -> Option<f64> {
+		match self {
+			Value::Int(n) => return Some(*n as f64),
+			Value::Float(f) => return Some(*f),
+			_ => return None,
+		}
+	}
+
+	pub fn as_str(&self) -> Option<&str> {
+		match self {
+			Value::String(s) => return Some(s.as_str()),
+			_ => return None,
+		}
+	}
+
+	pub fn as_array(&self) -> Option<&Vec<Value>> {
+		match self {
+			Value::Array(a) => return Some(a),
+			_ => return None,
+		}
+	}
+
+	pub fn as_array_mut(&mut self) -> Option<&mut Vec<Value>> {
+		match self {
+			Value::Array(a) => return Some(a),
+			_ => return None,
+		}
+	}
+
+	pub fn as_object(&self) -> Option<&Map> {
+		match self {
+			Value::Object(m) => return Some(m),
+			_ => return None,
+		}
+	}
+
+	pub fn as_object_mut(&mut self) -> Option<&mut Map> {
+		match self {
+			Value::Object(m) => return Some(m),
+			_ => return None,
+		}
+	}
+
+	// Compact JSON text.
+	pub fn encode(&self) -> String {
+		out mut := String::new()
+		write_value(&mut out, self, 0, false)
+		return out
+	}
+
+	// Indented JSON text (two spaces).
+	pub fn pretty(&self) -> String {
+		out mut := String::new()
+		write_value(&mut out, self, 0, true)
+		return out
+	}
+}
+
+impl Display for Value {
+	fn to_string(&self) -> String {
+		return self.encode()
+	}
+}
+
+// An empty object.
+pub fn object() -> Value {
+	return Value::Object(BTreeMap::new())
+}
+
+// ----- writing ---------------------------------------------------------------------
+
+fn write_str(out: &mut String, s: &str) {
+	out.push_char('"')
+	for c in s.chars() {
+		if c == '"' {
+			out.push("\\\"")
+		} else if c == '\\' {
+			out.push("\\\\")
+		} else if c == '\n' {
+			out.push("\\n")
+		} else if c == '\r' {
+			out.push("\\r")
+		} else if c == '\t' {
+			out.push("\\t")
+		} else if (c as u32) < 32 {
+			out.push("\\u{c as u32:04x}")
+		} else {
+			out.push_char(c)
+		}
+	}
+	out.push_char('"')
+}
+
+fn indent(out: &mut String, depth: usize) {
+	out.push_char('\n')
+	i mut := 0
+	while i < depth {
+		out.push("  ")
+		i += 1
+	}
+}
+
+fn write_value(out: &mut String, v: &Value, depth: usize, pretty: bool) {
+	match v {
+		Value::Null => out.push("null"),
+		Value::Bool(b) => {
+			if *b {
+				out.push("true")
+			} else {
+				out.push("false")
+			}
+		}
+		Value::Int(n) => out.push("{n}"),
+		Value::Float(f) => {
+			// JSON has no NaN or infinity.
+			if f.is_finite() {
+				out.push("{f:?}")
+			} else {
+				out.push("null")
+			}
+		}
+		Value::String(s) => write_str(out, s),
+		Value::Array(a) => {
+			if a.len() == 0 {
+				out.push("[]")
+				return
+			}
+			out.push_char('[')
+			first mut := true
+			for x in a.iter() {
+				if !first {
+					out.push_char(',')
+				}
+				if pretty {
+					indent(out, depth + 1)
+				}
+				write_value(out, x, depth + 1, pretty)
+				first = false
+			}
+			if pretty {
+				indent(out, depth)
+			}
+			out.push_char(']')
+		}
+		Value::Object(m) => {
+			if m.len() == 0 {
+				out.push("{{}}")
+				return
+			}
+			out.push_char('{')
+			first mut := true
+			for (k, x) in m.iter() {
+				if !first {
+					out.push_char(',')
+				}
+				if pretty {
+					indent(out, depth + 1)
+				}
+				write_str(out, k)
+				out.push_char(':')
+				if pretty {
+					out.push_char(' ')
+				}
+				write_value(out, x, depth + 1, pretty)
+				first = false
+			}
+			if pretty {
+				indent(out, depth)
+			}
+			out.push_char('}')
+		}
+	}
+}
+
+// ----- parsing ---------------------------------------------------------------------
+
+const MAX_DEPTH: usize = 512
+
+struct Parser<'a> {
+	s: &'a str,
+	b: &'a [u8],
+	pos: usize,
+	depth: usize,
+}
+
+// Parses JSON text into a Value.
+pub fn parse(text: &str) -> Result<Value, Error> {
+	p mut := Parser { s: text, b: text.as_bytes(), pos: 0, depth: 0 }
+	p.skip_ws()
+	v := p.value()?
+	p.skip_ws()
+	if p.pos < p.b.len() {
+		return Err(p.error("trailing characters after the value"))
+	}
+	return Ok(v)
+}
+
+impl<'a> Parser<'a> {
+	fn error(&self, msg: &str) -> Error {
+		line mut := 1
+		col mut := 1
+		i mut := 0
+		while i < self.pos && i < self.b.len() {
+			if self.b[i] == 10 {
+				line += 1
+				col = 1
+			} else if self.b[i] < 128 || self.b[i] >= 192 {
+				col += 1
+			}
+			i += 1
+		}
+		return Error { msg: msg.to_string(), line: line, column: col }
+	}
+
+	fn skip_ws(&mut self) {
+		while self.pos < self.b.len() {
+			c := self.b[self.pos]
+			if c == 32 || c == 9 || c == 10 || c == 13 {
+				self.pos += 1
+			} else {
+				return
+			}
+		}
+	}
+
+	fn peek(&self) -> u8 {
+		if self.pos < self.b.len() {
+			return self.b[self.pos]
+		}
+		return 0
+	}
+
+	fn literal(&mut self, word: &str, v: Value) -> Result<Value, Error> {
+		if self.s[self.pos..].starts_with(word) {
+			self.pos += word.len()
+			return Ok(v)
+		}
+		return Err(self.error("invalid literal"))
+	}
+
+	fn value(&mut self) -> Result<Value, Error> {
+		c := self.peek()
+		if c == 123 {
+			return self.object()
+		}
+		if c == 91 {
+			return self.array()
+		}
+		if c == 34 {
+			return Ok(Value::String(self.string()?))
+		}
+		if c == 116 {
+			return self.literal("true", Value::Bool(true))
+		}
+		if c == 102 {
+			return self.literal("false", Value::Bool(false))
+		}
+		if c == 110 {
+			return self.literal("null", Value::Null)
+		}
+		if c == 45 || (c >= 48 && c <= 57) {
+			return self.number()
+		}
+		if self.pos >= self.b.len() {
+			return Err(self.error("unexpected end of input"))
+		}
+		return Err(self.error("expected a value"))
+	}
+
+	fn enter(&mut self) -> Result<(), Error> {
+		self.depth += 1
+		if self.depth > MAX_DEPTH {
+			return Err(self.error("nesting too deep"))
+		}
+		return Ok(())
+	}
+
+	fn array(&mut self) -> Result<Value, Error> {
+		self.enter()?
+		self.pos += 1
+		out mut := Vec::new()
+		self.skip_ws()
+		if self.peek() == 93 {
+			self.pos += 1
+			self.depth -= 1
+			return Ok(Value::Array(out))
+		}
+		loop {
+			self.skip_ws()
+			out.push(self.value()?)
+			self.skip_ws()
+			c := self.peek()
+			if c == 44 {
+				self.pos += 1
+			} else if c == 93 {
+				self.pos += 1
+				self.depth -= 1
+				return Ok(Value::Array(out))
+			} else {
+				return Err(self.error("expected `,` or `]`"))
+			}
+		}
+	}
+
+	fn object(&mut self) -> Result<Value, Error> {
+		self.enter()?
+		self.pos += 1
+		m mut := BTreeMap::new()
+		self.skip_ws()
+		if self.peek() == 125 {
+			self.pos += 1
+			self.depth -= 1
+			return Ok(Value::Object(m))
+		}
+		loop {
+			self.skip_ws()
+			if self.peek() != 34 {
+				return Err(self.error("expected a string key"))
+			}
+			k := self.string()?
+			self.skip_ws()
+			if self.peek() != 58 {
+				return Err(self.error("expected `:`"))
+			}
+			self.pos += 1
+			self.skip_ws()
+			v := self.value()?
+			m.insert(k, v)
+			self.skip_ws()
+			c := self.peek()
+			if c == 44 {
+				self.pos += 1
+			} else if c == 125 {
+				self.pos += 1
+				self.depth -= 1
+				return Ok(Value::Object(m))
+			} else {
+				return Err(self.error("expected `,` or `}}`"))
+			}
+		}
+	}
+
+	fn hex4(&mut self) -> Result<u32, Error> {
+		if self.pos + 4 > self.b.len() {
+			return Err(self.error("truncated \\u escape"))
+		}
+		let mut n: u32 = 0
+		i mut := 0
+		while i < 4 {
+			c := self.b[self.pos + i]
+			d := if c >= 48 && c <= 57 {
+				(c - 48) as u32
+			} else if c >= 97 && c <= 102 {
+				(c - 87) as u32
+			} else if c >= 65 && c <= 70 {
+				(c - 55) as u32
+			} else {
+				return Err(self.error("invalid \\u escape"))
+			}
+			n = n * 16 + d
+			i += 1
+		}
+		self.pos += 4
+		return Ok(n)
+	}
+
+	fn string(&mut self) -> Result<String, Error> {
+		self.pos += 1
+		out mut := String::new()
+		start mut := self.pos
+		loop {
+			if self.pos >= self.b.len() {
+				return Err(self.error("unterminated string"))
+			}
+			c := self.b[self.pos]
+			if c == 34 {
+				out.push(&self.s[start..self.pos])
+				self.pos += 1
+				return Ok(out)
+			}
+			if c < 32 {
+				return Err(self.error("control character in string"))
+			}
+			if c != 92 {
+				self.pos += 1
+				continue
+			}
+			out.push(&self.s[start..self.pos])
+			self.pos += 1
+			e := self.peek()
+			self.pos += 1
+			if e == 34 {
+				out.push_char('"')
+			} else if e == 92 {
+				out.push_char('\\')
+			} else if e == 47 {
+				out.push_char('/')
+			} else if e == 98 {
+				out.push_char('\u{8}')
+			} else if e == 102 {
+				out.push_char('\u{c}')
+			} else if e == 110 {
+				out.push_char('\n')
+			} else if e == 114 {
+				out.push_char('\r')
+			} else if e == 116 {
+				out.push_char('\t')
+			} else if e == 117 {
+				hi := self.hex4()?
+				cp mut := hi
+				if hi >= 0xD800 && hi < 0xDC00 {
+					// A surrogate pair.
+					if self.peek() != 92 || self.pos + 1 >= self.b.len() || self.b[self.pos + 1] != 117 {
+						return Err(self.error("unpaired surrogate in \\u escape"))
+					}
+					self.pos += 2
+					lo := self.hex4()?
+					if lo < 0xDC00 || lo >= 0xE000 {
+						return Err(self.error("invalid low surrogate in \\u escape"))
+					}
+					cp = 0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00)
+				} else if hi >= 0xDC00 && hi < 0xE000 {
+					return Err(self.error("unpaired surrogate in \\u escape"))
+				}
+				match char::from_u32(cp) {
+					Some(ch) => out.push_char(ch),
+					None => return Err(self.error("invalid \\u escape")),
+				}
+			} else {
+				self.pos -= 1
+				return Err(self.error("invalid escape"))
+			}
+			start = self.pos
+		}
+	}
+
+	fn digits(&mut self) -> usize {
+		n mut := 0
+		while self.pos < self.b.len() && self.b[self.pos] >= 48 && self.b[self.pos] <= 57 {
+			self.pos += 1
+			n += 1
+		}
+		return n
+	}
+
+	fn number(&mut self) -> Result<Value, Error> {
+		start := self.pos
+		if self.peek() == 45 {
+			self.pos += 1
+		}
+		first := self.peek()
+		n := self.digits()
+		if n == 0 {
+			return Err(self.error("expected digits"))
+		}
+		if first == 48 && n > 1 {
+			return Err(self.error("leading zeros are not allowed"))
+		}
+		is_float mut := false
+		if self.peek() == 46 {
+			self.pos += 1
+			is_float = true
+			if self.digits() == 0 {
+				return Err(self.error("expected digits after `.`"))
+			}
+		}
+		if self.peek() == 101 || self.peek() == 69 {
+			self.pos += 1
+			is_float = true
+			if self.peek() == 43 || self.peek() == 45 {
+				self.pos += 1
+			}
+			if self.digits() == 0 {
+				return Err(self.error("expected exponent digits"))
+			}
+		}
+		text := &self.s[start..self.pos]
+		if !is_float {
+			match i64::parse(text) {
+				Ok(v) => return Ok(Value::Int(v)),
+				Err(_) => {}
+			}
+		}
+		match std::strconv::parse_float(text) {
+			Ok(f) => return Ok(Value::Float(f)),
+			Err(_) => return Err(self.error("invalid number")),
+		}
+	}
+}
+
+// ----- typed conversion -----------------------------------------------------------
+
+// Types that convert to JSON.
+pub trait ToJson {
+	fn to_json(&self) -> Value
+}
+
+// Types that convert from JSON.
+pub trait FromJson {
+	fn from_json(v: &Value) -> Result<Self, Error>
+
+	// The value for a missing object member (`Option` gives `None`; other
+	// types make the member required).
+	fn from_missing() -> Option<Self> {
+		return None
+	}
+}
+
+// Compact JSON for `v`.
+pub fn to_string<T: ToJson>(v: &T) -> String {
+	return v.to_json().encode()
+}
+
+// Indented JSON for `v`.
+pub fn to_string_pretty<T: ToJson>(v: &T) -> String {
+	return v.to_json().pretty()
+}
+
+// Parses `text` and converts it to `T`.
+pub fn from_str<T: FromJson>(text: &str) -> Result<T, Error> {
+	v := parse(text)?
+	return T::from_json(&v)
+}
+
+// Converts a parsed Value to `T`.
+pub fn from_value<T: FromJson>(v: &Value) -> Result<T, Error> {
+	return T::from_json(v)
+}
+
+// ----- helpers used by #[derive(Json)] ---------------------------------------------
+
+pub fn expect_object<'a>(v: &'a Value, ty: &str) -> Result<&'a Map, Error> {
+	match v {
+		Value::Object(m) => return Ok(m),
+		_ => return Err(Error::mismatch("an object for {ty}", v)),
+	}
+}
+
+pub fn expect_array<'a>(v: &'a Value, n: usize, ty: &str) -> Result<&'a Vec<Value>, Error> {
+	match v {
+		Value::Array(a) => {
+			if a.len() != n {
+				return Err(Error::new("expected {n} elements for {ty}, found {a.len()}"))
+			}
+			return Ok(a)
+		}
+		_ => return Err(Error::mismatch("an array for {ty}", v)),
+	}
+}
+
+// The member `key` of `m`, converted.
+pub fn field<T: FromJson>(m: &Map, key: &str) -> Result<T, Error> {
+	match m.get(key) {
+		Some(v) => {
+			match T::from_json(v) {
+				Ok(x) => return Ok(x),
+				Err(e) => return Err(e.within("field \"{key}\"")),
+			}
+		}
+		None => match T::from_missing() {
+			Some(x) => return Ok(x),
+			None => return Err(Error::new("missing field \"{key}\"")),
+		},
+	}
+}
+
+// Element `i` of `a`, converted.
+pub fn elem<T: FromJson>(a: &Vec<Value>, i: usize) -> Result<T, Error> {
+	match T::from_json(&a[i]) {
+		Ok(x) => return Ok(x),
+		Err(e) => return Err(e.within("element {i}")),
+	}
+}
+
+// An enum value: its variant name and payload (none for unit variants).
+pub fn variant<'a>(v: &'a Value, ty: &str) -> Result<(&'a str, Option<&'a Value>), Error> {
+	match v {
+		Value::String(s) => return Ok((s.as_str(), None)),
+		Value::Object(m) => {
+			if m.len() == 1 {
+				(k, x) := m.first_key_value().unwrap()
+				return Ok((k.as_str(), Some(x)))
+			}
+		}
+		_ => {}
+	}
+	return Err(Error::mismatch("a variant of {ty}", v))
+}
+
+pub fn unknown_variant(name: &str, ty: &str) -> Error {
+	return Error::new("unknown variant \"{name}\" of {ty}")
+}
+
+pub fn payload<'a>(p: Option<&'a Value>, name: &str) -> Result<&'a Value, Error> {
+	match p {
+		Some(v) => return Ok(v),
+		None => return Err(Error::new("variant \"{name}\" needs a value")),
+	}
+}
+
+// ----- impls for standard types ----------------------------------------------------
+
+impl ToJson for Value {
+	fn to_json(&self) -> Value {
+		return self.clone()
+	}
+}
+
+impl FromJson for Value {
+	fn from_json(v: &Value) -> Result<Value, Error> {
+		return Ok(v.clone())
+	}
+}
+
+impl ToJson for bool {
+	fn to_json(&self) -> Value {
+		return Value::Bool(*self)
+	}
+}
+
+impl FromJson for bool {
+	fn from_json(v: &Value) -> Result<bool, Error> {
+		match v {
+			Value::Bool(b) => return Ok(*b),
+			_ => return Err(Error::mismatch("bool", v)),
+		}
+	}
+}
+
+impl ToJson for f64 {
+	fn to_json(&self) -> Value {
+		return Value::Float(*self)
+	}
+}
+
+impl FromJson for f64 {
+	fn from_json(v: &Value) -> Result<f64, Error> {
+		match v.as_f64() {
+			Some(f) => return Ok(f),
+			None => return Err(Error::mismatch("a number", v)),
+		}
+	}
+}
+
+impl ToJson for f32 {
+	fn to_json(&self) -> Value {
+		return Value::Float(*self as f64)
+	}
+}
+
+impl FromJson for f32 {
+	fn from_json(v: &Value) -> Result<f32, Error> {
+		match v.as_f64() {
+			Some(f) => return Ok(f as f32),
+			None => return Err(Error::mismatch("a number", v)),
+		}
+	}
+}
+
+impl ToJson for char {
+	fn to_json(&self) -> Value {
+		return Value::String(self.to_string())
+	}
+}
+
+impl ToJson for String {
+	fn to_json(&self) -> Value {
+		return Value::String(self.clone())
+	}
+}
+
+impl FromJson for String {
+	fn from_json(v: &Value) -> Result<String, Error> {
+		match v {
+			Value::String(s) => return Ok(s.clone()),
+			_ => return Err(Error::mismatch("string", v)),
+		}
+	}
+}
+
+impl ToJson for str {
+	fn to_json(&self) -> Value {
+		return Value::String(self.to_string())
+	}
+}
+
+impl<T: ToJson> ToJson for Vec<T> {
+	fn to_json(&self) -> Value {
+		out mut := Vec::with_capacity(self.len())
+		for x in self.iter() {
+			out.push(x.to_json())
+		}
+		return Value::Array(out)
+	}
+}
+
+impl<T: ToJson> ToJson for [T] {
+	fn to_json(&self) -> Value {
+		out mut := Vec::with_capacity(self.len())
+		for x in self.iter() {
+			out.push(x.to_json())
+		}
+		return Value::Array(out)
+	}
+}
+
+impl<T: FromJson> FromJson for Vec<T> {
+	fn from_json(v: &Value) -> Result<Vec<T>, Error> {
+		match v {
+			Value::Array(a) => {
+				out mut := Vec::with_capacity(a.len())
+				i mut := 0
+				while i < a.len() {
+					out.push(elem(a, i)?)
+					i += 1
+				}
+				return Ok(out)
+			}
+			_ => return Err(Error::mismatch("array", v)),
+		}
+	}
+}
+
+impl<T: ToJson> ToJson for Option<T> {
+	fn to_json(&self) -> Value {
+		match self {
+			Some(x) => return x.to_json(),
+			None => return Value::Null,
+		}
+	}
+}
+
+impl<T: FromJson> FromJson for Option<T> {
+	fn from_json(v: &Value) -> Result<Option<T>, Error> {
+		if v.is_null() {
+			return Ok(None)
+		}
+		return Ok(Some(T::from_json(v)?))
+	}
+
+	fn from_missing() -> Option<Option<T>> {
+		return Some(None)
+	}
+}
+
+impl<T: ToJson> ToJson for Box<T> {
+	fn to_json(&self) -> Value {
+		return (**self).to_json()
+	}
+}
+
+impl<T: FromJson> FromJson for Box<T> {
+	fn from_json(v: &Value) -> Result<Box<T>, Error> {
+		return Ok(Box::new(T::from_json(v)?))
+	}
+}
+
+impl<T: ToJson> ToJson for BTreeMap<String, T> {
+	fn to_json(&self) -> Value {
+		m mut := BTreeMap::new()
+		for (k, v) in self.iter() {
+			m.insert(k.clone(), v.to_json())
+		}
+		return Value::Object(m)
+	}
+}
+
+impl<T: FromJson> FromJson for BTreeMap<String, T> {
+	fn from_json(v: &Value) -> Result<BTreeMap<String, T>, Error> {
+		m := expect_object(v, "a map")?
+		out mut := BTreeMap::new()
+		for (k, _) in m.iter() {
+			out.insert(k.clone(), field(m, k)?)
+		}
+		return Ok(out)
+	}
+}
+
+impl<T: ToJson> ToJson for HashMap<String, T> {
+	fn to_json(&self) -> Value {
+		m mut := BTreeMap::new()
+		for (k, v) in self.iter() {
+			m.insert(k.clone(), v.to_json())
+		}
+		return Value::Object(m)
+	}
+}
+
+impl<T: FromJson> FromJson for HashMap<String, T> {
+	fn from_json(v: &Value) -> Result<HashMap<String, T>, Error> {
+		m := expect_object(v, "a map")?
+		out mut := HashMap::new()
+		for (k, _) in m.iter() {
+			out.insert(k.clone(), field(m, k)?)
+		}
+		return Ok(out)
+	}
+}
+
+impl ToJson for i8 {
+	fn to_json(&self) -> Value {
+		return Value::Int(*self as i64)
+	}
+}
+
+impl FromJson for i8 {
+	fn from_json(v: &Value) -> Result<i8, Error> {
+		match v {
+			Value::Int(n) => {
+				if *n >= (i8::MIN as i64) && *n <= (i8::MAX as i64) {
+					return Ok(*n as i8)
+				}
+			}
+			_ => {}
+		}
+		return Err(Error::mismatch("i8", v))
+	}
+}
+
+impl ToJson for i16 {
+	fn to_json(&self) -> Value {
+		return Value::Int(*self as i64)
+	}
+}
+
+impl FromJson for i16 {
+	fn from_json(v: &Value) -> Result<i16, Error> {
+		match v {
+			Value::Int(n) => {
+				if *n >= (i16::MIN as i64) && *n <= (i16::MAX as i64) {
+					return Ok(*n as i16)
+				}
+			}
+			_ => {}
+		}
+		return Err(Error::mismatch("i16", v))
+	}
+}
+
+impl ToJson for i32 {
+	fn to_json(&self) -> Value {
+		return Value::Int(*self as i64)
+	}
+}
+
+impl FromJson for i32 {
+	fn from_json(v: &Value) -> Result<i32, Error> {
+		match v {
+			Value::Int(n) => {
+				if *n >= (i32::MIN as i64) && *n <= (i32::MAX as i64) {
+					return Ok(*n as i32)
+				}
+			}
+			_ => {}
+		}
+		return Err(Error::mismatch("i32", v))
+	}
+}
+
+impl ToJson for i64 {
+	fn to_json(&self) -> Value {
+		return Value::Int(*self as i64)
+	}
+}
+
+impl FromJson for i64 {
+	fn from_json(v: &Value) -> Result<i64, Error> {
+		match v {
+			Value::Int(n) => return Ok(*n as i64),
+			_ => {}
+		}
+		return Err(Error::mismatch("i64", v))
+	}
+}
+
+impl ToJson for isize {
+	fn to_json(&self) -> Value {
+		return Value::Int(*self as i64)
+	}
+}
+
+impl FromJson for isize {
+	fn from_json(v: &Value) -> Result<isize, Error> {
+		match v {
+			Value::Int(n) => return Ok(*n as isize),
+			_ => {}
+		}
+		return Err(Error::mismatch("isize", v))
+	}
+}
+
+impl ToJson for u8 {
+	fn to_json(&self) -> Value {
+		return Value::Int(*self as i64)
+	}
+}
+
+impl FromJson for u8 {
+	fn from_json(v: &Value) -> Result<u8, Error> {
+		match v {
+			Value::Int(n) => {
+				if *n >= (u8::MIN as i64) && *n <= (u8::MAX as i64) {
+					return Ok(*n as u8)
+				}
+			}
+			_ => {}
+		}
+		return Err(Error::mismatch("u8", v))
+	}
+}
+
+impl ToJson for u16 {
+	fn to_json(&self) -> Value {
+		return Value::Int(*self as i64)
+	}
+}
+
+impl FromJson for u16 {
+	fn from_json(v: &Value) -> Result<u16, Error> {
+		match v {
+			Value::Int(n) => {
+				if *n >= (u16::MIN as i64) && *n <= (u16::MAX as i64) {
+					return Ok(*n as u16)
+				}
+			}
+			_ => {}
+		}
+		return Err(Error::mismatch("u16", v))
+	}
+}
+
+impl ToJson for u32 {
+	fn to_json(&self) -> Value {
+		return Value::Int(*self as i64)
+	}
+}
+
+impl FromJson for u32 {
+	fn from_json(v: &Value) -> Result<u32, Error> {
+		match v {
+			Value::Int(n) => {
+				if *n >= (u32::MIN as i64) && *n <= (u32::MAX as i64) {
+					return Ok(*n as u32)
+				}
+			}
+			_ => {}
+		}
+		return Err(Error::mismatch("u32", v))
+	}
+}
+
+impl ToJson for u64 {
+	fn to_json(&self) -> Value {
+		if (*self as u64) <= 9223372036854775807 {
+			return Value::Int(*self as i64)
+		}
+		return Value::Float(*self as f64)
+	}
+}
+
+impl FromJson for u64 {
+	fn from_json(v: &Value) -> Result<u64, Error> {
+		match v {
+			Value::Int(n) => {
+				if *n >= 0 {
+					return Ok(*n as u64)
+				}
+			}
+			Value::Float(f) => {
+				if *f >= 0.0 && *f <= 18446744073709551615.0 && f.fract() == 0.0 {
+					return Ok(*f as u64)
+				}
+			}
+			_ => {}
+		}
+		return Err(Error::mismatch("u64", v))
+	}
+}
+
+impl ToJson for usize {
+	fn to_json(&self) -> Value {
+		if (*self as u64) <= 9223372036854775807 {
+			return Value::Int(*self as i64)
+		}
+		return Value::Float(*self as f64)
+	}
+}
+
+impl FromJson for usize {
+	fn from_json(v: &Value) -> Result<usize, Error> {
+		match v {
+			Value::Int(n) => {
+				if *n >= 0 {
+					return Ok(*n as usize)
+				}
+			}
+			Value::Float(f) => {
+				if *f >= 0.0 && *f <= 18446744073709551615.0 && f.fract() == 0.0 {
+					return Ok(*f as usize)
+				}
+			}
+			_ => {}
+		}
+		return Err(Error::mismatch("usize", v))
+	}
+}

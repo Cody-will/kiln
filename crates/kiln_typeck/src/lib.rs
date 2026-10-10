@@ -246,6 +246,37 @@ impl<'r, 'a> Typed<'r, 'a> {
         self.has_body(trait_fn).then(|| (trait_fn, substs.clone()))
     }
 
+    /// The type of field `f` of `t` (`name`, `0`, or `Variant.name` for
+    /// enum payloads), or `Unknown`.
+    pub fn field_ty(&self, t: &Ty, f: &str) -> Ty {
+        match t {
+            Ty::Tuple(ts) => f
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| ts.get(i).cloned())
+                .unwrap_or(Ty::Unknown),
+            Ty::Adt(d, _) => {
+                let (variant, name) = match f.split_once('.') {
+                    Some((v, n)) => (Some(v), n),
+                    None => (None, f),
+                };
+                let vdef = variant.and_then(|v| {
+                    self.c
+                        .r
+                        .variants(*d)
+                        .into_iter()
+                        .find(|x| self.c.r.def(*x).name == v)
+                });
+                self.adt_fields(t, vdef)
+                    .into_iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, t)| t)
+                    .unwrap_or(Ty::Unknown)
+            }
+            _ => Ty::Unknown,
+        }
+    }
+
     /// Field types of a struct type, or of enum variant `variant` of an enum type.
     pub fn adt_fields(&self, t: &Ty, variant: Option<DefId>) -> Vec<(String, Ty)> {
         let Ty::Adt(d, args) = t else { return vec![] };

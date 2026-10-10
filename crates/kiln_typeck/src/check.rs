@@ -400,6 +400,11 @@ impl Body<'_, '_, '_> {
                 }
                 _ => {}
             }
+            // The impls that fit both the type and the arguments known so
+            // far. With one, its arguments are adopted; with several
+            // (`String: Borrow<?Q>` has `Borrow<String>` and `Borrow<str>`),
+            // wait until the arguments are known from elsewhere.
+            let mut fits = vec![];
             for idx in 0..self.c.impls.len() {
                 let Some((itr, iargs)) = self.c.impls[idx].trait_ref.clone() else {
                     continue;
@@ -407,16 +412,30 @@ impl Body<'_, '_, '_> {
                 if itr != tr {
                     continue;
                 }
+                let snap = self.c.infer.snapshot();
                 let (st, map) = self.instantiate_impl(idx);
-                if !self.c.infer.can_unify(&st, &t) {
-                    continue;
+                let ok = self.c.infer.try_unify(&st, &t)
+                    && args
+                        .iter()
+                        .zip(&iargs)
+                        .all(|(a, b)| self.c.infer.try_unify(a, &b.subst(&map)));
+                self.c.infer.restore(snap);
+                if ok {
+                    fits.push(idx);
                 }
-                self.c.infer.unify(&st, &t);
-                for (a, b) in args.iter().zip(&iargs) {
-                    let b = b.subst(&map);
-                    self.c.infer.try_unify(a, &b);
+            }
+            match fits.as_slice() {
+                [idx] => {
+                    let idx = *idx;
+                    let iargs = self.c.impls[idx].trait_ref.clone().unwrap().1;
+                    let (st, map) = self.instantiate_impl(idx);
+                    self.c.infer.unify(&st, &t);
+                    for (a, b) in args.iter().zip(&iargs) {
+                        self.c.infer.try_unify(a, &b.subst(&map));
+                    }
                 }
-                break;
+                [] => {}
+                _ => self.arg_obligations.push((t, tr, args)),
             }
         }
     }
@@ -610,6 +629,18 @@ impl Body<'_, '_, '_> {
                 (_, Ty::Dyn(traits)) => {
                     let traits = traits.clone();
                     return traits.iter().all(|t| self.implements(&fi, *t));
+                }
+                // `&&T` → `&T` (auto-deref through references).
+                (Ty::Ref(m2, _), _) => {
+                    if *em && !*m2 {
+                        return false;
+                    }
+                    let next = fi.clone();
+                    if self.coerces(&next, &e) {
+                        self.deref_steps += 1;
+                        return true;
+                    }
+                    return false;
                 }
                 // Deref coercion through a user `Deref` (`DerefMut` for
                 // `&mut`): `&MutexGuard<Vec<T>>` → `&Vec<T>` → `&[T]`.

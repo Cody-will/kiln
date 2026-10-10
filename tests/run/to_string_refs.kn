@@ -1,0 +1,9 @@
+fn main() {
+    s := "a".to_string()
+    r := &s
+    println(r.to_string())
+    rr := &r
+    println(rr.to_string())
+    n := 5i32
+    println((&n).to_string())
+}

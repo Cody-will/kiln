@@ -1,0 +1,15 @@
+import std::encoding::json
+
+fn main() {
+    v := json::parse(r#"{"a": [1, 2.5, "x\u00e9\ud83d\ude00\n", null, true, -0.5e3], "b": {}, "c": []}"#).unwrap()
+    println("{v}")
+    println("{v.pretty()}")
+    p := v.pointer("/a/2")
+    println("{p:?} {v.get("a").unwrap().at(1).unwrap().as_f64():?}")
+    for bad in [r"[1, 2,]", r#"{"a" 1}"#, "[01]", r#""\x""#, "[1] x", "", r#"{"a":"#, r#""\ud800""#].iter() {
+        match json::parse(bad) {
+            Ok(v) => println("unexpected ok {v}"),
+            Err(e) => println("{e}"),
+        }
+    }
+}

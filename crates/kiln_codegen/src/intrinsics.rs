@@ -569,7 +569,7 @@ impl FnCx<'_, '_, '_, '_> {
                 }
             }
             ("String", "new") => self.init_string(dest),
-            ("String", "from") | ("str", "to_string") => {
+            ("String", "from") | ("str" | "String", "to_string") => {
                 let (p, n) = self.str_of(&args[0]);
                 self.call_rt("kn_string_from", &[dest, p, n]);
             }
@@ -979,7 +979,7 @@ impl FnCx<'_, '_, '_, '_> {
                 let z = self.iconst(0);
                 self.store(z, a, 16);
             }
-            (_, "display_to_string") => {
+            (_, "display_to_string" | "to_string") => {
                 let t = self.op_ty(&args[0]);
                 let inner = match &t {
                     Ty::Ref(_, x) => (**x).clone(),

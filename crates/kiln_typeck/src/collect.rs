@@ -469,6 +469,8 @@ impl<'r, 'a> Checker<'r, 'a> {
             if self.impls[idx].trait_ref.is_some() {
                 continue;
             }
+            // Keyed by the type itself: `io::Error` and `json::Error` differ.
+            let key = format!("{:?}", self.impls[idx].self_ty);
             let ty = self.fmt_ty(&self.impls[idx].self_ty);
             let mut names: Vec<_> = self.impls[idx]
                 .methods
@@ -478,7 +480,7 @@ impl<'r, 'a> Checker<'r, 'a> {
             names.sort();
             for (n, i) in names {
                 let span = self.r.fns[i].decl.name.span;
-                if seen.insert((ty.clone(), n.clone()), span).is_some() {
+                if seen.insert((key.clone(), n.clone()), span).is_some() {
                     self.error(
                         format!("duplicate definitions with name `{n}` for type `{ty}`"),
                         span,

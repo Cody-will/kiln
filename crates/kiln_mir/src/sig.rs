@@ -21,6 +21,12 @@ pub struct TyLifetimes {
     pub generic_value: bool,
     /// Reference nesting depth during the walk.
     behind: u32,
+    /// The type parameters it mentions (closed over bounds that link them,
+    /// such as `K: Borrow<Q>`, by [`decl_flows`]).
+    pub names: BTreeSet<String>,
+    /// Holds generics that cannot be named: `Self`, `impl Trait`, function
+    /// values. Flows involving it are assumed.
+    pub opaque: bool,
 }
 
 impl TyLifetimes {
@@ -68,8 +74,12 @@ fn walk(t: &Type, generics: &[String], r: &Resolved<'_>, out: &mut TyLifetimes) 
         TypeKind::Path(p) => {
             if p.segments.len() == 1 {
                 let n = &p.segments[0].ident.name;
-                if generics.contains(n) || n == "Self" {
+                if generics.contains(n) {
                     out.set_generic();
+                    out.names.insert(n.clone());
+                } else if n == "Self" {
+                    out.set_generic();
+                    out.opaque = true;
                 }
             }
             let last = p.segments.last().unwrap();
@@ -96,6 +106,10 @@ fn walk(t: &Type, generics: &[String], r: &Resolved<'_>, out: &mut TyLifetimes) 
             }
             if matches!(r.path(p.span), Res::TyParam(_) | Res::SelfTy) {
                 out.set_generic();
+                let named = p.segments.len() == 1 && generics.contains(&p.segments[0].ident.name);
+                if !named {
+                    out.opaque = true;
+                }
             }
         }
         TypeKind::Ptr { inner, .. } => {
@@ -110,6 +124,7 @@ fn walk(t: &Type, generics: &[String], r: &Resolved<'_>, out: &mut TyLifetimes) 
             // A function value may hold borrows (its captures), but a result
             // can only get them through a signature that mentions a generic.
             out.generic = true;
+            out.opaque = true;
             params.iter().for_each(|x| walk(x, generics, r, out));
             if let Some(x) = ret {
                 walk(x, generics, r, out);
@@ -126,6 +141,7 @@ fn walk(t: &Type, generics: &[String], r: &Resolved<'_>, out: &mut TyLifetimes) 
         }
         TypeKind::Impl(bounds) => {
             out.set_generic();
+            out.opaque = true;
             for b in bounds {
                 if let Bound::Lifetime(l) = b {
                     out.named.insert(l.name.clone());
@@ -171,9 +187,13 @@ pub fn fn_lifetimes(
     generics.extend(type_param_names(&decl.generics));
     let mut params = Vec::new();
     if let Some(sp) = &decl.self_param {
+        // `Self` holds the impl's type parameters (`outer`); in a trait,
+        // or for a type without parameters, it is opaque.
         let mut l = TyLifetimes {
             generic: true,
             generic_value: matches!(sp, SelfParam::Value { .. }),
+            names: outer.iter().cloned().collect(),
+            opaque: outer.is_empty(),
             ..Default::default()
         };
         if let SelfParam::Ref { lifetime, .. } = sp {
@@ -261,8 +281,15 @@ pub fn return_flows(
         // From an argument that is generic only behind a reference
         // (`&mut Option<T>`), it carries what the referent holds but not the
         // reference's own borrow: `opt.take()` does not keep `opt` borrowed.
+        // Only arguments holding a generic connected to the result's count;
+        // `key: &Q` in `get<Q>(&self, key: &Q) -> Option<&V>` does not.
         for (i, p) in params.iter().enumerate() {
-            if p.generic && !p.generic_value {
+            let linked = p.generic
+                && (p.opaque || ret.opaque || p.names.intersection(&ret.names).next().is_some());
+            if !linked {
+                continue;
+            }
+            if !p.generic_value {
                 out.insert(i | crate::DEEP_FLOW);
             } else {
                 out.insert(i);
@@ -298,9 +325,86 @@ pub fn decl_flows(
     outer_generics: Option<&Generics>,
     r: &Resolved<'_>,
 ) -> Vec<usize> {
-    let (params, ret) = fn_lifetimes(decl, outer, r);
+    let (mut params, mut ret) = fn_lifetimes(decl, outer, r);
     let ref_self = matches!(decl.self_param, Some(SelfParam::Ref { .. }));
     let mut gs = vec![&decl.generics];
     gs.extend(outer_generics);
+    let mut all: Vec<String> = outer.to_vec();
+    all.extend(type_param_names(&decl.generics));
+    let groups = linked_generics(&gs, &all, r);
+    for t in params.iter_mut().chain(std::iter::once(&mut ret)) {
+        let extra: Vec<String> = groups
+            .iter()
+            .filter(|g| g.iter().any(|n| t.names.contains(n)))
+            .flatten()
+            .cloned()
+            .collect();
+        t.names.extend(extra);
+    }
     return_flows(&params, &ret, ref_self, &outlives(&gs))
+}
+
+/// Groups of type parameters that bounds tie together: `K: Borrow<Q>`
+/// links `K` and `Q`, since a value of one may be made from the other.
+fn linked_generics(gs: &[&Generics], names: &[String], r: &Resolved<'_>) -> Vec<BTreeSet<String>> {
+    let mut groups: Vec<BTreeSet<String>> = vec![];
+    let mut link = |set: BTreeSet<String>| {
+        if set.len() < 2 {
+            return;
+        }
+        let mut merged = set;
+        groups.retain(|g| {
+            if g.iter().any(|n| merged.contains(n)) {
+                merged.extend(g.iter().cloned());
+                false
+            } else {
+                true
+            }
+        });
+        groups.push(merged);
+    };
+    let in_bounds = |bounds: &[Bound], set: &mut BTreeSet<String>| {
+        for b in bounds {
+            if let Bound::Trait { path, .. } = b {
+                // These compare, hash, show, or borrow out of `Self`; none
+                // makes a `Self` from its argument (`K: Borrow<Q>` never
+                // turns a `Q` into a `K`).
+                let inert = [
+                    "Borrow",
+                    "Eq",
+                    "PartialEq",
+                    "Ord",
+                    "PartialOrd",
+                    "Hash",
+                    "Display",
+                    "Debug",
+                ];
+                if inert.contains(&path.segments.last().unwrap().ident.name.as_str()) {
+                    continue;
+                }
+                for seg in &path.segments {
+                    for a in &seg.args {
+                        if let GenericArg::Type(t) | GenericArg::Binding { ty: t, .. } = a {
+                            set.extend(ty_lifetimes(t, names, r).names);
+                        }
+                    }
+                }
+            }
+        }
+    };
+    for g in gs {
+        for p in &g.params {
+            if let GenericParam::Type { name, bounds, .. } = p {
+                let mut set = BTreeSet::from([name.name.clone()]);
+                in_bounds(bounds, &mut set);
+                link(set);
+            }
+        }
+        for w in &g.where_clause {
+            let mut set = ty_lifetimes(&w.ty, names, r).names;
+            in_bounds(&w.bounds, &mut set);
+            link(set);
+        }
+    }
+    groups
 }

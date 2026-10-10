@@ -1,0 +1,22 @@
+{"a":[1,2.5,"xé😀\n",null,true,-500.0],"b":{},"c":[]}
+{
+  "a": [
+    1,
+    2.5,
+    "xé😀\n",
+    null,
+    true,
+    -500.0
+  ],
+  "b": {},
+  "c": []
+}
+Some(String("xé😀\n")) Some(2.5)
+json: expected a value at line 1, column 7
+json: expected `:` at line 1, column 6
+json: leading zeros are not allowed at line 1, column 4
+json: invalid escape at line 1, column 3
+json: trailing characters after the value at line 1, column 5
+json: unexpected end of input at line 1, column 1
+json: unexpected end of input at line 1, column 6
+json: unpaired surrogate in \u escape at line 1, column 8

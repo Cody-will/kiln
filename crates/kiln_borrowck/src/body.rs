@@ -73,6 +73,12 @@ pub(crate) struct Ck<'b, 't, 'r, 'a> {
     /// Closures handed to `Scope::spawn`: they keep their loans until the body returns.
     pinned: BTreeSet<Local>,
     may_hold_cache: Vec<bool>,
+    /// Per local: a reference whose referent cannot hold borrows (`&String`),
+    /// so deep flows from it carry nothing.
+    no_deep: Vec<bool>,
+    /// Projected places whose type cannot hold borrows (the `Err` payload
+    /// of a `Result<&T, Error>`): reading them carries no loans.
+    inert: HashSet<Place>,
     drop_cache: Vec<bool>,
 }
 
@@ -96,6 +102,8 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
             live: vec![],
             pinned: BTreeSet::new(),
             may_hold_cache: vec![],
+            no_deep: vec![],
+            inert: HashSet::new(),
             drop_cache: vec![],
         }
     }
@@ -113,6 +121,13 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
         let n = self.b.locals.len();
         self.may_hold_cache = (0..n)
             .map(|i| self.may_hold(&self.b.locals[i].ty.clone()))
+            .collect();
+        self.inert = self.inert_places();
+        self.no_deep = (0..n)
+            .map(|i| match self.b.locals[i].ty.clone() {
+                Ty::Ref(_, inner) => !self.may_hold(&inner),
+                _ => false,
+            })
             .collect();
         self.drop_cache = (0..n)
             .map(|i| {
@@ -215,7 +230,9 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                     param: Some(i - 1),
                 });
                 self.holds[i].insert(id);
-                self.holds[n + i].insert(id);
+                if !self.no_deep[i] {
+                    self.holds[n + i].insert(id);
+                }
             }
         }
         for (bi, bb) in self.b.blocks.iter().enumerate() {
@@ -288,10 +305,45 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
         self.hin = hin;
     }
 
-    fn op_holds_in(st: &[BTreeSet<usize>], o: &Operand) -> BTreeSet<usize> {
+    fn op_holds_in(&self, st: &[BTreeSet<usize>], o: &Operand) -> BTreeSet<usize> {
         o.place()
+            .filter(|p| !self.inert.contains(p))
             .map(|p| st[p.local.0 as usize].clone())
             .unwrap_or_default()
+    }
+
+    /// Collects [`Ck::inert`]: projected operand places of types that cannot
+    /// hold borrows.
+    fn inert_places(&mut self) -> HashSet<Place> {
+        let mut places = vec![];
+        for bb in &self.b.blocks {
+            for st in &bb.stmts {
+                if let StmtKind::Assign(_, rv) = &st.kind {
+                    for o in rv.operands() {
+                        if let Some(p) = o.place() {
+                            if !p.proj.is_empty() {
+                                places.push(p.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut out = HashSet::new();
+        for p in places {
+            let mut t = self.b.locals[p.local.0 as usize].ty.clone();
+            for x in &p.proj {
+                t = match (x, t) {
+                    (Proj::Deref(_), Ty::Ref(_, inner)) => *inner,
+                    (Proj::Field(f), t) => self.typed.field_ty(&t, f),
+                    _ => Ty::Unknown,
+                };
+            }
+            if !matches!(t, Ty::Unknown | Ty::Var(_)) && !self.may_hold(&t) {
+                out.insert(p);
+            }
+        }
+        out
     }
 
     /// Applies statement `loc` to the per-local loan sets.
@@ -299,6 +351,8 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
         let n = self.b.locals.len();
         let deep_of = |st: &[BTreeSet<usize>], o: &Operand| -> BTreeSet<usize> {
             o.place()
+                .filter(|p| !(p.proj.is_empty() && self.no_deep[p.local.0 as usize]))
+                .filter(|p| !self.inert.contains(p))
                 .map(|p| st[n + p.local.0 as usize].clone())
                 .unwrap_or_default()
         };
@@ -310,7 +364,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                 }
                 let (add, deep): (BTreeSet<usize>, BTreeSet<usize>) = match rv {
                     Rvalue::Use(o) | Rvalue::Coerce(o, _) => {
-                        (Self::op_holds_in(st, o), deep_of(st, o))
+                        (self.op_holds_in(st, o), deep_of(st, o))
                     }
                     Rvalue::Ref { place, .. } => {
                         let base = place.local.0 as usize;
@@ -325,7 +379,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                         (s, d)
                     }
                     Rvalue::Aggregate(_, ops) => (
-                        ops.iter().flat_map(|o| Self::op_holds_in(st, o)).collect(),
+                        ops.iter().flat_map(|o| self.op_holds_in(st, o)).collect(),
                         ops.iter().flat_map(|o| deep_of(st, o)).collect(),
                     ),
                     Rvalue::Call { args, flows, .. } => {
@@ -337,7 +391,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                             };
                             let inner = deep_of(st, o);
                             if f & DEEP_FLOW == 0 {
-                                a.extend(Self::op_holds_in(st, o));
+                                a.extend(self.op_holds_in(st, o));
                             } else {
                                 a.extend(inner.iter().copied());
                             }
@@ -1063,7 +1117,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                 match kind {
                     SpawnKind::GoCall => {
                         for o in operands {
-                            let held = Self::op_holds_in(&self.holds_before(bi, si), o);
+                            let held = self.op_holds_in(&self.holds_before(bi, si), o);
                             self.check_static(held, s.span, "argument to `go`");
                             if let Some(p) = o.place() {
                                 if p.proj.is_empty() {
@@ -1084,7 +1138,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                                 continue;
                             }
                             let _ = is_move;
-                            let held = Self::op_holds_in(&self.holds_before(bi, si), o);
+                            let held = self.op_holds_in(&self.holds_before(bi, si), o);
                             self.check_static(held, s.span, "`go` block capture");
                             self.check_send(&c.ty, s.span, Some(&c.name));
                         }
