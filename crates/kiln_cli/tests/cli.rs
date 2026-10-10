@@ -106,3 +106,54 @@ fn mir_dumps_bodies() {
     assert!(out.contains("bb0:"), "{out}");
     assert!(out.contains("return"), "{out}");
 }
+
+#[test]
+fn test_command_runs_passing_tests() {
+    let (code, out, err) = kiln(&["test", "tests/kiln_test/passing.kn"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("running 5 tests"), "{out}");
+    assert!(out.contains("test adds ... ok"));
+    assert!(out.contains("test returns_ok ... ok"));
+    assert!(out.contains("test divides_by_zero ... ok"));
+    assert!(out.contains("test slow ... ignored"));
+    assert!(out.contains("test inner::nested ... ok"));
+    assert!(
+        out.contains("test result: ok. 4 passed; 0 failed; 1 ignored"),
+        "{out}"
+    );
+
+    let (code, out, _) = kiln(&["test", "--run", "nest", "tests/kiln_test/passing.kn"]);
+    assert_eq!(code, 0);
+    assert!(
+        out.contains("1 passed; 0 failed; 0 ignored; 4 filtered out"),
+        "{out}"
+    );
+}
+
+#[test]
+fn test_command_reports_failures() {
+    let (code, out, _) = kiln(&["test", "tests/kiln_test/failing.kn"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("test passes ... ok"));
+    assert!(out.contains("test wrong_sum ... FAILED"));
+    assert!(out.contains("captured output"));
+    assert!(out.contains("left: 4\n right: 5"), "{out}");
+    assert!(out.contains("test returns_err ... FAILED"));
+    assert!(out.contains("error: invalid integer literal"), "{out}");
+    assert!(out.contains("test did not panic as expected"));
+    assert!(
+        out.contains("test result: FAILED. 1 passed; 3 failed"),
+        "{out}"
+    );
+}
+
+#[test]
+fn test_command_discovers_files_in_directories() {
+    let (code, out, _) = kiln(&["test", "--run", "adds", "tests/kiln_test"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("passing.kn"), "{out}");
+    assert!(
+        out.contains("test result: ok. 1 passed; 0 failed; 0 ignored; 8 filtered out"),
+        "{out}"
+    );
+}

@@ -25,7 +25,8 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 | `static` items | 🚧 Type-checked but not yet compiled |
 | Multi-file packages, `kiln.toml`, registry | 🚧 Not yet: `kiln check` works on a single file (inline `mod` blocks are supported) |
 | `kiln build`, `kiln run` | ✅ Implemented (single file) |
-| `kiln fmt`, `kiln test`, language server | 🚧 Not yet |
+| `kiln test` (`#[test]`, `#[should_panic]`, `#[ignore]`, process-per-test, parallel) | ✅ Implemented (single files and directories) |
+| `kiln fmt`, language server | 🚧 Not yet |
 
 ## What `kiln check` catches today
 

@@ -9,9 +9,13 @@
 //! - `kiln build [--release] <file> [-o <output>]`: compile to a native executable
 //!   (debug builds panic on integer overflow; release builds wrap).
 //! - `kiln run [--release] <file> [args...]`: build to a temporary executable and run it.
+//! - `kiln test [--release] [--run <substr>] [--ignored] [--timeout <secs>] [paths...]`:
+//!   build and run `#[test]` functions (see [`test`]).
 //!
 //! Exit status is 0 on success, 1 when the file has errors, and 2 on usage errors
 //! (`kiln run` exits with the program's status).
+
+mod test;
 
 use kiln_lexer::{lex, Diagnostic, LineIndex, TokenKind};
 use std::process::ExitCode;
@@ -28,6 +32,9 @@ USAGE:
                             Compile to a native executable
     kiln run [--release] <file.kn> [args...]
                             Build and run
+    kiln test [--release] [--run <substr>] [--ignored] [--timeout <secs>] [paths...]
+                            Run #[test] functions in the given files, or in every
+                            .kn file under the given directories (default: .)
 
     Debug builds (the default) panic on integer overflow; --release builds wrap.
     kiln help               Show this message
@@ -69,6 +76,10 @@ fn main() -> ExitCode {
                 _ => usage_error(),
             }
         }
+        [cmd, rest @ ..] if cmd == "test" => match test::parse_args(rest) {
+            Some(o) => test::run(o),
+            None => usage_error(),
+        },
         [flag] if flag == "--version" || flag == "-V" => {
             println!("kiln {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -209,7 +220,7 @@ fn describe(kind: &TokenKind) -> String {
     }
 }
 
-fn report(file: &str, src: &str, errors: &[Diagnostic]) -> ExitCode {
+pub(crate) fn report(file: &str, src: &str, errors: &[Diagnostic]) -> ExitCode {
     for e in errors {
         eprint!("{}", e.render(file, src));
     }

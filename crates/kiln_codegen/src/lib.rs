@@ -629,6 +629,33 @@ pub fn build_source(src: &str, out: &std::path::Path, opts: Options) -> Result<(
     if !parsed.errors.is_empty() {
         return Err(BuildError::Diagnostics(parsed.errors));
     }
+    build_parsed(parsed, out, opts)
+}
+
+/// Builds the test executable for `src` (see [`kiln_parser::test_harness`]):
+/// running it with a test's name runs that test. Returns the tests found.
+pub fn build_tests(
+    src: &str,
+    out: &std::path::Path,
+    opts: Options,
+) -> Result<Vec<kiln_parser::TestCase>, BuildError> {
+    let mut parsed = kiln_parser::parse(src);
+    if !parsed.errors.is_empty() {
+        return Err(BuildError::Diagnostics(parsed.errors));
+    }
+    let (tests, errs) = kiln_parser::test_harness(&mut parsed.file);
+    if !errs.is_empty() {
+        return Err(BuildError::Diagnostics(errs));
+    }
+    build_parsed(parsed, out, opts)?;
+    Ok(tests)
+}
+
+fn build_parsed(
+    parsed: kiln_parser::Parse,
+    out: &std::path::Path,
+    opts: Options,
+) -> Result<(), BuildError> {
     let prelude = kiln_resolve::parse_prelude();
     let resolved = kiln_resolve::resolve(&parsed.file, &prelude);
     if !resolved.errors.is_empty() {

@@ -42,9 +42,10 @@ The `kiln` binary has these commands today:
 | `kiln check <file.kn>` | Resolve names, type-check, and borrow-check, printing diagnostics |
 | `kiln build <file.kn> [-o out]` | Compile to a native executable |
 | `kiln run <file.kn>` | Compile and run |
+| `kiln test [paths...]` | Run `#[test]` functions |
 
 <div class="status">
-🚧 <code>kiln test</code>, <code>kiln fmt</code>, and <code>kiln new</code> are specified but not implemented yet. <code>kiln build</code> and <code>kiln run</code> work on single files; programs that use <code>go</code>, channels, or <code>std</code> modules don't compile to executables yet.
+🚧 <code>kiln fmt</code> and <code>kiln new</code> are specified but not implemented yet. <code>kiln build</code>, <code>kiln run</code>, and <code>kiln test</code> work on single files.
 </div>
 
 ## Editor support

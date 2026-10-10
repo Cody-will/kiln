@@ -559,6 +559,10 @@ json = { git = "https://github.com/kiln-lang/json", tag = "v0.3" }
   - Registry: `pkg.kiln-lang.dev`, using semver resolution.
   - Builds are incremental per package.
 - **Tests and benchmarks**: `#[test] fn ...` lives inline, and the `tests/` and `benches/` directories are recognized automatically.
+  - `kiln test [--release] [--run <substr>] [--ignored] [--timeout <secs>] [paths...]` (implemented): explicit files are tested; directories are searched recursively for `.kn` files containing `#[test]` (hidden directories and `target` are skipped); the default is the current directory.
+  - A test is a function marked `#[test]` with no parameters, at the top level or in an inline `mod`, returning `()` or `Result<(), E>` (an `Err` fails the test and prints `E`'s `Display`). `#[should_panic]` or `#[should_panic(expected = "text")]` expects a panic; `#[ignore]` skips a test unless `--ignored` is given.
+  - Each test file is compiled once into a test executable whose generated `main` replaces the file's own `main`. Every test runs in its own process, in parallel across CPUs, because panics exit the process instead of unwinding. One failing test therefore cannot corrupt another, and output is captured per test and shown only for failures. The default timeout is 10 minutes, as in Go.
+  - `assert(cond)`, `assert_eq(left, right)`, and `assert_ne(left, right)` are in the prelude; the last two need `Eq + Debug` and print both values on failure.
 
 ## 8. Standard Library
 
@@ -602,7 +606,7 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 | `std::encoding` | `json` (`Value`, `#[derive(Json)]`), `base64`, `hex`, `csv` (RFC 4180 `Reader`/`Writer`, `parse`/`format`, custom delimiter, comments, field-count checks) | ✅ |
 | `std::crypto` | `sha256`, `sha1`, `md5` (one-shot `sum`/`hex`, streaming hashers that implement `io::Write`, digests are fixed arrays like `[u8; 32]`), `hmac` (SHA-256/SHA-1, `verify_sha256`), `constant_time_eq` | ✅ |
 | `std::regexp` | RE2-style `Regex` (Pike VM, linear time, leftmost-first): `find`/`find_all`/`captures`/`captures_all`, named groups, `replace_all` with `$1`/`${name}`, `replace_all_fn`, `split`, `quote_meta`; flags `i`, `m`, `s` | ✅ |
-| `std::testing` (`kiln test`) | | 🚧 phase 2 |
+| `kiln test`, `assert_eq`/`assert_ne` | test discovery and runner (see §7 tooling) | ✅ |
 | `std::compress`, `std::mime`, `std::url`, templates | | 🚧 phase 3 |
 
 ## 9. Open Questions for the User

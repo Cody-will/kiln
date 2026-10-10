@@ -7,8 +7,10 @@
 pub mod ast;
 mod derive;
 mod parser;
+mod testgen;
 
 pub use derive::DERIVE_BASE;
+pub use testgen::{test_harness, TestCase};
 
 use kiln_lexer::{lex, Diagnostic};
 
@@ -44,6 +46,15 @@ fn parse_inner(src: &str, base: usize) -> Parse {
     let mut errors = lexed.errors;
     errors.extend(p.errors);
     Parse { file, errors }
+}
+
+/// Parses compiler-generated source, giving it its own span range (above
+/// [`DERIVE_BASE`]) registered under `name`, so errors in it are readable.
+pub fn parse_generated(text: String, name: &'static str) -> Parse {
+    let text: &'static str = Box::leak(text.into_boxed_str());
+    let base = derive::reserve(text.len() + 1);
+    kiln_lexer::register_source(base, name, text);
+    parse_at(text, base)
 }
 
 /// Parses a single expression (for tests and tooling).

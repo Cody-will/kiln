@@ -14,6 +14,11 @@ pub const DERIVE_BASE: usize = 1 << 42;
 
 static NEXT: AtomicUsize = AtomicUsize::new(DERIVE_BASE);
 
+/// Reserves `n` bytes of generated-span space; returns its base.
+pub(crate) fn reserve(n: usize) -> usize {
+    NEXT.fetch_add(n, Ordering::Relaxed)
+}
+
 const J: &str = "std::encoding::json";
 
 /// Expands derives in `file`, appending generated items and reporting

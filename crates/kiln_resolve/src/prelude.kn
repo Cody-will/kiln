@@ -1702,6 +1702,20 @@ pub fn eprintln(s: &str)
 pub fn panic(msg: &str) -> !
 pub fn assert(cond: bool)
 
+// Panics, showing both values, unless `left == right`.
+pub fn assert_eq<T: Eq + Debug>(left: T, right: T) {
+	if left != right {
+		panic("assertion `left == right` failed\n  left: {left:?}\n right: {right:?}")
+	}
+}
+
+// Panics, showing the value, if `left == right`.
+pub fn assert_ne<T: Eq + Debug>(left: T, right: T) {
+	if left == right {
+		panic("assertion `left != right` failed\n  both: {left:?}")
+	}
+}
+
 impl Num for i8 {
 	fn zero() -> i8 {
 		return 0
