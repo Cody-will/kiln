@@ -1,0 +1,42 @@
+import std::sync::{AtomicI64, Mutex}
+
+static GREETING: &str = "hello"
+static PRIMES: [i32; 5] = [2, 3, 5, 7, 11]
+static HITS: AtomicI64 = AtomicI64::new(0)
+static NAMES: Mutex<Vec<String>> = Mutex::new(Vec::new())
+static mut COUNTER: i32 = 10
+// Initializers run before `main`, in order, and may use earlier statics.
+static FIRST_PRIME: i32 = PRIMES[0] * 100
+
+fn bump() {
+	HITS.add(1)
+	NAMES.lock().push("call {HITS.load()}")
+}
+
+fn main() {
+	println(GREETING)
+	s mut := 0
+	for p in PRIMES.iter() {
+		s += *p
+	}
+	println("{s} {PRIMES[4]} {PRIMES.len()} {FIRST_PRIME}")
+	bump()
+	bump()
+	// The guard from `lock()` is released at the end of each statement.
+	println("{HITS.load()} {NAMES.lock().len()}")
+	unsafe {
+		COUNTER += 5
+		println("{COUNTER}")
+	}
+	tasks mut := Vec::new()
+	for _ in 0..4 {
+		tasks.push(go move {
+			bump()
+		})
+	}
+	for t in tasks {
+		t.join()
+	}
+	names := NAMES.lock()
+	println("{HITS.load()} {names.len()} {names[0]}")
+}

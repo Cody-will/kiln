@@ -146,7 +146,12 @@ impl Codegen<'_, '_> {
     }
 
     /// Defines the C `main` that calls the user's `main` and turns an `Err` into exit code 1.
-    pub(crate) fn define_entry(&mut self, main_idx: usize, user_main: FuncId) {
+    pub(crate) fn define_entry(
+        &mut self,
+        main_idx: usize,
+        user_main: FuncId,
+        inits: &[(cranelift_module::DataId, FuncId)],
+    ) {
         let (_, ret) = self.typed.signature(main_idx);
         let mut sig = self.module.make_signature();
         sig.params.push(ir::AbiParam::new(types::I32));
@@ -182,6 +187,14 @@ impl Codegen<'_, '_> {
                 l.size.max(8),
                 3,
             ));
+            // Statics first, in declaration order: each initializer writes
+            // its value straight into the static's storage.
+            for (data, init) in inits {
+                let gv = self.module.declare_data_in_func(*data, b.func);
+                let a = b.ins().global_value(types::I64, gv);
+                let f = self.module.declare_func_in_func(*init, b.func);
+                b.ins().call(f, &[a]);
+            }
             let addr = b.ins().stack_addr(types::I64, slot, 0);
             let f = self.module.declare_func_in_func(user_main, b.func);
             b.ins().call(f, &[addr]);
@@ -1155,13 +1168,16 @@ impl FnCx<'_, '_, '_, '_> {
             AggKind::Range {
                 has_start: true,
                 has_end: true,
-                ..
+                inclusive,
             } => {
                 for (n, o) in ["start", "end"].iter().zip(ops) {
                     let (off, _) = self.cg.field(dt, n);
                     let a = self.b.ins().iadd_imm(dest, off as i64);
                     self.store_op(o, a);
                 }
+                let (off, _) = self.cg.field(dt, "incl");
+                let v = self.b.ins().iconst(types::I8, *inclusive as i64);
+                self.store(v, dest, off as i32);
             }
             AggKind::Range { .. } => {
                 self.error("code generation supports only `a..b` and `a..=b` ranges")
@@ -1450,7 +1466,7 @@ impl FnCx<'_, '_, '_, '_> {
         self.str_at(a, &t)
     }
 
-    fn is_signed(t: &Ty) -> bool {
+    pub(crate) fn is_signed(t: &Ty) -> bool {
         matches!(
             t,
             Ty::Prim(

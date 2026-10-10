@@ -260,6 +260,32 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         self.res.tys.get(&e.span).cloned().unwrap_or(Ty::Unknown)
     }
 
+    /// The place of static `d` (named by `e`): `*static_addr`, through a
+    /// `&'static T`, or a raw pointer for `static mut`.
+    fn static_place(&mut self, d: DefId, e: &Expr) -> Place {
+        let ty = self.ty(e);
+        let mutable = matches!(
+            self.r.def(d).item.map(|i| &i.kind),
+            Some(ast::ItemKind::Static { mutable: true, .. })
+        );
+        let (rt, kind) = if mutable {
+            (Ty::Ptr(true, Box::new(ty)), DerefKind::Ptr)
+        } else {
+            (Ty::Ref(false, Box::new(ty)), DerefKind::Ref(false))
+        };
+        let t = self.temp(rt, e.span);
+        self.assign(
+            Place::local(t),
+            Rvalue::Call {
+                callee: Callee::Intrinsic(format!("static_addr:{}", d.0)),
+                args: vec![],
+                flows: vec![],
+            },
+            e.span,
+        );
+        Place::local(t).project(Proj::Deref(kind.into()))
+    }
+
     /// Whether `e` is a closure or a plain name (possibly parenthesized).
     fn direct(e: &Expr) -> bool {
         match &e.kind {
@@ -438,7 +464,54 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         self.pop_scope(Self::end_span(b));
     }
 
+    /// Lowers a statement; its temporaries die when it ends (so a lock guard
+    /// in `println("{*m.lock()}")` is released right away). Temporaries live
+    /// on for `defer` (its arguments are used at function exit) and for a
+    /// declaration whose value may borrow them (`r := &make()`).
     fn stmt(&mut self, s: &ast::Stmt) {
+        let depth = self.scopes.len();
+        let mark = self.scopes[depth - 1].len();
+        self.stmt_inner(s);
+        let extend = match &s.kind {
+            AstStmt::Defer(_) | AstStmt::Item(_) => true,
+            AstStmt::Let { init: Some(e), .. } | AstStmt::ShortDecl { init: e, .. } => {
+                let t = self.ty(e);
+                self.may_borrow(&t)
+            }
+            _ => false,
+        };
+        if extend || self.scopes.len() != depth || self.scopes[depth - 1].len() < mark {
+            return;
+        }
+        // The temporaries stay in the scope too, so paths that leave early
+        // (`return` inside a loop) still end them; ending one twice is harmless
+        // (drops are guarded by drop flags).
+        let temps: Vec<Local> = self.scopes[depth - 1][mark..]
+            .iter()
+            .copied()
+            .filter(|l| self.body.locals[l.0 as usize].kind == LocalKind::Temp)
+            .collect();
+        for l in temps.into_iter().rev() {
+            self.push(StmtKind::StorageDead(l), s.span);
+        }
+    }
+
+    /// Whether a value of type `t` may hold a reference.
+    fn may_borrow(&self, t: &Ty) -> bool {
+        match t {
+            Ty::Ref(..) | Ty::Param(_) | Ty::Fn(..) | Ty::Dyn(_) | Ty::Unknown | Ty::Var(_) => true,
+            Ty::Adt(d, args) => {
+                self.typed.adt_has_lifetimes(*d) || args.iter().any(|a| self.may_borrow(a))
+            }
+            Ty::Tuple(ts) => ts.iter().any(|x| self.may_borrow(x)),
+            Ty::Array(x, _) | Ty::Slice(x) | Ty::ChanSend(x) | Ty::ChanRecv(x) | Ty::Ptr(_, x) => {
+                self.may_borrow(x)
+            }
+            _ => false,
+        }
+    }
+
+    fn stmt_inner(&mut self, s: &ast::Stmt) {
         match &s.kind {
             AstStmt::Let { pat, init, .. } => match init {
                 Some(init) => {
@@ -1035,6 +1108,9 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     }
                     Some(Place::local(l))
                 }
+                Res::Def(d) if self.r.def(d).kind == DefKind::Static => {
+                    Some(self.static_place(d, e))
+                }
                 _ => None,
             },
             ExprKind::Field(base, name) => {
@@ -1435,7 +1511,10 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     }
                     self.unsupported("constants with non-literal values", e.span);
                 }
-                DefKind::Static => self.unsupported("statics", e.span),
+                DefKind::Static => {
+                    let p = self.static_place(d, e);
+                    return self.operand_of(p, &ty);
+                }
                 _ => {}
             }
         }
@@ -2085,8 +2164,8 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             info.recv_ty,
             Ty::Prim(kiln_resolve::PrimTy::Str) | Ty::Slice(_)
         );
-        let container =
-            matches!(&pt, Ty::Adt(d, _) if self.lang(*d, "String") || self.lang(*d, "Vec"));
+        let container = matches!(&pt, Ty::Array(..))
+            || matches!(&pt, Ty::Adt(d, _) if self.lang(*d, "String") || self.lang(*d, "Vec"));
         let self_op = match &info.self_param {
             Some(ast::SelfParam::Ref { mutable, .. }) if unsized_target && container => {
                 let r1 = self.temp_of(
@@ -2511,6 +2590,51 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     sp,
                 );
                 (el, t)
+            }
+            _ if self.res.iter_items.contains_key(&e.span) => {
+                // Any `Iterator`: `match it.next() { Some(x) => body, None => break }`.
+                let et = self.res.iter_items[&e.span].clone();
+                let fi = self.res.callees[&e.span];
+                let subs = self
+                    .res
+                    .callee_substs
+                    .get(&e.span)
+                    .map(sorted)
+                    .unwrap_or_default();
+                let opt_ty = match self.r.prelude_type("Option") {
+                    Some(o) => Ty::Adt(o, vec![et.clone()]),
+                    None => Ty::Unknown,
+                };
+                let r = self.temp_of(
+                    Ty::Ref(true, Box::new(it_ty.clone())),
+                    Rvalue::Ref {
+                        mutable: true,
+                        place: Place::local(it),
+                    },
+                    sp,
+                );
+                let opt = self.temp(opt_ty, sp);
+                self.assign(
+                    Place::local(opt),
+                    Rvalue::Call {
+                        callee: Callee::Fn(fi, subs),
+                        args: vec![r],
+                        flows: vec![],
+                    },
+                    sp,
+                );
+                // `Some` is variant 0.
+                self.test_variant(&Place::local(opt), 0, exit_loop, sp);
+                self.goto(bodyb, sp);
+                self.cur = bodyb;
+                self.push_scope();
+                let el = self.temp(et.clone(), pat.span);
+                self.assign(
+                    Place::local(el),
+                    Rvalue::Use(Operand::Move(Place::local(opt).field("Some.0"))),
+                    sp,
+                );
+                (el, et)
             }
             _ => {
                 // Index-based iteration.

@@ -31,6 +31,10 @@ pub const PRELUDE_SRC: &str = include_str!("prelude.kn");
 /// the prelude.
 pub const STD_MODULES: &[(&str, &str)] = &[
     ("mem", include_str!("../std/mem.kn")),
+    ("iter", include_str!("../std/iter.kn")),
+    ("unicode", include_str!("../std/unicode.kn")),
+    ("utf8", include_str!("../std/utf8.kn")),
+    ("strings", include_str!("../std/strings.kn")),
     ("ptr", include_str!("../std/ptr.kn")),
     ("time", include_str!("../std/time.kn")),
     ("sync", include_str!("../std/sync.kn")),
@@ -330,6 +334,9 @@ pub struct Resolved<'a> {
     pub impls: Vec<ImplRef<'a>>,
     /// All function declarations (free functions, methods, trait methods).
     pub fns: Vec<FnRef<'a>>,
+    /// Static items and their initializer functions (`fn <init X>() -> T`,
+    /// indexes into `fns`), in declaration order.
+    pub statics: Vec<(DefId, usize)>,
     /// Name-resolution diagnostics.
     pub errors: Vec<Diagnostic>,
 }

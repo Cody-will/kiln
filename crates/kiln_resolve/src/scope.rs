@@ -50,6 +50,7 @@ impl<'a> Resolver<'a> {
                 locals: Vec::new(),
                 impls: Vec::new(),
                 fns: Vec::new(),
+                statics: Vec::new(),
                 errors: Vec::new(),
             },
             module: DefId(0),
@@ -532,7 +533,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn walk_bounds(&mut self, bounds: &[Bound]) {
+    fn walk_bounds(&mut self, bounds: &'a [Bound]) {
         for b in bounds {
             if let Bound::Trait { path, .. } = b {
                 let res = self.resolve_path(path, Ns::Type);
@@ -551,6 +552,10 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 self.r.paths.insert(path.span, res);
+                // `I: Iterator<T>`: resolve the trait's arguments too.
+                for seg in &path.segments {
+                    self.walk_generic_args(&seg.args);
+                }
             }
         }
     }
@@ -670,9 +675,38 @@ impl<'a> Resolver<'a> {
                     self.walk_expr(v);
                 }
             }
-            ItemKind::Static { ty, value, .. } => {
-                self.walk_type(ty);
-                self.walk_expr(value);
+            ItemKind::Static {
+                name, ty, value, ..
+            } => {
+                // The initializer becomes a hidden function `fn <init X>() -> T`,
+                // checked like any other and run before `main`.
+                let def = self.r.modules[&self.module].values.get(&name.name).copied();
+                let ret = Expr {
+                    kind: ExprKind::Return(Some(Box::new(value.clone()))),
+                    span: name.span,
+                };
+                let decl: &'a FnDecl = Box::leak(Box::new(FnDecl {
+                    name: Ident {
+                        name: format!("<init {}>", name.name),
+                        span: name.span,
+                    },
+                    is_unsafe: false,
+                    generics: Generics::default(),
+                    self_param: None,
+                    params: vec![],
+                    ret: Some(static_lifetimes(ty)),
+                    body: Some(Block {
+                        stmts: vec![Stmt {
+                            kind: StmtKind::Expr(ret),
+                            span: name.span,
+                        }],
+                        span: value.span,
+                    }),
+                }));
+                self.walk_fn(decl, item, None, None, def);
+                if let Some(d) = def {
+                    self.r.statics.push((d, self.r.fns.len() - 1));
+                }
             }
             ItemKind::TypeAlias { generics, ty, .. } => {
                 self.walk_generics(generics);
@@ -1586,4 +1620,39 @@ pub fn kind_name(k: DefKind) -> &'static str {
         DefKind::TypeAlias => "type alias",
         DefKind::External => "external item",
     }
+}
+
+/// `ty` with every elided reference lifetime made `'static` (references in a
+/// static's type live forever).
+fn static_lifetimes(ty: &Type) -> Type {
+    let mut t = ty.clone();
+    fn fix(t: &mut Type) {
+        match &mut t.kind {
+            TypeKind::Ref { lifetime, inner, .. } => {
+                if lifetime.is_none() {
+                    *lifetime = Some(Ident {
+                        name: "static".into(),
+                        span: t.span,
+                    });
+                }
+                fix(inner);
+            }
+            TypeKind::Ptr { inner, .. } | TypeKind::Slice(inner) | TypeKind::Array(inner, _) => {
+                fix(inner)
+            }
+            TypeKind::Tuple(ts) => ts.iter_mut().for_each(fix),
+            TypeKind::Path(p) => {
+                for seg in &mut p.segments {
+                    for a in &mut seg.args {
+                        if let GenericArg::Type(t) = a {
+                            fix(t);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    fix(&mut t);
+    t
 }

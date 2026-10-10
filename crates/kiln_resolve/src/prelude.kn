@@ -93,8 +93,279 @@ pub trait From<T> {
 	fn from(value: T) -> Self
 }
 
-pub trait Iterator {
-	type Item
+// A sequence of `T` values, produced one at a time by `next`. `for x in it`
+// works for any iterator. Adapters such as `map` and `filter` are lazy: nothing
+// runs until the iterator is consumed (by `for`, `collect`, `count`, ...).
+// The adapter types live in `std::iter`.
+pub trait Iterator<T> {
+	// The next value, or None when the sequence is done.
+	fn next(&mut self) -> Option<T>
+
+	// ----- adapters ---------------------------------------------------------------
+
+	// Each value passed through `f`.
+	fn map<U>(self, f: fn mut(T) -> U) -> std::iter::Map<Self, T, U> {
+		return std::iter::Map { inner: self, f: f }
+	}
+
+	// Only the values for which `keep` returns true.
+	fn filter(self, keep: fn mut(&T) -> bool) -> std::iter::Filter<Self, T> {
+		return std::iter::Filter { inner: self, keep: keep }
+	}
+
+	// The `Some` results of `f`, skipping the `None`s.
+	fn filter_map<U>(self, f: fn mut(T) -> Option<U>) -> std::iter::FilterMap<Self, T, U> {
+		return std::iter::FilterMap { inner: self, f: f }
+	}
+
+	// Each value with its position: `(0, a), (1, b), ...`.
+	fn enumerate(self) -> std::iter::Enumerate<Self, T> {
+		return std::iter::Enumerate { inner: self, n: 0 }
+	}
+
+	// Pairs of values from both iterators; stops when either does.
+	fn zip<J: Iterator<U>, U>(self, other: J) -> std::iter::Zip<Self, J, T, U> {
+		return std::iter::Zip { a: self, b: other }
+	}
+
+	// This iterator's values, then `other`'s.
+	fn chain<J: Iterator<T>>(self, other: J) -> std::iter::Chain<Self, J, T> {
+		return std::iter::Chain { a: self, b: other, first: true }
+	}
+
+	// At most the first `n` values.
+	fn take(self, n: usize) -> std::iter::Take<Self, T> {
+		return std::iter::Take { inner: self, left: n }
+	}
+
+	// All but the first `n` values.
+	fn skip(self, n: usize) -> std::iter::Skip<Self, T> {
+		return std::iter::Skip { inner: self, n: n }
+	}
+
+	// Values while `f` holds; stops at the first that fails.
+	fn take_while(self, f: fn mut(&T) -> bool) -> std::iter::TakeWhile<Self, T> {
+		return std::iter::TakeWhile { inner: self, f: f, done: false }
+	}
+
+	// Skips values while `f` holds, then yields the rest.
+	fn skip_while(self, f: fn mut(&T) -> bool) -> std::iter::SkipWhile<Self, T> {
+		return std::iter::SkipWhile { inner: self, f: f, started: false }
+	}
+
+	// Every `n`th value, starting with the first.
+	fn step_by(self, n: usize) -> std::iter::StepBy<Self, T> {
+		if n == 0 {
+			panic("step_by: the step must be positive")
+		}
+		return std::iter::StepBy { inner: self, step: n, first: true }
+	}
+
+	// The values of the iterators `f` returns, one after another.
+	fn flat_map<J: Iterator<U>, U>(self, f: fn mut(T) -> J) -> std::iter::FlatMap<Self, T, J, U> {
+		return std::iter::FlatMap { inner: self, f: f, cur: None }
+	}
+
+	// An iterator that can look at the next value without taking it.
+	fn peekable(self) -> std::iter::Peekable<Self, T> {
+		return std::iter::Peekable { inner: self, peeked: None }
+	}
+
+	// Calls `f` on each value as it passes through.
+	fn inspect(self, f: fn mut(&T)) -> std::iter::Inspect<Self, T> {
+		return std::iter::Inspect { inner: self, f: f }
+	}
+
+	// ----- consumers ---------------------------------------------------------------
+
+	// All the values, in a vector.
+	fn collect(self) -> Vec<T> {
+		it mut := self
+		out mut := Vec::new()
+		while let Some(x) = it.next() {
+			out.push(x)
+		}
+		return out
+	}
+
+	// How many values there are.
+	fn count(self) -> usize {
+		it mut := self
+		n mut := 0
+		while let Some(_) = it.next() {
+			n += 1
+		}
+		return n
+	}
+
+	// The last value.
+	fn last(self) -> Option<T> {
+		it mut := self
+		last mut := None
+		while let Some(x) = it.next() {
+			last = Some(x)
+		}
+		return last
+	}
+
+	// The value at position `n` (counting from 0), consuming those before it.
+	fn nth(&mut self, n: usize) -> Option<T> {
+		i mut := 0
+		while let Some(x) = self.next() {
+			if i == n {
+				return Some(x)
+			}
+			i += 1
+		}
+		return None
+	}
+
+	// Combines the values from left to right: `f(f(f(init, a), b), c)`.
+	fn fold<A>(self, init: A, f: fn mut(A, T) -> A) -> A {
+		it mut := self
+		acc mut := init
+		while let Some(x) = it.next() {
+			acc = f(acc, x)
+		}
+		return acc
+	}
+
+	// Calls `f` on each value.
+	fn for_each(self, f: fn mut(T)) {
+		it mut := self
+		while let Some(x) = it.next() {
+			f(x)
+		}
+	}
+
+	// Whether `f` holds for some value (stops at the first).
+	fn any(&mut self, f: fn mut(T) -> bool) -> bool {
+		while let Some(x) = self.next() {
+			if f(x) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Whether `f` holds for every value (stops at the first that fails).
+	fn all(&mut self, f: fn mut(T) -> bool) -> bool {
+		while let Some(x) = self.next() {
+			if !f(x) {
+				return false
+			}
+		}
+		return true
+	}
+
+	// The first value for which `f` holds.
+	fn find(&mut self, f: fn mut(&T) -> bool) -> Option<T> {
+		while let Some(x) = self.next() {
+			if f(&x) {
+				return Some(x)
+			}
+		}
+		return None
+	}
+
+	// The position of the first value for which `f` holds.
+	fn position(&mut self, f: fn mut(T) -> bool) -> Option<usize> {
+		i mut := 0
+		while let Some(x) = self.next() {
+			if f(x) {
+				return Some(i)
+			}
+			i += 1
+		}
+		return None
+	}
+
+	// The smallest value (the first of equals).
+	fn min(self) -> Option<T> where T: Ord {
+		it mut := self
+		best mut := it.next()?
+		while let Some(x) = it.next() {
+			if x < best {
+				best = x
+			}
+		}
+		return Some(best)
+	}
+
+	// The largest value (the last of equals).
+	fn max(self) -> Option<T> where T: Ord {
+		it mut := self
+		best mut := it.next()?
+		while let Some(x) = it.next() {
+			if x >= best {
+				best = x
+			}
+		}
+		return Some(best)
+	}
+
+	// The value for which `key` is smallest (the first of equals).
+	fn min_by_key<K: Ord>(self, key: fn mut(&T) -> K) -> Option<T> {
+		it mut := self
+		best mut := it.next()?
+		bk mut := key(&best)
+		while let Some(x) = it.next() {
+			k := key(&x)
+			if k < bk {
+				best = x
+				bk = k
+			}
+		}
+		return Some(best)
+	}
+
+	// The value for which `key` is largest (the last of equals).
+	fn max_by_key<K: Ord>(self, key: fn mut(&T) -> K) -> Option<T> {
+		it mut := self
+		best mut := it.next()?
+		bk mut := key(&best)
+		while let Some(x) = it.next() {
+			k := key(&x)
+			if k >= bk {
+				best = x
+				bk = k
+			}
+		}
+		return Some(best)
+	}
+
+	// The total of the values (0 when there are none).
+	fn sum(self) -> T where T: Num {
+		it mut := self
+		acc mut := T::zero()
+		while let Some(x) = it.next() {
+			acc = acc.add(x)
+		}
+		return acc
+	}
+
+	// The product of the values (1 when there are none).
+	fn product(self) -> T where T: Num {
+		it mut := self
+		acc mut := T::one()
+		while let Some(x) = it.next() {
+			acc = acc.mul(x)
+		}
+		return acc
+	}
+}
+
+// Ranges are iterators: `(0..10).map(|i| i * i)`.
+impl<T> Iterator<T> for Range<T> {
+	fn next(&mut self) -> Option<T>
+}
+
+// Numbers, for `sum` and `product` (and generic numeric code).
+pub trait Num {
+	fn zero() -> Self
+	fn one() -> Self
+	fn add(self, other: Self) -> Self
+	fn mul(self, other: Self) -> Self
 }
 
 impl<T> Option<T> {
@@ -130,6 +401,109 @@ impl<T> Option<T> {
 		match self {
 			Some(v) => return v,
 			None => return default,
+		}
+	}
+
+	// Takes the value out, leaving None.
+	pub fn take(&mut self) -> Option<T> {
+		return std::mem::replace(self, None)
+	}
+
+	// Puts `value` in, returning the old value.
+	pub fn replace(&mut self, value: T) -> Option<T> {
+		return std::mem::replace(self, Some(value))
+	}
+
+	// A reference to the value, if any.
+	pub fn as_ref(&self) -> Option<&T> {
+		match self {
+			Some(x) => return Some(x),
+			None => return None,
+		}
+	}
+
+	// A mutable reference to the value, if any.
+	pub fn as_mut(&mut self) -> Option<&mut T> {
+		match self {
+			Some(x) => return Some(x),
+			None => return None,
+		}
+	}
+
+	// The value, or the result of `f`.
+	pub fn unwrap_or_else(self, f: fn mut() -> T) -> T {
+		match self {
+			Some(x) => return x,
+			None => return f(),
+		}
+	}
+
+	// The value passed through `f`.
+	pub fn map<U>(self, f: fn mut(T) -> U) -> Option<U> {
+		match self {
+			Some(x) => return Some(f(x)),
+			None => return None,
+		}
+	}
+
+	// `f` of the value, or `default`.
+	pub fn map_or<U>(self, default: U, f: fn mut(T) -> U) -> U {
+		match self {
+			Some(x) => return f(x),
+			None => return default,
+		}
+	}
+
+	// `f` of the value (which may itself be None).
+	pub fn and_then<U>(self, f: fn mut(T) -> Option<U>) -> Option<U> {
+		match self {
+			Some(x) => return f(x),
+			None => return None,
+		}
+	}
+
+	// This option if it has a value, otherwise `other`.
+	pub fn or(self, other: Option<T>) -> Option<T> {
+		match self {
+			Some(x) => return Some(x),
+			None => return other,
+		}
+	}
+
+	// This option if it has a value, otherwise the result of `f`.
+	pub fn or_else(self, f: fn mut() -> Option<T>) -> Option<T> {
+		match self {
+			Some(x) => return Some(x),
+			None => return f(),
+		}
+	}
+
+	// The value if `keep` holds for it.
+	pub fn filter(self, keep: fn mut(&T) -> bool) -> Option<T> {
+		match self {
+			Some(x) => {
+				if keep(&x) {
+					return Some(x)
+				}
+				return None
+			},
+			None => return None,
+		}
+	}
+
+	// `Ok(value)`, or `Err(err)` when there is none.
+	pub fn ok_or<E>(self, err: E) -> Result<T, E> {
+		match self {
+			Some(x) => return Ok(x),
+			None => return Err(err),
+		}
+	}
+
+	// `Ok(value)`, or `Err(f())` when there is none.
+	pub fn ok_or_else<E>(self, f: fn mut() -> E) -> Result<T, E> {
+		match self {
+			Some(x) => return Ok(x),
+			None => return Err(f()),
 		}
 	}
 }
@@ -181,6 +555,62 @@ impl<T, E> Result<T, E> {
 		match self {
 			Ok(_) => return None,
 			Err(e) => return Some(e),
+		}
+	}
+
+	// The success value passed through `f`.
+	pub fn map<U>(self, f: fn mut(T) -> U) -> Result<U, E> {
+		match self {
+			Ok(x) => return Ok(f(x)),
+			Err(e) => return Err(e),
+		}
+	}
+
+	// The error passed through `f`.
+	pub fn map_err<F>(self, f: fn mut(E) -> F) -> Result<T, F> {
+		match self {
+			Ok(x) => return Ok(x),
+			Err(e) => return Err(f(e)),
+		}
+	}
+
+	// `f` of the success value (which may itself fail).
+	pub fn and_then<U>(self, f: fn mut(T) -> Result<U, E>) -> Result<U, E> {
+		match self {
+			Ok(x) => return f(x),
+			Err(e) => return Err(e),
+		}
+	}
+
+	// This result if it succeeded, otherwise `f` of the error.
+	pub fn or_else<F>(self, f: fn mut(E) -> Result<T, F>) -> Result<T, F> {
+		match self {
+			Ok(x) => return Ok(x),
+			Err(e) => return f(e),
+		}
+	}
+
+	// The success value, or `f` of the error.
+	pub fn unwrap_or_else(self, f: fn mut(E) -> T) -> T {
+		match self {
+			Ok(x) => return x,
+			Err(e) => return f(e),
+		}
+	}
+
+	// References to the values.
+	pub fn as_ref(&self) -> Result<&T, &E> {
+		match self {
+			Ok(x) => return Ok(x),
+			Err(e) => return Err(e),
+		}
+	}
+
+	// The error value; panics if the result is Ok.
+	pub fn unwrap_err(self) -> E {
+		match self {
+			Ok(_) => panic("called `unwrap_err` on an `Ok` value"),
+			Err(e) => return e,
 		}
 	}
 }
@@ -444,6 +874,43 @@ impl str {
 		}
 		return true
 	}
+
+	// The characters.
+	pub fn chars<'a>(&'a self) -> std::strings::Chars<'a> {
+		return std::strings::Chars { b: self.as_bytes(), front: 0, back: self.len() }
+	}
+
+	// The characters with their byte offsets.
+	pub fn char_indices<'a>(&'a self) -> std::strings::CharIndices<'a> {
+		return std::strings::CharIndices { b: self.as_bytes(), i: 0 }
+	}
+
+	// The bytes.
+	pub fn bytes<'a>(&'a self) -> std::iter::Iter<'a, u8> {
+		return self.as_bytes().iter()
+	}
+
+	// The number of characters (not bytes).
+	pub fn char_count(&self) -> usize {
+		n mut := 0
+		for b in self.as_bytes() {
+			if *b & 192 != 128 {
+				n += 1
+			}
+		}
+		return n
+	}
+
+	// Whether byte offset `i` is at the start of a character (or the end).
+	pub fn is_char_boundary(&self, i: usize) -> bool {
+		if i == 0 || i == self.len() {
+			return true
+		}
+		if i > self.len() {
+			return false
+		}
+		return self.as_bytes()[i] & 192 != 128
+	}
 }
 
 fn is_space(b: u8) -> bool {
@@ -562,6 +1029,163 @@ impl<T> Box<T> {
 	pub unsafe fn from_raw(p: *mut T) -> Box<T>
 }
 
+impl char {
+	// The character with scalar value `n`; `n` must be valid (see `from_u32`).
+	pub unsafe fn from_u32_unchecked(n: u32) -> char
+
+	// The character with scalar value `n`, if it is one.
+	pub fn from_u32(n: u32) -> Option<char> {
+		if n > 1114111 || (n >= 55296 && n <= 57343) {
+			return None
+		}
+		return Some(unsafe { char::from_u32_unchecked(n) })
+	}
+
+	// The digit `d` in base `radix` (2 to 36): `from_digit(11, 16)` is 'b'.
+	pub fn from_digit(d: u32, radix: u32) -> Option<char> {
+		if radix < 2 || radix > 36 || d >= radix {
+			return None
+		}
+		if d < 10 {
+			return Some(unsafe { char::from_u32_unchecked(48 + d) })
+		}
+		return Some(unsafe { char::from_u32_unchecked(87 + d) })
+	}
+
+	// The value of this digit in base `radix` (2 to 36): '7' is 7, 'f' is 15.
+	pub fn to_digit(self, radix: u32) -> Option<u32> {
+		n := self as u32
+		d := if n >= 48 && n <= 57 {
+			n - 48
+		} else if n >= 97 && n <= 122 {
+			n - 87
+		} else if n >= 65 && n <= 90 {
+			n - 55
+		} else {
+			99
+		}
+		if d < radix {
+			return Some(d)
+		}
+		return None
+	}
+
+	// Whether this is a digit in base `radix`.
+	pub fn is_digit(self, radix: u32) -> bool {
+		return self.to_digit(radix).is_some()
+	}
+
+	// How many bytes this character takes in UTF-8.
+	pub fn len_utf8(self) -> usize {
+		return std::utf8::len(self)
+	}
+
+	pub fn is_ascii(self) -> bool {
+		return (self as u32) < 128
+	}
+
+	pub fn is_ascii_digit(self) -> bool {
+		n := self as u32
+		return n >= 48 && n <= 57
+	}
+
+	pub fn is_ascii_hexdigit(self) -> bool {
+		return self.to_digit(16).is_some()
+	}
+
+	pub fn is_ascii_uppercase(self) -> bool {
+		n := self as u32
+		return n >= 65 && n <= 90
+	}
+
+	pub fn is_ascii_lowercase(self) -> bool {
+		n := self as u32
+		return n >= 97 && n <= 122
+	}
+
+	pub fn is_ascii_alphabetic(self) -> bool {
+		return self.is_ascii_uppercase() || self.is_ascii_lowercase()
+	}
+
+	pub fn is_ascii_alphanumeric(self) -> bool {
+		return self.is_ascii_alphabetic() || self.is_ascii_digit()
+	}
+
+	// Space, tab, newline, form feed, or carriage return.
+	pub fn is_ascii_whitespace(self) -> bool {
+		n := self as u32
+		return n == 32 || n == 9 || n == 10 || n == 12 || n == 13
+	}
+
+	// One of !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~
+	pub fn is_ascii_punctuation(self) -> bool {
+		n := self as u32
+		return (n >= 33 && n <= 47) || (n >= 58 && n <= 64) || (n >= 91 && n <= 96) || (n >= 123 && n <= 126)
+	}
+
+	pub fn to_ascii_uppercase(self) -> char {
+		if self.is_ascii_lowercase() {
+			return unsafe { char::from_u32_unchecked(self as u32 - 32) }
+		}
+		return self
+	}
+
+	pub fn to_ascii_lowercase(self) -> char {
+		if self.is_ascii_uppercase() {
+			return unsafe { char::from_u32_unchecked(self as u32 + 32) }
+		}
+		return self
+	}
+
+	// A letter, in any script.
+	pub fn is_alphabetic(self) -> bool {
+		return std::unicode::is_letter(self)
+	}
+
+	// A number, in any script (see `std::unicode::is_number`).
+	pub fn is_numeric(self) -> bool {
+		return std::unicode::is_number(self)
+	}
+
+	pub fn is_alphanumeric(self) -> bool {
+		return self.is_alphabetic() || self.is_numeric()
+	}
+
+	// Unicode white space.
+	pub fn is_whitespace(self) -> bool {
+		return std::unicode::is_space(self)
+	}
+
+	pub fn is_uppercase(self) -> bool {
+		return std::unicode::is_upper(self)
+	}
+
+	pub fn is_lowercase(self) -> bool {
+		return std::unicode::is_lower(self)
+	}
+
+	pub fn is_control(self) -> bool {
+		return std::unicode::is_control(self)
+	}
+
+	// The uppercase form when it is one character ('ß' stays 'ß').
+	pub fn to_uppercase(self) -> char {
+		return std::unicode::to_upper(self)
+	}
+
+	// The lowercase form when it is one character.
+	pub fn to_lowercase(self) -> char {
+		return std::unicode::to_lower(self)
+	}
+
+	// The character as a one-character string.
+	pub fn to_string(self) -> String {
+		s mut := String::new()
+		s.push_char(self)
+		return s
+	}
+}
+
 impl f64 {
 	pub fn sqrt(self) -> f64
 	pub fn abs(self) -> f64
@@ -584,3 +1208,219 @@ pub fn eprint(s: &str)
 pub fn eprintln(s: &str)
 pub fn panic(msg: &str) -> !
 pub fn assert(cond: bool)
+
+impl Num for i8 {
+	fn zero() -> i8 {
+		return 0
+	}
+
+	fn one() -> i8 {
+		return 1
+	}
+
+	fn add(self, other: i8) -> i8 {
+		return self + other
+	}
+
+	fn mul(self, other: i8) -> i8 {
+		return self * other
+	}
+}
+
+impl Num for i16 {
+	fn zero() -> i16 {
+		return 0
+	}
+
+	fn one() -> i16 {
+		return 1
+	}
+
+	fn add(self, other: i16) -> i16 {
+		return self + other
+	}
+
+	fn mul(self, other: i16) -> i16 {
+		return self * other
+	}
+}
+
+impl Num for i32 {
+	fn zero() -> i32 {
+		return 0
+	}
+
+	fn one() -> i32 {
+		return 1
+	}
+
+	fn add(self, other: i32) -> i32 {
+		return self + other
+	}
+
+	fn mul(self, other: i32) -> i32 {
+		return self * other
+	}
+}
+
+impl Num for i64 {
+	fn zero() -> i64 {
+		return 0
+	}
+
+	fn one() -> i64 {
+		return 1
+	}
+
+	fn add(self, other: i64) -> i64 {
+		return self + other
+	}
+
+	fn mul(self, other: i64) -> i64 {
+		return self * other
+	}
+}
+
+impl Num for isize {
+	fn zero() -> isize {
+		return 0
+	}
+
+	fn one() -> isize {
+		return 1
+	}
+
+	fn add(self, other: isize) -> isize {
+		return self + other
+	}
+
+	fn mul(self, other: isize) -> isize {
+		return self * other
+	}
+}
+
+impl Num for u8 {
+	fn zero() -> u8 {
+		return 0
+	}
+
+	fn one() -> u8 {
+		return 1
+	}
+
+	fn add(self, other: u8) -> u8 {
+		return self + other
+	}
+
+	fn mul(self, other: u8) -> u8 {
+		return self * other
+	}
+}
+
+impl Num for u16 {
+	fn zero() -> u16 {
+		return 0
+	}
+
+	fn one() -> u16 {
+		return 1
+	}
+
+	fn add(self, other: u16) -> u16 {
+		return self + other
+	}
+
+	fn mul(self, other: u16) -> u16 {
+		return self * other
+	}
+}
+
+impl Num for u32 {
+	fn zero() -> u32 {
+		return 0
+	}
+
+	fn one() -> u32 {
+		return 1
+	}
+
+	fn add(self, other: u32) -> u32 {
+		return self + other
+	}
+
+	fn mul(self, other: u32) -> u32 {
+		return self * other
+	}
+}
+
+impl Num for u64 {
+	fn zero() -> u64 {
+		return 0
+	}
+
+	fn one() -> u64 {
+		return 1
+	}
+
+	fn add(self, other: u64) -> u64 {
+		return self + other
+	}
+
+	fn mul(self, other: u64) -> u64 {
+		return self * other
+	}
+}
+
+impl Num for usize {
+	fn zero() -> usize {
+		return 0
+	}
+
+	fn one() -> usize {
+		return 1
+	}
+
+	fn add(self, other: usize) -> usize {
+		return self + other
+	}
+
+	fn mul(self, other: usize) -> usize {
+		return self * other
+	}
+}
+
+impl Num for f32 {
+	fn zero() -> f32 {
+		return 0.0
+	}
+
+	fn one() -> f32 {
+		return 1.0
+	}
+
+	fn add(self, other: f32) -> f32 {
+		return self + other
+	}
+
+	fn mul(self, other: f32) -> f32 {
+		return self * other
+	}
+}
+
+impl Num for f64 {
+	fn zero() -> f64 {
+		return 0.0
+	}
+
+	fn one() -> f64 {
+		return 1.0
+	}
+
+	fn add(self, other: f64) -> f64 {
+		return self + other
+	}
+
+	fn mul(self, other: f64) -> f64 {
+		return self * other
+	}
+}

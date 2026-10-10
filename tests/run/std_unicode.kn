@@ -1,0 +1,41 @@
+import std::strings
+import std::unicode
+import std::utf8
+
+fn main() {
+	s := "héllo, wörld ß Σ 日本"
+	println("{s.len()} {s.char_count()}")
+	up := s.chars().map(|c| c.to_uppercase()).collect()
+	b mut := strings::Builder::new()
+	for c in up {
+		b.push_char(c)
+	}
+	println(b.finish())
+	rev mut := String::new()
+	for c in "abc→d".chars().rev() {
+		rev.push_char(c)
+	}
+	println(rev)
+	for (i, c) in "aé日".char_indices() {
+		print("{i}:{c} ")
+	}
+	println("")
+	println("{unicode::is_letter('日')} {unicode::is_digit('٣')} {unicode::is_space('\u{3000}')} {unicode::is_punct('!')} {unicode::is_symbol('+')}")
+	println("{'A'.to_digit(16).unwrap()} {char::from_digit(11, 16).unwrap()} {char::from_u32(55296).is_none()}")
+	bad mut := Vec::new()
+	bad.push(104 as u8)
+	bad.push(255 as u8)
+	bad.push(105 as u8)
+	println("{utf8::valid(&bad)} {utf8::count(&bad)} {utf8::valid("日本".as_bytes())}")
+	(c, n) := utf8::decode("€x".as_bytes())
+	println("{c} {n} {'€'.len_utf8()}")
+	enc mut := Vec::new()
+	utf8::encode('😀', &mut enc)
+	println("{enc.len()} {String::from_utf8(enc).unwrap()}")
+	parts mut := Vec::new()
+	parts.push("a")
+	parts.push("b")
+	parts.push("c")
+	println(strings::join(&parts, ", "))
+	println("{'x'.to_string()} {"abc".bytes().count()}")
+}

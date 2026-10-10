@@ -479,8 +479,12 @@ Network I/O in a task never blocks an OS thread. The runtime parks the task on i
 
 ### 5.1 Conveniences decided while building the standard library
 
-- **Interpolated strings as `&str`**: an interpolated string literal (which builds a `String`) can be passed where a `&str` is expected; the string lives until the end of the enclosing block. `fs::read_to_string("{dir}/config.toml")` needs no `&`. Other `String` values still need an explicit `&`.
+- **Interpolated strings as `&str`**: an interpolated string literal (which builds a `String`) can be passed where a `&str` is expected; the string is a temporary (see below). `fs::read_to_string("{dir}/config.toml")` needs no `&`. Other `String` values still need an explicit `&`.
 - **Methods on temporaries**: a `&mut self` method can be called on a temporary value, such as `Cursor::from_str("x").read_to_string(&mut s)`.
+- **Temporaries**: a temporary value (a `MutexGuard` from `m.lock()`, an interpolated string, a function result that is only borrowed) is dropped at the end of the statement that creates it, as in Rust, so `println("{m.lock().len()}")` releases the lock right away. A temporary lives to the end of the block when a `let` keeps a borrow of it (`x := s.trim()` on a temporary `s`) or a `defer` uses it. Two guards of the same mutex in one statement still deadlock.
+- **Iterators**: `trait Iterator<T>` takes the item type as a parameter (Kiln has no associated types yet) and requires only `next(&mut self) -> Option<T>`. It provides the adapters `map`, `filter`, `filter_map`, `enumerate`, `zip`, `chain`, `take`, `skip`, `take_while`, `skip_while`, `step_by`, `flat_map`, `peekable`, `inspect`, and the consumers `collect` (to `Vec<T>`), `count`, `last`, `nth`, `fold`, `for_each`, `any`, `all`, `find`, `position`, `min`, `max`, `min_by_key`, `max_by_key`, `sum`, and `product`. `DoubleEndedIterator<T>` adds `next_back` and `rev`. `for x in it` works for any iterator. Slices and arrays have `iter()` (`&T`) and `iter_mut()` (`&mut T`); `Vec` has `into_iter()` (owned `T`; unconsumed items are dropped with the iterator); ranges are iterators; `str` has `chars()`, `char_indices()`, and `bytes()`. `for x in v` over a `Vec` or slice yields references, as before.
+- **Statics**: `static NAME: T = expr` is one global value with a fixed address. Initializers can be any expression; they run before `main`, in source order (a static may read the ones before it). A `static`'s type must be `Sync`, since every task can reach it; it changes through interior mutability (`static HITS: AtomicI64`, `static NAMES: Mutex<Vec<String>>`). `static mut` permits plain assignment but every use needs `unsafe`. References in a static's type are `'static`.
+- **`char` methods**: `from_u32`, `from_digit`, `to_digit`, `is_digit(radix)`, `len_utf8`, the `is_ascii_*` and `to_ascii_*` family, and the Unicode-aware `is_alphabetic`, `is_numeric`, `is_alphanumeric`, `is_whitespace`, `is_uppercase`, `is_lowercase`, `is_control`, `to_uppercase`, and `to_lowercase`. Case mapping returns one `char`; a character whose uppercase is several characters (like `ß`) is unchanged.
 - **Associated functions on enums**: `ErrorKind::from_number(3)` calls a function from an `impl` block of the enum. Variants take priority when names collide.
 - **Structural equality**: `==` on types that derive `Eq` compares field by field: enum variants and payloads, structs, tuples, arrays, `String`, `Vec`, and `Box`, looking through references.
 - **Re-exports**: a plain `import` is private to its module (and the modules nested in it). `pub import` also makes the name reachable through the module's path, so `std::fmt` re-exports the prelude's `Display` with `pub import Display`. Import paths may start with `self::` or `super::`.
@@ -512,7 +516,7 @@ fn main() {
   - The design targets a Polonius-style analysis but starts with NLL.
 - **Interior mutability**: `Cell`, `RefCell`, `Mutex`, `RwLock`, and `Atomic*`.
 - **Concurrency memory model**: C++11/Rust atomics orderings. Safe code cannot cause data races.
-- **`unsafe` blocks** permit:
+- **`unsafe` blocks** permit the following, and the compiler rejects each of them outside `unsafe { }` or an `unsafe fn` body:
   - Dereferencing raw pointers.
   - Calling `unsafe fn` and FFI functions.
   - Accessing `static mut`.

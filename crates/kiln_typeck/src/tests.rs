@@ -695,3 +695,38 @@ fn enum_associated_functions() {
         vec!["no variant or associated function named `B` in enum `E`"]
     );
 }
+
+#[test]
+fn unsafe_operations_need_unsafe() {
+    let src = "unsafe fn danger() {}\nfn main() {\n x mut := 1\n p := &mut x as *mut i32\n *p = 2\n danger()\n unsafe {\n  *p = 3\n  danger()\n }\n}";
+    assert_eq!(
+        errs(src),
+        vec![
+            "dereferencing a raw pointer is unsafe and requires an `unsafe` block",
+            "calling `unsafe fn danger` is unsafe and requires an `unsafe` block",
+        ]
+    );
+    // Inside an `unsafe fn`, no block is needed.
+    assert!(errs("unsafe fn f(p: *mut i32) {\n *p = 1\n}\nfn main() {}").is_empty());
+}
+
+#[test]
+fn statics() {
+    assert!(errs("static N: i32 = 4\nstatic S: &str = \"x\"\nstatic mut M: i32 = 0\nfn main() {\n x := N + 1\n unsafe {\n  M = x\n }\n}").is_empty());
+    assert_eq!(
+        errs("static mut M: i32 = 0\nfn main() {\n M = 1\n}"),
+        vec!["using a `static mut` is unsafe and requires an `unsafe` block"]
+    );
+    assert_eq!(
+        errs("static N: i32 = 0\nfn main() {\n N = 1\n}"),
+        vec!["cannot assign to the immutable static `N`"]
+    );
+    assert_eq!(
+        errs("static P: *mut i32 = 0 as *mut i32\nfn main() {}"),
+        vec!["static `P` has type `*mut i32`, which cannot be shared between tasks safely"]
+    );
+    assert_eq!(
+        errs("static N: i32 = \"no\"\nfn main() {}"),
+        vec!["mismatched types: expected `i32`, found `&str`"]
+    );
+}

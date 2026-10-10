@@ -1,0 +1,474 @@
+// Iterator adapters and the iterators over slices and vectors. The
+// `Iterator<T>` trait itself is in the prelude.
+//
+//	squares := (1..=5).map(|x| x * x).collect()
+//	for (i, name) in names.iter().enumerate() {
+//		println("{i}: {name}")
+//	}
+
+// ----- slices and vectors --------------------------------------------------------
+
+impl<T> [T] {
+	// The elements, by reference.
+	pub fn iter<'a>(&'a self) -> Iter<'a, T> {
+		return Iter { s: self, front: 0, back: self.len() }
+	}
+
+	// The elements, by mutable reference.
+	pub fn iter_mut<'a>(&'a mut self) -> IterMut<'a, T> {
+		n := self.len()
+		return IterMut { p: std::ptr::slice_ptr(self), front: 0, back: n }
+	}
+}
+
+impl<T> Vec<T> {
+	// An iterator that takes the elements out of the vector.
+	pub fn into_iter(self) -> IntoIter<T> {
+		n := self.len()
+		return IntoIter { v: self, front: 0, back: n }
+	}
+}
+
+// An iterator over `&T`, from `slice.iter()` or `vec.iter()`.
+pub struct Iter<'a, T> {
+	s: &'a [T],
+	front: usize,
+	back: usize,
+}
+
+impl<'a, T> Iterator<&'a T> for Iter<'a, T> {
+	fn next(&mut self) -> Option<&'a T> {
+		if self.front >= self.back {
+			return None
+		}
+		s := self.s
+		self.front += 1
+		return Some(&s[self.front - 1])
+	}
+}
+
+impl<'a, T> DoubleEndedIterator<&'a T> for Iter<'a, T> {
+	fn next_back(&mut self) -> Option<&'a T> {
+		if self.front >= self.back {
+			return None
+		}
+		s := self.s
+		self.back -= 1
+		return Some(&s[self.back])
+	}
+}
+
+impl<'a, T> Iter<'a, T> {
+	// How many elements are left.
+	pub fn len(&self) -> usize {
+		return self.back - self.front
+	}
+}
+
+// An iterator over `&mut T`, from `slice.iter_mut()` or `vec.iter_mut()`.
+pub struct IterMut<'a, T> {
+	p: *mut T,
+	front: usize,
+	back: usize,
+}
+
+impl<'a, T> Iterator<&'a mut T> for IterMut<'a, T> {
+	fn next(&mut self) -> Option<&'a mut T> {
+		if self.front >= self.back {
+			return None
+		}
+		self.front += 1
+		// Each element is handed out once, so the references never alias.
+		return Some(unsafe { &mut *std::ptr::add(self.p, self.front - 1) })
+	}
+}
+
+impl<'a, T> DoubleEndedIterator<&'a mut T> for IterMut<'a, T> {
+	fn next_back(&mut self) -> Option<&'a mut T> {
+		if self.front >= self.back {
+			return None
+		}
+		self.back -= 1
+		return Some(unsafe { &mut *std::ptr::add(self.p, self.back) })
+	}
+}
+
+// An iterator that owns a vector's elements, from `vec.into_iter()`.
+// Elements not taken are dropped with the iterator.
+pub struct IntoIter<T> {
+	v: Vec<T>,
+	front: usize,
+	back: usize,
+}
+
+impl<T> Iterator<T> for IntoIter<T> {
+	fn next(&mut self) -> Option<T> {
+		if self.front >= self.back {
+			return None
+		}
+		self.front += 1
+		return Some(unsafe { std::ptr::read(std::ptr::add(self.v.as_ptr(), self.front - 1)) })
+	}
+}
+
+impl<T> DoubleEndedIterator<T> for IntoIter<T> {
+	fn next_back(&mut self) -> Option<T> {
+		if self.front >= self.back {
+			return None
+		}
+		self.back -= 1
+		return Some(unsafe { std::ptr::read(std::ptr::add(self.v.as_ptr(), self.back)) })
+	}
+}
+
+impl<T> Drop for IntoIter<T> {
+	fn drop(&mut self) {
+		unsafe {
+			p := self.v.as_ptr()
+			for i in self.front..self.back {
+				std::ptr::drop_in_place(std::ptr::add(p, i))
+			}
+			// The vector now only frees its buffer.
+			self.v.set_len(0)
+		}
+	}
+}
+
+// ----- reversing -----------------------------------------------------------------
+
+// An iterator that can also take values from the back.
+pub trait DoubleEndedIterator<T>: Iterator<T> {
+	// The last value not yet taken, or None.
+	fn next_back(&mut self) -> Option<T>
+
+	// The values in reverse order.
+	fn rev(self) -> Rev<Self, T> {
+		return Rev { inner: self }
+	}
+}
+
+impl<T> DoubleEndedIterator<T> for Range<T> {
+	fn next_back(&mut self) -> Option<T>
+}
+
+// See `DoubleEndedIterator::rev`.
+pub struct Rev<I, T> {
+	inner: I,
+}
+
+impl<I: DoubleEndedIterator<T>, T> Iterator<T> for Rev<I, T> {
+	fn next(&mut self) -> Option<T> {
+		return self.inner.next_back()
+	}
+}
+
+// ----- adapters (see the methods of `Iterator`) ---------------------------------------
+
+pub struct Map<I, T, U> {
+	inner: I,
+	f: fn mut(T) -> U,
+}
+
+impl<I: Iterator<T>, T, U> Iterator<U> for Map<I, T, U> {
+	fn next(&mut self) -> Option<U> {
+		x := self.inner.next()?
+		return Some((self.f)(x))
+	}
+}
+
+pub struct Filter<I, T> {
+	inner: I,
+	keep: fn mut(&T) -> bool,
+}
+
+impl<I: Iterator<T>, T> Iterator<T> for Filter<I, T> {
+	fn next(&mut self) -> Option<T> {
+		while let Some(x) = self.inner.next() {
+			if (self.keep)(&x) {
+				return Some(x)
+			}
+		}
+		return None
+	}
+}
+
+pub struct FilterMap<I, T, U> {
+	inner: I,
+	f: fn mut(T) -> Option<U>,
+}
+
+impl<I: Iterator<T>, T, U> Iterator<U> for FilterMap<I, T, U> {
+	fn next(&mut self) -> Option<U> {
+		while let Some(x) = self.inner.next() {
+			if let Some(y) = (self.f)(x) {
+				return Some(y)
+			}
+		}
+		return None
+	}
+}
+
+pub struct Enumerate<I, T> {
+	inner: I,
+	n: usize,
+}
+
+impl<I: Iterator<T>, T> Iterator<(usize, T)> for Enumerate<I, T> {
+	fn next(&mut self) -> Option<(usize, T)> {
+		x := self.inner.next()?
+		self.n += 1
+		return Some((self.n - 1, x))
+	}
+}
+
+pub struct Zip<I, J, T, U> {
+	a: I,
+	b: J,
+}
+
+impl<I: Iterator<T>, J: Iterator<U>, T, U> Iterator<(T, U)> for Zip<I, J, T, U> {
+	fn next(&mut self) -> Option<(T, U)> {
+		x := self.a.next()?
+		y := self.b.next()?
+		return Some((x, y))
+	}
+}
+
+pub struct Chain<I, J, T> {
+	a: I,
+	b: J,
+	first: bool,
+}
+
+impl<I: Iterator<T>, J: Iterator<T>, T> Iterator<T> for Chain<I, J, T> {
+	fn next(&mut self) -> Option<T> {
+		if self.first {
+			if let Some(x) = self.a.next() {
+				return Some(x)
+			}
+			self.first = false
+		}
+		return self.b.next()
+	}
+}
+
+pub struct Take<I, T> {
+	inner: I,
+	left: usize,
+}
+
+impl<I: Iterator<T>, T> Iterator<T> for Take<I, T> {
+	fn next(&mut self) -> Option<T> {
+		if self.left == 0 {
+			return None
+		}
+		self.left -= 1
+		return self.inner.next()
+	}
+}
+
+pub struct Skip<I, T> {
+	inner: I,
+	n: usize,
+}
+
+impl<I: Iterator<T>, T> Iterator<T> for Skip<I, T> {
+	fn next(&mut self) -> Option<T> {
+		while self.n > 0 {
+			self.n -= 1
+			self.inner.next()?
+		}
+		return self.inner.next()
+	}
+}
+
+pub struct TakeWhile<I, T> {
+	inner: I,
+	f: fn mut(&T) -> bool,
+	done: bool,
+}
+
+impl<I: Iterator<T>, T> Iterator<T> for TakeWhile<I, T> {
+	fn next(&mut self) -> Option<T> {
+		if self.done {
+			return None
+		}
+		x := self.inner.next()?
+		if (self.f)(&x) {
+			return Some(x)
+		}
+		self.done = true
+		return None
+	}
+}
+
+pub struct SkipWhile<I, T> {
+	inner: I,
+	f: fn mut(&T) -> bool,
+	started: bool,
+}
+
+impl<I: Iterator<T>, T> Iterator<T> for SkipWhile<I, T> {
+	fn next(&mut self) -> Option<T> {
+		if self.started {
+			return self.inner.next()
+		}
+		while let Some(x) = self.inner.next() {
+			if !(self.f)(&x) {
+				self.started = true
+				return Some(x)
+			}
+		}
+		return None
+	}
+}
+
+pub struct StepBy<I, T> {
+	inner: I,
+	step: usize,
+	first: bool,
+}
+
+impl<I: Iterator<T>, T> Iterator<T> for StepBy<I, T> {
+	fn next(&mut self) -> Option<T> {
+		if self.first {
+			self.first = false
+			return self.inner.next()
+		}
+		return self.inner.nth(self.step - 1)
+	}
+}
+
+pub struct FlatMap<I, T, J, U> {
+	inner: I,
+	f: fn mut(T) -> J,
+	cur: Option<J>,
+}
+
+impl<I: Iterator<T>, T, J: Iterator<U>, U> Iterator<U> for FlatMap<I, T, J, U> {
+	fn next(&mut self) -> Option<U> {
+		loop {
+			if let Some(j) = &mut self.cur {
+				if let Some(x) = j.next() {
+					return Some(x)
+				}
+			}
+			x := self.inner.next()?
+			self.cur = Some((self.f)(x))
+		}
+	}
+}
+
+pub struct Peekable<I, T> {
+	inner: I,
+	peeked: Option<Option<T>>,
+}
+
+impl<I: Iterator<T>, T> Peekable<I, T> {
+	// The next value without taking it.
+	pub fn peek(&mut self) -> Option<&T> {
+		if self.peeked.is_none() {
+			self.peeked = Some(self.inner.next())
+		}
+		match &self.peeked {
+			Some(Some(x)) => return Some(x),
+			_ => return None,
+		}
+	}
+
+	// Takes the next value if `f` holds for it.
+	pub fn next_if(&mut self, f: fn mut(&T) -> bool) -> Option<T> {
+		ok := match self.peek() {
+			Some(x) => f(x),
+			None => false,
+		}
+		if ok {
+			return self.next()
+		}
+		return None
+	}
+}
+
+impl<I: Iterator<T>, T> Iterator<T> for Peekable<I, T> {
+	fn next(&mut self) -> Option<T> {
+		match self.peeked.take() {
+			Some(v) => return v,
+			None => return self.inner.next(),
+		}
+	}
+}
+
+pub struct Inspect<I, T> {
+	inner: I,
+	f: fn mut(&T),
+}
+
+impl<I: Iterator<T>, T> Iterator<T> for Inspect<I, T> {
+	fn next(&mut self) -> Option<T> {
+		x := self.inner.next()?
+		(self.f)(&x)
+		return Some(x)
+	}
+}
+
+// ----- sources -------------------------------------------------------------------------
+
+// An iterator that calls `f` for each value until it returns None.
+pub fn from_fn<T>(f: fn mut() -> Option<T>) -> FromFn<T> {
+	return FromFn { f: f }
+}
+
+pub struct FromFn<T> {
+	f: fn mut() -> Option<T>,
+}
+
+impl<T> Iterator<T> for FromFn<T> {
+	fn next(&mut self) -> Option<T> {
+		return (self.f)()
+	}
+}
+
+// An iterator that yields `value` forever (combine with `take`).
+pub fn repeat<T: Clone>(value: T) -> Repeat<T> {
+	return Repeat { value: value }
+}
+
+pub struct Repeat<T> {
+	value: T,
+}
+
+impl<T: Clone> Iterator<T> for Repeat<T> {
+	fn next(&mut self) -> Option<T> {
+		return Some(self.value.clone())
+	}
+}
+
+// An iterator with no values.
+pub fn empty<T>() -> Empty<T> {
+	return Empty { done: true }
+}
+
+pub struct Empty<T> {
+	done: bool,
+}
+
+impl<T> Iterator<T> for Empty<T> {
+	fn next(&mut self) -> Option<T> {
+		return None
+	}
+}
+
+// An iterator with exactly one value.
+pub fn once<T>(value: T) -> Once<T> {
+	return Once { value: Some(value) }
+}
+
+pub struct Once<T> {
+	value: Option<T>,
+}
+
+impl<T> Iterator<T> for Once<T> {
+	fn next(&mut self) -> Option<T> {
+		return self.value.take()
+	}
+}

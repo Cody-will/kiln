@@ -5,10 +5,12 @@ fn main() {
     println!("cargo:rerun-if-changed=runtime/kiln_rt.c");
     println!("cargo:rerun-if-changed=runtime/kiln_sched.c");
     println!("cargo:rerun-if-changed=runtime/kiln_std.c");
+    println!("cargo:rerun-if-changed=runtime/kiln_unicode.c");
     cc::Build::new()
         .file("runtime/kiln_rt.c")
         .file("runtime/kiln_sched.c")
         .file("runtime/kiln_std.c")
+        .file("runtime/kiln_unicode.c")
         .opt_level(2)
         .warnings(true)
         .cargo_metadata(false)

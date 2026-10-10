@@ -5,6 +5,7 @@
 use crate::func::FnCx;
 use crate::Codegen;
 use cranelift_codegen::ir::{condcodes::IntCC, types, InstBuilder, Value};
+use cranelift_module::Module;
 use kiln_mir::Operand;
 use kiln_parser::ast::TypeKind;
 use kiln_typeck::ty::Ty;
@@ -344,6 +345,14 @@ impl FnCx<'_, '_, '_, '_> {
     pub(crate) fn intrinsic(&mut self, name: &str, args: &[Operand], dest: Value, dt: &Ty) {
         let short = name.rsplit("::").next().unwrap_or(name);
         let ty_name = name.split("::").next().unwrap_or("");
+        if let Some(n) = name.strip_prefix("static_addr:") {
+            let d = kiln_resolve::DefId(n.parse().unwrap_or(0));
+            let id = self.cg.static_data(d);
+            let gv = self.cg.module.declare_data_in_func(id, self.b.func);
+            let a = self.b.ins().global_value(types::I64, gv);
+            self.store(a, dest, 0);
+            return;
+        }
         if name.starts_with("select:") {
             return self.select(name, args, dest);
         }
@@ -570,6 +579,11 @@ impl FnCx<'_, '_, '_, '_> {
                     self.call_rt("kn_vec_reserve", &[dest, n, s, a]);
                 }
             }
+            ("char", "from_u32_unchecked") => {
+                // A `char` is its scalar value in 4 bytes.
+                let v = self.op_scalar(&args[0]);
+                self.store(v, dest, 0);
+            }
             ("Vec", "len") => {
                 let v = self.op_scalar(&args[0]);
                 let n = self.load(types::I64, v, 16);
@@ -598,6 +612,106 @@ impl FnCx<'_, '_, '_, '_> {
                 self.store_op(&args[1], at);
                 let len2 = self.b.ins().iadd_imm(len, 1);
                 self.store(len2, v, 16);
+            }
+            ("Range", "next_back") => {
+                // args: &mut Range<T>. Yields the last value and shrinks `end`.
+                let rt = match self.op_ty(&args[0]) {
+                    Ty::Ref(_, t) => *t,
+                    t => t,
+                };
+                let r = self.op_scalar(&args[0]);
+                let (soff, et) = self.cg.field(&rt, "start");
+                let (eoff, _) = self.cg.field(&rt, "end");
+                let (ioff, _) = self.cg.field(&rt, "incl");
+                let (poff, _) = self.cg.field(dt, "Some.0");
+                let ct = self.cg.scalar(&et).unwrap_or(types::I64);
+                let (lt, le) = if Self::is_signed(&et) {
+                    (IntCC::SignedLessThan, IntCC::SignedLessThanOrEqual)
+                } else {
+                    (IntCC::UnsignedLessThan, IntCC::UnsignedLessThanOrEqual)
+                };
+                let s = self.load(ct, r, soff as i32);
+                let e = self.load(ct, r, eoff as i32);
+                let incl = self.load(types::I8, r, ioff as i32);
+                let none = self.b.ins().iconst(types::I32, 1);
+                self.store(none, dest, 0);
+                let excl = self.b.ins().icmp_imm(IntCC::Equal, incl, 0);
+                let below = self.b.ins().icmp(lt, s, e);
+                let go_excl = self.b.ins().band(excl, below);
+                self.when(go_excl, |cx| {
+                    let e1 = cx.b.ins().iadd_imm(e, -1);
+                    cx.store(e1, r, eoff as i32);
+                    cx.store(e1, dest, poff as i32);
+                    let some = cx.b.ins().iconst(types::I32, 0);
+                    cx.store(some, dest, 0);
+                });
+                let is_incl = self.b.ins().icmp_imm(IntCC::Equal, incl, 1);
+                let within = self.b.ins().icmp(le, s, e);
+                let go_incl = self.b.ins().band(is_incl, within);
+                self.when(go_incl, |cx| {
+                    cx.store(e, dest, poff as i32);
+                    let last = cx.b.ins().icmp(IntCC::Equal, s, e);
+                    let two = cx.b.ins().iconst(types::I8, 2);
+                    let one = cx.b.ins().iconst(types::I8, 1);
+                    let ni = cx.b.ins().select(last, two, one);
+                    cx.store(ni, r, ioff as i32);
+                    let e1 = cx.b.ins().iadd_imm(e, -1);
+                    let ne = cx.b.ins().select(last, e, e1);
+                    cx.store(ne, r, eoff as i32);
+                    let some = cx.b.ins().iconst(types::I32, 0);
+                    cx.store(some, dest, 0);
+                });
+            }
+            ("Range", "next") => {
+                // args: &mut Range<T>. Yields start and advances it.
+                let rt = match self.op_ty(&args[0]) {
+                    Ty::Ref(_, t) => *t,
+                    t => t,
+                };
+                let r = self.op_scalar(&args[0]);
+                let (soff, et) = self.cg.field(&rt, "start");
+                let (eoff, _) = self.cg.field(&rt, "end");
+                let (ioff, _) = self.cg.field(&rt, "incl");
+                let (poff, _) = self.cg.field(dt, "Some.0");
+                let ct = self.cg.scalar(&et).unwrap_or(types::I64);
+                let signed = Self::is_signed(&et);
+                let (lt, le) = if signed {
+                    (IntCC::SignedLessThan, IntCC::SignedLessThanOrEqual)
+                } else {
+                    (IntCC::UnsignedLessThan, IntCC::UnsignedLessThanOrEqual)
+                };
+                let s = self.load(ct, r, soff as i32);
+                let e = self.load(ct, r, eoff as i32);
+                let incl = self.load(types::I8, r, ioff as i32);
+                let none = self.b.ins().iconst(types::I32, 1);
+                self.store(none, dest, 0);
+                let excl = self.b.ins().icmp_imm(IntCC::Equal, incl, 0);
+                let below = self.b.ins().icmp(lt, s, e);
+                let go_excl = self.b.ins().band(excl, below);
+                self.when(go_excl, |cx| {
+                    cx.store(s, dest, poff as i32);
+                    let s1 = cx.b.ins().iadd_imm(s, 1);
+                    cx.store(s1, r, soff as i32);
+                    let some = cx.b.ins().iconst(types::I32, 0);
+                    cx.store(some, dest, 0);
+                });
+                let is_incl = self.b.ins().icmp_imm(IntCC::Equal, incl, 1);
+                let within = self.b.ins().icmp(le, s, e);
+                let go_incl = self.b.ins().band(is_incl, within);
+                self.when(go_incl, |cx| {
+                    cx.store(s, dest, poff as i32);
+                    let last = cx.b.ins().icmp(IntCC::Equal, s, e);
+                    // At the end: mark it used up rather than overflow past `end`.
+                    let two = cx.b.ins().iconst(types::I8, 2);
+                    let one = cx.b.ins().iconst(types::I8, 1);
+                    let ni = cx.b.ins().select(last, two, one);
+                    cx.store(ni, r, ioff as i32);
+                    let s1 = cx.b.ins().iadd_imm(s, 1);
+                    let ns = cx.b.ins().select(last, s, s1);
+                    cx.store(ns, r, soff as i32);
+                    let some = cx.b.ins().iconst(types::I32, 0);
+                    cx.store(some, dest, 0);
+                });
             }
             ("Vec", "pop") => {
                 let vt = self.op_ty(&args[0]);

@@ -1,0 +1,117 @@
+fn main() {
+	more()
+	v mut := Vec::new()
+	for i in 1..=5 {
+		v.push(i)
+	}
+	sq := v.iter().map(|x| *x * *x).collect()
+	println("{sq.len()} {sq[0]} {sq[4]}")
+	evens := (0..10).filter(|x| *x % 2 == 0).collect()
+	println("{evens.len()} {evens[4]}")
+	for (i, x) in v.iter().enumerate() {
+		if i == 2 {
+			println("v[{i}] = {*x}")
+		}
+	}
+	total := v.iter().map(|x| *x).sum()
+	println("sum {total} prod {(1..=5).product()}")
+	println("rev {(0..5).rev().collect().len()} last {(0..5).rev().next().unwrap()}")
+	println("incl {(1..=3).count()} {(0..=255 as u8).count()}")
+	for x in v.iter_mut() {
+		*x *= 10
+	}
+	println("{v[0]} {v[4]}")
+	names mut := Vec::new()
+	names.push(String::from("ann"))
+	names.push(String::from("bob"))
+	names.push(String::from("cy"))
+	for n in names.iter().rev() {
+		println(n)
+	}
+	lens := names.iter().map(|s| s.len()).collect()
+	println("{lens[2]}")
+	owned := names.into_iter().filter(|s| s.len() == 3).collect()
+	println("{owned.len()} {owned[1]}")
+	z := (1..4).zip(10..20).map(|p| p.0 + p.1).collect()
+	println("{z.len()} {z[2]}")
+	c := (0..3).chain(7..9).skip(1).step_by(2).collect()
+	println("{c.len()} {c[0]} {c[1]}")
+	tw := (1..100).take_while(|x| *x < 4).count()
+	sw := (1..10).skip_while(|x| *x < 8).collect()
+	println("{tw} {sw[0]}")
+	m := (3..8).max().unwrap()
+	mn := (3..8).min().unwrap()
+	println("{m} {mn}")
+	f := (1..10).find(|x| *x * *x > 20)
+	println("{f.unwrap()} {(1..10).position(|x| x == 4).unwrap()}")
+	acc mut := 0
+	(1..4).for_each(|x| {
+		acc += x
+	})
+	println("{acc} {(1..5).fold(0, |a, x| a + x)}")
+	p mut := (1..4).peekable()
+	pk := *p.peek().unwrap()
+	a1 := p.next().unwrap()
+	a2 := p.next().unwrap()
+	println("{pk} {a1} {a2}")
+	fm := (1..4).flat_map(|x| 0..x).count()
+	println("{fm}")
+	any := (1..5).any(|x| x == 3)
+	all := (1..5).all(|x| x < 3)
+	println("{any} {all}")
+	part := v.iter().map(|x| *x).take(2).collect()
+	println("{part[1]}")
+}
+
+struct D {
+	n: i32,
+}
+
+impl Drop for D {
+	fn drop(&mut self) {
+		println("drop {self.n}")
+	}
+}
+
+// Iterating by value moves the elements out; those not taken are dropped
+// with the iterator, each exactly once.
+fn partial() {
+	v mut := Vec::new()
+	for i in 0..4 {
+		v.push(D { n: i })
+	}
+	it mut := v.into_iter()
+	a := it.next().unwrap()
+	b := it.next_back().unwrap()
+	println("took {a.n} {b.n}")
+}
+
+// Generic code over any iterator.
+fn total<I: Iterator<i32>>(it: I) -> i32 {
+	s mut := 0
+	for x in it {
+		s += x
+	}
+	return s
+}
+
+fn evens<I: Iterator<T>, T>(it: I) -> Vec<T> {
+	return it.step_by(2).collect()
+}
+
+fn more() {
+	partial()
+	println("{total((1..4).map(|x| x * 2))} {total(std::iter::once(7))}")
+	e := evens("abcde".chars())
+	println("{e.len()} {e[2]}")
+	counter mut := 0
+	gen := std::iter::from_fn(|| {
+		counter += 1
+		if counter > 3 {
+			return None
+		}
+		return Some(counter)
+	})
+	println("{gen.sum()}")
+	println("{std::iter::repeat(5).take(3).sum()} {std::iter::empty::<i32>().count()}")
+}

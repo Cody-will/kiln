@@ -1,0 +1,143 @@
+// UTF-8 encoding and decoding of bytes, for code that handles text that may
+// not be valid (a `str` is always valid UTF-8).
+//
+//	(c, n) := utf8::decode(bytes)    // ('é', 2), or (REPLACEMENT, 1) if invalid
+
+// The character that stands in for invalid input: U+FFFD.
+pub const REPLACEMENT: char = '\u{FFFD}'
+
+// The largest Unicode scalar value.
+pub const MAX: char = '\u{10FFFF}'
+
+// The most bytes one character takes.
+pub const MAX_LEN: usize = 4
+
+// How many bytes `c` takes in UTF-8.
+pub fn len(c: char) -> usize {
+	n := c as u32
+	if n < 128 {
+		return 1
+	}
+	if n < 2048 {
+		return 2
+	}
+	if n < 65536 {
+		return 3
+	}
+	return 4
+}
+
+// Whether `b` is a continuation byte (`10xxxxxx`).
+pub fn is_continuation(b: u8) -> bool {
+	return b & 192 == 128
+}
+
+// Whether `n` is a Unicode scalar value (a valid `char`).
+pub fn valid_char(n: u32) -> bool {
+	return n <= 1114111 && !(n >= 55296 && n <= 57343)
+}
+
+// Decodes the first character of `b`: the character and its length. Invalid
+// or truncated input gives `(REPLACEMENT, 1)`; empty input `(REPLACEMENT, 0)`.
+pub fn decode(b: &[u8]) -> (char, usize) {
+	if b.len() == 0 {
+		return (REPLACEMENT, 0)
+	}
+	b0 := b[0] as u32
+	if b0 < 128 {
+		return (unsafe { char::from_u32_unchecked(b0) }, 1)
+	}
+	(need, min, init) := if b0 & 224 == 192 {
+		(1, 128, b0 & 31)
+	} else if b0 & 240 == 224 {
+		(2, 2048, b0 & 15)
+	} else if b0 & 248 == 240 {
+		(3, 65536, b0 & 7)
+	} else {
+		(0, 0, 0)
+	}
+	if need == 0 || b.len() <= need {
+		return (REPLACEMENT, 1)
+	}
+	n mut := init
+	for i in 1..=need {
+		if !is_continuation(b[i]) {
+			return (REPLACEMENT, 1)
+		}
+		n = (n << 6) | (b[i] as u32 & 63)
+	}
+	if n < min || !valid_char(n) {
+		return (REPLACEMENT, 1)
+	}
+	return (unsafe { char::from_u32_unchecked(n) }, need + 1)
+}
+
+// Decodes the last character of `b` (see `decode`).
+pub fn decode_last(b: &[u8]) -> (char, usize) {
+	if b.len() == 0 {
+		return (REPLACEMENT, 0)
+	}
+	start mut := b.len() - 1
+	while start > 0 && b.len() - start < 4 && is_continuation(b[start]) {
+		start -= 1
+	}
+	(c, n) := decode(&b[start..])
+	if start + n != b.len() {
+		return (REPLACEMENT, 1)
+	}
+	return (c, n)
+}
+
+// Appends the UTF-8 encoding of `c` to `out`; returns the number of bytes.
+pub fn encode(c: char, out: &mut Vec<u8>) -> usize {
+	n := c as u32
+	if n < 128 {
+		out.push(n as u8)
+		return 1
+	}
+	if n < 2048 {
+		out.push((192 | (n >> 6)) as u8)
+		out.push((128 | (n & 63)) as u8)
+		return 2
+	}
+	if n < 65536 {
+		out.push((224 | (n >> 12)) as u8)
+		out.push((128 | ((n >> 6) & 63)) as u8)
+		out.push((128 | (n & 63)) as u8)
+		return 3
+	}
+	out.push((240 | (n >> 18)) as u8)
+	out.push((128 | ((n >> 12) & 63)) as u8)
+	out.push((128 | ((n >> 6) & 63)) as u8)
+	out.push((128 | (n & 63)) as u8)
+	return 4
+}
+
+// Whether `b` is entirely valid UTF-8.
+pub fn valid(b: &[u8]) -> bool {
+	i mut := 0
+	while i < b.len() {
+		if b[i] < 128 {
+			i += 1
+			continue
+		}
+		(c, n) := decode(&b[i..])
+		if n == 1 {
+			return false
+		}
+		i += n
+	}
+	return true
+}
+
+// The number of characters in `b` (each invalid byte counts as one).
+pub fn count(b: &[u8]) -> usize {
+	i mut := 0
+	n mut := 0
+	while i < b.len() {
+		(_, k) := decode(&b[i..])
+		i += k
+		n += 1
+	}
+	return n
+}

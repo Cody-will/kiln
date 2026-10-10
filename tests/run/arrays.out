@@ -4,6 +4,6 @@ zeros 16 0
 saw 1
 drop 1
 drop 2
+drop 3
 grid 3
 end
-drop 3

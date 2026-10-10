@@ -9,7 +9,8 @@
 //! * Enums: a `u32` tag at offset 0, then the active variant's fields starting
 //!   at a common payload offset.
 //! * Function values (closures, fn items as values): `{ code, env }`.
-//! * `Range<T>`: `{ start, end }`.
+//! * `Range<T>`: `{ start, end, incl: u8 }` (`incl`: 0 for `a..b`, 1 for
+//!   `a..=b`, 2 once an inclusive range is used up).
 
 use crate::Codegen;
 use cranelift_codegen::ir::{types, Type};
@@ -130,7 +131,7 @@ impl Codegen<'_, '_> {
             }
             Ty::Adt(_, a) if self.is_lang(t, "Range") => {
                 let e = self.layout(&a[0]);
-                sequential(&[e, e]).1
+                sequential(&[e, e, Layout { size: 1, align: 1 }]).1
             }
             Ty::Adt(d, _) => match self.r.def(*d).kind {
                 DefKind::Enum => {
@@ -212,14 +213,11 @@ impl Codegen<'_, '_> {
             }
             Ty::Adt(_, a) if self.is_lang(t, "Range") => {
                 let e = self.layout(&a[0]);
-                (
-                    if name == "end" {
-                        align_up(e.size, e.align)
-                    } else {
-                        0
-                    },
-                    a[0].clone(),
-                )
+                match name {
+                    "end" => (align_up(e.size, e.align), a[0].clone()),
+                    "incl" => (align_up(e.size, e.align) + e.size, Ty::Prim(PrimTy::U8)),
+                    _ => (0, a[0].clone()),
+                }
             }
             Ty::Adt(d, _) => {
                 if let Some((vname, f)) = name.split_once('.') {

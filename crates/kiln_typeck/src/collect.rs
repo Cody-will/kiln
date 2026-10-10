@@ -39,6 +39,9 @@ pub(crate) struct FnSig {
     pub outer_generics: Vec<String>,
     /// `(param name, trait)` bounds in scope, including the enclosing impl's.
     pub bounds: Vec<(String, DefId)>,
+    /// The same bounds with their trait arguments: `I: Iterator<T>` is
+    /// `("I", Iterator, [T])`.
+    pub bound_args: Vec<(String, DefId, Vec<Ty>)>,
     pub self_param: Option<SelfParam>,
     pub params: Vec<Ty>,
     pub ret: Ty,
@@ -494,23 +497,29 @@ impl<'r, 'a> Checker<'r, 'a> {
     fn lower_sig(&mut self, i: usize) -> FnSig {
         let f = self.r.fns[i].clone();
         let mut bounds = Vec::new();
+        let mut bound_args = Vec::new();
         let mut outer_generics = Vec::new();
         let self_ty = if let Some(idx) = f.impl_idx {
             let decl = self.r.impls[idx].decl;
             outer_generics = generic_names(&decl.generics);
             self.push_bounds(&decl.generics, None, &mut bounds);
+            self.push_bound_args(&decl.generics, None, &mut bound_args);
             Some(self.impls[idx].self_ty.clone())
         } else if let Some(t) = f.trait_def {
             bounds.push(("Self".to_string(), t));
             if let Some(ItemKind::Trait(td)) = self.r.def(t).item.map(|i| &i.kind) {
                 outer_generics = generic_names(&td.generics);
             }
+            // Inside a trait, `Self: Trait<its own parameters>`.
+            let own = outer_generics.iter().cloned().map(Ty::Param).collect();
+            bound_args.push(("Self".to_string(), t, own));
             None
         } else {
             None
         };
         let sty = self_ty.as_ref();
         self.push_bounds(&f.decl.generics, sty, &mut bounds);
+        self.push_bound_args(&f.decl.generics, sty, &mut bound_args);
         let params = f
             .decl
             .params
@@ -527,10 +536,43 @@ impl<'r, 'a> Checker<'r, 'a> {
             generics: generic_names(&f.decl.generics),
             outer_generics,
             bounds,
+            bound_args,
             self_param: f.decl.self_param.clone(),
             params,
             ret,
             has_body: f.decl.body.is_some(),
+        }
+    }
+
+    /// Like [`push_bounds`], keeping each bound's trait arguments.
+    fn push_bound_args(
+        &mut self,
+        g: &ast::Generics,
+        self_ty: Option<&Ty>,
+        out: &mut Vec<(String, DefId, Vec<Ty>)>,
+    ) {
+        let mut one = |s: &mut Self, name: &str, bounds: &[Bound]| {
+            for b in bounds {
+                if let Bound::Trait { path, maybe: false } = b {
+                    if let Res::Def(d) = s.r.path(path.span) {
+                        if s.r.def(d).kind == DefKind::Trait {
+                            let args =
+                                s.lower_args(&path.segments.last().unwrap().args, self_ty, false);
+                            out.push((name.to_string(), d, args));
+                        }
+                    }
+                }
+            }
+        };
+        for p in &g.params {
+            if let GenericParam::Type { name, bounds, .. } = p {
+                one(self, &name.name, bounds);
+            }
+        }
+        for w in g.where_clause.iter().filter(|w| w.lifetime.is_none()) {
+            if let Ty::Param(n) = self.lower_ty(&w.ty, self_ty, false) {
+                one(self, &n, &w.bounds);
+            }
         }
     }
 

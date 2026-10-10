@@ -23,6 +23,9 @@ struct Method {
     ret: Ty,
     /// Trait bound obligations from the method's generics.
     obligations: Vec<(Ty, DefId)>,
+    /// Bounds with trait arguments (`I: Iterator<T>`), used to infer `T`
+    /// from `I`'s impl.
+    arg_obligations: Vec<(Ty, DefId, Vec<Ty>)>,
     /// Index into `Resolved::fns` of the callee, when it is a declared function.
     fn_idx: Option<usize>,
     /// Generic substitution used to instantiate the callee (including `Self` for trait methods).
@@ -61,6 +64,9 @@ pub struct FnResults {
     pub coercions: HashMap<Span, Ty>,
     /// Trait bounds in scope (`(param, trait)`).
     pub bounds: Vec<(String, DefId)>,
+    /// `for` loops over an `Iterator`: loop span → element type. The `next`
+    /// method is in `callees`/`callee_substs` under the same span.
+    pub iter_items: HashMap<Span, Ty>,
 }
 
 /// Per-function checking state.
@@ -71,13 +77,21 @@ pub struct Body<'c, 'r, 'a> {
     rets: Vec<Ty>,
     loops: Vec<LoopCx>,
     bounds: Vec<(String, DefId)>,
+    /// Bounds with trait arguments (see `FnSig::bound_args`).
+    bound_args: Vec<(String, DefId, Vec<Ty>)>,
+    /// Nesting depth of `unsafe` blocks (1 inside an `unsafe fn`).
+    unsafe_depth: usize,
     self_ty: Option<Ty>,
     tys: HashMap<Span, Ty>,
     obligations: Vec<(Ty, DefId, Span)>,
+    /// Pending `(type, trait, trait args)` bounds whose args are inferred
+    /// from the type's impl once it is known.
+    arg_obligations: Vec<(Ty, DefId, Vec<Ty>)>,
     declared: Vec<(LocalId, Span)>,
     methods: HashMap<Span, MethodInfo>,
     callees: HashMap<Span, usize>,
     callee_substs: HashMap<Span, HashMap<String, Ty>>,
+    iter_items: HashMap<Span, Ty>,
     coercions: Vec<(Span, Ty, Ty)>,
     /// Spans of interpolated string literals (which may coerce to `&str`).
     interp_spans: HashSet<Span>,
@@ -99,13 +113,17 @@ impl<'c, 'r, 'a> Body<'c, 'r, 'a> {
             rets: vec![],
             loops: vec![],
             bounds,
+            bound_args: vec![],
+            unsafe_depth: 0,
             self_ty: None,
             tys: HashMap::new(),
             obligations: vec![],
+            arg_obligations: vec![],
             declared: vec![],
             methods: HashMap::new(),
             callees: HashMap::new(),
             callee_substs: HashMap::new(),
+            iter_items: HashMap::new(),
             coercions: vec![],
             interp_spans: HashSet::new(),
             auto_stack: vec![],
@@ -129,6 +147,31 @@ impl Checker<'_, '_> {
             self.check_fn(i);
         }
         self.check_main();
+        self.check_statics();
+    }
+
+    /// A `static` is shared by every task, so its type must be `Sync`
+    /// (`static mut` is exempt: every use is `unsafe`).
+    fn check_statics(&mut self) {
+        let Some(sync) = self.r.prelude_type("Sync") else {
+            return;
+        };
+        for &(d, i) in &self.r.statics.clone() {
+            let def = self.r.def(d);
+            if matches!(def.item.map(|it| &it.kind), Some(ItemKind::Static { mutable: true, .. })) {
+                continue;
+            }
+            let (name, span) = (def.name.clone(), self.r.fns[i].decl.name.span);
+            let t = self.sigs[i].ret.clone();
+            if !Body::detached(self, vec![]).implements(&t, sync) {
+                let tn = self.fmt_ty(&t);
+                self.error_help(
+                    format!("static `{name}` has type `{tn}`, which cannot be shared between tasks safely"),
+                    span,
+                    "statics are shared by every task, so their type must be `Sync`; wrap the value in a `Mutex` or use an atomic",
+                );
+            }
+        }
     }
 
     fn check_main(&mut self) {
@@ -175,13 +218,17 @@ impl Checker<'_, '_> {
             rets: vec![sig.ret.clone()],
             loops: Vec::new(),
             bounds: sig.bounds.clone(),
+            bound_args: sig.bound_args.clone(),
+            unsafe_depth: f.decl.is_unsafe as usize,
             self_ty: self_ty.clone(),
             tys: HashMap::new(),
             obligations: Vec::new(),
+            arg_obligations: Vec::new(),
             declared: Vec::new(),
             methods: HashMap::new(),
             callees: HashMap::new(),
             callee_substs: HashMap::new(),
+            iter_items: HashMap::new(),
             coercions: vec![],
             interp_spans: HashSet::new(),
             auto_stack: Vec::new(),
@@ -276,10 +323,59 @@ impl Body<'_, '_, '_> {
                 })
                 .collect(),
             bounds: self.bounds.clone(),
+            iter_items: self.iter_items.iter().map(|(k, v)| (*k, z(self.c, v))).collect(),
+        }
+    }
+
+    /// Infers trait arguments from impls: with `I: Iterator<T>` and `I` now
+    /// `Counter` (`impl Iterator<i32> for Counter`), `T` is `i32`.
+    fn solve_arg_obligations(&mut self) {
+        let pending = std::mem::take(&mut self.arg_obligations);
+        for (t, tr, args) in pending {
+            let t = self.c.infer.zonk(&t);
+            match self.shallow(&t) {
+                Ty::Var(_) | Ty::Unknown => {
+                    self.arg_obligations.push((t, tr, args));
+                    continue;
+                }
+                Ty::Param(n) => {
+                    let found = self
+                        .bound_args
+                        .iter()
+                        .find(|(bn, btr, _)| *bn == n && *btr == tr)
+                        .map(|(_, _, a)| a.clone());
+                    if let Some(have) = found {
+                        for (a, b) in args.iter().zip(&have) {
+                            self.c.infer.try_unify(a, b);
+                        }
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            for idx in 0..self.c.impls.len() {
+                let Some((itr, iargs)) = self.c.impls[idx].trait_ref.clone() else {
+                    continue;
+                };
+                if itr != tr {
+                    continue;
+                }
+                let (st, map) = self.instantiate_impl(idx);
+                if !self.c.infer.can_unify(&st, &t) {
+                    continue;
+                }
+                self.c.infer.unify(&st, &t);
+                for (a, b) in args.iter().zip(&iargs) {
+                    let b = b.subst(&map);
+                    self.c.infer.try_unify(a, &b);
+                }
+                break;
+            }
         }
     }
 
     fn finish(&mut self) {
+        self.solve_arg_obligations();
         let obligations = std::mem::take(&mut self.obligations);
         for (t, tr, span) in obligations {
             let t = self.c.infer.zonk(&t);
@@ -658,7 +754,17 @@ impl Body<'_, '_, '_> {
             .filter(|(n, _)| n != "Self")
             .filter_map(|(n, t)| subst.get(n).map(|ty| (ty.clone(), *t)))
             .collect();
+        let arg_obligations = sig
+            .bound_args
+            .iter()
+            .filter(|(n, _, args)| n != "Self" && !args.is_empty())
+            .filter_map(|(n, t, args)| {
+                let args = args.iter().map(|a| a.subst(&subst)).collect();
+                subst.get(n).map(|ty| (ty.clone(), *t, args))
+            })
+            .collect();
         Method {
+            arg_obligations,
             self_param: sig.self_param.clone(),
             params: sig.params.iter().map(|t| t.subst(&subst)).collect(),
             ret: sig.ret.subst(&subst),
@@ -685,6 +791,20 @@ impl Body<'_, '_, '_> {
         };
         match &t {
             Ty::Param(n) => {
+                // A bound with trait arguments (`I: Iterator<T>`) instantiates
+                // the trait's parameters with them.
+                for (bn, tr, args) in self.bound_args.clone() {
+                    if &bn != n {
+                        continue;
+                    }
+                    let tinfo = self.c.traits.get(&tr).cloned().unwrap_or_default();
+                    if let Some(&i) = tinfo.methods.get(name) {
+                        let mut subst: HashMap<String, Ty> =
+                            tinfo.generics.iter().cloned().zip(args).collect();
+                        subst.insert("Self".to_string(), t.clone());
+                        return Some(self.instantiate_sig(i, subst));
+                    }
+                }
                 let traits = self.param_bounds(n);
                 return trait_method(self, traits, &t);
             }
@@ -771,6 +891,8 @@ impl Body<'_, '_, '_> {
             Ty::Adt(d, args) if self.c.is_lang(d, "Vec") => {
                 Some(Ty::Slice(Box::new(args[0].clone())))
             }
+            // Arrays have the slice methods (`arr.iter()`, `arr.len()`).
+            Ty::Array(x, _) => Some(Ty::Slice(x)),
             _ => None,
         }
     }
@@ -983,6 +1105,14 @@ impl Body<'_, '_, '_> {
                         self.c.r.def(d).item.map(|i| &i.kind),
                         Some(ItemKind::Static { mutable: true, .. })
                     ) => {}
+                Res::Def(d) if self.c.r.def(d).kind == DefKind::Static => {
+                    let n = self.c.r.def(d).name.clone();
+                    self.error_help(
+                        format!("cannot {what} the immutable static `{n}`"),
+                        e.span,
+                        "shared statics change through interior mutability (`AtomicI64`, `Mutex`); `static mut` needs `unsafe`",
+                    );
+                }
                 Res::Err | Res::External => {}
                 _ => self.error(format!("cannot {what} this expression"), e.span),
             },
@@ -1038,6 +1168,7 @@ impl Body<'_, '_, '_> {
             | ExprKind::Tuple(_)
             | ExprKind::Array(_)
             | ExprKind::Lit(_)
+            | ExprKind::Range { .. }
                 if what == "borrow" => {}
             _ => self.error(format!("cannot {what} this expression"), e.span),
         }
@@ -1176,7 +1307,13 @@ impl Body<'_, '_, '_> {
                 }
                 Ty::Array(Box::new(t), len)
             }
-            ExprKind::Block(b) | ExprKind::Unsafe(b) => self.block(b, value),
+            ExprKind::Block(b) => self.block(b, value),
+            ExprKind::Unsafe(b) => {
+                self.unsafe_depth += 1;
+                let t = self.block(b, value);
+                self.unsafe_depth -= 1;
+                t
+            }
             ExprKind::If { cond, then, els } => {
                 let ct = self.expr(cond);
                 self.coerce(&ct, &Ty::Prim(PrimTy::Bool), cond.span);
@@ -1239,7 +1376,7 @@ impl Body<'_, '_, '_> {
                 body,
             } => {
                 let it = self.expr(iter);
-                let elem = self.iter_elem(&it, iter.span);
+                let elem = self.iter_elem(&it, iter.span, e.span);
                 self.bind_pat(pat, &elem, None);
                 self.loop_body(label, None, body);
                 Ty::Unit
@@ -1504,7 +1641,11 @@ impl Body<'_, '_, '_> {
         }
     }
 
-    fn iter_elem(&mut self, t: &Ty, span: Span) -> Ty {
+    fn iter_elem(&mut self, t: &Ty, span: Span, for_span: Span) -> Ty {
+        // Any `Iterator`: the loop calls `next` (recorded under the loop's span).
+        if let Some(elem) = self.iterator_next(t, for_span) {
+            return elem;
+        }
         match self.shallow(t) {
             Ty::Unknown => Ty::Unknown,
             Ty::Adt(d, args) if self.c.is_lang(d, "Range") || self.c.is_lang(d, "Vec") => {
@@ -1522,6 +1663,33 @@ impl Body<'_, '_, '_> {
             },
             _ => self.not_iterable(t, span),
         }
+    }
+
+    /// When `t` is an `Iterator` (and not a built-in iterable), records its
+    /// `next` method under `for_span` and returns the element type.
+    fn iterator_next(&mut self, t: &Ty, for_span: Span) -> Option<Ty> {
+        let t = self.shallow(t);
+        match &t {
+            Ty::Adt(d, _) if self.c.is_lang(*d, "Range") || self.c.is_lang(*d, "Vec") => {
+                return None
+            }
+            Ty::Adt(..) | Ty::Param(_) => {}
+            _ => return None,
+        }
+        let tr = self.c.r.prelude_type("Iterator")?;
+        if !self.implements(&t, tr) {
+            return None;
+        }
+        let m = self.method_on(&t, "next")?;
+        let i = m.fn_idx?;
+        self.callees.insert(for_span, i);
+        self.callee_substs.insert(for_span, m.subst.clone());
+        let elem = match self.shallow(&m.ret) {
+            Ty::Adt(o, args) if Some(o) == self.c.r.prelude_type("Option") => args.first().cloned(),
+            _ => None,
+        }?;
+        self.iter_items.insert(for_span, elem.clone());
+        Some(elem)
     }
 
     fn not_iterable(&mut self, t: &Ty, span: Span) -> Ty {
@@ -1621,7 +1789,10 @@ impl Body<'_, '_, '_> {
                             let ty = ty.clone();
                             self.c.lower_ty(&ty, None, false)
                         }
-                        Some(ItemKind::Static { ty, .. }) => {
+                        Some(ItemKind::Static { ty, mutable, .. }) => {
+                            if *mutable {
+                                self.require_unsafe("using a `static mut`", span);
+                            }
                             let ty = ty.clone();
                             self.c.lower_ty(&ty, None, false)
                         }
@@ -1663,14 +1834,35 @@ impl Body<'_, '_, '_> {
 
     /// Function type for a method used as a value or path call (`Type::method`),
     /// with `self` as the first parameter.
+    /// Reports `what` unless inside an `unsafe` block or `unsafe fn`.
+    fn require_unsafe(&mut self, what: &str, span: Span) {
+        if self.unsafe_depth == 0 {
+            self.error_help(
+                format!("{what} is unsafe and requires an `unsafe` block"),
+                span,
+                "wrap it in `unsafe { ... }` after checking the safety requirements",
+            );
+        }
+    }
+
+    /// Checks a call to function `i`: an `unsafe fn` needs an `unsafe` block.
+    fn check_unsafe_call(&mut self, i: usize, span: Span) {
+        if self.c.r.fns[i].decl.is_unsafe {
+            let name = self.c.r.fns[i].decl.name.name.clone();
+            self.require_unsafe(&format!("calling `unsafe fn {name}`"), span);
+        }
+    }
+
     fn method_fn_ty(&mut self, m: Method, span: Span) -> Ty {
         if let Some(i) = m.fn_idx {
+            self.check_unsafe_call(i, span);
             self.callees.insert(span, i);
             self.callee_substs.insert(span, m.subst.clone());
         }
         for (t, tr) in m.obligations {
             self.obligations.push((t, tr, span));
         }
+        self.arg_obligations.extend(m.arg_obligations);
         Ty::Fn(m.params, Box::new(m.ret), false)
     }
 
@@ -1806,6 +1998,7 @@ impl Body<'_, '_, '_> {
         match self.shallow(&ft) {
             Ty::Fn(params, ret, _) => {
                 self.check_args(&params, args, span);
+                self.solve_arg_obligations();
                 *ret
             }
             Ty::Unknown => {
@@ -1930,7 +2123,12 @@ impl Body<'_, '_, '_> {
                 for (t, tr) in &m.obligations {
                     self.obligations.push((t.clone(), *tr, span));
                 }
+                self.arg_obligations.extend(m.arg_obligations.clone());
+                if let Some(i) = m.fn_idx {
+                    self.check_unsafe_call(i, span);
+                }
                 self.check_args(&m.params, args, span);
+                self.solve_arg_obligations();
                 return m.ret;
             }
         }
@@ -2334,7 +2532,11 @@ impl Body<'_, '_, '_> {
                 s
             }
             UnOp::Deref => match self.shallow(&t) {
-                Ty::Ref(_, i) | Ty::Ptr(_, i) => *i,
+                Ty::Ref(_, i) => *i,
+                Ty::Ptr(_, i) => {
+                    self.require_unsafe("dereferencing a raw pointer", span);
+                    *i
+                }
                 ot @ Ty::Adt(..) if self.overloaded_deref(&ot, "Deref").is_some() => {
                     self.overloaded_deref(&ot, "Deref").unwrap()
                 }

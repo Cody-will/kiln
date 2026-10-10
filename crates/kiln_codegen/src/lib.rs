@@ -96,6 +96,9 @@ pub struct Codegen<'r, 'a> {
     pub(crate) vtables: HashMap<String, DataId>,
     pub(crate) shims: HashMap<FuncId, FuncId>,
     pub(crate) strings: HashMap<String, DataId>,
+    /// Static items used by the program: definition → (storage, initializer
+    /// function index). Initialized before `main`, in declaration order.
+    pub(crate) statics: std::collections::BTreeMap<kiln_resolve::DefId, (DataId, usize)>,
     pub(crate) rt: HashMap<&'static str, FuncId>,
     /// Runtime functions declared by `std` (`kn_*` without a body).
     pub(crate) externs: HashMap<String, FuncId>,
@@ -298,6 +301,7 @@ pub fn compile(typed: Typed<'_, '_>, opts: Options) -> Result<Vec<u8>, Vec<Diagn
         vtables: HashMap::new(),
         shims: HashMap::new(),
         strings: HashMap::new(),
+        statics: Default::default(),
         rt: HashMap::new(),
         externs: HashMap::new(),
         errors: vec![],
@@ -316,8 +320,31 @@ pub fn compile(typed: Typed<'_, '_>, opts: Options) -> Result<Vec<u8>, Vec<Diagn
     };
     let user_main = cg.instance(main_idx, 0, HashMap::new(), Abi::Plain);
     cg.drain();
+    // Compile the initializers of the statics in use (which may use more).
+    let mut inits: Vec<(DataId, FuncId)> = Vec::new();
+    let mut done = std::collections::HashSet::new();
+    loop {
+        let todo: Vec<_> = cg
+            .statics
+            .iter()
+            .filter(|(d, _)| !done.contains(*d))
+            .map(|(d, v)| (*d, *v))
+            .collect();
+        if todo.is_empty() {
+            break;
+        }
+        for (d, (data, fi)) in todo {
+            done.insert(d);
+            let f = cg.instance(fi, 0, HashMap::new(), Abi::Plain);
+            inits.push((data, f));
+        }
+        cg.drain();
+    }
+    // Declaration order (statics are keyed by definition).
+    let order: Vec<DataId> = cg.statics.values().map(|v| v.0).collect();
+    inits.sort_by_key(|(d, _)| order.iter().position(|x| x == d));
     if cg.errors.is_empty() {
-        cg.define_entry(main_idx, user_main);
+        cg.define_entry(main_idx, user_main, &inits);
     }
     if !cg.errors.is_empty() {
         let mut errs = std::mem::take(&mut cg.errors);
@@ -441,6 +468,33 @@ impl Codegen<'_, '_> {
             .expect("declare shim");
         self.shims.insert(target, id);
         self.queue.push_back(Work::Shim { id, target, nargs });
+        id
+    }
+
+    /// The storage for static `d`: zeroed until its initializer runs.
+    pub(crate) fn static_data(&mut self, d: kiln_resolve::DefId) -> DataId {
+        if let Some((id, _)) = self.statics.get(&d) {
+            return *id;
+        }
+        let fi = self
+            .r
+            .statics
+            .iter()
+            .find(|(sd, _)| *sd == d)
+            .map(|(_, i)| *i)
+            .expect("static without initializer");
+        let (_, ty) = self.typed.signature(fi);
+        let l = self.layout(&ty);
+        let name = self.fresh_name(&format!("static_{}", self.r.def(d).name));
+        let id = self
+            .module
+            .declare_data(&name, Linkage::Local, true, false)
+            .expect("declare static");
+        let mut desc = DataDescription::new();
+        desc.define_zeroinit(l.size.max(1) as usize);
+        desc.set_align(l.align.max(1) as u64);
+        self.module.define_data(id, &desc).expect("define static");
+        self.statics.insert(d, (id, fi));
         id
     }
 

@@ -1,0 +1,133 @@
+// Strings: building them efficiently, joining, and iterating over characters.
+// Most operations are methods on `str` and `String` (see the reference).
+//
+//	b mut := strings::Builder::new()
+//	for w in words {
+//		b.push(w)
+//		b.push_char(' ')
+//	}
+//	line := b.finish()
+
+// An iterator over the characters of a string, from `s.chars()`.
+pub struct Chars<'a> {
+	b: &'a [u8],
+	front: usize,
+	back: usize,
+}
+
+impl<'a> Iterator<char> for Chars<'a> {
+	fn next(&mut self) -> Option<char> {
+		if self.front >= self.back {
+			return None
+		}
+		(c, n) := std::utf8::decode(&self.b[self.front..self.back])
+		self.front += n
+		return Some(c)
+	}
+}
+
+impl<'a> std::iter::DoubleEndedIterator<char> for Chars<'a> {
+	fn next_back(&mut self) -> Option<char> {
+		if self.front >= self.back {
+			return None
+		}
+		(c, n) := std::utf8::decode_last(&self.b[self.front..self.back])
+		self.back -= n
+		return Some(c)
+	}
+}
+
+// An iterator over `(byte offset, character)`, from `s.char_indices()`.
+pub struct CharIndices<'a> {
+	b: &'a [u8],
+	i: usize,
+}
+
+impl<'a> Iterator<(usize, char)> for CharIndices<'a> {
+	fn next(&mut self) -> Option<(usize, char)> {
+		if self.i >= self.b.len() {
+			return None
+		}
+		at := self.i
+		(c, n) := std::utf8::decode(&self.b[at..])
+		self.i += n
+		return Some((at, c))
+	}
+}
+
+// The strings in `parts` with `sep` between them.
+pub fn join(parts: &[&str], sep: &str) -> String {
+	n mut := 0
+	for p in parts {
+		n += p.len() + sep.len()
+	}
+	out mut := String::with_capacity(n)
+	for (i, p) in parts.iter().enumerate() {
+		if i > 0 {
+			out.push(sep)
+		}
+		out.push(*p)
+	}
+	return out
+}
+
+// Builds a string piece by piece without copying it each time.
+pub struct Builder {
+	s: String,
+}
+
+impl Builder {
+	pub fn new() -> Builder {
+		return Builder { s: String::new() }
+	}
+
+	// A builder with room for `n` bytes.
+	pub fn with_capacity(n: usize) -> Builder {
+		return Builder { s: String::with_capacity(n) }
+	}
+
+	pub fn push(&mut self, s: &str) {
+		self.s.push(s)
+	}
+
+	pub fn push_char(&mut self, c: char) {
+		self.s.push_char(c)
+	}
+
+	// Appends `s` followed by a newline.
+	pub fn push_line(&mut self, s: &str) {
+		self.s.push(s)
+		self.s.push("\n")
+	}
+
+	// The length so far, in bytes.
+	pub fn len(&self) -> usize {
+		return self.s.len()
+	}
+
+	pub fn is_empty(&self) -> bool {
+		return self.s.is_empty()
+	}
+
+	// The text so far.
+	pub fn as_str(&self) -> &str {
+		return self.s.as_str()
+	}
+
+	// Discards the text, keeping the buffer.
+	pub fn clear(&mut self) {
+		self.s.clear()
+	}
+
+	// The finished string.
+	pub fn finish(self) -> String {
+		return self.s
+	}
+}
+
+impl std::io::Write for Builder {
+	fn write(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
+		self.s.push(&String::from_utf8_lossy(buf))
+		return Ok(buf.len())
+	}
+}
