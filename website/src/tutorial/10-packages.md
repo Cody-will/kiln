@@ -29,6 +29,7 @@ fn main() {
 
 - Items are **private** by default. `pub` makes them public, and `pub(pkg)` makes them visible anywhere in the package but not outside it.
 - `import a::b` brings in a path, `import a::{X, Y as Z}` imports several names (with renaming), and `import a::*` imports everything public.
+- A plain `import` is private to the module that writes it. `pub import a::X` also re-exports `X`, so other code can reach it through this module's path. Paths can start with `self::` or `super::`.
 - Paths are separated by `::`. In code you can use a module's items through its name: `geometry::origin()`.
 
 ## Packages

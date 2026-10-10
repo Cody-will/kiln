@@ -92,3 +92,23 @@ fn main() {
 
 A single-expression closure (`|x| x * 2`) returns its expression; a closure with a `{ }` body follows the function rule.
 
+A function value of type `fn(..)` may be copied and shared, even between tasks, so a closure used as one may only *read* what it captures. A callback that changes captured variables has the type `fn mut(..)` instead:
+
+```kiln
+fn each(xs: &[i32], f: fn mut(i32)) {
+	for x in xs {
+		f(*x)
+	}
+}
+
+fn main() {
+	total mut := 0
+	each(&[1, 2, 3], |x| {
+		total += x
+	})
+	println("{total}")
+}
+```
+
+Any `fn` can be passed where a `fn mut` is expected. A closure that moves a captured value out (`move || drop(s)`) can only be called directly, since a second call would find the value gone.
+

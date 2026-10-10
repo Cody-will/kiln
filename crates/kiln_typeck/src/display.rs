@@ -33,11 +33,12 @@ impl Checker<'_, '_> {
                     format!("{name}<{}>", a.join(", "))
                 }
             }
-            Ty::Fn(ps, r) => {
+            Ty::Fn(ps, r, is_mut) => {
                 let a: Vec<_> = ps.iter().map(|x| self.fmt_ty(x)).collect();
+                let kw = if *is_mut { "fn mut" } else { "fn" };
                 match self.infer.zonk(r) {
-                    Ty::Unit => format!("fn({})", a.join(", ")),
-                    r => format!("fn({}) -> {}", a.join(", "), self.fmt_ty(&r)),
+                    Ty::Unit => format!("{kw}({})", a.join(", ")),
+                    r => format!("{kw}({}) -> {}", a.join(", "), self.fmt_ty(&r)),
                 }
             }
             Ty::Param(n) => n.clone(),

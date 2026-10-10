@@ -301,3 +301,20 @@ fn examples_resolve() {
         ok(src);
     }
 }
+
+#[test]
+fn import_visibility() {
+    let base = "mod a {\n\tpub struct S {}\n\tpub fn f() {}\n}\nmod b {\n\timport super::a::S\n\tpub import super::a::f\n\tfn g() {\n\t\tx := S {}\n\t}\n}\n";
+    // `pub import` re-exports; the private import is usable inside `b`.
+    ok(&format!(
+        "{base}import b::f\nfn main() {{\n\tf()\n\tb::f()\n}}"
+    ));
+    assert_eq!(
+        errors(&format!("{base}fn main() {{\n\tx := b::S {{}}\n}}")),
+        vec!["`S` is imported privately in module `b`"]
+    );
+    assert_eq!(
+        errors(&format!("{base}import b::S\nfn main() {{}}")),
+        vec!["unresolved import `b::S`"]
+    );
+}

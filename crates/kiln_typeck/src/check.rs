@@ -394,6 +394,11 @@ impl Body<'_, '_, '_> {
         if matches!(f, Ty::Never) {
             return true;
         }
+        // A shareable `fn` can be used where a `fn mut` is expected.
+        if let (Ty::Fn(fp, fr, false), Ty::Fn(_, _, true)) = (&f, &e) {
+            let as_mut = Ty::Fn(fp.clone(), fr.clone(), true);
+            return self.c.infer.try_unify(&as_mut, &e);
+        }
         if let (Ty::Ref(fm, fi), Ty::Ref(em, ei)) = (&f, &e) {
             if *em && !*fm {
                 return false;
@@ -532,6 +537,7 @@ impl Body<'_, '_, '_> {
                     None => true,
                 }
             }
+            Ty::Fn(_, _, true) => false,
             Ty::Fn(..) | Ty::ChanSend(_) | Ty::ChanRecv(_) => {
                 marker(&["Copy", "Clone", "Send", "Sync"])
                     && !(marker(&["Copy"]) && matches!(t, Ty::ChanSend(_) | Ty::ChanRecv(_)))
@@ -1340,9 +1346,9 @@ impl Body<'_, '_, '_> {
             ExprKind::Closure {
                 params, ret, body, ..
             } => {
-                let expected = match self.expected_fn.take() {
-                    Some(Ty::Fn(ps, _)) if ps.len() == params.len() => Some(ps),
-                    _ => None,
+                let (expected, is_mut) = match self.expected_fn.take() {
+                    Some(Ty::Fn(ps, _, m)) if ps.len() == params.len() => (Some(ps), m),
+                    _ => (None, false),
                 };
                 let pts: Vec<Ty> = params
                     .iter()
@@ -1383,7 +1389,7 @@ impl Body<'_, '_, '_> {
                 }
                 self.loops = saved;
                 self.rets.pop();
-                Ty::Fn(pts, Box::new(rt))
+                Ty::Fn(pts, Box::new(rt), is_mut)
             }
             ExprKind::Go(g) => {
                 // `go f(x)`: the task's result is the call's; a `go` block
@@ -1532,7 +1538,11 @@ impl Body<'_, '_, '_> {
         let me = Ty::Adt(adt, args.to_vec());
         match shape {
             Shape::Unit => me,
-            Shape::Tuple(ts) => Ty::Fn(ts.iter().map(|t| t.subst(&map)).collect(), Box::new(me)),
+            Shape::Tuple(ts) => Ty::Fn(
+                ts.iter().map(|t| t.subst(&map)).collect(),
+                Box::new(me),
+                false,
+            ),
             Shape::Named(_) => {
                 self.error_help(
                     format!("expected value, found struct-like {what}"),
@@ -1641,7 +1651,7 @@ impl Body<'_, '_, '_> {
             Res::Assoc { base, name } => self.assoc(p, &base, &name, span),
             Res::Builtin(Builtin::Drop) => {
                 let v = self.fresh();
-                Ty::Fn(vec![v], Box::new(Ty::Unit))
+                Ty::Fn(vec![v], Box::new(Ty::Unit), false)
             }
             Res::Builtin(Builtin::Chan) => {
                 self.error("`chan` must be called: `chan::<T>(capacity)`", span);
@@ -1661,7 +1671,7 @@ impl Body<'_, '_, '_> {
         for (t, tr) in m.obligations {
             self.obligations.push((t, tr, span));
         }
-        Ty::Fn(m.params, Box::new(m.ret))
+        Ty::Fn(m.params, Box::new(m.ret), false)
     }
 
     /// `Base::name` paths: associated functions, methods (UFCS), and `Self::Variant`.
@@ -1794,7 +1804,7 @@ impl Body<'_, '_, '_> {
         }
         let ft = self.expr(f);
         match self.shallow(&ft) {
-            Ty::Fn(params, ret) => {
+            Ty::Fn(params, ret, _) => {
                 self.check_args(&params, args, span);
                 *ret
             }
@@ -1807,7 +1817,9 @@ impl Body<'_, '_, '_> {
             Ty::Var(v) if self.c.infer.kind(v) == VarKind::General => {
                 let pts: Vec<Ty> = args.iter().map(|a| self.expr(a)).collect();
                 let ret = self.fresh();
-                self.c.infer.unify(&ft, &Ty::Fn(pts, Box::new(ret.clone())));
+                self.c
+                    .infer
+                    .unify(&ft, &Ty::Fn(pts, Box::new(ret.clone()), false));
                 ret
             }
             other => {

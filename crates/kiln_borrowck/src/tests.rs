@@ -707,3 +707,31 @@ fn standard_library_borrow_checks() {
         .collect();
     assert!(errors.is_empty(), "{}", shown.join("\n"));
 }
+
+#[test]
+fn closure_capabilities() {
+    // A closure that moves a capture out can't become a `fn` value (it could
+    // be called twice).
+    err1(
+        "fn twice(f: fn()) {\n f()\n f()\n}\nfn main() {\n s := String::from(\"x\")\n twice(move || {\n  t := s\n })\n}",
+        "moves a captured value out",
+    );
+    // Mutating closures need `fn mut`; plain `fn` values are shared freely.
+    err1(
+        "fn each(f: fn(i32)) {\n f(1)\n}\nfn main() {\n n mut := 0\n each(|x| {\n  n += x\n })\n}",
+        "mutates the captured variable `n`",
+    );
+    ok("fn each(f: fn mut(i32)) {\n f(1)\n f(2)\n}\nfn main() {\n n mut := 0\n each(|x| {\n  n += x\n })\n f := |x| {\n  n += x\n }\n f(3)\n}");
+    // Captures must be `Send + Sync` for the closure to be a `fn` value.
+    err1(
+        "fn run(f: fn()) {\n f()\n}\nfn main() {\n x mut := 1\n p := &mut x as *mut i32\n run(move || {\n  q := p\n })\n}",
+        "which is not `Send` and `Sync`",
+    );
+    // `fn mut` values are not `Copy`, `Send`, or `Sync`.
+    err1(
+        "fn each(f: fn mut(i32)) {\n g := f\n f(1)\n}\nfn main() {}",
+        "use of moved value",
+    );
+    // A plain `fn` coerces to `fn mut`, not the other way around.
+    ok("fn each(f: fn mut(i32)) {\n f(1)\n}\nfn show(x: i32) {}\nfn main() {\n each(show)\n}");
+}

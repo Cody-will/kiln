@@ -304,6 +304,9 @@ pub struct ModuleScope {
     pub values: HashMap<String, DefId>,
     /// Parent module, if any.
     pub parent: Option<DefId>,
+    /// Names bound by a plain (non-`pub`) `import`: visible inside this module
+    /// and its children only. `(is_type_namespace, name)`.
+    pub private_imports: std::collections::HashSet<(bool, String)>,
 }
 
 /// The result of name resolution.

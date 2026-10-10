@@ -102,9 +102,12 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
 
     pub(crate) fn run(&mut self) {
         for (msg, span) in self.b.errors.clone() {
-            self.report(Diagnostic::error(msg, span).with_help(
-                "deferred calls run when the function returns; declare the variable at the top level of the function body",
-            ));
+            let d = Diagnostic::error(msg.clone(), span);
+            self.report(if msg.contains("deferred call") {
+                d.with_help("deferred calls run when the function returns; declare the variable at the top level of the function body")
+            } else {
+                d
+            });
         }
         self.reachable = self.compute_reachable();
         let n = self.b.locals.len();

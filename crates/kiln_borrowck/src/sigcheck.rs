@@ -48,7 +48,7 @@ fn used_lifetimes(t: &Type, out: &mut Vec<(String, Span)>) {
         | TypeKind::ChanSend(inner)
         | TypeKind::ChanRecv(inner) => used_lifetimes(inner, out),
         TypeKind::Tuple(ts) => ts.iter().for_each(|x| used_lifetimes(x, out)),
-        TypeKind::Fn { params, ret } => {
+        TypeKind::Fn { params, ret, .. } => {
             params.iter().for_each(|x| used_lifetimes(x, out));
             if let Some(r) = ret {
                 used_lifetimes(r, out);

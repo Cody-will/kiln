@@ -46,6 +46,15 @@ pub(crate) struct Lower<'t, 'r, 'a> {
     last_captures: Option<Vec<Capture>>,
     /// Locals holding closures that move a captured variable out (callable once).
     once: HashSet<Local>,
+    /// Locals holding closures that may not be used as `fn` values, with why:
+    /// they move a capture out, mutate a capture, or capture something not
+    /// `Send + Sync`. They can only be called directly.
+    local_fns: HashMap<Local, String>,
+    /// Set while lowering an expression whose value is bound directly to a
+    /// local (or called), where a restricted closure may appear.
+    flow_ok: bool,
+    /// Lowering the closure argument of `Scope::spawn`.
+    spawn_arg: bool,
     /// Locals whose scope has ended.
     dead: HashSet<Local>,
     /// Set while lowering deferred calls in the exit block.
@@ -126,6 +135,9 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             extra: vec![],
             last_captures: None,
             once: HashSet::new(),
+            local_fns: HashMap::new(),
+            flow_ok: false,
+            spawn_arg: false,
             dead: HashSet::new(),
             in_defer: false,
             last_consumes: false,
@@ -248,12 +260,64 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         self.res.tys.get(&e.span).cloned().unwrap_or(Ty::Unknown)
     }
 
+    /// Whether `e` is a closure or a plain name (possibly parenthesized).
+    fn direct(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Paren(x) => Self::direct(x),
+            ExprKind::Closure { .. } | ExprKind::Path(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Why the closure just lowered (its captures are in `last_captures`)
+    /// can't be a `fn` value of type `ty`, if it can't.
+    fn closure_restriction(&mut self, ty: &Ty, consumes: bool) -> Option<String> {
+        if consumes {
+            return Some("moves a captured value out".into());
+        }
+        if matches!(ty, Ty::Fn(_, _, true)) {
+            return None;
+        }
+        let caps = self.last_captures.clone().unwrap_or_default();
+        let bounds = self.res.bounds.clone();
+        for c in &caps {
+            if c.mode == CaptureMode::MutRef {
+                return Some(format!(
+                    "mutates the captured variable `{}` (a `fn` must not; declare the parameter `fn mut(..)` instead)",
+                    c.name
+                ));
+            }
+        }
+        for c in &caps {
+            if !self.typed.implements(&c.ty, "Send", &bounds)
+                || !self.typed.implements(&c.ty, "Sync", &bounds)
+            {
+                let t = self.typed.fmt_ty(&c.ty);
+                return Some(format!(
+                    "captures `{}` of type `{t}`, which is not `Send` and `Sync` (a `fn` value may be shared between tasks)",
+                    c.name
+                ));
+            }
+        }
+        None
+    }
+
     fn is_copy(&mut self, t: &Ty) -> bool {
         let bounds = self.res.bounds.clone();
         self.typed.is_copy(t, &bounds)
     }
 
     fn operand_of(&mut self, p: Place, ty: &Ty) -> Operand {
+        let ok = std::mem::take(&mut self.flow_ok);
+        if p.proj.is_empty() && !ok {
+            if let Some(why) = self.local_fns.get(&p.local).cloned() {
+                let span = self.body.locals[p.local.0 as usize].span;
+                self.body.errors.push((
+                    format!("this closure {why}, so it can only be called directly, not passed or stored as a `fn` value"),
+                    span,
+                ));
+            }
+        }
         if p.proj.is_empty() && self.once.contains(&p.local) {
             return Operand::Move(p);
         }
@@ -1285,8 +1349,10 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 body,
                 ..
             } => {
+                let ok = std::mem::take(&mut self.flow_ok);
+                let runs_once = std::mem::take(&mut self.spawn_arg);
                 let ret = match &ty {
-                    Ty::Fn(_, r) => (**r).clone(),
+                    Ty::Fn(_, r, _) => (**r).clone(),
                     _ => Ty::Unknown,
                 };
                 let (ops, caps) = self.nested(
@@ -1309,6 +1375,10 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 if consumes {
                     self.once.insert(t);
                 }
+                if let Some(why) = self.closure_restriction(&ty, consumes && !runs_once) {
+                    self.local_fns.insert(t, why);
+                }
+                self.flow_ok = ok;
                 self.operand_of(Place::local(t), &ty)
             }
             _ => {
@@ -1880,17 +1950,25 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                         Operand::Move(p)
                     }
                     Some(p) => Operand::Copy(p),
-                    None => self.expr(f),
+                    None => {
+                        self.flow_ok = Self::direct(f);
+                        self.expr(f)
+                    }
                 };
                 ops.push(c);
                 Callee::Value
             }
         };
         let offset = ops.len();
+        // `scope`'s body runs exactly once, so it may move captures out.
+        let once_arg = callee_idx
+            .is_some_and(|i| self.r.fn_is_core(i) && self.r.fns[i].decl.name.name == "scope");
         for a in args {
+            self.spawn_arg = once_arg;
             let o = self.arg(a);
             ops.push(o);
         }
+        self.spawn_arg = false;
         let flows = match callee_idx {
             Some(i) => self.fn_flows(i).into_iter().map(|x| x + offset).collect(),
             None => (0..ops.len()).collect(),
@@ -1978,7 +2056,13 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 Place::local(t)
             }
         };
+        // A scoped task's closure runs exactly once, so it may move captures out.
+        self.spawn_arg = info.as_ref().is_some_and(|info| {
+            info.fn_idx
+                .is_some_and(|i| self.r.fn_is_core(i) && self.r.fns[i].decl.name.name == "spawn")
+        });
         let arg_ops: Vec<Operand> = args.iter().map(|a| self.arg(a)).collect();
+        self.spawn_arg = false;
         let Some(info) = info else {
             let mut ops = vec![Operand::Copy(base)];
             ops.extend(arg_ops);
@@ -2275,15 +2359,19 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 }
             }
             _ => {
+                self.flow_ok = dest.as_ref().is_some_and(|d| d.proj.is_empty()) && Self::direct(e);
                 let op = self.expr(e);
+                self.flow_ok = false;
                 match dest {
                     Some(d) => {
                         if let Some(p) = op.place() {
-                            if d.proj.is_empty()
-                                && p.proj.is_empty()
-                                && self.once.contains(&p.local)
-                            {
-                                self.once.insert(d.local);
+                            if d.proj.is_empty() && p.proj.is_empty() {
+                                if self.once.contains(&p.local) {
+                                    self.once.insert(d.local);
+                                }
+                                if let Some(w) = self.local_fns.get(&p.local).cloned() {
+                                    self.local_fns.insert(d.local, w);
+                                }
                             }
                         }
                         self.assign(d, Rvalue::Use(op), e.span)
@@ -2612,7 +2700,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         let mut inner = Lower::new(&mut *self.typed, res, name, kind, span);
         inner.new_local(ret, None, span, LocalKind::Return, true, None);
         let param_tys = match fn_ty {
-            Some(Ty::Fn(ps, _)) => ps.clone(),
+            Some(Ty::Fn(ps, ..)) => ps.clone(),
             _ => vec![],
         };
         let mut pending = vec![];

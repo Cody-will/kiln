@@ -1065,6 +1065,7 @@ impl<'s> Parser<'s> {
             }
             T::Keyword(Kw::Fn) => {
                 self.bump();
+                let is_mut = self.eat(&T::Keyword(Kw::Mut));
                 self.expect(&T::LParen)?;
                 let params = self.comma_list(&T::RParen, Self::parse_type)?;
                 let ret = if self.eat(&T::Arrow) {
@@ -1072,7 +1073,11 @@ impl<'s> Parser<'s> {
                 } else {
                     None
                 };
-                TypeKind::Fn { params, ret }
+                TypeKind::Fn {
+                    params,
+                    ret,
+                    is_mut,
+                }
             }
             T::Keyword(Kw::Dyn) => {
                 self.bump();

@@ -9,5 +9,5 @@
 //		}
 //	}
 
-import Display
-import Debug
+pub import Display
+pub import Debug

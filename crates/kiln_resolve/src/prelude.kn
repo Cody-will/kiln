@@ -73,10 +73,10 @@ pub enum TryRecvError {
 pub struct Scope
 
 impl Scope {
-	pub fn spawn(&self, task: fn())
+	pub fn spawn(&self, task: fn mut())
 }
 
-pub fn scope(body: fn(&Scope))
+pub fn scope(body: fn mut(&Scope))
 
 // `*x`, method calls, and field access look through `Deref` (as for `&T`
 // and `Box<T>`): `Arc<T>` derefs to `T`, a `MutexGuard<T>` to the locked `T`.

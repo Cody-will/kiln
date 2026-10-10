@@ -167,7 +167,11 @@ impl<'r, 'a> Checker<'r, 'a> {
                     .map(|x| self.lower_ty(x, self_ty, infer))
                     .collect(),
             ),
-            TypeKind::Fn { params, ret } => Ty::Fn(
+            TypeKind::Fn {
+                params,
+                ret,
+                is_mut,
+            } => Ty::Fn(
                 params
                     .iter()
                     .map(|x| self.lower_ty(x, self_ty, infer))
@@ -177,6 +181,7 @@ impl<'r, 'a> Checker<'r, 'a> {
                         .map(|r| self.lower_ty(r, self_ty, infer))
                         .unwrap_or(Ty::Unit),
                 ),
+                *is_mut,
             ),
             TypeKind::Dyn(bounds) | TypeKind::Impl(bounds) => Ty::Dyn(self.bound_traits(bounds)),
             TypeKind::ChanSend(x) => Ty::ChanSend(Box::new(self.lower_ty(x, self_ty, infer))),

@@ -437,6 +437,8 @@ pub enum TypeKind {
         params: Vec<Type>,
         /// Return type.
         ret: Option<Box<Type>>,
+        /// `fn mut(..)`: may mutate its captures (not `Copy`, `Send`, or `Sync`).
+        is_mut: bool,
     },
     /// `dyn Trait + Trait`
     Dyn(Vec<Bound>),

@@ -84,7 +84,7 @@ impl<'r, 'a> Typed<'r, 'a> {
     pub fn is_copy(&mut self, t: &Ty, bounds: &[(String, DefId)]) -> bool {
         match t {
             Ty::Unknown | Ty::Never | Ty::Var(_) => true,
-            Ty::Fn(..) => true,
+            Ty::Fn(_, _, is_mut) => !is_mut,
             _ => self.implements(t, "Copy", bounds),
         }
     }

@@ -19,7 +19,7 @@ Status key: ✅ done · 🚧 in progress · ⬜ not started
 1. **Standard library phase 2:** `strings`, `strconv`, formatting options, `bytes`, `unicode/utf8`, `collections` (`HashMap`, `HashSet`, `BTreeMap`, `VecDeque`), `sort`, `math`, `rand`, `errors`, `flag`, `encoding` (JSON, base64, hex, CSV), SHA-256/MD5, `regexp`, `context`, and `kiln test`. This needs iterators (`for x in map`), `static` items in codegen, and integer/float parsing.
 2. **Standard library phase 3:** `compress`, `mime`, `url`, templates.
 3. **Runtime refinements:** growable task stacks, per-task panics that `join` reports as `Err(Panic)` instead of ending the program, IOCP on Windows, timeouts for connect/read/write.
-4. **Type checker gaps:** associated types, `impl Trait` as a distinct type, deeper exhaustiveness (nested patterns, integer ranges), method resolution on integer literals before defaulting, `pub import` (all imports re-export today).
+4. **Type checker gaps:** associated types, `impl Trait` as a distinct type, deeper exhaustiveness (nested patterns, integer ranges), method resolution on integer literals before defaulting.
 5. **Codegen gaps:** `static` items, unwinding (or at least running `defer` on panic), debug info, slice patterns, `|` patterns with bindings, an optimizing LLVM backend for release builds.
 6. **Lossless CST decision:** choose whether to build a lossless syntax tree (in the rowan style) before the formatter and language server depend on the AST.
 7. **Borrow checker refinements:** lifetime variance, higher-ranked lifetimes.

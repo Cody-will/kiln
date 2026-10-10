@@ -89,7 +89,7 @@ fn walk(t: &Type, generics: &[String], r: &Resolved<'_>, out: &mut TyLifetimes) 
         }
         TypeKind::ChanSend(inner) | TypeKind::ChanRecv(inner) => walk(inner, generics, r, out),
         TypeKind::Tuple(ts) => ts.iter().for_each(|x| walk(x, generics, r, out)),
-        TypeKind::Fn { params, ret } => {
+        TypeKind::Fn { params, ret, .. } => {
             out.generic = true;
             params.iter().for_each(|x| walk(x, generics, r, out));
             if let Some(x) = ret {

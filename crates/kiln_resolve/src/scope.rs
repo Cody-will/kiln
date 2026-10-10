@@ -98,6 +98,12 @@ impl<'a> Resolver<'a> {
         self.r.errors.push(Diagnostic::error(msg, span));
     }
 
+    fn error_help(&mut self, msg: impl Into<String>, span: Span, help: impl Into<String>) {
+        self.r
+            .errors
+            .push(Diagnostic::error(msg, span).with_help(help));
+    }
+
     fn new_def(&mut self, kind: DefKind, name: &Ident, vis: Visibility, module: DefId) -> DefId {
         let id = DefId(self.r.defs.len() as u32);
         self.r.defs.push(Def {
@@ -246,7 +252,10 @@ impl<'a> Resolver<'a> {
     fn bind_imports(&mut self, items: &'a [Item], module: DefId) {
         for item in items {
             match &item.kind {
-                ItemKind::Import(tree) => self.bind_import(tree, &[], module),
+                ItemKind::Import(tree) => {
+                    let public = item.vis != Visibility::Private;
+                    self.bind_import(tree, &[], module, public)
+                }
                 ItemKind::Mod {
                     name,
                     items: Some(body),
@@ -259,7 +268,40 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn bind_import(&mut self, tree: &ImportTree, prefix: &[Ident], module: DefId) {
+    /// Binds an imported name; a plain `import` stays private to the module.
+    fn bind_imported(&mut self, module: DefId, ns: Ns, name: &Ident, id: DefId, public: bool) {
+        self.insert(module, ns, name, id);
+        if !public {
+            self.r
+                .modules
+                .get_mut(&module)
+                .unwrap()
+                .private_imports
+                .insert((ns == Ns::Type, name.name.clone()));
+        }
+    }
+
+    /// Whether code in module `from` can see private names of module `target`.
+    fn sees(&self, from: DefId, target: DefId) -> bool {
+        let mut m = Some(from);
+        while let Some(id) = m {
+            if id == target {
+                return true;
+            }
+            m = self.r.modules[&id].parent;
+        }
+        false
+    }
+
+    /// Whether `name` in `module` is a private import hidden from `from`.
+    fn hidden_import(&self, module: DefId, is_type: bool, name: &str, from: DefId) -> bool {
+        self.r.modules[&module]
+            .private_imports
+            .contains(&(is_type, name.to_string()))
+            && !self.sees(from, module)
+    }
+
+    fn bind_import(&mut self, tree: &ImportTree, prefix: &[Ident], module: DefId, public: bool) {
         let full = |p: &[Ident]| -> Vec<Ident> { prefix.iter().chain(p).cloned().collect() };
         match tree {
             ImportTree::Path { path, alias } => {
@@ -279,8 +321,8 @@ impl<'a> Resolver<'a> {
                 if path[0].name == "core" {
                     let id =
                         self.new_def(DefKind::External, &bind_name, Visibility::Private, module);
-                    self.insert(module, Ns::Type, &bind_name, id);
-                    self.insert(module, Ns::Value, &bind_name, id);
+                    self.bind_imported(module, Ns::Type, &bind_name, id, public);
+                    self.bind_imported(module, Ns::Value, &bind_name, id, public);
                     return;
                 }
                 let (types, values) = self.lookup_import_path(&path, module);
@@ -295,16 +337,16 @@ impl<'a> Resolver<'a> {
                     return;
                 }
                 if let Some(t) = types {
-                    self.insert(module, Ns::Type, &bind_name, t);
+                    self.bind_imported(module, Ns::Type, &bind_name, t, public);
                 }
                 if let Some(v) = values {
-                    self.insert(module, Ns::Value, &bind_name, v);
+                    self.bind_imported(module, Ns::Value, &bind_name, v, public);
                 }
             }
             ImportTree::Group { prefix: p, items } => {
                 let new_prefix = full(p);
                 for t in items {
-                    self.bind_import(t, &new_prefix, module);
+                    self.bind_import(t, &new_prefix, module, public);
                 }
             }
             ImportTree::Glob { prefix: p } => {
@@ -315,26 +357,25 @@ impl<'a> Resolver<'a> {
                 match self.lookup_import_path(&path, module).0 {
                     Some(m) if self.r.def(m).kind == DefKind::Mod => {
                         let scope = self.r.modules[&m].clone();
-                        for (n, id) in scope.types {
-                            if self.r.def(id).vis != Visibility::Private {
-                                self.r
-                                    .modules
-                                    .get_mut(&module)
-                                    .unwrap()
-                                    .types
-                                    .entry(n)
-                                    .or_insert(id);
-                            }
-                        }
-                        for (n, id) in scope.values {
-                            if self.r.def(id).vis != Visibility::Private {
-                                self.r
-                                    .modules
-                                    .get_mut(&module)
-                                    .unwrap()
-                                    .values
-                                    .entry(n)
-                                    .or_insert(id);
+                        for (is_type, table) in [(true, scope.types), (false, scope.values)] {
+                            for (n, id) in table {
+                                if self.r.def(id).vis == Visibility::Private
+                                    || self.hidden_import(m, is_type, &n, module)
+                                {
+                                    continue;
+                                }
+                                let dst = self.r.modules.get_mut(&module).unwrap();
+                                let t = if is_type {
+                                    &mut dst.types
+                                } else {
+                                    &mut dst.values
+                                };
+                                if !t.contains_key(&n) {
+                                    t.insert(n.clone(), id);
+                                    if !public {
+                                        dst.private_imports.insert((is_type, n));
+                                    }
+                                }
                             }
                         }
                     }
@@ -351,7 +392,19 @@ impl<'a> Resolver<'a> {
     /// the type-namespace and value-namespace results.
     fn lookup_import_path(&self, path: &[Ident], module: DefId) -> (Option<DefId>, Option<DefId>) {
         let start = if path[0].name == "self" {
-            return self.lookup_in_module_path(&path[1..], module);
+            return self.lookup_in_module_path(&path[1..], module, module);
+        } else if path[0].name == "super" {
+            // `super::x`, `super::super::x`: start from an ancestor module.
+            let mut m = module;
+            let mut i = 0;
+            while i < path.len() && path[i].name == "super" {
+                match self.r.modules[&m].parent {
+                    Some(p) => m = p,
+                    None => return (None, None),
+                }
+                i += 1;
+            }
+            return self.lookup_in_module_path(&path[i..], m, module);
         } else if path[0].name == "std" {
             self.r.prelude
         } else if self.r.modules[&module].types.contains_key(&path[0].name)
@@ -376,18 +429,22 @@ impl<'a> Resolver<'a> {
         } else {
             self.r.root
         };
-        self.lookup_in_module_path(path, start)
+        self.lookup_in_module_path(path, start, module)
     }
 
     fn lookup_in_module_path(
         &self,
         path: &[Ident],
         mut module: DefId,
+        from: DefId,
     ) -> (Option<DefId>, Option<DefId>) {
         if path.is_empty() {
             return (Some(module), None);
         }
         for seg in &path[..path.len() - 1] {
+            if self.hidden_import(module, true, &seg.name, from) {
+                return (None, None);
+            }
             match self.r.modules[&module].types.get(&seg.name) {
                 Some(&id) if self.r.def(id).kind == DefKind::Mod => module = id,
                 Some(&id) if self.r.def(id).kind == DefKind::Enum => {
@@ -405,7 +462,17 @@ impl<'a> Resolver<'a> {
         }
         let last = &path[path.len() - 1].name;
         let s = &self.r.modules[&module];
-        (s.types.get(last).copied(), s.values.get(last).copied())
+        let t = s
+            .types
+            .get(last)
+            .copied()
+            .filter(|_| !self.hidden_import(module, true, last, from));
+        let v = s
+            .values
+            .get(last)
+            .copied()
+            .filter(|_| !self.hidden_import(module, false, last, from));
+        (t, v)
     }
 
     // ----- phase 3: walk items -----------------------------------------------
@@ -793,7 +860,7 @@ impl<'a> Resolver<'a> {
                 self.walk_expr(len);
             }
             TypeKind::Tuple(ts) => ts.iter().for_each(|t| self.walk_type(t)),
-            TypeKind::Fn { params, ret } => {
+            TypeKind::Fn { params, ret, .. } => {
                 params.iter().for_each(|t| self.walk_type(t));
                 if let Some(r) = ret {
                     self.walk_type(r);
@@ -941,6 +1008,21 @@ impl<'a> Resolver<'a> {
                         } else {
                             b.or(a)
                         };
+                        let is_type = !last || ns == Ns::Type;
+                        let found_is_type = if is_type { a.is_some() } else { b.is_none() };
+                        if found.is_some()
+                            && self.hidden_import(id, found_is_type, name, self.module)
+                        {
+                            self.error_help(
+                                format!(
+                                    "`{name}` is imported privately in module `{}`",
+                                    self.r.def(id).name
+                                ),
+                                seg.ident.span,
+                                format!("import it from where it is defined, or make it `pub import` in `{}`", self.r.def(id).name),
+                            );
+                            return Res::Err;
+                        }
                         match found {
                             Some(d) => {
                                 if self.r.def(d).vis == Visibility::Private

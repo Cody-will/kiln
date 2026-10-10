@@ -26,7 +26,8 @@ pub enum Ty {
     /// A struct or enum with generic arguments.
     Adt(DefId, Vec<Ty>),
     /// A function or closure type.
-    Fn(Vec<Ty>, Box<Ty>),
+    /// Parameters, return type, and whether it is `fn mut`.
+    Fn(Vec<Ty>, Box<Ty>, bool),
     /// A generic parameter in scope (by name; `Self` inside traits).
     Param(String),
     /// `dyn Trait + ...`
@@ -88,7 +89,7 @@ impl Ty {
             Ty::Array(t, n) => Ty::Array(s(t), *n),
             Ty::Slice(t) => Ty::Slice(s(t)),
             Ty::Adt(d, args) => Ty::Adt(*d, args.iter().map(|t| t.subst(map)).collect()),
-            Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(|t| t.subst(map)).collect(), s(r)),
+            Ty::Fn(ps, r, m) => Ty::Fn(ps.iter().map(|t| t.subst(map)).collect(), s(r), *m),
             Ty::ChanSend(t) => Ty::ChanSend(s(t)),
             Ty::ChanRecv(t) => Ty::ChanRecv(s(t)),
             _ => self.clone(),
@@ -161,7 +162,7 @@ impl InferTable {
             Ty::Array(x, n) => Ty::Array(z(x), *n),
             Ty::Slice(x) => Ty::Slice(z(x)),
             Ty::Adt(d, args) => Ty::Adt(*d, args.iter().map(|x| self.zonk(x)).collect()),
-            Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(|x| self.zonk(x)).collect(), z(r)),
+            Ty::Fn(ps, r, m) => Ty::Fn(ps.iter().map(|x| self.zonk(x)).collect(), z(r), *m),
             Ty::ChanSend(x) => Ty::ChanSend(z(x)),
             Ty::ChanRecv(x) => Ty::ChanRecv(z(x)),
             _ => t,
@@ -173,7 +174,7 @@ impl InferTable {
             Ty::Var(w) => w == v,
             Ty::Tuple(ts) => ts.iter().any(|x| self.occurs(v, x)),
             Ty::Adt(_, ts) => ts.iter().any(|x| self.occurs(v, x)),
-            Ty::Fn(ps, r) => ps.iter().any(|x| self.occurs(v, x)) || self.occurs(v, &r),
+            Ty::Fn(ps, r, _) => ps.iter().any(|x| self.occurs(v, x)) || self.occurs(v, &r),
             Ty::Ref(_, x)
             | Ty::Ptr(_, x)
             | Ty::Array(x, _)
@@ -236,8 +237,9 @@ impl InferTable {
             (Ty::Adt(d1, xs), Ty::Adt(d2, ys)) => {
                 d1 == d2 && xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| self.unify(x, y))
             }
-            (Ty::Fn(p1, r1), Ty::Fn(p2, r2)) => {
-                p1.len() == p2.len()
+            (Ty::Fn(p1, r1, m1), Ty::Fn(p2, r2, m2)) => {
+                m1 == m2
+                    && p1.len() == p2.len()
                     && p1.iter().zip(p2).all(|(x, y)| self.unify(x, y))
                     && self.unify(r1, r2)
             }
@@ -332,7 +334,7 @@ impl InferTable {
         match self.zonk(t) {
             Ty::Var(_) => true,
             Ty::Tuple(ts) | Ty::Adt(_, ts) => ts.iter().any(|x| self.has_unbound(x)),
-            Ty::Fn(ps, r) => ps.iter().any(|x| self.has_unbound(x)) || self.has_unbound(&r),
+            Ty::Fn(ps, r, _) => ps.iter().any(|x| self.has_unbound(x)) || self.has_unbound(&r),
             Ty::Ref(_, x)
             | Ty::Ptr(_, x)
             | Ty::Array(x, _)

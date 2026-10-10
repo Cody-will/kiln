@@ -1069,7 +1069,7 @@ impl FnCx<'_, '_, '_, '_> {
                 match self.resolve(*i, substs) {
                     Target::Direct(id) => {
                         let nargs = match &t {
-                            Ty::Fn(ps, _) => ps.len(),
+                            Ty::Fn(ps, ..) => ps.len(),
                             _ => 0,
                         };
                         let shim = self.cg.shim(id, nargs);
@@ -1330,7 +1330,7 @@ impl FnCx<'_, '_, '_, '_> {
                 ret.subst(&s)
             }
             Callee::Value => match args.first().map(|a| self.op_ty(a)) {
-                Some(Ty::Fn(_, r)) => *r,
+                Some(Ty::Fn(_, r, _)) => *r,
                 _ => Ty::Unit,
             },
             Callee::Intrinsic(_) => Ty::Unit,

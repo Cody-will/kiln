@@ -457,8 +457,12 @@ Network I/O in a task never blocks an OS thread. The runtime parks the task on i
   - Integers: `i8`–`i128`, `u8`–`u128`, `isize`, `usize`.
   - Floats: `f32` and `f64`.
   - Other: `bool`, `char` (a Unicode scalar value), `str` (UTF-8, unsized), and `()`.
-- **Compound types**: tuples `(A, B)`, arrays `[T; N]`, slices `[T]`, references `&T` and `&mut T`, raw pointers `*const T` and `*mut T` (deref is `unsafe` only), and function types `fn(A) -> B`.
-- **Closures** implement `Fn`, `FnMut`, or `FnOnce`, and may need `move`.
+- **Compound types**: tuples `(A, B)`, arrays `[T; N]`, slices `[T]`, references `&T` and `&mut T`, raw pointers `*const T` and `*mut T` (deref is `unsafe` only), and function types `fn(A) -> B` and `fn mut(A) -> B`.
+- **Function values** come in two types, chosen for safety without Rust's three closure traits:
+  - `fn(A) -> B` is a *shareable* function: a named function or a closure that only reads its captures, all of which are `Send + Sync`. It is `Copy`, `Send`, and `Sync`, so it can be stored, copied, and called from many tasks (HTTP handlers are `fn` values).
+  - `fn mut(A) -> B` may also mutate its captures (`|x| { total += x }`). It is not `Copy`, `Send`, or `Sync`. A `fn` value can be used where a `fn mut` is expected, not the reverse. Use it for callbacks run in place, like `each(f: fn mut(T))`.
+  - A closure that moves a captured value out (`move || drop(s)`) can run only once. It can be called directly or bound with `:=`, but never used as a `fn` or `fn mut` value. The same goes for a closure that would break its type's rules (mutating, or capturing a non-`Send`/`Sync` value, where a `fn` is expected). The exceptions are the closures given to `scope` and `Scope::spawn`, which the runtime calls exactly once.
+  - Closures may need `move` to take ownership of what they capture.
 - **Nominal user types** are `struct`, `enum`, and `type Alias = ...`.
 - **Generics** are monomorphized:
   - Bounds go inline or in a `where` clause.
@@ -479,7 +483,7 @@ Network I/O in a task never blocks an OS thread. The runtime parks the task on i
 - **Methods on temporaries**: a `&mut self` method can be called on a temporary value, such as `Cursor::from_str("x").read_to_string(&mut s)`.
 - **Associated functions on enums**: `ErrorKind::from_number(3)` calls a function from an `impl` block of the enum. Variants take priority when names collide.
 - **Structural equality**: `==` on types that derive `Eq` compares field by field: enum variants and payloads, structs, tuples, arrays, `String`, `Vec`, and `Box`, looking through references.
-- **Re-exports**: an `import` inside a module makes the imported name reachable through that module's path (`std::fmt::Display` is the prelude's `Display`).
+- **Re-exports**: a plain `import` is private to its module (and the modules nested in it). `pub import` also makes the name reachable through the module's path, so `std::fmt` re-exports the prelude's `Display` with `pub import Display`. Import paths may start with `self::` or `super::`.
 - **Blanket impls for references**: `impl<W: Write> Write for &mut W` lets a `&mut` writer be passed where a writer is expected. A method call on a reference uses the referent's impl first.
 
 ## 6. Memory Model
