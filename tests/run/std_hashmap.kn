@@ -1,0 +1,76 @@
+import std::collections::HashMap
+
+#[derive(Eq, Hash, Debug, Clone)]
+struct P {
+    x: i32,
+    y: i32,
+}
+
+fn main() {
+    // Stress against a simple model: key k maps to k * 3 when present.
+    m mut := HashMap::new()
+    present mut := Vec::new()
+    i mut := 0
+    while i < 2000 {
+        present.push(false)
+        i += 1
+    }
+    let mut s: u64 = 12345
+    n mut := 0
+    while n < 20000 {
+        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)
+        k := ((s >> 33) % 2000) as i32
+        if (s >> 20) % 3 == 0 {
+            r := m.remove(&k)
+            if r.is_some() != present[k as usize] {
+                panic("remove mismatch")
+            }
+            present[k as usize] = false
+        } else {
+            m.insert(k, k * 3)
+            present[k as usize] = true
+        }
+        n += 1
+    }
+    count mut := 0
+    j mut := 0
+    while j < 2000 {
+        got := m.get(&(j as i32))
+        if present[j] {
+            count += 1
+            if got != Some(&((j as i32) * 3)) {
+                panic("value mismatch")
+            }
+        } else if got.is_some() {
+            panic("phantom key")
+        }
+        j += 1
+    }
+    println("stress ok {m.len() == count}")
+
+    words := "the cat and the hat and the bat".split(" ")
+    counts mut := HashMap::new()
+    for w in words {
+        *counts.entry(w.to_string()).or_insert(0) += 1
+    }
+    println("{counts:?}")
+    println("the={counts.get("the").unwrap()} has_dog={counts.contains_key("dog")}")
+    counts.retain(|_k, v| *v > 1)
+    total mut := 0
+    for (k, v) in counts.iter() {
+        total += *v
+    }
+    println("{counts.len()} {total}")
+    c2 := counts.clone()
+    println("{c2 == counts}")
+    pts mut := HashMap::new()
+    pts.insert(P { x: 1, y: 2 }, "a")
+    pts.insert(P { x: 1, y: 2 }, "b")
+    println("{pts:?}")
+    for v in counts.values_mut() {
+        *v *= 10
+    }
+    keys mut := counts.into_keys().collect()
+    keys.sort()
+    println("{keys:?}")
+}

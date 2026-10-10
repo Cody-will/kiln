@@ -40,6 +40,7 @@ pub const STD_MODULES: &[(&str, &str)] = &[
     ("num", include_str!("../std/num.kn")),
     ("strconv", include_str!("../std/strconv.kn")),
     ("hash", include_str!("../std/hash.kn")),
+    ("collections", include_str!("../std/collections.kn")),
     ("ptr", include_str!("../std/ptr.kn")),
     ("time", include_str!("../std/time.kn")),
     ("sync", include_str!("../std/sync.kn")),

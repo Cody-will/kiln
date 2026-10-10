@@ -1,0 +1,7 @@
+stress ok true
+{"the": 3, "cat": 1, "and": 2, "hat": 1, "bat": 1}
+the=3 has_dog=false
+2 5
+true
+{P { x: 1, y: 2 }: "b"}
+["and", "the"]

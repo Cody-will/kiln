@@ -1,0 +1,715 @@
+// Collections: HashMap, HashSet, BTreeMap, BTreeSet, VecDeque.
+//
+//	counts mut := HashMap::new()
+//	for w in text.split_whitespace() {
+//		*counts.entry(w.to_string()).or_insert(0) += 1
+//	}
+//	if let Some(n) = counts.get("the") { ... }
+//
+// HashMap and HashSet need keys that implement Hash and Eq; lookups take any
+// borrowed form of the key (a `&str` for `String` keys). Hash tables are
+// seeded randomly per process. Iteration order of a HashMap is unspecified
+// (today it is insertion order until something is removed); use BTreeMap
+// when you need keys in sorted order.
+
+// ===== HashMap ====================================================================
+
+struct Bucket<K, V> {
+	hash: u64,
+	key: K,
+	value: V,
+}
+
+// Index slot markers: 0 is empty; TOMB is a removed entry; anything else is
+// an index into `entries` plus one.
+const TOMB: usize = usize::MAX
+
+// A hash table mapping keys to values.
+pub struct HashMap<K, V> {
+	entries: Vec<Bucket<K, V>>,
+	slots: Vec<usize>,
+	used: usize,
+}
+
+impl<K, V> HashMap<K, V> {
+	// An empty map. It allocates nothing until the first insert.
+	pub fn new() -> HashMap<K, V> {
+		return HashMap { entries: Vec::new(), slots: Vec::new(), used: 0 }
+	}
+
+	// The number of entries.
+	pub fn len(&self) -> usize {
+		return self.entries.len()
+	}
+
+	pub fn is_empty(&self) -> bool {
+		return self.entries.len() == 0
+	}
+
+	// Removes every entry, keeping the allocated space.
+	pub fn clear(&mut self) {
+		self.entries.clear()
+		i mut := 0
+		while i < self.slots.len() {
+			self.slots[i] = 0
+			i += 1
+		}
+		self.used = 0
+	}
+
+	// The entries as `(&key, &value)` pairs.
+	pub fn iter<'a>(&'a self) -> Iter<'a, K, V> {
+		return Iter { inner: self.entries.iter() }
+	}
+
+	// The entries as `(&key, &mut value)` pairs.
+	pub fn iter_mut<'a>(&'a mut self) -> IterMut<'a, K, V> {
+		return IterMut { inner: self.entries.iter_mut() }
+	}
+
+	// The keys.
+	pub fn keys<'a>(&'a self) -> Keys<'a, K, V> {
+		return Keys { inner: self.entries.iter() }
+	}
+
+	// The values.
+	pub fn values<'a>(&'a self) -> Values<'a, K, V> {
+		return Values { inner: self.entries.iter() }
+	}
+
+	// The values, mutably.
+	pub fn values_mut<'a>(&'a mut self) -> ValuesMut<'a, K, V> {
+		return ValuesMut { inner: self.entries.iter_mut() }
+	}
+
+	// The entries as `(key, value)` pairs, consuming the map.
+	pub fn into_iter(self) -> IntoIter<K, V> {
+		return IntoIter { inner: self.entries.into_iter() }
+	}
+
+	// The keys, consuming the map.
+	pub fn into_keys(self) -> IntoKeys<K, V> {
+		return IntoKeys { inner: self.entries.into_iter() }
+	}
+
+	// The values, consuming the map.
+	pub fn into_values(self) -> IntoValues<K, V> {
+		return IntoValues { inner: self.entries.into_iter() }
+	}
+
+	// Removes and returns every entry, leaving the map empty.
+	pub fn drain(&mut self) -> IntoIter<K, V> {
+		entries := std::mem::replace(&mut self.entries, Vec::new())
+		self.clear()
+		return IntoIter { inner: entries.into_iter() }
+	}
+}
+
+impl<K: Hash + Eq, V> HashMap<K, V> {
+	// An empty map with room for `n` entries before it grows.
+	pub fn with_capacity(n: usize) -> HashMap<K, V> {
+		m mut := HashMap::new()
+		m.reserve(n)
+		return m
+	}
+
+	// A map of the pairs from `items`; later duplicates win.
+	pub fn from_iter<I: Iterator<(K, V)>>(items: I) -> HashMap<K, V> {
+		m mut := HashMap::new()
+		m.extend(items)
+		return m
+	}
+
+	// How many entries fit before the table grows.
+	pub fn capacity(&self) -> usize {
+		return self.slots.len() / 8 * 7
+	}
+
+	// Makes room for `n` more entries.
+	pub fn reserve(&mut self, n: usize) {
+		if (self.used + n) * 8 <= self.slots.len() * 7 {
+			return
+		}
+		need := self.entries.len() + n
+		size mut := 8
+		while size * 7 < need * 8 {
+			size *= 2
+		}
+		self.rehash(size)
+	}
+
+	// Rebuilds the index with `size` slots (a power of two), dropping tombstones.
+	fn rehash(&mut self, size: usize) {
+		slots mut := Vec::with_capacity(size)
+		i mut := 0
+		while i < size {
+			slots.push(0)
+			i += 1
+		}
+		mask := size - 1
+		j mut := 0
+		while j < self.entries.len() {
+			k mut := (self.entries[j].hash as usize) & mask
+			while slots[k] != 0 {
+				k = (k + 1) & mask
+			}
+			slots[k] = j + 1
+			j += 1
+		}
+		self.slots = slots
+		self.used = self.entries.len()
+	}
+
+	// The slot holding `key`, if present.
+	fn find<Q: Eq>(&self, h: u64, key: &Q) -> Option<usize> where K: Borrow<Q> {
+		if self.slots.len() == 0 {
+			return None
+		}
+		mask := self.slots.len() - 1
+		i mut := (h as usize) & mask
+		loop {
+			s := self.slots[i]
+			if s == 0 {
+				return None
+			}
+			if s != TOMB {
+				e := &self.entries[s - 1]
+				if e.hash == h && Borrow::borrow(&e.key) == key {
+					return Some(i)
+				}
+			}
+			i = (i + 1) & mask
+		}
+	}
+
+	// Adds an entry known to be absent; returns its index.
+	fn push_new(&mut self, h: u64, key: K, value: V) -> usize {
+		self.reserve(1)
+		mask := self.slots.len() - 1
+		i mut := (h as usize) & mask
+		while self.slots[i] != 0 && self.slots[i] != TOMB {
+			i = (i + 1) & mask
+		}
+		if self.slots[i] == 0 {
+			self.used += 1
+		}
+		self.entries.push(Bucket { hash: h, key: key, value: value })
+		self.slots[i] = self.entries.len()
+		return self.entries.len() - 1
+	}
+
+	// Sets `key` to `value`, returning the old value if there was one.
+	pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+		h := std::hash::hash(&key)
+		if let Some(i) = self.find(h, &key) {
+			idx := self.slots[i] - 1
+			return Some(std::mem::replace(&mut self.entries[idx].value, value))
+		}
+		self.push_new(h, key, value)
+		return None
+	}
+
+	// The value for `key`.
+	pub fn get<Q: Hash + Eq>(&self, key: &Q) -> Option<&V> where K: Borrow<Q> {
+		match self.find(std::hash::hash(key), key) {
+			Some(i) => return Some(&self.entries[self.slots[i] - 1].value),
+			None => return None,
+		}
+	}
+
+	// The value for `key`, mutably.
+	pub fn get_mut<Q: Hash + Eq>(&mut self, key: &Q) -> Option<&mut V> where K: Borrow<Q> {
+		match self.find(std::hash::hash(key), key) {
+			Some(i) => {
+				idx := self.slots[i] - 1
+				return Some(&mut self.entries[idx].value)
+			}
+			None => return None,
+		}
+	}
+
+	// The stored key and value for `key`.
+	pub fn get_key_value<Q: Hash + Eq>(&self, key: &Q) -> Option<(&K, &V)> where K: Borrow<Q> {
+		match self.find(std::hash::hash(key), key) {
+			Some(i) => {
+				e := &self.entries[self.slots[i] - 1]
+				return Some((&e.key, &e.value))
+			}
+			None => return None,
+		}
+	}
+
+	// Whether the map has an entry for `key`.
+	pub fn contains_key<Q: Hash + Eq>(&self, key: &Q) -> bool where K: Borrow<Q> {
+		return self.find(std::hash::hash(key), key).is_some()
+	}
+
+	// Removes `key`, returning its value.
+	pub fn remove<Q: Hash + Eq>(&mut self, key: &Q) -> Option<V> where K: Borrow<Q> {
+		match self.remove_entry(key) {
+			Some((_, v)) => return Some(v),
+			None => return None,
+		}
+	}
+
+	// Removes `key`, returning the stored key and value.
+	pub fn remove_entry<Q: Hash + Eq>(&mut self, key: &Q) -> Option<(K, V)> where K: Borrow<Q> {
+		match self.find(std::hash::hash(key), key) {
+			Some(i) => return Some(self.take_slot(i)),
+			None => return None,
+		}
+	}
+
+	// Removes the entry in slot `i`. The last entry moves into its place in
+	// `entries`, so its slot is updated.
+	fn take_slot(&mut self, i: usize) -> (K, V) {
+		idx := self.slots[i] - 1
+		self.slots[i] = TOMB
+		last := self.entries.len() - 1
+		if idx != last {
+			mask := self.slots.len() - 1
+			j mut := (self.entries[last].hash as usize) & mask
+			while self.slots[j] != last + 1 {
+				j = (j + 1) & mask
+			}
+			self.slots[j] = idx + 1
+		}
+		b := self.entries.swap_remove(idx)
+		return (b.key, b.value)
+	}
+
+	// The entry for `key`, for inserting or updating in place:
+	// `*m.entry(k).or_insert(0) += 1`.
+	pub fn entry<'a>(&'a mut self, key: K) -> Entry<'a, K, V> {
+		h := std::hash::hash(&key)
+		idx := match self.find(h, &key) {
+			Some(i) => Some(self.slots[i] - 1),
+			None => None,
+		}
+		return Entry { map: self, key: key, hash: h, idx: idx }
+	}
+
+	// Keeps only the entries for which `keep` returns true.
+	pub fn retain(&mut self, keep: fn mut(&K, &mut V) -> bool) {
+		old := std::mem::replace(&mut self.entries, Vec::new())
+		for b in old.into_iter() {
+			e mut := b
+			if keep(&e.key, &mut e.value) {
+				self.entries.push(e)
+			}
+		}
+		size := self.slots.len()
+		if size > 0 {
+			self.rehash(size)
+		}
+	}
+
+	// Inserts every pair from `items`.
+	pub fn extend<I: Iterator<(K, V)>>(&mut self, items: I) {
+		it mut := items
+		while let Some((k, v)) = it.next() {
+			self.insert(k, v)
+		}
+	}
+}
+
+impl<K: Hash + Eq, V: Eq> Eq for HashMap<K, V> {
+	// Maps are equal when they have the same keys with equal values, in any order.
+	fn eq(&self, other: &HashMap<K, V>) -> bool {
+		if self.len() != other.len() {
+			return false
+		}
+		for e in self.entries.iter() {
+			match other.get(&e.key) {
+				Some(v) => {
+					if !(v == &e.value) {
+						return false
+					}
+				}
+				None => return false,
+			}
+		}
+		return true
+	}
+}
+
+impl<K: Clone, V: Clone> Clone for HashMap<K, V> {
+	fn clone(&self) -> HashMap<K, V> {
+		entries mut := Vec::with_capacity(self.entries.len())
+		for e in self.entries.iter() {
+			entries.push(Bucket { hash: e.hash, key: e.key.clone(), value: e.value.clone() })
+		}
+		return HashMap { entries: entries, slots: self.slots.clone(), used: self.used }
+	}
+}
+
+impl<K: Debug, V: Debug> Debug for HashMap<K, V> {
+	fn fmt_debug(&self, f: &mut std::fmt::Formatter) {
+		f.begin("{{")
+		first mut := true
+		for e in self.entries.iter() {
+			f.item(first)
+			f.debug(&e.key)
+			f.write(": ")
+			f.debug(&e.value)
+			first = false
+		}
+		f.end("}}", first, false)
+	}
+}
+
+// A place in a map for one key, which may or may not hold a value.
+pub struct Entry<'a, K, V> {
+	map: &'a mut HashMap<K, V>,
+	key: K,
+	hash: u64,
+	idx: Option<usize>,
+}
+
+impl<'a, K: Hash + Eq, V> Entry<'a, K, V> {
+	// The key this entry is for.
+	pub fn key(&self) -> &K {
+		return &self.key
+	}
+
+	// Whether the map already has a value for the key.
+	pub fn is_occupied(&self) -> bool {
+		return self.idx.is_some()
+	}
+
+	// The value, inserting `default` first if there is none.
+	pub fn or_insert(self, default: V) -> &'a mut V {
+		e mut := self
+		idx := match e.idx {
+			Some(i) => i,
+			None => e.map.push_new(e.hash, e.key, default),
+		}
+		return &mut e.map.entries[idx].value
+	}
+
+	// The value, inserting `make()` first if there is none.
+	pub fn or_insert_with(self, make: fn mut() -> V) -> &'a mut V {
+		e mut := self
+		idx := match e.idx {
+			Some(i) => i,
+			None => e.map.push_new(e.hash, e.key, make()),
+		}
+		return &mut e.map.entries[idx].value
+	}
+
+	// Calls `f` on the value if there is one, then returns the entry.
+	pub fn and_modify(self, f: fn mut(&mut V)) -> Entry<'a, K, V> {
+		e mut := self
+		if let Some(i) = e.idx {
+			f(&mut e.map.entries[i].value)
+		}
+		return e
+	}
+}
+
+pub struct Iter<'a, K, V> {
+	inner: std::iter::Iter<'a, Bucket<K, V>>,
+}
+
+impl<'a, K, V> Iterator<(&'a K, &'a V)> for Iter<'a, K, V> {
+	fn next(&mut self) -> Option<(&'a K, &'a V)> {
+		match self.inner.next() {
+			Some(b) => return Some((&b.key, &b.value)),
+			None => return None,
+		}
+	}
+}
+
+pub struct IterMut<'a, K, V> {
+	inner: std::iter::IterMut<'a, Bucket<K, V>>,
+}
+
+impl<'a, K, V> Iterator<(&'a K, &'a mut V)> for IterMut<'a, K, V> {
+	fn next(&mut self) -> Option<(&'a K, &'a mut V)> {
+		match self.inner.next() {
+			Some(b) => return Some((&b.key, &mut b.value)),
+			None => return None,
+		}
+	}
+}
+
+pub struct Keys<'a, K, V> {
+	inner: std::iter::Iter<'a, Bucket<K, V>>,
+}
+
+impl<'a, K, V> Iterator<&'a K> for Keys<'a, K, V> {
+	fn next(&mut self) -> Option<&'a K> {
+		match self.inner.next() {
+			Some(b) => return Some(&b.key),
+			None => return None,
+		}
+	}
+}
+
+pub struct Values<'a, K, V> {
+	inner: std::iter::Iter<'a, Bucket<K, V>>,
+}
+
+impl<'a, K, V> Iterator<&'a V> for Values<'a, K, V> {
+	fn next(&mut self) -> Option<&'a V> {
+		match self.inner.next() {
+			Some(b) => return Some(&b.value),
+			None => return None,
+		}
+	}
+}
+
+pub struct ValuesMut<'a, K, V> {
+	inner: std::iter::IterMut<'a, Bucket<K, V>>,
+}
+
+impl<'a, K, V> Iterator<&'a mut V> for ValuesMut<'a, K, V> {
+	fn next(&mut self) -> Option<&'a mut V> {
+		match self.inner.next() {
+			Some(b) => return Some(&mut b.value),
+			None => return None,
+		}
+	}
+}
+
+pub struct IntoIter<K, V> {
+	inner: std::iter::IntoIter<Bucket<K, V>>,
+}
+
+impl<K, V> Iterator<(K, V)> for IntoIter<K, V> {
+	fn next(&mut self) -> Option<(K, V)> {
+		match self.inner.next() {
+			Some(b) => return Some((b.key, b.value)),
+			None => return None,
+		}
+	}
+}
+
+pub struct IntoKeys<K, V> {
+	inner: std::iter::IntoIter<Bucket<K, V>>,
+}
+
+impl<K, V> Iterator<K> for IntoKeys<K, V> {
+	fn next(&mut self) -> Option<K> {
+		match self.inner.next() {
+			Some(b) => return Some(b.key),
+			None => return None,
+		}
+	}
+}
+
+pub struct IntoValues<K, V> {
+	inner: std::iter::IntoIter<Bucket<K, V>>,
+}
+
+impl<K, V> Iterator<V> for IntoValues<K, V> {
+	fn next(&mut self) -> Option<V> {
+		match self.inner.next() {
+			Some(b) => return Some(b.value),
+			None => return None,
+		}
+	}
+}
+
+// ===== HashSet ====================================================================
+
+// A set of distinct values, stored in a hash table.
+pub struct HashSet<T> {
+	map: HashMap<T, ()>,
+}
+
+impl<T> HashSet<T> {
+	// An empty set.
+	pub fn new() -> HashSet<T> {
+		return HashSet { map: HashMap::new() }
+	}
+
+	pub fn len(&self) -> usize {
+		return self.map.len()
+	}
+
+	pub fn is_empty(&self) -> bool {
+		return self.map.len() == 0
+	}
+
+	pub fn clear(&mut self) {
+		self.map.clear()
+	}
+
+	// The values.
+	pub fn iter<'a>(&'a self) -> Keys<'a, T, ()> {
+		return self.map.keys()
+	}
+
+	// The values, consuming the set.
+	pub fn into_iter(self) -> IntoKeys<T, ()> {
+		return self.map.into_keys()
+	}
+
+	// Removes and returns every value.
+	pub fn drain(&mut self) -> IntoKeys<T, ()> {
+		return IntoKeys { inner: std::mem::replace(&mut self.map.entries, Vec::new()).into_iter() }
+	}
+}
+
+impl<T: Hash + Eq> HashSet<T> {
+	// An empty set with room for `n` values.
+	pub fn with_capacity(n: usize) -> HashSet<T> {
+		return HashSet { map: HashMap::with_capacity(n) }
+	}
+
+	// A set of the values from `items`.
+	pub fn from_iter<I: Iterator<T>>(items: I) -> HashSet<T> {
+		s mut := HashSet::new()
+		s.extend(items)
+		return s
+	}
+
+	pub fn reserve(&mut self, n: usize) {
+		self.map.reserve(n)
+	}
+
+	// Adds `value`; returns false if it was already present.
+	pub fn insert(&mut self, value: T) -> bool {
+		return self.map.insert(value, ()).is_none()
+	}
+
+	// Whether `value` is in the set.
+	pub fn contains<Q: Hash + Eq>(&self, value: &Q) -> bool where T: Borrow<Q> {
+		return self.map.contains_key(value)
+	}
+
+	// The stored value equal to `value`.
+	pub fn get<Q: Hash + Eq>(&self, value: &Q) -> Option<&T> where T: Borrow<Q> {
+		match self.map.get_key_value(value) {
+			Some((k, _)) => return Some(k),
+			None => return None,
+		}
+	}
+
+	// Removes `value`; returns whether it was present.
+	pub fn remove<Q: Hash + Eq>(&mut self, value: &Q) -> bool where T: Borrow<Q> {
+		return self.map.remove(value).is_some()
+	}
+
+	// Removes and returns the stored value equal to `value`.
+	pub fn take<Q: Hash + Eq>(&mut self, value: &Q) -> Option<T> where T: Borrow<Q> {
+		match self.map.remove_entry(value) {
+			Some((k, _)) => return Some(k),
+			None => return None,
+		}
+	}
+
+	// Keeps only the values for which `keep` returns true.
+	pub fn retain(&mut self, keep: fn mut(&T) -> bool) {
+		self.map.retain(|k, _v| keep(k))
+	}
+
+	// Adds every value from `items`.
+	pub fn extend<I: Iterator<T>>(&mut self, items: I) {
+		it mut := items
+		while let Some(x) = it.next() {
+			self.map.insert(x, ())
+		}
+	}
+
+	// Whether every value of this set is in `other`.
+	pub fn is_subset(&self, other: &HashSet<T>) -> bool {
+		if self.len() > other.len() {
+			return false
+		}
+		for x in self.iter() {
+			if !other.contains(x) {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Whether every value of `other` is in this set.
+	pub fn is_superset(&self, other: &HashSet<T>) -> bool {
+		return other.is_subset(self)
+	}
+
+	// Whether the sets have no values in common.
+	pub fn is_disjoint(&self, other: &HashSet<T>) -> bool {
+		for x in self.iter() {
+			if other.contains(x) {
+				return false
+			}
+		}
+		return true
+	}
+
+	// The values in both sets, as references into this one.
+	pub fn intersection<'a>(&'a self, other: &HashSet<T>) -> Vec<&'a T> {
+		out mut := Vec::new()
+		for x in self.iter() {
+			if other.contains(x) {
+				out.push(x)
+			}
+		}
+		return out
+	}
+
+	// The values in this set but not in `other`.
+	pub fn difference<'a>(&'a self, other: &HashSet<T>) -> Vec<&'a T> {
+		out mut := Vec::new()
+		for x in self.iter() {
+			if !other.contains(x) {
+				out.push(x)
+			}
+		}
+		return out
+	}
+
+	// The values in either set (each once).
+	pub fn union<'a>(&'a self, other: &'a HashSet<T>) -> Vec<&'a T> {
+		out mut := Vec::new()
+		for x in self.iter() {
+			out.push(x)
+		}
+		for x in other.iter() {
+			if !self.contains(x) {
+				out.push(x)
+			}
+		}
+		return out
+	}
+
+	// The values in exactly one of the sets.
+	pub fn symmetric_difference<'a>(&'a self, other: &'a HashSet<T>) -> Vec<&'a T> {
+		out mut := self.difference(other)
+		for x in other.iter() {
+			if !self.contains(x) {
+				out.push(x)
+			}
+		}
+		return out
+	}
+}
+
+impl<T: Hash + Eq> Eq for HashSet<T> {
+	fn eq(&self, other: &HashSet<T>) -> bool {
+		return self.len() == other.len() && self.is_subset(other)
+	}
+}
+
+impl<T: Clone> Clone for HashSet<T> {
+	fn clone(&self) -> HashSet<T> {
+		return HashSet { map: self.map.clone() }
+	}
+}
+
+impl<T: Debug> Debug for HashSet<T> {
+	fn fmt_debug(&self, f: &mut std::fmt::Formatter) {
+		f.begin("{{")
+		first mut := true
+		for e in self.map.entries.iter() {
+			f.item(first)
+			f.debug(&e.key)
+			first = false
+		}
+		f.end("}}", first, false)
+	}
+}

@@ -685,7 +685,10 @@ impl Body<'_, '_, '_> {
                 VarKind::General => true,
             },
             Ty::Unknown | Ty::Never => true,
-            Ty::Param(n) => self.param_bounds(n).contains(&tr),
+            Ty::Param(n) => {
+                let n = n.clone();
+                self.param_bounds(&n).contains(&tr) || self.has_impl(&t, tr)
+            }
             Ty::Prim(p) => {
                 (match p {
                     PrimTy::F32 | PrimTy::F64 => marker(&[

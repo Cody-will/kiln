@@ -1,0 +1,4 @@
+false true true 5
+[3, 4] 3 7 5
+true {1, 2, 3, 4}
+{2, 4} true true false

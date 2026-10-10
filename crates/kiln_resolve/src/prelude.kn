@@ -70,6 +70,31 @@ pub trait Hash {
 	}
 }
 
+// A type that can be viewed as a `&Q`, used for lookups: a `HashMap<String, V>`
+// is searched with a `&str`, without building a `String`. Values must hash and
+// compare the same as their borrowed form.
+pub trait Borrow<Q> {
+	fn borrow(&self) -> &Q
+}
+
+impl<T> Borrow<T> for T {
+	fn borrow(&self) -> &T {
+		return self
+	}
+}
+
+impl Borrow<str> for String {
+	fn borrow(&self) -> &str {
+		return self.as_str()
+	}
+}
+
+impl<T> Borrow<[T]> for Vec<T> {
+	fn borrow(&self) -> &[T] {
+		return self.as_slice()
+	}
+}
+
 // The result of comparing two values.
 #[derive(Clone, Copy, Eq, Ord, Hash, Debug)]
 pub enum Ordering {
