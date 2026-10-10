@@ -590,7 +590,7 @@ fn select_arms() {
 
 #[test]
 fn chan_methods() {
-    ok("fn main() {\n (tx, rx) := chan::<i32>(1)\n r := tx.try_send(1)\n o := rx.try_recv()\n tx.close()\n let n: usize = rx.len()\n}");
+    ok("fn main() {\n (tx, rx) := chan::<i32>(1)\n r := tx.try_send(1)\n o := rx.try_recv()\n p := rx.recv()\n let q: Option<i32> = p\n tx.close()\n let n: usize = rx.len()\n}");
 }
 
 #[test]
@@ -611,4 +611,39 @@ fn repository_examples_type_check() {
             assert!(e.is_empty(), "{}: {e:#?}", path.display());
         }
     }
+}
+
+/// Every ```kiln block in the website must type-check (use ```text for
+/// intentionally broken code).
+#[test]
+fn website_examples_type_check() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let p = entry.unwrap().path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|e| e == "md") {
+                out.push(p);
+            }
+        }
+    }
+    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../website/src"));
+    let mut files = Vec::new();
+    walk(root, &mut files);
+    let mut checked = 0;
+    for f in files {
+        let text = std::fs::read_to_string(&f).unwrap();
+        for (i, block) in text.split("```kiln\n").skip(1).enumerate() {
+            let code = block.split("```").next().unwrap();
+            let e = errs(code);
+            assert!(
+                e.is_empty(),
+                "{} block {}: {e:#?}\n{code}",
+                f.display(),
+                i + 1
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 20, "only {checked} website examples found");
 }

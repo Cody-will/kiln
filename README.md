@@ -29,6 +29,7 @@ fn main() -> Result<(), io::Error> {
 - [docs/SPEC.md](docs/SPEC.md): the language design spec (draft).
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the compiler is organized.
 - [docs/ROADMAP.md](docs/ROADMAP.md): milestones and current status.
+- [website/](website/): the Kiln website and step-by-step tutorial. Build it with `mdbook build website`.
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to build, test, and contribute.
 
 ## Building
@@ -52,6 +53,7 @@ Example programs are in [`examples/`](examples/). Kiln source files use the `.kn
 | `crates/kiln_lexer` | Tokens, lexer (with Go-style semicolon insertion), spans, diagnostics |
 | `crates/kiln_parser` | AST and recursive-descent/Pratt parser |
 | `crates/kiln_resolve` | Name resolution: modules, imports, scopes, prelude |
+| `website/` | The website and tutorial book (mdBook); see `website/README.md` |
 | `crates/kiln_typeck` | Type checking: inference, traits/impls, generics, `?`, explicit returns |
 | `crates/kiln_cli` | The `kiln` binary |
 | `docs/` | Spec, architecture, roadmap |

@@ -32,3 +32,7 @@ cargo test --workspace
 ## License
 
 By contributing, you agree that your contributions will be dual-licensed under MIT OR Apache-2.0, as described in the README.
+
+## Website and tutorial
+
+The site in `website/` is an mdBook. Preview it with `mdbook serve website`. Every ` ```kiln ` code block must pass `kiln check` (enforced by `cargo test`). Mark features that are not implemented yet with a 🚧 status callout, and update `website/src/status.md` when a milestone lands. Deploying to GitHub Pages is manual (`.github/workflows/pages.yml`).

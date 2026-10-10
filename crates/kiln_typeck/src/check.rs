@@ -1525,9 +1525,11 @@ impl Body<'_, '_, '_> {
         let ret = match (c, name) {
             (Ty::ChanSend(x), "try_send") => {
                 self.check_args(&[(**x).clone()], args, span);
-                return Some(self.c.result_ty(Ty::Unit, (**x).clone()));
+                // The error type (`TrySendError<T>`) lives in std, which is opaque for now.
+                return Some(self.c.result_ty(Ty::Unit, Ty::Unknown));
             }
-            (Ty::ChanRecv(x), "try_recv") => self.c.option_ty((**x).clone()),
+            (Ty::ChanRecv(x), "try_recv") => self.c.result_ty((**x).clone(), Ty::Unknown),
+            (Ty::ChanRecv(x), "recv") => self.c.option_ty((**x).clone()),
             (Ty::ChanSend(_), "close") => Ty::Unit,
             (Ty::ChanSend(_) | Ty::ChanRecv(_), "len" | "cap") => Ty::Prim(PrimTy::Usize),
             (Ty::ChanSend(_) | Ty::ChanRecv(_), "clone") => c.clone(),

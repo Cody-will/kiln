@@ -1,0 +1,26 @@
+[book]
+title = "The Kiln Programming Language"
+authors = ["The Kiln contributors"]
+description = "Syntax as simple as Go, functionality like Rust."
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+additional-css = ["theme/kiln.css"]
+additional-js = ["theme/kiln-highlight.js"]
+git-repository-url = "https://github.com/Cody-will/kiln"
+edit-url-template = "https://github.com/Cody-will/kiln/edit/main/website/{path}"
+site-url = "/kiln/"
+
+[output.html.playground]
+runnable = false
+copyable = true
+
+[output.html.search]
+enable = true
