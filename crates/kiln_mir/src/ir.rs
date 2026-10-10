@@ -239,6 +239,8 @@ pub enum InterpSeg {
 pub enum AggKind {
     Tuple,
     Array,
+    /// `[x; n]`: one operand, copied `n` times.
+    ArrayRepeat(u64),
     /// A struct, with the field names in operand order.
     Struct(DefId, Vec<String>),
     /// Enum variant `index` of enum `def`, with field names in operand order.
@@ -353,7 +355,13 @@ pub enum StmtKind {
     /// The local's scope ends: it is dropped and its storage invalidated.
     StorageDead(Local),
     /// Register deferred call number `n` (run at function exit, last-in first-out).
-    DeferPush(u32),
+    /// With `Some(rec)`, the callee and arguments were evaluated into the tuple
+    /// `rec` at the `defer` statement (Go semantics); its value moves onto the
+    /// defer stack with the call.
+    DeferPush(u32, Option<Local>),
+    /// First statement of a deferred call's block: move the arguments saved by
+    /// the matching `DeferPush` back into `rec`.
+    DeferLoad(Local),
     /// Start a task.
     Spawn {
         kind: SpawnKind,

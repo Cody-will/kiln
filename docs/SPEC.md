@@ -447,7 +447,18 @@ Network I/O in a task never blocks an OS thread. The runtime parks the task on i
 - **Allocation**:
   - Values live on the stack by default.
   - Heap types are `Box<T>`, `Vec<T>`, `String`, `Rc<T>` (single task), and `Arc<T>` (shared across tasks).
-- **Destruction** is deterministic: `Drop` runs at the end of the owner's scope. `defer` runs a call when the enclosing *function* returns (Go semantics), after the return value is computed and before locals are dropped; multiple defers run last-in, first-out. A `defer` inside a loop registers one call per iteration. Variables used by a deferred call must still be alive at function exit, so they must be declared in the function's outermost scope. Deferred code sees variables as they are at function exit, so using a variable that was moved after the `defer` is an error.
+- **Destruction** is deterministic: `Drop` runs at the end of the owner's scope. `defer` runs a call when the enclosing *function* returns (Go semantics), after the return value is computed and before locals are dropped; multiple defers run last-in, first-out. A `defer` inside a loop registers one call per iteration. As in Go, `defer f(args)` and `defer x.m(args)` evaluate the function, receiver, and arguments when the `defer` statement runs: arguments are moved or copied then, and an interpolated string is formatted then. A borrowed argument (`defer read(&s)`) keeps its borrow until the function returns, so `s` can't be moved or mutated afterwards, and `s` must live until function exit. `defer println(s)` borrows `s` rather than moving it. `defer { ... }` runs the block at exit like a Go closure: it sees variables as they are then, so its variables must be declared in the function's outermost scope and must not be moved after the `defer`.
+
+```kiln
+fn main() {
+	for i in 0..3 {
+		defer println("{i}")  // prints 2, 1, 0 at exit
+	}
+	x mut := 1
+	defer println("x was {x}")  // prints "x was 1"
+	x = 2
+}
+```
 - **Borrow checking**:
   - Uses non-lexical lifetimes computed over the MIR control-flow graph: a borrow lasts until the last use of the reference, not until the end of its scope.
   - Passing a `&mut T` variable as a call argument reborrows it (`&mut *r`), so the variable stays usable after the call.

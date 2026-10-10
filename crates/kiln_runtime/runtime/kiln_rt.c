@@ -303,19 +303,36 @@ int32_t kn_str_contains(const uint8_t *p, size_t len, const uint8_t *q, size_t q
 
 /* ----- defer stacks ------------------------------------------------------ */
 
-void kn_defer_push(KnVec *stack, uint32_t id) {
-	kn_vec_reserve(stack, 1, 4, 4);
-	((uint32_t *)stack->ptr)[stack->len++] = id;
+/* A function's defer stack: (call id, saved arguments) pairs, plus the
+ * arguments of the call being run. */
+typedef struct {
+	KnVec entries;
+	void *current;
+} KnDefer;
+
+typedef struct {
+	uint64_t id;
+	void *args;
+} KnDeferEntry;
+
+void kn_defer_push(KnDefer *d, uint32_t id, void *args) {
+	kn_vec_reserve(&d->entries, 1, sizeof(KnDeferEntry), 8);
+	KnDeferEntry *e = &((KnDeferEntry *)d->entries.ptr)[d->entries.len++];
+	e->id = id;
+	e->args = args;
 }
 
-/* Pops the most recent deferred call id, or returns -1 (and frees the stack). */
-int64_t kn_defer_pop(KnVec *stack) {
-	if (stack->len == 0) {
-		kn_vec_free(stack, 4, 4);
-		stack->cap = 0;
+/* Pops the most recent deferred call: returns its id and sets `current` to
+ * its saved arguments, or returns -1 (and frees the stack). */
+int64_t kn_defer_pop(KnDefer *d) {
+	if (d->entries.len == 0) {
+		kn_vec_free(&d->entries, sizeof(KnDeferEntry), 8);
+		d->entries.cap = 0;
 		return -1;
 	}
-	return ((uint32_t *)stack->ptr)[--stack->len];
+	KnDeferEntry e = ((KnDeferEntry *)d->entries.ptr)[--d->entries.len];
+	d->current = e.args;
+	return (int64_t)e.id;
 }
 
 /* ----- math -------------------------------------------------------------- */

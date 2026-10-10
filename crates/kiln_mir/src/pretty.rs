@@ -57,6 +57,7 @@ impl fmt::Display for Rvalue {
                 let k = match k {
                     AggKind::Tuple => "tuple".to_string(),
                     AggKind::Array => "array".to_string(),
+                    AggKind::ArrayRepeat(n) => format!("array_repeat[{n}]"),
                     AggKind::Struct(_, fs) => format!("struct{{{}}}", fs.join(",")),
                     AggKind::Variant { index, .. } => format!("variant#{index}"),
                     AggKind::Range { .. } => "range".to_string(),
@@ -116,7 +117,11 @@ impl fmt::Display for Body {
                     StmtKind::Read(p) => writeln!(f, "    read {p}")?,
                     StmtKind::Eval(rv) => writeln!(f, "    eval {rv}")?,
                     StmtKind::StorageDead(l) => writeln!(f, "    dead _{}", l.0)?,
-                    StmtKind::DeferPush(n) => writeln!(f, "    defer_push {n}")?,
+                    StmtKind::DeferPush(n, None) => writeln!(f, "    defer_push {n}")?,
+                    StmtKind::DeferPush(n, Some(r)) => {
+                        writeln!(f, "    defer_push {n}(move _{})", r.0)?
+                    }
+                    StmtKind::DeferLoad(r) => writeln!(f, "    _{} = defer_load", r.0)?,
                     StmtKind::Spawn {
                         kind,
                         operands,

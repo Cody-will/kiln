@@ -21,6 +21,8 @@ struct LoopCx {
     brk: BlockId,
     cont: BlockId,
     result: Option<Place>,
+    /// Scopes deeper than this end when leaving the loop body (`break`/`continue`).
+    depth: usize,
 }
 
 /// Builds one [`Body`].
@@ -35,7 +37,7 @@ pub(crate) struct Lower<'t, 'r, 'a> {
     scopes: Vec<Vec<Local>>,
     loops: Vec<LoopCx>,
     /// Deferred calls and whether each is inside a loop.
-    defers: Vec<(Expr, bool)>,
+    defers: Vec<Deferred>,
     /// For closures and `go` blocks: variables captured from the parent.
     is_nested: bool,
     upvars: Vec<(LocalId, Local)>,
@@ -50,6 +52,20 @@ pub(crate) struct Lower<'t, 'r, 'a> {
     in_defer: bool,
     /// Whether the closure just lowered moves a captured variable.
     last_consumes: bool,
+}
+
+/// A `defer` statement.
+struct Deferred {
+    expr: Expr,
+    in_loop: bool,
+    /// For calls: the tuple local holding the callee and arguments evaluated at
+    /// the `defer` statement, and how to make the call from them.
+    now: Option<(Local, DeferCall)>,
+}
+
+enum DeferCall {
+    Call(Callee, Vec<usize>),
+    Print(Op),
 }
 
 fn dummy_span() -> Span {
@@ -256,6 +272,20 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         }
     }
 
+    /// On an early exit (`break`, `continue`, `return`, `?`): ends the scopes
+    /// deeper than `depth` on this path, innermost first. (The function's
+    /// outermost scope ends after deferred calls run, in the exit block.)
+    fn exit_scopes(&mut self, depth: usize, span: Span) {
+        let dying: Vec<Local> = self.scopes[depth.min(self.scopes.len())..]
+            .iter()
+            .rev()
+            .flat_map(|s| s.iter().rev().copied())
+            .collect();
+        for l in dying {
+            self.push(StmtKind::StorageDead(l), span);
+        }
+    }
+
     fn lang(&self, d: DefId, name: &str) -> bool {
         self.r.prelude_type(name) == Some(d)
     }
@@ -271,11 +301,14 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         let after: Vec<BlockId> = (0..n).map(|_| self.new_block()).collect();
         let done = self.new_block();
         self.in_defer = true;
-        for (i, (d, in_loop)) in defers.iter().enumerate() {
+        for (i, d) in defers.iter().enumerate() {
             self.cur = targets[i];
-            self.expr_into(d, None);
-            let next = if *in_loop { self.exit } else { after[i] };
-            self.goto(next, d.span);
+            match &d.now {
+                Some((rec, call)) => self.run_deferred(*rec, call, d.expr.span),
+                None => self.expr_into(&d.expr, None),
+            }
+            let next = if d.in_loop { self.exit } else { after[i] };
+            self.goto(next, d.expr.span);
             self.cur = after[i];
             let t = (0..n).map(|j| (j < i).then_some(targets[j])).collect();
             self.terminate(Terminator::DeferDispatch { targets: t, done }, end);
@@ -403,9 +436,15 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 );
             }
             AstStmt::Defer(e) => {
-                self.push(StmtKind::DeferPush(self.defers.len() as u32), s.span);
+                let id = self.defers.len() as u32;
                 let in_loop = !self.loops.is_empty();
-                self.defers.push((e.clone(), in_loop));
+                let now = self.defer_now(e);
+                self.push(StmtKind::DeferPush(id, now.as_ref().map(|x| x.0)), s.span);
+                self.defers.push(Deferred {
+                    expr: e.clone(),
+                    in_loop,
+                    now,
+                });
             }
             AstStmt::Go(GoTarget::Call(e)) => {
                 self.unsupported(
@@ -532,7 +571,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             PatternKind::Slice(ps) => {
                 self.unsupported("slice patterns", pat.span);
                 let et = match ty {
-                    Ty::Array(t) | Ty::Slice(t) => (**t).clone(),
+                    Ty::Array(t, _) | Ty::Slice(t) => (**t).clone(),
                     Ty::Adt(_, args) if !args.is_empty() => args[0].clone(),
                     _ => Ty::Unknown,
                 };
@@ -959,6 +998,12 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     )
                 }
                 ast::UnOp::Neg => {
+                    // `-123` is a constant (so `-2147483648` is a valid `i32`).
+                    if let ExprKind::Lit(Lit::Int { value, .. }) = &x.kind {
+                        if !ty.is_float_prim() {
+                            return Operand::constant(ConstKind::Int(-(*value as i128)), ty);
+                        }
+                    }
                     let o = self.expr(x);
                     self.temp_of(ty, Rvalue::Pure(Op::Neg, vec![o]), e.span)
                 }
@@ -1031,15 +1076,20 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 self.temp_of(ty, Rvalue::Aggregate(AggKind::Tuple, ops), e.span)
             }
             ExprKind::Array(xs) => {
-                self.unsupported("arrays", e.span);
                 let ops = xs.iter().map(|x| self.expr(x)).collect();
                 self.temp_of(ty, Rvalue::Aggregate(AggKind::Array, ops), e.span)
             }
-            ExprKind::ArrayRepeat(x, n) => {
-                self.unsupported("arrays", e.span);
+            ExprKind::ArrayRepeat(x, _) => {
+                let n = match &ty {
+                    Ty::Array(_, n) => *n,
+                    _ => 0,
+                };
                 let a = self.expr(x);
-                let b = self.expr(n);
-                self.temp_of(ty, Rvalue::Aggregate(AggKind::Array, vec![a, b]), e.span)
+                self.temp_of(
+                    ty,
+                    Rvalue::Aggregate(AggKind::ArrayRepeat(n), vec![a]),
+                    e.span,
+                )
             }
             ExprKind::StructLit { path, fields, base } => {
                 let v = self.variant_of(&self.r.path(path.span), &ty);
@@ -1242,6 +1292,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             );
         }
         let _ = (vs, rvs);
+        self.exit_scopes(1, e.span);
         self.goto(self.exit, e.span);
         self.cur = ok;
         self.operand_of(Place::local(t).field(format!("{ok_name}.0")), &ty)
@@ -1299,6 +1350,143 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             }),
             _ => None,
         }
+    }
+
+    /// For `defer f(args)` and `defer x.m(args)`: evaluates the callee and
+    /// arguments now (Go semantics) into a tuple local that lives until
+    /// function exit. Other deferred expressions (blocks) run at exit as written.
+    fn defer_now(&mut self, e: &Expr) -> Option<(Local, DeferCall)> {
+        let mut inner = e;
+        while let ExprKind::Paren(x) = &inner.kind {
+            inner = x;
+        }
+        let (ops, call) = match &inner.kind {
+            ExprKind::Call(f, args) => {
+                if let Some(op) = self.print_kind(f) {
+                    // Printing borrows a named string instead of moving it.
+                    let ops = args
+                        .iter()
+                        .map(|a| match self.place(a) {
+                            Some(p) => {
+                                let t = Ty::Ref(false, Box::new(self.ty(a)));
+                                self.temp_of(
+                                    t,
+                                    Rvalue::Ref {
+                                        mutable: false,
+                                        place: p,
+                                    },
+                                    a.span,
+                                )
+                            }
+                            None => self.expr(a),
+                        })
+                        .collect();
+                    (ops, DeferCall::Print(op))
+                } else {
+                    let is_ctor = matches!(&f.kind, ExprKind::Path(_))
+                        && !self.res.callees.contains_key(&f.span)
+                        && !matches!(&f.kind, ExprKind::Path(p) if matches!(self.r.path(p.span), Res::Builtin(_)));
+                    if is_ctor {
+                        return None;
+                    }
+                    let (callee, ops, flows) = self.call_operands(f, args);
+                    (ops, DeferCall::Call(callee, flows))
+                }
+            }
+            ExprKind::MethodCall { receiver, args, .. } => {
+                let (callee, ops, flows) = self.method_operands(inner, receiver, args);
+                (ops, DeferCall::Call(callee, flows))
+            }
+            _ => return None,
+        };
+        let tys: Vec<Ty> = ops.iter().map(|o| self.operand_ty(o)).collect();
+        let rec = self.new_local(Ty::Tuple(tys), None, e.span, LocalKind::Temp, true, None);
+        // Lives until function exit (the outermost scope).
+        self.scopes[0].push(rec);
+        self.assign(
+            Place::local(rec),
+            Rvalue::Aggregate(AggKind::Tuple, ops),
+            e.span,
+        );
+        Some((rec, call))
+    }
+
+    /// The body of a deferred call evaluated by [`Self::defer_now`].
+    fn run_deferred(&mut self, rec: Local, call: &DeferCall, span: Span) {
+        self.push(StmtKind::DeferLoad(rec), span);
+        let Ty::Tuple(tys) = self.body.locals[rec.0 as usize].ty.clone() else {
+            return;
+        };
+        match call {
+            DeferCall::Print(op) => {
+                let ops = (0..tys.len())
+                    .map(|i| Operand::Copy(Place::local(rec).field(i.to_string())))
+                    .collect();
+                self.push(StmtKind::Eval(Rvalue::Pure(op.clone(), ops)), span);
+            }
+            DeferCall::Call(callee, flows) => {
+                let ops = tys
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| self.operand_of(Place::local(rec).field(i.to_string()), t))
+                    .collect();
+                let rv = Rvalue::Call {
+                    callee: callee.clone(),
+                    args: ops,
+                    flows: flows.clone(),
+                };
+                self.push(StmtKind::Eval(rv), span);
+            }
+        }
+    }
+
+    /// The type of an operand.
+    fn operand_ty(&self, o: &Operand) -> Ty {
+        match o {
+            Operand::Const(c) => c.ty.clone(),
+            Operand::Copy(p) | Operand::Move(p) => self.place_ty(p),
+        }
+    }
+
+    /// The type of a place: its local's type through each projection.
+    fn place_ty(&self, p: &Place) -> Ty {
+        let mut t = self.body.locals[p.local.0 as usize].ty.clone();
+        for x in &p.proj {
+            t = match (x, t) {
+                (Proj::Deref(_), Ty::Ref(_, inner) | Ty::Ptr(_, inner)) => *inner,
+                (Proj::Deref(_), Ty::Adt(d, a)) if self.lang(d, "Box") && !a.is_empty() => {
+                    a[0].clone()
+                }
+                (Proj::Index(_), t) => self.elem_ty(&t),
+                (Proj::Field(f), Ty::Tuple(ts)) => f
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|i| ts.get(i).cloned())
+                    .unwrap_or(Ty::Unknown),
+                (Proj::Field(f), t @ Ty::Adt(..)) => {
+                    let (variant, name) = match f.split_once('.') {
+                        Some((v, n)) => (Some(v), n),
+                        None => (None, f.as_str()),
+                    };
+                    let vdef = match (&t, variant) {
+                        (Ty::Adt(d, _), Some(v)) => self
+                            .r
+                            .variants(*d)
+                            .into_iter()
+                            .find(|x| self.r.def(*x).name == v),
+                        _ => None,
+                    };
+                    self.typed
+                        .adt_fields(&t, vdef)
+                        .into_iter()
+                        .find(|(n, _)| n == name)
+                        .map(|(_, t)| t)
+                        .unwrap_or(Ty::Unknown)
+                }
+                _ => Ty::Unknown,
+            };
+        }
+        t
     }
 
     /// Lowers callee and arguments; returns the callee, operands, and borrow flows.
@@ -1584,6 +1772,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     brk: after,
                     cont: head,
                     result: dest,
+                    depth: self.scopes.len(),
                 });
                 self.block_into(body, None);
                 self.loops.pop();
@@ -1604,6 +1793,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     brk: after,
                     cont: head,
                     result: None,
+                    depth: self.scopes.len(),
                 });
                 self.block_into(body, None);
                 self.loops.pop();
@@ -1632,6 +1822,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     brk: after,
                     cont: head,
                     result: None,
+                    depth: self.scopes.len() - 1,
                 });
                 self.block_into(body, None);
                 self.loops.pop();
@@ -1667,6 +1858,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     self.expr_into(v, d);
                 }
                 let brk = self.loops[i].brk;
+                self.exit_scopes(self.loops[i].depth, e.span);
                 self.goto(brk, e.span);
                 self.cur = self.new_block();
             }
@@ -1680,6 +1872,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 };
                 if let Some(i) = idx {
                     let c = self.loops[i].cont;
+                    self.exit_scopes(self.loops[i].depth, e.span);
                     self.goto(c, e.span);
                     self.cur = self.new_block();
                 }
@@ -1688,6 +1881,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 if let Some(v) = v {
                     self.expr_into(v, Some(Place::local(Local(0))));
                 }
+                self.exit_scopes(1, e.span);
                 self.goto(self.exit, e.span);
                 self.cur = self.new_block();
             }
@@ -1770,26 +1964,36 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         let it_op = self.expr(iter);
         let it = self.temp(it_ty.clone(), iter.span);
         self.assign(Place::local(it), Rvalue::Use(it_op), iter.span);
-        // By-value `Vec` iteration takes the elements up front (the vector's
-        // length becomes 0), so leaving the loop early can't drop an element twice.
+        // By-value `Vec` iteration: the elements move into a non-owning view
+        // (`cap` = usize::MAX) that advances as they are taken, and the vector
+        // keeps only its buffer. Leaving the loop early drops the view, which
+        // drops exactly the elements not taken yet.
         let by_value_vec = matches!(&it_ty, Ty::Adt(d, _) if self.lang(*d, "Vec"));
-        let saved_len = if by_value_vec {
-            let l = self.temp_of(
-                usize_ty(),
-                Rvalue::Call {
-                    callee: Callee::Intrinsic("len".into()),
-                    args: vec![Operand::Copy(Place::local(it))],
-                    flows: vec![],
-                },
-                iter.span,
-            );
+        let view = if by_value_vec {
+            let v = self.temp(it_ty.clone(), iter.span);
+            let rv = Rvalue::Call {
+                callee: Callee::Intrinsic("vec_iter_view".into()),
+                args: vec![Operand::Copy(Place::local(it))],
+                flows: vec![],
+            };
+            self.assign(Place::local(v), rv, iter.span);
             let forget = Rvalue::Call {
                 callee: Callee::Intrinsic("vec_forget_elems".into()),
                 args: vec![Operand::Copy(Place::local(it))],
                 flows: vec![],
             };
             self.push(StmtKind::Eval(forget), iter.span);
-            Some(l)
+            Some(v)
+        } else if let (Ty::Array(et, _), Some(vec)) = (&it_ty, self.r.prelude_type("Vec")) {
+            // By-value arrays: the elements move into a view of the array's storage.
+            let v = self.temp(Ty::Adt(vec, vec![(**et).clone()]), iter.span);
+            let rv = Rvalue::Call {
+                callee: Callee::Intrinsic("array_iter_view".into()),
+                args: vec![Operand::Move(Place::local(it))],
+                flows: vec![],
+            };
+            self.assign(Place::local(v), rv, iter.span);
+            Some(v)
         } else {
             None
         };
@@ -1852,6 +2056,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 let et = match &inner {
                     Ty::Adt(d, a) if self.lang(*d, "Vec") => Some(a[0].clone()),
                     Ty::Slice(t) if by_ref.is_some() => Some((**t).clone()),
+                    Ty::Array(t, _) => Some((**t).clone()),
                     _ => None,
                 };
                 let Some(et) = et else {
@@ -1877,18 +2082,15 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     sp,
                     head,
                 );
-                let len = match saved_len.clone() {
-                    Some(l) => l,
-                    None => self.temp_of(
-                        usize_ty(),
-                        Rvalue::Call {
-                            callee: Callee::Intrinsic("len".into()),
-                            args: vec![Operand::Copy(Place::local(it))],
-                            flows: vec![],
-                        },
-                        sp,
-                    ),
-                };
+                let len = self.temp_of(
+                    usize_ty(),
+                    Rvalue::Call {
+                        callee: Callee::Intrinsic("len".into()),
+                        args: vec![Operand::Copy(Place::local(view.unwrap_or(it)))],
+                        flows: vec![],
+                    },
+                    sp,
+                );
                 let c = self.temp_of(
                     bool_ty(),
                     Rvalue::Pure(
@@ -1913,15 +2115,15 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     None => {
                         let el = self.temp(et.clone(), pat.span);
                         let rv = Rvalue::Call {
-                            callee: Callee::Intrinsic("vec_take".into()),
-                            args: vec![
-                                Operand::Copy(Place::local(it)),
-                                Operand::Copy(Place::local(idx)),
-                            ],
+                            callee: Callee::Intrinsic("vec_take_front".into()),
+                            args: vec![Operand::Copy(Place::local(view.unwrap_or(it)))],
                             flows: vec![0],
                         };
                         self.assign(Place::local(el), rv, sp);
-                        (el, et)
+                        // The view shrinks instead; the index stays 0.
+                        return self.finish_for(
+                            label, pat, body, e, el, et, head, after, exit_loop, cleanup,
+                        );
                     }
                 };
                 self.assign(
@@ -1970,7 +2172,9 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         cleanup: Option<Rvalue>,
     ) {
         self.bind_pattern(pat, Place::local(el), &elem_ty, None);
+        let depth = self.scopes.len() - 1;
         self.loops.push(LoopCx {
+            depth,
             label: label.as_ref().map(|l| l.name.clone()),
             brk: after,
             cont: head,
@@ -1993,10 +2197,10 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             Ty::Adt(d, a) if (self.lang(*d, "Range") || self.lang(*d, "Vec")) && !a.is_empty() => {
                 a[0].clone()
             }
-            Ty::Array(x) | Ty::Slice(x) | Ty::ChanRecv(x) => (**x).clone(),
+            Ty::Array(x, _) | Ty::Slice(x) | Ty::ChanRecv(x) => (**x).clone(),
             Ty::Ref(m, inner) => match &**inner {
                 Ty::Adt(d, a) if self.lang(*d, "Vec") => Ty::Ref(*m, Box::new(a[0].clone())),
-                Ty::Array(x) | Ty::Slice(x) => Ty::Ref(*m, x.clone()),
+                Ty::Array(x, _) | Ty::Slice(x) => Ty::Ref(*m, x.clone()),
                 _ => Ty::Unknown,
             },
             _ => Ty::Unknown,

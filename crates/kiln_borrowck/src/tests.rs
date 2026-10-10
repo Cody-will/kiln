@@ -375,13 +375,36 @@ fn structs_with_references() {
 // ----- defer ---------------------------------------------------------------------------------
 
 #[test]
-fn defer_sees_values_at_exit() {
+fn defer_evaluates_arguments_at_the_defer_statement() {
     ok(&main_with(
         " s := String::from(\"a\")\n defer read(&s)\n println(\"working\")",
     ));
+    // The deferred call keeps its borrow of `s` until the function returns.
     err1(
         &main_with(" s := String::from(\"a\")\n defer read(&s)\n take(s)"),
+        "cannot move out of `s` because it is borrowed",
+    );
+    // A moved argument is moved at the `defer`, like any call.
+    err1(
+        &main_with(" s := String::from(\"a\")\n defer take(s)\n println(s)"),
+        "use of moved value: `s`",
+    );
+    // Copy arguments are copied: later assignments don't affect the deferred call.
+    ok("fn show(n: i32) {\n}\nfn main() {\n x mut := 1\n defer show(x)\n x = 2\n show(x)\n}");
+    // Printing an interpolated string formats it at the `defer`.
+    ok("fn main() {\n for i in 0..3 {\n defer println(\"{i}\")\n }\n}");
+}
+
+#[test]
+fn defer_blocks_see_values_at_exit() {
+    // `defer { ... }` runs the block at exit, like a Go closure.
+    err1(
+        &main_with(" s := String::from(\"a\")\n defer {\n read(&s)\n }\n take(s)"),
         "borrow of moved value: `s`",
+    );
+    err1(
+        &main_with(" {\n t := String::from(\"a\")\n defer {\n read(&t)\n }\n }"),
+        "`t` is dropped before this deferred call runs",
     );
 }
 
@@ -635,10 +658,10 @@ fn defer_per_execution() {
     ok(&main_with(
         " s := String::from(\"a\")\n if true {\n defer take(s)\n }",
     ));
-    // Deferred calls can't use variables from scopes that ended before the function returns.
+    // A deferred call can't keep a borrow of a variable whose scope ends first.
     err1(
         &main_with(" {\n t := String::from(\"a\")\n defer read(&t)\n }"),
-        "`t` is dropped before this deferred call runs",
+        "`t` does not live long enough",
     );
 }
 

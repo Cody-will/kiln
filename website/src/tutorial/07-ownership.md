@@ -185,7 +185,23 @@ fn work() {
 }
 ```
 
-Deferred calls run after the return value is computed and before local variables are dropped, last-in first-out. They see variables as they are when the function returns, so moving a variable after deferring a call that uses it is an error.
+Deferred calls run after the return value is computed and before local variables are dropped, last-in first-out. As in Go, the arguments are evaluated when the `defer` line runs, not when the call does:
+
+```kiln
+fn main() {
+	x mut := 1
+	defer println("x was {x}")
+	x = 2
+	for i in 0..3 {
+		defer println("cleanup {i}")
+	}
+	println("x is {x}")
+}
+```
+
+This prints `x is 2`, then `cleanup 2`, `cleanup 1`, `cleanup 0`, and finally `x was 1`.
+
+Arguments follow the usual ownership rules at the `defer`: a `String` passed by value moves into the deferred call, and a borrowed argument such as `defer read(&s)` keeps `s` borrowed until the function returns, so `s` can't be moved or changed after it. To run code that sees variables as they are at exit, defer a block instead: `defer { ... }`.
 
 When values with a `Drop` impl hold references, the borrow checker uses drop order: a value declared *before* the thing it borrows would be dropped *after* it, which is reported as "does not live long enough".
 

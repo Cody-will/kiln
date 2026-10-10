@@ -153,7 +153,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                 self.typed.adt_has_lifetimes(*d) || args.iter().any(|a| self.may_hold(a))
             }
             Ty::Tuple(ts) => ts.iter().any(|x| self.may_hold(x)),
-            Ty::Array(x) | Ty::Slice(x) | Ty::ChanSend(x) | Ty::ChanRecv(x) => self.may_hold(x),
+            Ty::Array(x, _) | Ty::Slice(x) | Ty::ChanSend(x) | Ty::ChanRecv(x) => self.may_hold(x),
             _ => false,
         }
     }
@@ -351,7 +351,8 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                 }
             }
             StmtKind::Read(p) => uses.push(p.local),
-            StmtKind::DeferPush(_) => {}
+            // The saved arguments stay live from the `defer` to the deferred call.
+            StmtKind::DeferPush(..) | StmtKind::DeferLoad(_) => {}
             StmtKind::Eval(rv) => rv_uses(rv, &mut uses),
             StmtKind::StorageDead(l) => {
                 if self.drop_cache[l.0 as usize] {
@@ -521,7 +522,12 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                     self.check_init(st, p, false, s.span, loc);
                 }
             }
-            StmtKind::StorageDead(_) | StmtKind::DeferPush(_) => {}
+            StmtKind::StorageDead(_) | StmtKind::DeferPush(..) => {}
+            StmtKind::DeferLoad(l) => {
+                // The deferred call's block runs only after its `defer`, so the
+                // saved arguments are initialized there.
+                st.retain(|(x, _), _| x != l);
+            }
         }
         if report {
             for (o, _) in &uses {
@@ -715,7 +721,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
             }
             StmtKind::Eval(rv) => ops(rv, &mut out),
             StmtKind::Read(p) => out.push((p.clone(), Access::Read)),
-            StmtKind::DeferPush(_) => {}
+            StmtKind::DeferPush(..) | StmtKind::DeferLoad(_) => {}
             StmtKind::StorageDead(l) => out.push((Place::local(*l), Access::Dead)),
             StmtKind::Spawn { operands, .. } => {
                 for o in operands {
