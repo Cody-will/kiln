@@ -652,6 +652,7 @@ pub enum Lit {
 
 /// Part of an interpolated string.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)] // interpolation parts are few and short-lived
 pub enum InterpPart {
     /// Literal text.
     Text(String),
