@@ -6,6 +6,8 @@ invalid value "ten" for flag -workers: expected int
 flag needs an argument: -addr
 invalid value "maybe" for flag -v: expected bool
 flag: help requested
+1m30s 30s
+invalid value "soon" for flag -timeout: expected duration
 Usage of server:
   -addr string
     	address to listen on (default ":8080")
@@ -13,6 +15,8 @@ Usage of server:
     	instance name
   -ratio float
     	sampling ratio (default 0.5)
+  -timeout duration
+    	request timeout (default 30s)
   -v
     	verbose logging
   -workers int

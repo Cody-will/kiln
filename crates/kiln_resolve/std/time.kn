@@ -6,6 +6,8 @@
 //	time::sleep(time::millis(50))
 //	println("took {start.elapsed()}")
 
+import super::super::Error as ErrorTrait
+
 fn kn_time_mono() -> i64
 fn kn_time_unix() -> i64
 fn kn_time_sleep(ns: i64)
@@ -285,6 +287,120 @@ fn pad2(n: i64) -> String {
 	}
 	return "{n}"
 }
+
+// Parses a duration in Go's format: an optional sign, then one or more
+// decimal numbers, each with an optional fraction and a unit: `ns`, `us`
+// (or `µs`), `ms`, `s`, `m`, `h`. Examples: `300ms`, `-1.5h`, `2h45m`,
+// `1m30.5s`. `0` alone needs no unit. Whatever `Duration` displays parses
+// back to the same value.
+pub fn parse_duration(s: &str) -> Result<Duration, ParseDurationError> {
+	bad := ParseDurationError { input: s.to_string(), why: "invalid duration" }
+	b := s.as_bytes()
+	i mut := 0
+	neg mut := false
+	if i < b.len() && (b[i] == 45 || b[i] == 43) {
+		neg = b[i] == 45
+		i += 1
+	}
+	if &s[i..] == "0" {
+		return Ok(Duration { nanos: 0 })
+	}
+	if i == b.len() {
+		return Err(bad)
+	}
+	range := ParseDurationError { input: s.to_string(), why: "duration out of range" }
+	// Nanoseconds as u64; the result must fit in i64 (2^63 - 1, or 2^63
+	// when negative).
+	limit := if neg { 9223372036854775808u64 } else { 9223372036854775807u64 }
+	total mut := 0u64
+	while i < b.len() {
+		// The number: digits, then an optional fraction.
+		start := i
+		whole mut := 0u64
+		while i < b.len() && b[i] >= 48 && b[i] <= 57 {
+			whole = match whole.checked_mul(10) {
+				Some(w) => match w.checked_add((b[i] - 48) as u64) {
+					Some(w) => w,
+					None => return Err(range),
+				},
+				None => return Err(range),
+			}
+			i += 1
+		}
+		had_whole := i > start
+		frac mut := 0u64
+		scale mut := 1u64
+		if i < b.len() && b[i] == 46 {
+			i += 1
+			fstart := i
+			while i < b.len() && b[i] >= 48 && b[i] <= 57 {
+				// Digits past what nanoseconds can hold are dropped.
+				if scale < 1000000000000 {
+					frac = frac * 10 + (b[i] - 48) as u64
+					scale = scale * 10
+				}
+				i += 1
+			}
+			if !had_whole && i == fstart {
+				return Err(bad)
+			}
+		} else if !had_whole {
+			return Err(bad)
+		}
+		// The unit.
+		ustart := i
+		while i < b.len() && !(b[i] >= 48 && b[i] <= 57) && b[i] != 46 {
+			i += 1
+		}
+		unit := match &s[ustart..i] {
+			"ns" => 1u64,
+			"us" => 1000u64,
+			"µs" => 1000u64,
+			"μs" => 1000u64,
+			"ms" => 1000000u64,
+			"s" => 1000000000u64,
+			"m" => 60000000000u64,
+			"h" => 3600000000000u64,
+			"" => return Err(ParseDurationError { input: s.to_string(), why: "missing unit in duration" }),
+			_ => return Err(ParseDurationError { input: s.to_string(), why: "unknown unit in duration" }),
+		}
+		v := match whole.checked_mul(unit) {
+			Some(v) => v,
+			None => return Err(range),
+		}
+		// frac / scale of a unit, without overflowing (unit <= 3.6e12, frac < 1e12).
+		part := (frac as f64 * unit as f64 / scale as f64) as u64
+		total = match total.checked_add(v) {
+			Some(t) => match t.checked_add(part) {
+				Some(t) => t,
+				None => return Err(range),
+			},
+			None => return Err(range),
+		}
+		if total > limit {
+			return Err(range)
+		}
+	}
+	if neg {
+		return Ok(Duration { nanos: (0 as i64).wrapping_sub(total as i64) })
+	}
+	return Ok(Duration { nanos: total as i64 })
+}
+
+// Why `parse_duration` rejected its input.
+#[derive(Clone, Debug, Eq)]
+pub struct ParseDurationError {
+	input: String,
+	why: &'static str,
+}
+
+impl Display for ParseDurationError {
+	fn to_string(&self) -> String {
+		return "time: {self.why} {self.input:?}"
+	}
+}
+
+impl ErrorTrait for ParseDurationError {}
 
 // Parks the current task for `d` (other tasks keep running).
 pub fn sleep(d: Duration) {

@@ -27,7 +27,7 @@ Non-goals for 1.0: inheritance, implicit numeric conversions, macros that rewrit
   - Inside `(...)`, `[...]`, `<...>`, and `{...}` lists, newlines between elements are ignored, so a missing trailing comma before a newline still parses. `kiln fmt` adds the comma.
   - Statement-level consequence: `} else {` and a `where` clause must stay on the same line as what precedes them, as in Go.
 - **Literals**:
-  - Integers: `42`, `0xFF`, `0b1010`, `1_000`, with optional suffixes `42u8` and `3i64`.
+  - Integers: `42`, `0xFF`, `0b1010`, `1_000`, with optional suffixes `42u8` and `3i64`. An unsuffixed literal takes its type from context (default `i32`); a literal that does not fit its type is a compile-time error, never a silent wrap (`x := 3000000000` needs `3000000000i64`).
   - Floats: `3.14` and `1e9f32`.
   - Strings: `"..."`, raw strings `r"..."`, and interpolation `"hi {name}"`.
   - Byte strings: `b"..."` and raw `br"..."` have type `&'static [u8]`. Only ASCII text is allowed; `\xHH` (00-FF) and `\n \r \t \0 \\ \" \'` escape; there is no interpolation. `b'x'` is a `u8`. Byte strings are not yet allowed in patterns.
@@ -588,7 +588,7 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 
 | Module | Contents | Status |
 |---|---|---|
-| `std::time` | `Duration` (`time::secs(5)`), `Instant`, `SystemTime` (RFC 3339 display), `sleep`, `after`, `tick` | ✅ |
+| `std::time` | `Duration` (`time::secs(5)`, `time::parse_duration("1m30s")`), `Instant`, `SystemTime` (RFC 3339 display), `sleep`, `after`, `tick` | ✅ |
 | `std::sync` | `Arc`, `Mutex`, `RwLock`, `WaitGroup`, `Once`, `AtomicI64`, `AtomicBool`, `AtomicUsize` | ✅ |
 | `std::io` | `Read`/`Write`, `BufReader` (`next_line`, `peek`, `read_byte`, `read_char`, `discard`), `BufWriter` (`buffered`, `available`), `Scanner` (lines/words/chars, Go's `bufio.Scanner`; bufio lives in `io` as in Rust), `Cursor`, `copy`, stdin/stdout/stderr, `Error`/`ErrorKind` | ✅ |
 | `std::fs` | `File`, `OpenOptions`, `read_to_string`, `write`, `read_dir`, `metadata`, `create_dir_all`, `remove_dir_all`, ... | ✅ |
@@ -605,7 +605,7 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 | `std::math` | constants, trigonometry, exp/log, `hypot`, `gamma`, ...; also `f64`/`f32` methods | ✅ |
 | `std::rand` | shared generator (`rand::range`, `shuffle`, `choose`), seedable `Rng`, `secure_fill` from the OS | ✅ |
 | `std::errors` | `AnyError` (any error plus context; `?` converts), `errors::new`, `Result::context`, `Message` | ✅ |
-| `std::flag` | `FlagSet` with `bool`/`int`/`float`/`string` flags, Go's `-name value` / `-name=value` / `--name` forms, `get_*` accessors, `args()`, `is_set`, Go-format `usage()`, `parse_or_exit` | ✅ |
+| `std::flag` | `FlagSet` with `bool`/`int`/`float`/`string`/`duration` flags, Go's `-name value` / `-name=value` / `--name` forms, `get_*` accessors, `args()`, `is_set`, Go-format `usage()`, `parse_or_exit` | ✅ |
 | `std::context` | `background`, `with_cancel`, `with_timeout`, `with_deadline`; `cancel`, `done()` (a channel for `select`), `err`, `check`, `wait`, `remaining()` (feeds socket timeouts), `net::TcpStream::connect_ctx`; no `WithValue` | ✅ |
 | `std::encoding` | `json` (`Value`, `#[derive(Json)]`), `base64`, `hex`, `csv` (RFC 4180 `Reader`/`Writer`, `parse`/`format`, custom delimiter, comments, field-count checks) | ✅ |
 | `std::crypto` | `sha256`, `sha1`, `md5` (one-shot `sum`/`hex`, streaming hashers that implement `io::Write`, digests are fixed arrays like `[u8; 32]`), `hmac` (SHA-256/SHA-1, `verify_sha256`), `constant_time_eq` | ✅ |

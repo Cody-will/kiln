@@ -1,0 +1,19 @@
+"300ms" -> 300ms (300000000)
+"-1.5h" -> -1h30m0s (-5400000000000)
+"2h45m" -> 2h45m0s (9900000000000)
+"1m30.5s" -> 1m30.5s (90500000000)
+"0" -> 0s (0)
+"1us" -> 1µs (1000)
+"2µs" -> 2µs (2000)
+".5s" -> 500ms (500000000)
+"1.s" -> 1s (1000000000)
+"+5ns" -> 5ns (5)
+"1h2m3.5s" -> 1h2m3.5s (3723500000000)
+"" -> time: invalid duration ""
+"s" -> time: invalid duration "s"
+"5" -> time: missing unit in duration "5"
+"3x" -> time: unknown unit in duration "3x"
+"1.2.3s" -> time: missing unit in duration "1.2.3s"
+"-" -> time: invalid duration "-"
+"9999999999h" -> time: duration out of range "9999999999h"
+"0.000000001s" -> 1ns (1)

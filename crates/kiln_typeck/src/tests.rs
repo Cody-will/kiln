@@ -770,3 +770,24 @@ fn format_specs() {
 fn turbofish_on_variants() {
     ok("fn main() {\n x := None::<i32>\n y := x.is_none()\n}");
 }
+
+#[test]
+fn integer_literals_must_fit_their_type() {
+    err1(
+        "fn main() {\n x := 3000000000\n}",
+        "literal out of range for `i32`",
+    );
+    err1(
+        "fn main() {\n let x: u8 = 256\n}",
+        "literal out of range for `u8`",
+    );
+    err1(
+        "fn main() {\n x := 60000000000 as u64\n}",
+        "literal out of range for `i32`",
+    );
+    err1(
+        "fn main() {\n let x: i8 = -129\n}",
+        "literal out of range for `i8`",
+    );
+    ok("fn main() {\n let a: i8 = -128\n let b: u8 = 255\n c := 60000000000u64\n let d: i64 = -9223372036854775808\n e := 0xFFFFFFFFu32\n let f: u64 = 18446744073709551615\n}");
+}

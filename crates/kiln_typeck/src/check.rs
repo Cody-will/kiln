@@ -96,6 +96,10 @@ pub struct Body<'c, 'r, 'a> {
     /// from the type's impl once it is known.
     arg_obligations: Vec<(Ty, DefId, Vec<Ty>)>,
     declared: Vec<(LocalId, Span)>,
+    /// Integer literals, checked against their final type in `finish`.
+    int_lits: Vec<(u128, Ty, Span)>,
+    /// Integer literals written directly after a unary `-`.
+    negated_lits: HashSet<Span>,
     methods: HashMap<Span, MethodInfo>,
     callees: HashMap<Span, usize>,
     callee_substs: HashMap<Span, HashMap<String, Ty>>,
@@ -143,6 +147,8 @@ impl<'c, 'r, 'a> Body<'c, 'r, 'a> {
             obligations: vec![],
             arg_obligations: vec![],
             declared: vec![],
+            int_lits: Vec::new(),
+            negated_lits: HashSet::new(),
             methods: HashMap::new(),
             callees: HashMap::new(),
             callee_substs: HashMap::new(),
@@ -258,6 +264,8 @@ impl Checker<'_, '_> {
             obligations: Vec::new(),
             arg_obligations: Vec::new(),
             declared: Vec::new(),
+            int_lits: Vec::new(),
+            negated_lits: HashSet::new(),
             methods: HashMap::new(),
             callees: HashMap::new(),
             callee_substs: HashMap::new(),
@@ -504,6 +512,7 @@ impl Body<'_, '_, '_> {
             }
         }
         self.c.infer.apply_literal_defaults();
+        self.check_int_literals();
         self.check_fmt_specs();
         let declared = std::mem::take(&mut self.declared);
         for (id, span) in declared {
@@ -515,6 +524,45 @@ impl Body<'_, '_, '_> {
                     format!("type annotations needed for `{name}`"),
                     span,
                     format!("the type is only partially known (`{shown}`); write `let {name}: Type = ...`"),
+                );
+            }
+        }
+    }
+
+    /// Rejects integer literals that do not fit their (inferred) type,
+    /// instead of letting them wrap.
+    fn check_int_literals(&mut self) {
+        let lits = std::mem::take(&mut self.int_lits);
+        for (v, t, span) in lits {
+            let Ty::Prim(p) = self.c.infer.zonk(&t) else {
+                continue;
+            };
+            let (max, signed): (u128, bool) = match p {
+                PrimTy::I8 => (i8::MAX as u128, true),
+                PrimTy::I16 => (i16::MAX as u128, true),
+                PrimTy::I32 => (i32::MAX as u128, true),
+                PrimTy::I64 | PrimTy::Isize => (i64::MAX as u128, true),
+                PrimTy::I128 => (i128::MAX as u128, true),
+                PrimTy::U8 => (u8::MAX as u128, false),
+                PrimTy::U16 => (u16::MAX as u128, false),
+                PrimTy::U32 => (u32::MAX as u128, false),
+                PrimTy::U64 | PrimTy::Usize => (u64::MAX as u128, false),
+                PrimTy::U128 => (u128::MAX, false),
+                _ => continue,
+            };
+            let neg = self.negated_lits.contains(&span);
+            let limit = if signed && neg { max + 1 } else { max };
+            if v > limit {
+                let name = self.fmt(&Ty::Prim(p));
+                let lo = if signed {
+                    format!("-{}", max + 1)
+                } else {
+                    "0".to_string()
+                };
+                self.error_help(
+                    format!("literal out of range for `{name}`"),
+                    span,
+                    format!("`{name}` holds {lo} to {max}; give the literal a wider type with a suffix (e.g. `{v}i64`, `{v}u64`)"),
                 );
             }
         }
@@ -1394,7 +1442,13 @@ impl Body<'_, '_, '_> {
 
     fn expr_inner(&mut self, e: &Expr, value: bool) -> Ty {
         match &e.kind {
-            ExprKind::Lit(l) => self.lit_ty(l),
+            ExprKind::Lit(l) => {
+                let t = self.lit_ty(l);
+                if let Lit::Int { value, .. } = l {
+                    self.int_lits.push((*value, t.clone(), e.span));
+                }
+                t
+            }
             ExprKind::Interp(parts) => {
                 self.interp_spans.insert(e.span);
                 for p in parts {
@@ -2762,6 +2816,9 @@ impl Body<'_, '_, '_> {
     }
 
     fn unary(&mut self, op: UnOp, x: &Expr, span: Span) -> Ty {
+        if op == UnOp::Neg && matches!(x.kind, ExprKind::Lit(Lit::Int { .. })) {
+            self.negated_lits.insert(x.span);
+        }
         let t = self.expr(x);
         match op {
             UnOp::Neg => {
