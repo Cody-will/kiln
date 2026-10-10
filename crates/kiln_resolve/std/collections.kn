@@ -99,8 +99,14 @@ impl<K, V> HashMap<K, V> {
 
 	// Removes and returns every entry, leaving the map empty.
 	pub fn drain(&mut self) -> IntoIter<K, V> {
-		entries := std::mem::replace(&mut self.entries, Vec::new())
-		self.clear()
+		i mut := 0
+		while i < self.slots.len() {
+			self.slots[i] = 0
+			i += 1
+		}
+		self.used = 0
+		entries mut := Vec::new()
+		std::mem::swap(&mut self.entries, &mut entries)
 		return IntoIter { inner: entries.into_iter() }
 	}
 }
@@ -291,7 +297,8 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 
 	// Keeps only the entries for which `keep` returns true.
 	pub fn retain(&mut self, keep: fn mut(&K, &mut V) -> bool) {
-		old := std::mem::replace(&mut self.entries, Vec::new())
+		old mut := Vec::new()
+		std::mem::swap(&mut self.entries, &mut old)
 		for b in old.into_iter() {
 			e mut := b
 			if keep(&e.key, &mut e.value) {
@@ -548,7 +555,7 @@ impl<T> HashSet<T> {
 
 	// Removes and returns every value.
 	pub fn drain(&mut self) -> IntoKeys<T, ()> {
-		return IntoKeys { inner: std::mem::replace(&mut self.map.entries, Vec::new()).into_iter() }
+		return IntoKeys { inner: self.map.drain().inner }
 	}
 }
 
