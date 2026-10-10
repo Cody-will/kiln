@@ -72,6 +72,8 @@ pub(crate) struct Checker<'r, 'a> {
     pub traits: HashMap<DefId, TraitInfo>,
     pub infer: InferTable,
     pub errors: Vec<Diagnostic>,
+    /// Per-function type results (indexed like `Resolved::fns`).
+    pub results: Vec<Option<crate::check::FnResults>>,
 }
 
 /// Names of the generic type parameters declared in `g`.
@@ -95,6 +97,7 @@ impl<'r, 'a> Checker<'r, 'a> {
             traits: HashMap::new(),
             infer: InferTable::default(),
             errors: Vec::new(),
+            results: Vec::new(),
         }
     }
 
@@ -403,6 +406,7 @@ impl<'r, 'a> Checker<'r, 'a> {
                 self.traits.get_mut(&t).unwrap().methods.insert(name, i);
             }
         }
+        self.results = vec![None; self.r.fns.len()];
         // Duplicate inherent methods across impl blocks of the same type.
         let mut seen: HashMap<(String, String), Span> = HashMap::new();
         for idx in 0..self.impls.len() {

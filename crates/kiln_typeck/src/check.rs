@@ -23,10 +23,40 @@ struct Method {
     ret: Ty,
     /// Trait bound obligations from the method's generics.
     obligations: Vec<(Ty, DefId)>,
+    /// Index into `Resolved::fns` of the callee, when it is a declared function.
+    fn_idx: Option<usize>,
+}
+
+/// How a method call was resolved (exported for MIR lowering).
+#[derive(Debug, Clone)]
+pub struct MethodInfo {
+    /// Number of autoderef steps applied to the receiver.
+    pub steps: usize,
+    /// The callee's `self` parameter (`None` for associated functions).
+    pub self_param: Option<SelfParam>,
+    /// Receiver type after autoderef.
+    pub recv_ty: Ty,
+    /// Index into `Resolved::fns` of the callee, if it is a declared method.
+    pub fn_idx: Option<usize>,
+}
+
+/// Type information for one function body, exported for later phases.
+#[derive(Debug, Clone, Default)]
+pub struct FnResults {
+    /// Types of locals (fully resolved).
+    pub locals: HashMap<LocalId, Ty>,
+    /// Types of expressions, keyed by span (fully resolved).
+    pub tys: HashMap<Span, Ty>,
+    /// Method call resolutions, keyed by the call expression's span.
+    pub methods: HashMap<Span, MethodInfo>,
+    /// Callee function index for path expressions naming a function.
+    pub callees: HashMap<Span, usize>,
+    /// Trait bounds in scope (`(param, trait)`).
+    pub bounds: Vec<(String, DefId)>,
 }
 
 /// Per-function checking state.
-pub(crate) struct Body<'c, 'r, 'a> {
+pub struct Body<'c, 'r, 'a> {
     c: &'c mut Checker<'r, 'a>,
     locals: HashMap<LocalId, Ty>,
     /// Return types of the enclosing function and closures (innermost last).
@@ -37,6 +67,30 @@ pub(crate) struct Body<'c, 'r, 'a> {
     tys: HashMap<Span, Ty>,
     obligations: Vec<(Ty, DefId, Span)>,
     declared: Vec<(LocalId, Span)>,
+    methods: HashMap<Span, MethodInfo>,
+    callees: HashMap<Span, usize>,
+    /// ADTs whose auto-trait impls are being computed (cycle guard).
+    auto_stack: Vec<DefId>,
+}
+
+impl<'c, 'r, 'a> Body<'c, 'r, 'a> {
+    /// A body context with no locals, used for trait queries outside bodies.
+    pub(crate) fn detached(c: &'c mut Checker<'r, 'a>, bounds: Vec<(String, DefId)>) -> Self {
+        Body {
+            c,
+            locals: HashMap::new(),
+            rets: vec![],
+            loops: vec![],
+            bounds,
+            self_ty: None,
+            tys: HashMap::new(),
+            obligations: vec![],
+            declared: vec![],
+            methods: HashMap::new(),
+            callees: HashMap::new(),
+            auto_stack: vec![],
+        }
+    }
 }
 
 fn int_ty(p: PrimTy) -> Ty {
@@ -103,6 +157,9 @@ impl Checker<'_, '_> {
             tys: HashMap::new(),
             obligations: Vec::new(),
             declared: Vec::new(),
+            methods: HashMap::new(),
+            callees: HashMap::new(),
+            auto_stack: Vec::new(),
         };
         if let (Some(sl), Some(sp), Some(st)) = (f.self_local, &sig.self_param, &self_ty) {
             let t = match sp {
@@ -118,6 +175,8 @@ impl Checker<'_, '_> {
         let t = b.block(body, false);
         b.check_explicit_return(body, &t, &sig.ret, &f.decl.name);
         b.finish();
+        let results = b.export();
+        self.results[i] = Some(results);
     }
 }
 
@@ -145,6 +204,25 @@ impl Body<'_, '_, '_> {
     fn lower(&mut self, t: &Type) -> Ty {
         let st = self.self_ty.clone();
         self.c.lower_ty(t, st.as_ref(), true)
+    }
+
+    fn export(&mut self) -> FnResults {
+        let z = |c: &Checker, t: &Ty| c.infer.zonk(t);
+        FnResults {
+            locals: self.locals.iter().map(|(k, v)| (*k, z(self.c, v))).collect(),
+            tys: self.tys.iter().map(|(k, v)| (*k, z(self.c, v))).collect(),
+            methods: self
+                .methods
+                .iter()
+                .map(|(k, m)| {
+                    let mut m = m.clone();
+                    m.recv_ty = z(self.c, &m.recv_ty);
+                    (*k, m)
+                })
+                .collect(),
+            callees: self.callees.clone(),
+            bounds: self.bounds.clone(),
+        }
     }
 
     fn finish(&mut self) {
@@ -310,7 +388,7 @@ impl Body<'_, '_, '_> {
     }
 
     /// Whether `t` implements trait `tr`.
-    pub(crate) fn implements(&mut self, t: &Ty, tr: DefId) -> bool {
+    pub fn implements(&mut self, t: &Ty, tr: DefId) -> bool {
         let t = self.c.infer.zonk(t);
         let trait_name = self.c.r.def(tr).name.clone();
         let tn = trait_name.as_str();
@@ -343,6 +421,13 @@ impl Body<'_, '_, '_> {
             Ty::Ref(m, inner) => {
                 if marker(&["Copy", "Clone"]) {
                     !*m
+                } else if tn == "Send" && !*m {
+                    // `&T: Send` iff `T: Sync`.
+                    let inner = (**inner).clone();
+                    match self.c.r.prelude_type("Sync") {
+                        Some(sync) => self.implements(&inner, sync),
+                        None => true,
+                    }
                 } else {
                     let inner = (**inner).clone();
                     self.implements(&inner, tr)
@@ -355,6 +440,13 @@ impl Body<'_, '_, '_> {
             Ty::Array(x) | Ty::Slice(x) => {
                 let x = (**x).clone();
                 self.implements(&x, tr)
+            }
+            Ty::ChanSend(x) | Ty::ChanRecv(x) if marker(&["Send", "Sync"]) => {
+                let x = (**x).clone();
+                match self.c.r.prelude_type("Send") {
+                    Some(send) => self.implements(&x, send),
+                    None => true,
+                }
             }
             Ty::Fn(..) | Ty::ChanSend(_) | Ty::ChanRecv(_) => {
                 marker(&["Copy", "Clone", "Send", "Sync"])
@@ -381,11 +473,35 @@ impl Body<'_, '_, '_> {
                         || self.has_impl(&t, tr);
                 }
                 if marker(&["Send", "Sync"]) {
-                    return true; // auto traits: field analysis is future work
+                    // Auto traits: an explicit impl wins; otherwise all fields must implement it.
+                    if self.has_impl(&t, tr) || self.auto_stack.contains(&d) {
+                        return true;
+                    }
+                    let info = self.c.adts[&d].clone();
+                    let map: HashMap<String, Ty> =
+                        info.generics.iter().cloned().zip(args.iter().cloned()).collect();
+                    let mut fields: Vec<Ty> = Vec::new();
+                    let mut push_shape = |sh: &Shape| match sh {
+                        Shape::Unit => {}
+                        Shape::Tuple(ts) => fields.extend(ts.iter().map(|x| x.subst(&map))),
+                        Shape::Named(fs) => fields.extend(fs.iter().map(|(_, x)| x.subst(&map))),
+                    };
+                    push_shape(&info.shape);
+                    for (_, sh) in &info.variants {
+                        push_shape(sh);
+                    }
+                    self.auto_stack.push(d);
+                    let ok = fields.iter().all(|f| self.implements(f, tr));
+                    self.auto_stack.pop();
+                    return ok;
                 }
                 self.c.adts[&d].derives.iter().any(|x| x == tn) || self.has_impl(&t, tr)
             }
         }
+    }
+
+    pub(crate) fn has_impl_pub(&mut self, t: &Ty, tr: DefId) -> bool {
+        self.has_impl(t, tr)
     }
 
     /// Whether an explicit `impl Trait for T` matches `t`.
@@ -435,6 +551,7 @@ impl Body<'_, '_, '_> {
             params: sig.params.iter().map(|t| t.subst(&subst)).collect(),
             ret: sig.ret.subst(&subst),
             obligations,
+            fn_idx: Some(i),
         }
     }
 
@@ -1285,6 +1402,9 @@ impl Body<'_, '_, '_> {
     /// Function type for a method used as a value or path call (`Type::method`),
     /// with `self` as the first parameter.
     fn method_fn_ty(&mut self, m: Method, span: Span) -> Ty {
+        if let Some(i) = m.fn_idx {
+            self.callees.insert(span, i);
+        }
         for (t, tr) in m.obligations {
             self.obligations.push((t, tr, span));
         }
@@ -1480,9 +1600,19 @@ impl Body<'_, '_, '_> {
                 return Ty::Unknown;
             }
             if let Some(t) = self.builtin_method(&c, name, args, span) {
+                let self_param = Some(SelfParam::Ref { lifetime: None, mutable: false });
+                let info = MethodInfo { steps, self_param, recv_ty: c.clone(), fn_idx: None };
+                self.methods.insert(span, info);
                 return t;
             }
             if let Some(m) = self.method_on(&c, name) {
+                let info = MethodInfo {
+                    steps,
+                    self_param: m.self_param.clone(),
+                    recv_ty: c.clone(),
+                    fn_idx: m.fn_idx,
+                };
+                self.methods.insert(span, info);
                 if let Some(SelfParam::Ref { mutable: true, .. }) = m.self_param {
                     if steps == 0 {
                         self.check_place_mut(recv, "borrow");

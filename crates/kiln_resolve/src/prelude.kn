@@ -30,6 +30,21 @@ pub trait Send {}
 pub trait Sync {}
 pub trait Error {}
 
+// Runs cleanup when a value goes out of scope.
+pub trait Drop {
+	fn drop(&mut self)
+}
+
+// Scoped tasks: tasks spawned with `s.spawn(...)` may borrow locals and are
+// joined before `scope` returns.
+pub struct Scope
+
+impl Scope {
+	pub fn spawn(&self, task: fn())
+}
+
+pub fn scope(body: fn(&Scope))
+
 pub trait From<T> {
 	fn from(value: T) -> Self
 }
