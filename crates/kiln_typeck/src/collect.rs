@@ -382,6 +382,32 @@ impl<'r, 'a> Checker<'r, 'a> {
                     );
                 }
             }
+            if let (Some((tr, _)), Some(path)) = (&trait_ref, &imp.decl.trait_ref) {
+                let unsafe_trait = matches!(
+                    self.r.def(*tr).item.map(|i| &i.kind),
+                    Some(kiln_parser::ast::ItemKind::Trait(t)) if t.is_unsafe
+                );
+                let name = self.r.def(*tr).name.clone();
+                if unsafe_trait && !imp.decl.is_unsafe {
+                    self.error_help(
+                        format!("the trait `{name}` requires an `unsafe impl` declaration"),
+                        path.span,
+                        format!("write `unsafe impl {name} for ...`: implementing `{name}` manually promises thread safety the compiler can't check"),
+                    );
+                } else if !unsafe_trait && imp.decl.is_unsafe {
+                    self.error_help(
+                        format!("implementing the trait `{name}` is not unsafe"),
+                        path.span,
+                        "remove `unsafe` from this impl",
+                    );
+                }
+            } else if imp.decl.is_unsafe && imp.decl.trait_ref.is_none() {
+                self.error_help(
+                    "inherent impls cannot be unsafe",
+                    imp.decl.self_ty.span,
+                    "remove `unsafe`",
+                );
+            }
             self.impls.push(ImplInfo {
                 generics,
                 self_ty,
@@ -505,7 +531,7 @@ impl<'r, 'a> Checker<'r, 'a> {
                 }
             }
         }
-        for w in &g.where_clause {
+        for w in g.where_clause.iter().filter(|w| w.lifetime.is_none()) {
             match self.lower_ty(&w.ty, self_ty, false) {
                 Ty::Param(n) => {
                     for t in self.bound_traits(&w.bounds) {

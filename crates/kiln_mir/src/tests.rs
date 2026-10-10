@@ -72,11 +72,21 @@ fn go_block_spawn() {
 fn defer_runs_in_exit_block() {
     let b = lower("fn main() {\n defer println(\"bye\")\n x := 1\n}");
     let exit = &b[0].blocks[1];
-    assert!(matches!(exit.term, Terminator::Return));
-    assert!(exit
+    let Terminator::DeferDispatch { targets, done } = &exit.term else {
+        panic!("{}", b[0])
+    };
+    let run = &b[0].blocks[targets[0].unwrap().0 as usize];
+    assert!(run
         .stmts
         .iter()
         .any(|s| matches!(s.kind, StmtKind::Eval(Rvalue::Pure(_)))));
+    // Locals die after the deferred calls.
+    let done = &b[0].blocks[done.0 as usize];
+    assert!(done
+        .stmts
+        .iter()
+        .any(|s| matches!(s.kind, StmtKind::StorageDead(_))));
+    assert!(matches!(done.term, Terminator::Return));
 }
 
 #[test]

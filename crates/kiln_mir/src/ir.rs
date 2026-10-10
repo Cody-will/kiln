@@ -236,6 +236,8 @@ pub enum StmtKind {
     Eval(Rvalue),
     /// The local's scope ends: it is dropped and its storage invalidated.
     StorageDead(Local),
+    /// Register deferred call number `n` (run at function exit, last-in first-out).
+    DeferPush(u32),
     /// Start a task.
     Spawn {
         kind: SpawnKind,
@@ -265,6 +267,15 @@ pub enum Terminator {
     Branch(Vec<BlockId>),
     Return,
     Unreachable,
+    /// Pop the most recently pushed deferred call and jump to its block
+    /// (`targets[n]`), or to `done` when none are left. Each target block jumps
+    /// to another dispatch after running its call. `None` targets cannot be on
+    /// the stack at this point (a defer outside any loop runs at most once, and
+    /// only defers pushed before it can remain below it).
+    DeferDispatch {
+        targets: Vec<Option<BlockId>>,
+        done: BlockId,
+    },
 }
 
 impl Terminator {
@@ -274,6 +285,11 @@ impl Terminator {
             Terminator::Goto(b) => vec![*b],
             Terminator::Branch(bs) => bs.clone(),
             Terminator::Return | Terminator::Unreachable => vec![],
+            Terminator::DeferDispatch { targets, done } => {
+                let mut v: Vec<BlockId> = targets.iter().flatten().copied().collect();
+                v.push(*done);
+                v
+            }
         }
     }
 }
@@ -306,6 +322,9 @@ pub struct Body {
     /// Parameter indices (0-based, `self` first) that the return value may borrow
     /// from, according to the signature. `None` means unchecked (closures).
     pub return_flows: Option<Vec<usize>>,
+    /// Errors found during lowering (e.g. a deferred call using a variable
+    /// that is dropped before the function returns).
+    pub errors: Vec<(String, Span)>,
     pub span: Span,
 }
 

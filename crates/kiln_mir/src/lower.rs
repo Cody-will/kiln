@@ -30,13 +30,22 @@ pub(crate) struct Lower<'t, 'r, 'a> {
     map: HashMap<LocalId, Local>,
     scopes: Vec<Vec<Local>>,
     loops: Vec<LoopCx>,
-    defers: Vec<Expr>,
+    /// Deferred calls and whether each is inside a loop.
+    defers: Vec<(Expr, bool)>,
     /// For closures and `go` blocks: variables captured from the parent.
     is_nested: bool,
     upvars: Vec<(LocalId, Local)>,
     /// Bodies of closures and `go` blocks lowered while lowering this one.
     pub(crate) extra: Vec<Body>,
     last_captures: Option<Vec<Capture>>,
+    /// Locals holding closures that move a captured variable out (callable once).
+    once: std::collections::HashSet<Local>,
+    /// Locals whose scope has ended.
+    dead: std::collections::HashSet<Local>,
+    /// Set while lowering deferred calls in the exit block.
+    in_defer: bool,
+    /// Whether the closure just lowered moves a captured variable.
+    last_consumes: bool,
 }
 
 fn dummy_span() -> Span {
@@ -59,6 +68,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             blocks: vec![],
             arg_count: 0,
             return_flows: None,
+            errors: vec![],
             span,
         };
         let mut l = Lower {
@@ -76,6 +86,10 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             upvars: vec![],
             extra: vec![],
             last_captures: None,
+            once: Default::default(),
+            dead: Default::default(),
+            in_defer: false,
+            last_consumes: false,
         };
         l.new_block(); // entry
         l.new_block(); // exit
@@ -187,6 +201,9 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
     }
 
     fn operand_of(&mut self, p: Place, ty: &Ty) -> Operand {
+        if p.proj.is_empty() && self.once.contains(&p.local) {
+            return Operand::Move(p);
+        }
         if self.is_copy(ty) {
             Operand::Copy(p)
         } else {
@@ -200,6 +217,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
 
     fn pop_scope(&mut self, end: Span) {
         let locals = self.scopes.pop().unwrap();
+        self.dead.extend(locals.iter().copied());
         for l in locals.into_iter().rev() {
             self.push(StmtKind::StorageDead(l), end);
         }
@@ -209,11 +227,27 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
 
     fn finish(mut self, end: Span) -> (Body, Vec<(LocalId, Local)>, Vec<Body>) {
         self.goto(self.exit, end);
-        self.cur = self.exit;
         let defers = std::mem::take(&mut self.defers);
-        for d in defers.iter().rev() {
+        let n = defers.len();
+        let targets: Vec<BlockId> = (0..n).map(|_| self.new_block()).collect();
+        // `after[i]`: dispatch used after running once-only defer `i` (only defers < i remain).
+        let after: Vec<BlockId> = (0..n).map(|_| self.new_block()).collect();
+        let done = self.new_block();
+        self.in_defer = true;
+        for (i, (d, in_loop)) in defers.iter().enumerate() {
+            self.cur = targets[i];
             self.expr_into(d, None);
+            let next = if *in_loop { self.exit } else { after[i] };
+            self.goto(next, d.span);
+            self.cur = after[i];
+            let t = (0..n).map(|j| (j < i).then_some(targets[j])).collect();
+            self.terminate(Terminator::DeferDispatch { targets: t, done }, end);
         }
+        self.in_defer = false;
+        self.cur = self.exit;
+        let all = targets.iter().map(|t| Some(*t)).collect();
+        self.terminate(Terminator::DeferDispatch { targets: all, done }, end);
+        self.cur = done;
         // Remaining locals die at function exit, in reverse declaration order.
         while self.scopes.len() > 1 {
             self.pop_scope(end);
@@ -237,6 +271,14 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
     }
 
     // ----- statements ------------------------------------------------------------------
+
+    /// Lowers a function's (or closure's) outermost block in the function scope,
+    /// so its variables live until after deferred calls run.
+    fn body_into(&mut self, b: &Block) {
+        for s in &b.stmts {
+            self.stmt(s);
+        }
+    }
 
     fn block_into(&mut self, b: &Block, dest: Option<Place>) {
         self.push_scope();
@@ -324,7 +366,11 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 let v = self.expr(value);
                 self.push(StmtKind::Eval(Rvalue::Pure(vec![c, v])), s.span);
             }
-            AstStmt::Defer(e) => self.defers.push(e.clone()),
+            AstStmt::Defer(e) => {
+                self.push(StmtKind::DeferPush(self.defers.len() as u32), s.span);
+                let in_loop = !self.loops.is_empty();
+                self.defers.push((e.clone(), in_loop));
+            }
             AstStmt::Go(GoTarget::Call(e)) => {
                 let operands = match &e.kind {
                     ExprKind::Call(f, args) => self.call_operands(f, args).0,
@@ -536,7 +582,17 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         match &e.kind {
             ExprKind::Paren(x) => self.place(x),
             ExprKind::Path(p) => match self.r.path(p.span) {
-                Res::Local(id) => Some(Place::local(self.lookup(id, e.span))),
+                Res::Local(id) => {
+                    let l = self.lookup(id, e.span);
+                    if self.in_defer && self.dead.contains(&l) {
+                        let name = self.r.local(id).name.clone();
+                        self.body.errors.push((
+                            format!("`{name}` is dropped before this deferred call runs"),
+                            e.span,
+                        ));
+                    }
+                    Some(Place::local(l))
+                }
                 _ => None,
             },
             ExprKind::Field(base, name) => {
@@ -724,8 +780,17 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     e.span,
                     ret,
                 );
+                let consumes = std::mem::take(&mut self.last_consumes);
                 self.last_captures = Some(caps);
-                self.temp_of(ty, Rvalue::Aggregate(ops), e.span)
+                let t = self.temp(ty.clone(), e.span);
+                self.push(
+                    StmtKind::Assign(Place::local(t), Rvalue::Aggregate(ops)),
+                    e.span,
+                );
+                if consumes {
+                    self.once.insert(t);
+                }
+                self.operand_of(Place::local(t), &ty)
             }
             _ => {
                 if matches!(ty, Ty::Unit | Ty::Never | Ty::Unknown) {
@@ -791,7 +856,12 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         let is_item = matches!(&f.kind, ExprKind::Path(p) if matches!(self.r.path(p.span), Res::Def(_) | Res::Assoc { .. }));
         let mut ops = Vec::new();
         if !is_item {
-            ops.push(self.read(f));
+            let callee = match self.place(f) {
+                Some(p) if p.proj.is_empty() && self.once.contains(&p.local) => Operand::Move(p),
+                Some(p) => Operand::Copy(p),
+                None => self.expr(f),
+            };
+            ops.push(callee);
         }
         let offset = ops.len();
         for a in args {
@@ -807,11 +877,9 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
 
     fn fn_flows(&self, i: usize) -> Vec<usize> {
         let f = &self.r.fns[i];
-        let outer = match f.impl_idx {
-            Some(idx) => sig::type_param_names(&self.r.impls[idx].decl.generics),
-            None => vec![],
-        };
-        sig::decl_flows(f.decl, &outer, self.r)
+        let og = f.impl_idx.map(|idx| &self.r.impls[idx].decl.generics);
+        let outer = og.map(sig::type_param_names).unwrap_or_default();
+        sig::decl_flows(f.decl, &outer, og, self.r)
     }
 
     fn call(&mut self, e: &Expr, f: &Expr, args: &[Expr]) -> Operand {
@@ -1134,7 +1202,17 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             _ => {
                 let op = self.expr(e);
                 match dest {
-                    Some(d) => self.push(StmtKind::Assign(d, Rvalue::Use(op)), e.span),
+                    Some(d) => {
+                        if let Some(p) = op.place() {
+                            if d.proj.is_empty()
+                                && p.proj.is_empty()
+                                && self.once.contains(&p.local)
+                            {
+                                self.once.insert(d.local);
+                            }
+                        }
+                        self.push(StmtKind::Assign(d, Rvalue::Use(op)), e.span)
+                    }
                     None => {
                         if !matches!(op, Operand::Const) {
                             self.push(StmtKind::Eval(Rvalue::Use(op)), e.span)
@@ -1231,12 +1309,12 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         }
         let end = match body {
             NestedBody::Block(b) => {
-                inner.block_into(b, None);
+                inner.body_into(b);
                 Self::end_span(b)
             }
             NestedBody::Expr(e) => {
                 match &e.kind {
-                    ExprKind::Block(b) => inner.block_into(b, None),
+                    ExprKind::Block(b) => inner.body_into(b),
                     _ => inner.expr_into(e, Some(Place::local(Local(0)))),
                 }
                 Span::new(e.span.end.saturating_sub(1), e.span.end)
@@ -1245,12 +1323,13 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         let (nb, upvars, extra) = inner.finish(end);
         let mut ops = vec![];
         let mut caps = vec![];
+        self.last_consumes = false;
         for (id, ul) in &upvars {
-            let mode = if is_move {
-                CaptureMode::Move
-            } else {
-                capture_mode(&nb, *ul)
-            };
+            let inferred = capture_mode(&nb, *ul);
+            if inferred == CaptureMode::Move {
+                self.last_consumes = true;
+            }
+            let mode = if is_move { CaptureMode::Move } else { inferred };
             let decl = nb.local(*ul).clone();
             let pl = Place::local(self.lookup(*id, span));
             let op = match mode {
@@ -1373,11 +1452,9 @@ pub fn lower_fn(typed: &mut Typed<'_, '_>, i: usize) -> Vec<Body> {
         Some(_) => format!("{}::{}", self_name(typed, i), f.decl.name.name),
         None => f.decl.name.name.clone(),
     };
-    let outer = match f.impl_idx {
-        Some(idx) => sig::type_param_names(&r.impls[idx].decl.generics),
-        None => vec![],
-    };
-    let flows = sig::decl_flows(f.decl, &outer, r);
+    let og = f.impl_idx.map(|idx| &r.impls[idx].decl.generics);
+    let outer = og.map(sig::type_param_names).unwrap_or_default();
+    let flows = sig::decl_flows(f.decl, &outer, og, r);
     let mut l = Lower::new(typed, res.clone(), name, BodyKind::Fn, f.decl.name.span);
     l.body.return_flows = Some(flows);
     l.new_local(ret, None, f.decl.name.span, LocalKind::Return, true, None);
@@ -1423,7 +1500,7 @@ pub fn lower_fn(typed: &mut Typed<'_, '_>, i: usize) -> Vec<Body> {
     for (p, a, t) in pending {
         l.bind_pattern(&p.pat, Place::local(a), &t, None);
     }
-    l.block_into(body_ast, None);
+    l.body_into(body_ast);
     let (body, _, extra) = l.finish(Lower::end_span(body_ast));
     let mut out = vec![body];
     out.extend(extra);

@@ -19,7 +19,7 @@ Status key: ✅ done · 🚧 in progress · ⬜ not started
 1. **Type checker gaps:** associated types, `impl Trait` as a distinct type, array lengths, deeper exhaustiveness (nested patterns, integer ranges), method resolution on integer literals before defaulting, and typed signatures for `std` instead of opaque externals.
 2. **Lossless CST decision:** choose whether to build a lossless syntax tree (in the rowan style) before the formatter and language server depend on the AST.
 3. **Codegen:** lower MIR (already built for the borrow checker) to LLVM via inkwell; run hello world and fib. MIR will need explicit drop elaboration and monomorphization first.
-4. **Borrow checker refinements:** flow-sensitive loan sets, lifetime bounds (`'a: 'b`), checking moves out of by-reference closure captures, `unsafe impl Send`.
+4. **Borrow checker refinements:** per-field drop elaboration after partial moves, lifetime variance, higher-ranked lifetimes.
 
 ## Known parser gaps
 

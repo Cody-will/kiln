@@ -473,7 +473,7 @@ fn go_requires_send() {
         "`Handle` cannot be sent between tasks safely",
     );
     err1(&format!("{s}fn main() {{\n h := Handle {{ p: 0 as *const u8 }}\n go move {{\n use_it(h)\n }}\n}}"), "cannot be sent between tasks safely");
-    ok(&format!("{s}impl Send for Handle {{}}\nfn main() {{\n h := Handle {{ p: 0 as *const u8 }}\n go use_it(h)\n}}"));
+    ok(&format!("{s}unsafe impl Send for Handle {{}}\nfn main() {{\n h := Handle {{ p: 0 as *const u8 }}\n go use_it(h)\n}}"));
 }
 
 #[test]
@@ -552,4 +552,105 @@ fn website_examples_check() {
         }
     }
     assert!(checked > 20, "only {checked} website examples found");
+}
+
+#[test]
+fn send_and_sync_impls_must_be_unsafe() {
+    let s = "struct Handle {\n p: *const u8,\n}\n";
+    err1(
+        &format!("{s}impl Send for Handle {{}}\nfn main() {{}}"),
+        "the trait `Send` requires an `unsafe impl` declaration",
+    );
+    err1(
+        &format!("{s}impl Sync for Handle {{}}\nfn main() {{}}"),
+        "requires an `unsafe impl`",
+    );
+    ok(&format!(
+        "{s}unsafe impl Sync for Handle {{}}\nfn main() {{}}"
+    ));
+    err1(
+        &format!("{s}trait T {{}}\nunsafe impl T for Handle {{}}\nfn main() {{}}"),
+        "implementing the trait `T` is not unsafe",
+    );
+}
+
+#[test]
+fn lifetime_bounds() {
+    // `'b: 'a` lets data borrowed for `'b` be returned as `'a`.
+    ok("fn pick<'a, 'b: 'a>(x: &'a str, y: &'b str) -> &'a str {\n return y\n}\nfn main() {}");
+    ok("fn pick<'a, 'b>(x: &'a str, y: &'b str) -> &'a str where 'b: 'a {\n return y\n}\nfn main() {}");
+    // Transitive.
+    ok("fn pick<'a, 'b: 'c, 'c: 'a>(x: &'a str, y: &'b str) -> &'a str {\n return y\n}\nfn main() {}");
+    err1(
+        "fn pick<'a, 'b>(x: &'a str, y: &'b str) -> &'a str {\n return y\n}\nfn main() {}",
+        "lifetime may not live long enough",
+    );
+    err1(
+        "fn pick<'a>(x: &'a str) -> &'a str where 'a: 'q {\n return x\n}\nfn main() {}",
+        "use of undeclared lifetime name `'q`",
+    );
+}
+
+#[test]
+fn trait_object_lifetimes() {
+    let s = "trait Show {\n fn show(&self) -> String\n}\nstruct Wrap<'a> {\n s: &'a str,\n}\nimpl<'a> Show for Wrap<'a> {\n fn show(&self) -> String {\n return String::from(self.s)\n }\n}\n";
+    // `Box<dyn Show>` means `Box<dyn Show + 'static>`: it can't hold a borrow of `s`.
+    err1(&format!("{s}fn make(s: &str) -> Box<dyn Show> {{\n return Box::new(Wrap {{ s: s }})\n}}\nfn main() {{}}"), "lifetime may not live long enough");
+    ok(&format!("{s}fn make<'a>(s: &'a str) -> Box<dyn Show + 'a> {{\n return Box::new(Wrap {{ s: s }})\n}}\nfn main() {{}}"));
+}
+
+#[test]
+fn reassigned_reference_drops_old_borrow() {
+    // After `r = &b`, `r` no longer borrows `a`, so `a` may be mutated.
+    ok("fn main() {\n a mut := 1\n b := 2\n r mut := &a\n println(\"{r}\")\n r = &b\n a = 5\n println(\"{r} {a}\")\n}");
+    // ...but while `r` may still point at `a` (one branch), it is borrowed.
+    has("fn main() {\n a mut := 1\n b := 2\n r mut := &a\n if b > 1 {\n r = &b\n }\n a = 5\n println(\"{r}\")\n}", "cannot assign to `a` because it is borrowed");
+}
+
+#[test]
+fn closures_that_move_captures_run_once() {
+    err1(
+        &main_with(" s := String::from(\"a\")\n f := || take(s)\n f()\n f()"),
+        "use of moved value: `f`",
+    );
+    ok(&main_with(
+        " s := String::from(\"a\")\n f := || take(s)\n f()",
+    ));
+    ok(&main_with(
+        " s := String::from(\"a\")\n f := || read(&s)\n f()\n f()",
+    ));
+}
+
+#[test]
+fn defer_per_execution() {
+    // A defer in a loop registers one call per iteration; all of them run at exit.
+    err1(
+        &main_with(" s := String::from(\"a\")\n for i in 0..3 {\n defer take(s)\n }"),
+        "use of moved value: `s`",
+    );
+    ok(&main_with(
+        " s := String::from(\"a\")\n for i in 0..3 {\n defer read(&s)\n }",
+    ));
+    // A conditional defer may or may not run.
+    ok(&main_with(
+        " s := String::from(\"a\")\n if true {\n defer take(s)\n }",
+    ));
+    // Deferred calls can't use variables from scopes that ended before the function returns.
+    err1(
+        &main_with(" {\n t := String::from(\"a\")\n defer read(&t)\n }"),
+        "`t` is dropped before this deferred call runs",
+    );
+}
+
+#[test]
+fn defer_mir_shape() {
+    let src = "fn main() {\n for i in 0..2 {\n defer println(\"x\")\n }\n}";
+    let p = kiln_parser::parse(src);
+    let pre = kiln_resolve::parse_prelude();
+    let r = kiln_resolve::resolve(&p.file, &pre);
+    let mut t = kiln_typeck::typeck(&r);
+    let b = &kiln_mir::lower_all(&mut t)[0].1[0];
+    let d = b.to_string();
+    assert!(d.contains("defer_push 0"), "{d}");
+    assert!(d.contains("defer_dispatch [bb"), "{d}");
 }

@@ -299,7 +299,8 @@ impl<'s> Parser<'s> {
                     | Kw::Pub
                     | Kw::Use
             ) | T::Hash
-        ) || (self.at_kw(Kw::Unsafe) && *self.nth(1) == T::Keyword(Kw::Fn))
+        ) || (self.at_kw(Kw::Unsafe)
+            && matches!(self.nth(1), T::Keyword(Kw::Fn | Kw::Impl | Kw::Trait)))
     }
 
     /// Skips tokens until the start of the next item at nesting depth 0.
@@ -458,6 +459,18 @@ impl<'s> Parser<'s> {
             T::Keyword(Kw::Unsafe) if *self.nth(1) == T::Keyword(Kw::Fn) => {
                 self.bump();
                 ItemKind::Fn(self.parse_fn(true)?)
+            }
+            T::Keyword(Kw::Unsafe) if *self.nth(1) == T::Keyword(Kw::Impl) => {
+                self.bump();
+                let mut i = self.parse_impl()?;
+                i.is_unsafe = true;
+                ItemKind::Impl(i)
+            }
+            T::Keyword(Kw::Unsafe) if *self.nth(1) == T::Keyword(Kw::Trait) => {
+                self.bump();
+                let mut t = self.parse_trait()?;
+                t.is_unsafe = true;
+                ItemKind::Trait(t)
             }
             T::Keyword(Kw::Struct) => ItemKind::Struct(self.parse_struct()?),
             T::Keyword(Kw::Enum) => ItemKind::Enum(self.parse_enum()?),
@@ -712,14 +725,30 @@ impl<'s> Parser<'s> {
         }
         loop {
             self.skip_implicit_semis();
-            let ty = self.parse_type()?;
-            self.expect(&T::Colon)?;
-            let bounds = self.parse_bounds()?;
-            preds.push(WherePredicate {
-                span: ty.span.to(self.prev_span()),
-                ty,
-                bounds,
-            });
+            if let T::Lifetime(_) = self.peek() {
+                let lt = self.expect_lifetime()?;
+                self.expect(&T::Colon)?;
+                let bounds = self.parse_bounds()?;
+                preds.push(WherePredicate {
+                    span: lt.span.to(self.prev_span()),
+                    ty: Type {
+                        kind: TypeKind::Infer,
+                        span: lt.span,
+                    },
+                    lifetime: Some(lt),
+                    bounds,
+                });
+            } else {
+                let ty = self.parse_type()?;
+                self.expect(&T::Colon)?;
+                let bounds = self.parse_bounds()?;
+                preds.push(WherePredicate {
+                    span: ty.span.to(self.prev_span()),
+                    ty,
+                    lifetime: None,
+                    bounds,
+                });
+            }
             if !self.eat(&T::Comma) {
                 return Ok(preds);
             }
@@ -822,6 +851,7 @@ impl<'s> Parser<'s> {
         generics.where_clause = self.parse_where()?;
         let items = self.parse_assoc_items()?;
         Ok(TraitDecl {
+            is_unsafe: false,
             name,
             generics,
             supertraits,
@@ -845,6 +875,7 @@ impl<'s> Parser<'s> {
         generics.where_clause = self.parse_where()?;
         let items = self.parse_assoc_items()?;
         Ok(ImplDecl {
+            is_unsafe: false,
             generics,
             trait_ref,
             self_ty,

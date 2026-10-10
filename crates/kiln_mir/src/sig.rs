@@ -96,7 +96,16 @@ fn walk(t: &Type, generics: &[String], r: &Resolved<'_>, out: &mut TyLifetimes) 
                 walk(x, generics, r, out);
             }
         }
-        TypeKind::Dyn(bounds) | TypeKind::Impl(bounds) => {
+        TypeKind::Dyn(bounds) => {
+            // A trait object without a lifetime bound is `'static`
+            // (`Box<dyn Trait>` = `Box<dyn Trait + 'static>`); `dyn Trait + 'a` borrows for `'a`.
+            for b in bounds {
+                if let Bound::Lifetime(l) = b {
+                    out.named.insert(l.name.clone());
+                }
+            }
+        }
+        TypeKind::Impl(bounds) => {
             out.generic = true;
             for b in bounds {
                 if let Bound::Lifetime(l) = b {
@@ -168,6 +177,48 @@ pub fn fn_lifetimes(
     (params, ret)
 }
 
+/// Declared outlives relations `('a, 'b)` meaning `'a: 'b`, from generic
+/// parameter bounds (`<'a: 'b>`) and where clauses (`where 'a: 'b`).
+pub fn outlives(gs: &[&Generics]) -> Vec<(String, String)> {
+    let mut out = vec![];
+    for g in gs {
+        for p in &g.params {
+            if let GenericParam::Lifetime { name, bounds } = p {
+                out.extend(bounds.iter().map(|b| (name.name.clone(), b.name.clone())));
+            }
+        }
+        for w in &g.where_clause {
+            if let Some(l) = &w.lifetime {
+                for b in &w.bounds {
+                    if let Bound::Lifetime(x) = b {
+                        out.push((l.name.clone(), x.name.clone()));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether `a` outlives `b` (reflexive, transitive; `'static` outlives everything).
+pub fn outlives_rel(rel: &[(String, String)], a: &str, b: &str) -> bool {
+    let mut seen = vec![a.to_string()];
+    let mut i = 0;
+    while i < seen.len() {
+        let cur = seen[i].clone();
+        if cur == b || cur == "static" {
+            return true;
+        }
+        for (x, y) in rel {
+            if *x == cur && !seen.contains(y) {
+                seen.push(y.clone());
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Which parameters (by index, `self` first) a call's result may borrow from.
 ///
 /// Rules (SPEC §4 "Lifetimes"):
@@ -176,7 +227,12 @@ pub fn fn_lifetimes(
 ///   single reference parameter, else (ambiguous; reported at the definition)
 ///   from every reference parameter;
 /// - a generic return type may carry borrows from any parameter.
-pub fn return_flows(params: &[TyLifetimes], ret: &TyLifetimes, has_ref_self: bool) -> Vec<usize> {
+pub fn return_flows(
+    params: &[TyLifetimes],
+    ret: &TyLifetimes,
+    has_ref_self: bool,
+    rel: &[(String, String)],
+) -> Vec<usize> {
     let mut out = BTreeSet::new();
     if ret.generic {
         out.extend(0..params.len());
@@ -185,7 +241,7 @@ pub fn return_flows(params: &[TyLifetimes], ret: &TyLifetimes, has_ref_self: boo
         if ret
             .named
             .iter()
-            .any(|l| l != "static" && p.named.contains(l))
+            .any(|r| r != "static" && p.named.iter().any(|pl| outlives_rel(rel, pl, r)))
         {
             out.insert(i);
         }
@@ -204,8 +260,15 @@ pub fn return_flows(params: &[TyLifetimes], ret: &TyLifetimes, has_ref_self: boo
 }
 
 /// [`return_flows`] for a declared function.
-pub fn decl_flows(decl: &FnDecl, outer: &[String], r: &Resolved<'_>) -> Vec<usize> {
+pub fn decl_flows(
+    decl: &FnDecl,
+    outer: &[String],
+    outer_generics: Option<&Generics>,
+    r: &Resolved<'_>,
+) -> Vec<usize> {
     let (params, ret) = fn_lifetimes(decl, outer, r);
     let ref_self = matches!(decl.self_param, Some(SelfParam::Ref { .. }));
-    return_flows(&params, &ret, ref_self)
+    let mut gs = vec![&decl.generics];
+    gs.extend(outer_generics);
+    return_flows(&params, &ret, ref_self, &outlives(&gs))
 }

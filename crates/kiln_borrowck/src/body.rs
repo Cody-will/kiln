@@ -66,6 +66,8 @@ pub(crate) struct Ck<'b, 't, 'r, 'a> {
     loans: Vec<Loan>,
     loan_at: BTreeMap<Loc, usize>,
     holds: Vec<BTreeSet<usize>>,
+    /// Flow-sensitive loan sets at the entry of each block.
+    hin: Vec<Option<Vec<BTreeSet<usize>>>>,
     /// live_out[block][stmt] for every statement, and live-out of the terminator at index `len`.
     live: Vec<Vec<BTreeSet<Local>>>,
     may_hold_cache: Vec<bool>,
@@ -88,6 +90,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
             loans: vec![],
             loan_at: BTreeMap::new(),
             holds: vec![],
+            hin: vec![],
             live: vec![],
             may_hold_cache: vec![],
             drop_cache: vec![],
@@ -95,6 +98,11 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
     }
 
     pub(crate) fn run(&mut self) {
+        for (msg, span) in self.b.errors.clone() {
+            self.report(Diagnostic::error(msg, span).with_help(
+                "deferred calls run when the function returns; declare the variable at the top level of the function body",
+            ));
+        }
         self.reachable = self.compute_reachable();
         let n = self.b.locals.len();
         self.may_hold_cache = (0..n)
@@ -154,12 +162,6 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
         &self.b.local(l).ty
     }
 
-    fn op_holds(&self, o: &Operand) -> BTreeSet<usize> {
-        o.place()
-            .map(|p| self.holds[p.local.0 as usize].clone())
-            .unwrap_or_default()
-    }
-
     fn stmt(&self, loc: Loc) -> &Statement {
         &self.b.blocks[loc.0].stmts[loc.1]
     }
@@ -206,48 +208,113 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                 }
             }
         }
-        loop {
-            let mut changed = false;
-            for (bi, bb) in self.b.blocks.iter().enumerate() {
-                if !self.reachable[bi] {
-                    continue;
-                }
-                for (si, s) in bb.stmts.iter().enumerate() {
-                    let StmtKind::Assign(dest, rv) = &s.kind else {
-                        continue;
-                    };
-                    let root = dest.local.0 as usize;
-                    if !self.may_hold_cache[root] {
-                        continue;
-                    }
-                    let add: BTreeSet<usize> = match rv {
-                        Rvalue::Use(o) => self.op_holds(o),
-                        Rvalue::Ref { place, .. } => {
-                            let mut s = BTreeSet::from([self.loan_at[&(bi, si)]]);
-                            if place.through_ref() {
-                                s.extend(self.holds[place.local.0 as usize].iter().copied());
-                            }
-                            s
-                        }
-                        Rvalue::Aggregate(ops) => {
-                            ops.iter().flat_map(|o| self.op_holds(o)).collect()
-                        }
-                        Rvalue::Call { args, flows } => flows
-                            .iter()
-                            .filter_map(|i| args.get(*i))
-                            .flat_map(|o| self.op_holds(o))
-                            .collect(),
-                        Rvalue::Pure(_) => BTreeSet::new(),
-                    };
-                    let before = self.holds[root].len();
-                    self.holds[root].extend(add);
-                    changed |= self.holds[root].len() != before;
-                }
+        // Flow-sensitive: which loans each local may hold at each point.
+        // Assigning a whole local replaces its loans (so a reassigned reference
+        // variable no longer keeps its old borrow alive).
+        let nb = self.b.blocks.len();
+        let entry = self.holds.clone();
+        let mut hin: Vec<Option<Vec<BTreeSet<usize>>>> = vec![None; nb];
+        hin[0] = Some(entry);
+        let mut work = VecDeque::from([0usize]);
+        while let Some(bi) = work.pop_front() {
+            let mut st = hin[bi].clone().unwrap();
+            for si in 0..self.b.blocks[bi].stmts.len() {
+                self.holds_transfer(&mut st, (bi, si));
             }
-            if !changed {
-                break;
+            for sb in self.succ(bi) {
+                let changed = match &mut hin[sb] {
+                    None => {
+                        hin[sb] = Some(st.clone());
+                        true
+                    }
+                    Some(e) => {
+                        let mut ch = false;
+                        for (a, b) in e.iter_mut().zip(&st) {
+                            let before = a.len();
+                            a.extend(b.iter().copied());
+                            ch |= a.len() != before;
+                        }
+                        ch
+                    }
+                };
+                if changed && !work.contains(&sb) {
+                    work.push_back(sb);
+                }
             }
         }
+        // The flow-insensitive union is used for "borrow later used here" notes.
+        for st in hin.iter().flatten() {
+            for (a, b) in self.holds.iter_mut().zip(st) {
+                a.extend(b.iter().copied());
+            }
+        }
+        for (bi, h) in hin.iter().enumerate() {
+            if let Some(h) = h {
+                let mut st = h.clone();
+                for si in 0..self.b.blocks[bi].stmts.len() {
+                    self.holds_transfer(&mut st, (bi, si));
+                    for (a, b) in self.holds.iter_mut().zip(&st) {
+                        a.extend(b.iter().copied());
+                    }
+                }
+            }
+        }
+        self.hin = hin;
+    }
+
+    fn op_holds_in(st: &[BTreeSet<usize>], o: &Operand) -> BTreeSet<usize> {
+        o.place()
+            .map(|p| st[p.local.0 as usize].clone())
+            .unwrap_or_default()
+    }
+
+    /// Applies statement `loc` to the per-local loan sets.
+    fn holds_transfer(&self, st: &mut [BTreeSet<usize>], loc: Loc) {
+        match &self.stmt(loc).kind {
+            StmtKind::Assign(dest, rv) => {
+                let root = dest.local.0 as usize;
+                if !self.may_hold_cache[root] {
+                    return;
+                }
+                let add: BTreeSet<usize> = match rv {
+                    Rvalue::Use(o) => Self::op_holds_in(st, o),
+                    Rvalue::Ref { place, .. } => {
+                        let mut s = BTreeSet::from([self.loan_at[&loc]]);
+                        if place.through_ref() {
+                            s.extend(st[place.local.0 as usize].iter().copied());
+                        }
+                        s
+                    }
+                    Rvalue::Aggregate(ops) => {
+                        ops.iter().flat_map(|o| Self::op_holds_in(st, o)).collect()
+                    }
+                    Rvalue::Call { args, flows } => flows
+                        .iter()
+                        .filter_map(|i| args.get(*i))
+                        .flat_map(|o| Self::op_holds_in(st, o))
+                        .collect(),
+                    Rvalue::Pure(_) => BTreeSet::new(),
+                };
+                if dest.proj.is_empty() {
+                    st[root] = add;
+                } else {
+                    st[root].extend(add);
+                }
+            }
+            StmtKind::StorageDead(l) => st[l.0 as usize].clear(),
+            _ => {}
+        }
+    }
+
+    /// Loan sets before statement `si` of block `bi`.
+    fn holds_before(&self, bi: usize, si: usize) -> Vec<BTreeSet<usize>> {
+        let mut st = self.hin[bi]
+            .clone()
+            .unwrap_or_else(|| vec![BTreeSet::new(); self.b.locals.len()]);
+        for i in 0..si {
+            self.holds_transfer(&mut st, (bi, i));
+        }
+        st
     }
 
     /// Locals holding loan `l`.
@@ -283,6 +350,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                 }
             }
             StmtKind::Read(p) => uses.push(p.local),
+            StmtKind::DeferPush(_) => {}
             StmtKind::Eval(rv) => rv_uses(rv, &mut uses),
             StmtKind::StorageDead(l) => {
                 if self.drop_cache[l.0 as usize] {
@@ -452,7 +520,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                     self.check_init(st, p, false, s.span, loc);
                 }
             }
-            StmtKind::StorageDead(_) => {}
+            StmtKind::StorageDead(_) | StmtKind::DeferPush(_) => {}
         }
         if report {
             for (o, _) in &uses {
@@ -646,6 +714,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
             }
             StmtKind::Eval(rv) => ops(rv, &mut out),
             StmtKind::Read(p) => out.push((p.clone(), Access::Read)),
+            StmtKind::DeferPush(_) => {}
             StmtKind::StorageDead(l) => out.push((Place::local(*l), Access::Dead)),
             StmtKind::Spawn { operands, .. } => {
                 for o in operands {
@@ -665,17 +734,19 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
             if !self.reachable[bi] {
                 continue;
             }
+            let mut st = self.holds_before(bi, 0);
             for si in 0..self.b.blocks[bi].stmts.len() {
                 let s = self.b.blocks[bi].stmts[si].clone();
                 let created = self.loan_at.get(&(bi, si)).copied();
                 let live_after = self.live[bi][si].clone();
+                self.holds_transfer(&mut st, (bi, si));
                 for (p, acc) in Self::accesses(&s) {
                     let mut live_loans = BTreeSet::new();
                     for l in &live_after {
                         if acc == Access::Dead && *l == Local(0) {
                             continue; // reported by the return check
                         }
-                        live_loans.extend(self.holds[l.0 as usize].iter().copied());
+                        live_loans.extend(st[l.0 as usize].iter().copied());
                     }
                     for li in live_loans {
                         if Some(li) == created {
@@ -809,12 +880,13 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
         if self.b.kind != BodyKind::Fn {
             return;
         }
-        let returns = (0..self.b.blocks.len())
-            .any(|bi| self.reachable[bi] && matches!(self.b.blocks[bi].term, Terminator::Return));
-        if !returns {
-            return;
+        let mut held: BTreeSet<usize> = BTreeSet::new();
+        for bi in 0..self.b.blocks.len() {
+            if self.reachable[bi] && matches!(self.b.blocks[bi].term, Terminator::Return) {
+                let st = self.holds_before(bi, self.b.blocks[bi].stmts.len());
+                held.extend(st[0].iter().copied());
+            }
         }
-        let held: Vec<usize> = self.holds[0].iter().copied().collect();
         for li in held {
             let loan = self.loans[li].clone();
             match (&loan.place, loan.param) {
@@ -898,7 +970,8 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                 match kind {
                     SpawnKind::GoCall => {
                         for o in operands {
-                            self.check_static(o, s.span, "argument to `go`");
+                            let held = Self::op_holds_in(&self.holds_before(bi, si), o);
+                            self.check_static(held, s.span, "argument to `go`");
                             if let Some(p) = o.place() {
                                 if p.proj.is_empty() {
                                     let t = self.ty_of(p.local).clone();
@@ -918,7 +991,8 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                                 continue;
                             }
                             let _ = is_move;
-                            self.check_static(o, s.span, "`go` block capture");
+                            let held = Self::op_holds_in(&self.holds_before(bi, si), o);
+                            self.check_static(held, s.span, "`go` block capture");
                             self.check_send(&c.ty, s.span, Some(&c.name));
                         }
                     }
@@ -947,8 +1021,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
     }
 
     /// Values moved into an unscoped task must not borrow from this function.
-    fn check_static(&mut self, o: &Operand, span: Span, what: &str) {
-        let held = self.op_holds(o);
+    fn check_static(&mut self, held: BTreeSet<usize>, span: Span, what: &str) {
         if let Some(&li) = held.iter().next() {
             let loan = self.loans[li].clone();
             let src = match (&loan.place, loan.param) {

@@ -358,6 +358,15 @@ impl Body<'_, '_, '_> {
                 _ => return false,
             }
         }
+        if let (Ty::Adt(d, fa), Ty::Adt(d2, ea)) = (&f, &e) {
+            if d == d2 && self.c.is_lang(*d, "Box") {
+                let (fi, ei) = (self.shallow(&fa[0]), self.shallow(&ea[0]));
+                if let (Ty::Dyn(traits), false) = (&ei, matches!(fi, Ty::Dyn(_) | Ty::Var(_))) {
+                    let traits = traits.clone();
+                    return traits.iter().all(|t| self.implements(&fi, *t));
+                }
+            }
+        }
         if let (Ty::Adt(d, args), Ty::Dyn(traits)) = (&f, &e) {
             if self.c.is_lang(*d, "Box") {
                 let inner = args[0].clone();

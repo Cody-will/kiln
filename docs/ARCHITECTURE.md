@@ -104,7 +104,9 @@ Checks each MIR body (see the module docs in `body.rs`):
 
 `sigcheck.rs` checks signatures and type definitions: undeclared lifetime names and elided lifetimes that elision cannot resolve.
 
-Known gaps: loans are tracked per local, flow-insensitively (a variable reassigned to a different reference keeps both loans, which can over-report in rare cases); closure bodies are checked separately, so moving a by-reference capture out of a closure isn't diagnosed; `defer` inside loops or branches is treated as running once; lifetime *bounds* (`'a: 'b`) and lifetimes in trait objects are not checked; borrows inside `std` (opaque) types aren't tracked.
+Loan sets are flow-sensitive: assigning a whole variable replaces the loans it holds. Closures that move a captured variable are callable once (calling twice is a use of a moved value). `defer` is modelled per execution: each `defer` pushes a call; the exit block pops and runs them last-in first-out (`DeferDispatch`), and a defer outside any loop can run at most once. Lifetime bounds (`'a: 'b` in generics and `where` clauses) extend which parameters a result may borrow from; `dyn Trait` without a lifetime is `'static`.
+
+Known gaps: partial moves are diagnosed, but drops of the remaining fields are not elaborated per field; the checker treats channel and `std` types as opaque; lifetime variance and higher-ranked lifetimes (`for<'a>`) are not modelled.
 
 ### `kiln_cli`
 

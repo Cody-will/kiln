@@ -167,6 +167,9 @@ pub enum Bound {
 /// `Type: Bound + Bound` in a where clause.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WherePredicate {
+    /// For lifetime predicates (`'a: 'b + 'c`), the constrained lifetime; `ty` is then `Infer`
+    /// and `bounds` are all `Bound::Lifetime`.
+    pub lifetime: Option<Ident>,
     /// The constrained type.
     pub ty: Type,
     /// Bounds on it.
@@ -284,6 +287,8 @@ pub struct EnumDecl {
 /// `trait Name<...>: Supertraits { ... }`
 #[derive(Debug, Clone, PartialEq)]
 pub struct TraitDecl {
+    /// `unsafe trait`: implementing it requires `unsafe impl`.
+    pub is_unsafe: bool,
     /// Name.
     pub name: Ident,
     /// Generics.
@@ -297,6 +302,8 @@ pub struct TraitDecl {
 /// `impl<...> [Trait for] Type where ... { ... }`
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImplDecl {
+    /// `unsafe impl` (required for `Send` and `Sync`).
+    pub is_unsafe: bool,
     /// Generics.
     pub generics: Generics,
     /// Implemented trait, if this is a trait impl.

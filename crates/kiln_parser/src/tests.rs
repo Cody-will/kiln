@@ -1063,3 +1063,26 @@ fn spec_examples_parse() {
         assert!(!p.file.items.is_empty());
     }
 }
+
+#[test]
+fn unsafe_impl_and_trait() {
+    let f = ok("unsafe trait Marker {}\nunsafe impl Send for P {}\nimpl Show for P {}\n");
+    assert!(matches!(&f.items[0].kind, ItemKind::Trait(t) if t.is_unsafe));
+    assert!(matches!(&f.items[1].kind, ItemKind::Impl(i) if i.is_unsafe));
+    assert!(matches!(&f.items[2].kind, ItemKind::Impl(i) if !i.is_unsafe));
+}
+
+#[test]
+fn lifetime_where_predicates() {
+    let f = ok(
+        "fn f<'a, 'b>(x: &'a str, y: &'b str) -> &'a str where 'b: 'a, T: Clone {\n\treturn x\n}\n",
+    );
+    let ItemKind::Fn(d) = &f.items[0].kind else {
+        panic!()
+    };
+    let w = &d.generics.where_clause;
+    assert_eq!(w.len(), 2);
+    assert_eq!(w[0].lifetime.as_ref().unwrap().name, "b");
+    assert!(matches!(&w[0].bounds[0], Bound::Lifetime(l) if l.name == "a"));
+    assert!(w[1].lifetime.is_none());
+}

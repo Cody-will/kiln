@@ -447,13 +447,13 @@ Network I/O in a task never blocks an OS thread. The runtime parks the task on i
 - **Allocation**:
   - Values live on the stack by default.
   - Heap types are `Box<T>`, `Vec<T>`, `String`, `Rc<T>` (single task), and `Arc<T>` (shared across tasks).
-- **Destruction** is deterministic: `Drop` runs at the end of the owner's scope. `defer` runs a call when the enclosing *function* returns (Go semantics), after the return value is computed and before locals are dropped; multiple defers run last-in, first-out. Deferred code sees variables as they are at function exit, so using a variable that was moved after the `defer` is an error.
+- **Destruction** is deterministic: `Drop` runs at the end of the owner's scope. `defer` runs a call when the enclosing *function* returns (Go semantics), after the return value is computed and before locals are dropped; multiple defers run last-in, first-out. A `defer` inside a loop registers one call per iteration. Variables used by a deferred call must still be alive at function exit, so they must be declared in the function's outermost scope. Deferred code sees variables as they are at function exit, so using a variable that was moved after the `defer` is an error.
 - **Borrow checking**:
   - Uses non-lexical lifetimes computed over the MIR control-flow graph: a borrow lasts until the last use of the reference, not until the end of its scope.
   - Passing a `&mut T` variable as a call argument reborrows it (`&mut *r`), so the variable stays usable after the call.
   - Method-call arguments are evaluated before the receiver is borrowed (two-phase borrows), so `v.push(v.len())` is accepted.
-  - A function whose return type has an elided lifetime must have `&self`/`&mut self` or exactly one parameter with a lifetime; otherwise it needs explicit lifetimes (`'static` for borrowed constants such as string literals). Structs that hold references must declare lifetime parameters.
-  - `Send` and `Sync` are auto traits: a struct or enum implements them when all of its fields do. Raw pointers implement neither; `&T` is `Send` only when `T: Sync`. A manual `impl Send for T {}` overrides this (it will require `unsafe impl` once `unsafe` impls are parsed).
+  - A function whose return type has an elided lifetime must have `&self`/`&mut self` or exactly one parameter with a lifetime; otherwise it needs explicit lifetimes (`'static` for borrowed constants such as string literals). Structs that hold references must declare lifetime parameters. Lifetime bounds are written `<'a, 'b: 'a>` or `where 'b: 'a` (`'b` outlives `'a`). A trait object without a lifetime (`Box<dyn Trait>`) is `'static`; write `Box<dyn Trait + 'a>` for one that borrows.
+  - `Send` and `Sync` are auto traits: a struct or enum implements them when all of its fields do. Raw pointers implement neither; `&T` is `Send` only when `T: Sync`. A manual `unsafe impl Send for T {}` overrides this; `Send` and `Sync` are `unsafe trait`s, so implementing them without `unsafe` is an error (and `unsafe impl` of an ordinary trait is too).
   - The design targets a Polonius-style analysis but starts with NLL.
 - **Interior mutability**: `Cell`, `RefCell`, `Mutex`, `RwLock`, and `Atomic*`.
 - **Concurrency memory model**: C++11/Rust atomics orderings. Safe code cannot cause data races.

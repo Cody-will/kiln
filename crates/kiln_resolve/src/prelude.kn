@@ -26,8 +26,8 @@ pub trait Hash {}
 pub trait Debug {}
 pub trait Display {}
 pub trait Default {}
-pub trait Send {}
-pub trait Sync {}
+pub unsafe trait Send {}
+pub unsafe trait Sync {}
 pub trait Error {}
 
 // Runs cleanup when a value goes out of scope.

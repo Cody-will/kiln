@@ -80,6 +80,42 @@ fn check_declared(types: &[&Type], declared: &[String], errors: &mut Vec<Diagnos
     }
 }
 
+/// Lifetimes named in outlives bounds (`<'a: 'b>`, `where 'a: 'b`) must be declared.
+fn check_bound_names(gs: &[&Generics], declared: &[String], errors: &mut Vec<Diagnostic>) {
+    let mut names: Vec<&kiln_parser::ast::Ident> = vec![];
+    for g in gs {
+        for p in &g.params {
+            if let GenericParam::Lifetime { bounds, .. } = p {
+                names.extend(bounds);
+            }
+        }
+        for w in &g.where_clause {
+            if let Some(l) = &w.lifetime {
+                names.push(l);
+                for b in &w.bounds {
+                    if let Bound::Lifetime(x) = b {
+                        names.push(x);
+                    }
+                }
+            }
+        }
+    }
+    for n in names {
+        if n.name != "static" && !declared.contains(&n.name) {
+            errors.push(
+                Diagnostic::error(
+                    format!("use of undeclared lifetime name `'{}`", n.name),
+                    n.span,
+                )
+                .with_help(format!(
+                    "declare it in the generic parameters: `<'{}>`",
+                    n.name
+                )),
+            );
+        }
+    }
+}
+
 /// Checks one function signature.
 pub fn check_fn(
     decl: &FnDecl,
@@ -95,6 +131,7 @@ pub fn check_fn(
         types.push(t);
     }
     check_declared(&types, &declared, errors);
+    check_bound_names(&[outer, &decl.generics], &declared, errors);
     if let Some(SelfParam::Ref {
         lifetime: Some(l), ..
     }) = &decl.self_param

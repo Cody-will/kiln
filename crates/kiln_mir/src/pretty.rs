@@ -77,6 +77,7 @@ impl fmt::Display for Body {
                     StmtKind::Read(p) => writeln!(f, "    read {p}")?,
                     StmtKind::Eval(rv) => writeln!(f, "    eval {rv}")?,
                     StmtKind::StorageDead(l) => writeln!(f, "    dead _{}", l.0)?,
+                    StmtKind::DeferPush(n) => writeln!(f, "    defer_push {n}")?,
                     StmtKind::Spawn {
                         kind,
                         operands,
@@ -107,6 +108,15 @@ impl fmt::Display for Body {
                     )
                 }
                 Terminator::Return => "return".into(),
+                Terminator::DeferDispatch { targets, done } => format!(
+                    "defer_dispatch [{}] else bb{}",
+                    targets
+                        .iter()
+                        .map(|t| t.map(|t| format!("bb{}", t.0)).unwrap_or("-".into()))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    done.0
+                ),
                 Terminator::Unreachable => "unreachable".into(),
             };
             writeln!(f, "    {t}")?;
