@@ -20,14 +20,170 @@
 // A derived struct is an object with its field names as keys; a tuple
 // struct is an array (a one-field tuple struct is its field's value). An
 // enum's unit variants are strings ("Red"); other variants are an object
-// with one key, the variant name, holding the payload. Objects are kept
-// with sorted keys, so output is deterministic.
+// with one key, the variant name, holding the payload. Objects keep
+// insertion order: derived structs write fields in declaration order, and
+// parsed objects keep the document's order. A missing `Option` field reads
+// as `None`.
 
 import std::collections::{BTreeMap, HashMap}
 import super::super::super::Error as ErrorTrait
 
 // A JSON object.
-pub type Map = BTreeMap<String, Value>
+// A JSON object: string keys in insertion order. Parsing keeps the
+// document's order and `#[derive(Json)]` writes fields in declaration
+// order. Lookups go through a hash index.
+#[derive(Clone)]
+pub struct Map {
+	entries: Vec<Entry>,
+	index: HashMap<String, usize>,
+}
+
+#[derive(Clone)]
+struct Entry {
+	key: String,
+	value: Value,
+}
+
+impl Map {
+	// An empty object.
+	pub fn new() -> Map {
+		return Map { entries: Vec::new(), index: HashMap::new() }
+	}
+
+	// Number of members.
+	pub fn len(&self) -> usize {
+		return self.entries.len()
+	}
+
+	// Whether there are no members.
+	pub fn is_empty(&self) -> bool {
+		return self.entries.len() == 0
+	}
+
+	// The value for `key`.
+	pub fn get(&self, key: &str) -> Option<&Value> {
+		match self.index.get(key) {
+			Some(i) => return Some(&self.entries[*i].value),
+			None => return None,
+		}
+	}
+
+	// The value for `key`, mutably.
+	pub fn get_mut(&mut self, key: &str) -> Option<&mut Value> {
+		match self.index.get(key) {
+			Some(i) => {
+				k := *i
+				return Some(&mut self.entries[k].value)
+			},
+			None => return None,
+		}
+	}
+
+	// Whether `key` is present.
+	pub fn contains_key(&self, key: &str) -> bool {
+		return self.index.get(key).is_some()
+	}
+
+	// Sets `key`. A new key goes at the end; an existing key keeps its
+	// place and the old value is returned.
+	pub fn insert(&mut self, key: String, value: Value) -> Option<Value> {
+		match self.index.get(key.as_str()) {
+			Some(i) => {
+				k := *i
+				return Some(std::mem::replace(&mut self.entries[k].value, value))
+			},
+			None => {},
+		}
+		self.index.insert(key.clone(), self.entries.len())
+		self.entries.push(Entry { key: key, value: value })
+		return None
+	}
+
+	// Removes `key`, keeping the order of the others.
+	pub fn remove(&mut self, key: &str) -> Option<Value> {
+		i := match self.index.remove(key) {
+			Some(i) => i,
+			None => return None,
+		}
+		e := self.entries.remove(i)
+		for j in i..self.entries.len() {
+			k := self.entries[j].key.clone()
+			self.index.insert(k, j)
+		}
+		return Some(e.value)
+	}
+
+	// The members as `(&key, &value)` pairs, in order.
+	pub fn iter<'a>(&'a self) -> MapIter<'a> {
+		return MapIter { inner: self.entries.iter() }
+	}
+
+	// The keys, in order.
+	pub fn keys(&self) -> Vec<&String> {
+		out mut := Vec::new()
+		for e in self.entries.iter() {
+			out.push(&e.key)
+		}
+		return out
+	}
+
+	// The first member.
+	pub fn first_key_value(&self) -> Option<(&String, &Value)> {
+		match self.entries.first() {
+			Some(e) => return Some((&e.key, &e.value)),
+			None => return None,
+		}
+	}
+}
+
+// Iterator over a `Map`'s members.
+pub struct MapIter<'a> {
+	inner: std::iter::Iter<'a, Entry>,
+}
+
+impl<'a> Iterator<(&'a String, &'a Value)> for MapIter<'a> {
+	fn next(&mut self) -> Option<(&'a String, &'a Value)> {
+		match self.inner.next() {
+			Some(e) => return Some((&e.key, &e.value)),
+			None => return None,
+		}
+	}
+}
+
+// Objects are equal when they have the same members, in any order.
+impl Eq for Map {
+	fn eq(&self, other: &Map) -> bool {
+		if self.len() != other.len() {
+			return false
+		}
+		for e in self.entries.iter() {
+			match other.get(&e.key) {
+				Some(v) => {
+					if v != &e.value {
+						return false
+					}
+				},
+				None => return false,
+			}
+		}
+		return true
+	}
+}
+
+impl Debug for Map {
+	fn fmt_debug(&self, f: &mut std::fmt::Formatter) {
+		f.begin("{{")
+		first mut := true
+		for e in self.entries.iter() {
+			f.item(first)
+			f.debug(&e.key)
+			f.write(": ")
+			f.debug(&e.value)
+			first = false
+		}
+		f.end("}}", first, false)
+	}
+}
 
 // Any JSON value. Integers that fit in i64 are kept exactly as `Int`.
 #[derive(Clone, Debug, Eq)]
@@ -246,7 +402,7 @@ impl Display for Value {
 
 // An empty object.
 pub fn object() -> Value {
-	return Value::Object(BTreeMap::new())
+	return Value::Object(Map::new())
 }
 
 // ----- writing ---------------------------------------------------------------------
@@ -487,7 +643,7 @@ impl<'a> Parser<'a> {
 	fn object(&mut self) -> Result<Value, Error> {
 		self.enter()?
 		self.pos += 1
-		m mut := BTreeMap::new()
+		m mut := Map::new()
 		self.skip_ws()
 		if self.peek() == 125 {
 			self.pos += 1
@@ -939,7 +1095,7 @@ impl<T: FromJson> FromJson for Box<T> {
 
 impl<T: ToJson> ToJson for BTreeMap<String, T> {
 	fn to_json(&self) -> Value {
-		m mut := BTreeMap::new()
+		m mut := Map::new()
 		for (k, v) in self.iter() {
 			m.insert(k.clone(), v.to_json())
 		}
@@ -960,7 +1116,7 @@ impl<T: FromJson> FromJson for BTreeMap<String, T> {
 
 impl<T: ToJson> ToJson for HashMap<String, T> {
 	fn to_json(&self) -> Value {
-		m mut := BTreeMap::new()
+		m mut := Map::new()
 		for (k, v) in self.iter() {
 			m.insert(k.clone(), v.to_json())
 		}

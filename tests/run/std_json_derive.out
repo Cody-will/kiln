@@ -1,3 +1,6 @@
-{"id":7,"name":"pic","shapes":["Empty",{"Dot":{"x":1,"y":2}},{"Line":[{"x":0,"y":0},{"x":3,"y":4}]},{"Rect":{"h":6,"w":5}}],"tags":["a","b"]}
+Opt { name: "a", nick: None }
+{"z":1,"a":2,"m":3}
+{"z":1,"m":3,"b":4}
+{"name":"pic","tags":["a","b"],"shapes":["Empty",{"Dot":{"x":1,"y":2}},{"Line":[{"x":0,"y":0},{"x":3,"y":4}]},{"Rect":{"w":5,"h":6}}],"id":7}
 Doc { name: "pic", tags: ["a", "b"], shapes: [Empty, Dot(Point { x: 1, y: 2 }), Line(Point { x: 0, y: 0 }, Point { x: 3, y: 4 }), Rect { w: 5, h: 6 }], id: Some(Id(7)) }
 error: json: missing field "y"

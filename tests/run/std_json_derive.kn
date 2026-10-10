@@ -25,7 +25,21 @@ struct Doc {
 	id: Option<Id>,
 }
 
+#[derive(Json, Debug)]
+struct Opt {
+	name: String,
+	nick: Option<String>,
+}
+
 fn main() -> Result<(), json::Error> {
+	let o: Opt = json::from_str(r#"{"name": "a"}"#)?
+	println("{o:?}")
+	v := json::parse(r#"{"z": 1, "a": 2, "m": 3}"#)?
+	println("{v}")
+	m mut := v.as_object().unwrap().clone()
+	m.remove("a")
+	m.insert("b".to_string(), json::Value::Int(4))
+	println("{json::Value::Object(m)}")
 	d := Doc {
 		name: "pic".to_string(),
 		tags: ["a".to_string(), "b".to_string()].to_vec(),

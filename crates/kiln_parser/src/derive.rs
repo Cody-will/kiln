@@ -126,7 +126,7 @@ fn header(name: &str, g: &Generics, tr: &str) -> String {
 
 /// Statements building an object `var` from `(key, expr-of-a-reference)`.
 fn object(var: &str, fields: &[(String, String)]) -> String {
-    let mut s = format!("\t\t{var} mut := std::collections::BTreeMap::new()\n");
+    let mut s = format!("\t\t{var} mut := std::encoding::json::Map::new()\n");
     for (k, e) in fields {
         let _ = writeln!(
             s,
