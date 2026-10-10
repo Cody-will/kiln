@@ -4,23 +4,22 @@ Status key: ✅ done · 🚧 in progress · ⬜ not started
 
 | Milestone | Scope | Status |
 |---|---|---|
-| **M0: Front end** | Spec v0.1, lexer, parser with error recovery, `kiln lex` and `kiln parse`, CI | 🚧 lexer and parser done; TextMate and Tree-sitter grammars pending |
-| **M1: First binaries** | Name resolution, type checking for fns/structs/enums/match, LLVM codegen via inkwell; hello world and fib run | ⬜ |
-| **M2: Abstractions** | Traits, generics (monomorphization), `Result` and `?`, `Drop`, `defer` | ⬜ |
-| **M3: Safety** | MIR, NLL borrow checker, lifetime elision, missing-`return` analysis | ⬜ |
+| **M0: Front end** | Spec v0.1, lexer, parser with error recovery, `kiln lex` and `kiln parse`, CI | ✅ lexer, parser, VS Code TextMate grammar, Tree-sitter grammar |
+| **M1: First binaries** | Name resolution, type checking for fns/structs/enums/match, LLVM codegen via inkwell; hello world and fib run | 🚧 `kiln_resolve` and `kiln_typeck` done (`kiln check`); codegen next |
+| **M2: Abstractions** | Traits, generics (monomorphization), `Result` and `?`, `Drop`, `defer` | 🚧 type checking of traits, generics, and `?` done; monomorphization and `Drop` pending |
+| **M3: Safety** | MIR, NLL borrow checker, lifetime elision, (missing-`return` is already checked in `kiln_typeck`) | ⬜ |
 | **M4: Concurrency** | Runtime: M:N scheduler, `go`, channels, `select`, scoped tasks, netpoller; `Send`/`Sync` checks | ⬜ |
 | **M5: Std and packages** | io, fs, net, collections, sync, time; `kiln build`/`run`/`test`; `kiln.toml`, lockfile, registry client | ⬜ |
 | **M6: Tooling** | `kiln fmt` (gofmt-style, tabs, trailing commas), `kiln-ls` MVP (diagnostics, hover, go-to-def, completion) | ⬜ |
 | **M7: Backend-ready** | `std::http`, JSON, testing framework; dogfood a real service | ⬜ |
 | **M8: 1.0 hardening** | Compiler fuzzing, conformance suite, performance, docs, stability guarantees | ⬜ |
 
-## Next up (M0 → M1)
+## Next up (M1)
 
-1. **Editor support:** a TextMate grammar and VS Code extension (`editors/vscode-kiln`), and a Tree-sitter grammar (`editors/tree-sitter-kiln`).
-2. **Parser gaps** (see below).
-3. **Lossless CST decision:** choose whether to build a lossless syntax tree now (in the rowan style), before the formatter and language server depend on the AST.
-4. **Name resolution and HIR** (`kiln_resolve`).
-5. **Type checker skeleton** (`kiln_types`) and the first LLVM output.
+1. **Type checker gaps:** associated types, `impl Trait` as a distinct type, array lengths, deeper exhaustiveness (nested patterns, integer ranges), `Send`/`Sync` analysis, method resolution on integer literals before defaulting, and typed signatures for `std` instead of opaque externals.
+2. **Lossless CST decision:** choose whether to build a lossless syntax tree (in the rowan style) before the formatter and language server depend on the AST.
+3. **MIR and codegen:** lower typed bodies to a MIR, then LLVM via inkwell; run hello world and fib.
+4. **Borrow checker** on MIR (M3).
 
 ## Known parser gaps
 

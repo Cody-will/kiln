@@ -4,6 +4,7 @@
 //!
 //! - `kiln lex <file>`: print tokens with line:column positions.
 //! - `kiln parse <file>`: print the AST.
+//! - `kiln check <file>`: parse, resolve names, and type-check; print diagnostics.
 //!
 //! Exit status is 0 on success, 1 when the file has errors, and 2 on usage errors.
 
@@ -16,13 +17,14 @@ kiln - the Kiln language toolchain
 USAGE:
     kiln lex <file.kn>      Print the token stream
     kiln parse <file.kn>    Print the syntax tree
+    kiln check <file.kn>    Resolve names and type-check
     kiln help               Show this message
     kiln --version          Show the version";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
-        [cmd, file] if cmd == "lex" || cmd == "parse" => run(cmd, file),
+        [cmd, file] if cmd == "lex" || cmd == "parse" || cmd == "check" => run(cmd, file),
         [flag] if flag == "--version" || flag == "-V" => {
             println!("kiln {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -54,6 +56,12 @@ fn run(cmd: &str, file: &str) -> ExitCode {
             println!("{line}:{col}\t{}", describe(&t.kind));
         }
         lexed.errors
+    } else if cmd == "check" {
+        let errors = kiln_typeck::check_source(&src);
+        if errors.is_empty() {
+            println!("{file}: ok");
+        }
+        errors
     } else {
         let parsed = kiln_parser::parse(&src);
         println!("{:#?}", parsed.file);

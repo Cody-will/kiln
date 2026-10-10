@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 kiln_lexer = { path = "../kiln_lexer" }
 kiln_parser = { path = "../kiln_parser" }
+kiln_typeck = { path = "../kiln_typeck" }
 
 [lints]
 workspace = true

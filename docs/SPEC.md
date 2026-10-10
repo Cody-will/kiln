@@ -333,7 +333,7 @@ fn main() {
 	}
 	drop(jobs_tx) // dropping the last sender closes the channel
 
-	timeout := time::after(5.secs())
+	timeout := time::after(time::secs(5))
 	loop {
 		select {
 			r := <-res_rx => println("got {r}"),

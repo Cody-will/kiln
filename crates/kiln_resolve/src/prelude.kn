@@ -1,0 +1,121 @@
+// The Kiln prelude: built-in types and traits visible in every module.
+//
+// Functions without bodies are provided by the compiler. This file is parsed
+// with the normal parser; `impl` blocks on primitive types are only allowed here.
+
+pub enum Option<T> {
+	Some(T),
+	None,
+}
+
+pub enum Result<T, E> {
+	Ok(T),
+	Err(E),
+}
+
+pub struct String
+pub struct Vec<T>
+pub struct Box<T>
+pub struct Range<T>
+
+pub trait Copy {}
+pub trait Clone {}
+pub trait Eq {}
+pub trait Ord {}
+pub trait Hash {}
+pub trait Debug {}
+pub trait Display {}
+pub trait Default {}
+pub trait Send {}
+pub trait Sync {}
+pub trait Error {}
+
+pub trait From<T> {
+	fn from(value: T) -> Self
+}
+
+pub trait Iterator {
+	type Item
+}
+
+impl<T> Option<T> {
+	pub fn is_some(&self) -> bool
+	pub fn is_none(&self) -> bool
+	pub fn unwrap(self) -> T
+	pub fn expect(self, msg: &str) -> T
+	pub fn unwrap_or(self, default: T) -> T
+}
+
+impl<T, E> Result<T, E> {
+	pub fn is_ok(&self) -> bool
+	pub fn is_err(&self) -> bool
+	pub fn unwrap(self) -> T
+	pub fn expect(self, msg: &str) -> T
+	pub fn unwrap_or(self, default: T) -> T
+	pub fn ok(self) -> Option<T>
+	pub fn err(self) -> Option<E>
+}
+
+impl String {
+	pub fn new() -> String
+	pub fn from(s: &str) -> String
+	pub fn len(&self) -> usize
+	pub fn is_empty(&self) -> bool
+	pub fn push(&mut self, s: &str)
+	pub fn as_str(&self) -> &str
+	pub fn to_upper(&self) -> String
+	pub fn to_lower(&self) -> String
+	pub fn trim(&self) -> &str
+}
+
+impl str {
+	pub fn len(&self) -> usize
+	pub fn is_empty(&self) -> bool
+	pub fn to_string(&self) -> String
+	pub fn to_upper(&self) -> String
+	pub fn to_lower(&self) -> String
+	pub fn trim(&self) -> &str
+	pub fn starts_with(&self, prefix: &str) -> bool
+	pub fn ends_with(&self, suffix: &str) -> bool
+	pub fn contains(&self, needle: &str) -> bool
+}
+
+impl<T> Vec<T> {
+	pub fn new() -> Vec<T>
+	pub fn with_capacity(n: usize) -> Vec<T>
+	pub fn len(&self) -> usize
+	pub fn is_empty(&self) -> bool
+	pub fn push(&mut self, value: T)
+	pub fn pop(&mut self) -> Option<T>
+	pub fn get(&self, index: usize) -> Option<&T>
+	pub fn first(&self) -> Option<&T>
+	pub fn last(&self) -> Option<&T>
+	pub fn clear(&mut self)
+}
+
+impl<T> Box<T> {
+	pub fn new(value: T) -> Box<T>
+}
+
+impl f64 {
+	pub fn sqrt(self) -> f64
+	pub fn abs(self) -> f64
+	pub fn floor(self) -> f64
+	pub fn ceil(self) -> f64
+	pub fn round(self) -> f64
+	pub fn powi(self, n: i32) -> f64
+	pub fn min(self, other: f64) -> f64
+	pub fn max(self, other: f64) -> f64
+}
+
+impl f32 {
+	pub fn sqrt(self) -> f32
+	pub fn abs(self) -> f32
+}
+
+pub fn print(s: &str)
+pub fn println(s: &str)
+pub fn eprint(s: &str)
+pub fn eprintln(s: &str)
+pub fn panic(msg: &str) -> !
+pub fn assert(cond: bool)

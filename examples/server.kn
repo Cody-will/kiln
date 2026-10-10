@@ -1,5 +1,6 @@
 import std::net::{TcpListener, TcpStream}
 import std::io::{self, BufReader}
+import std::log
 
 fn handle(conn: TcpStream) -> Result<(), io::Error> {
 	defer log::debug("connection closed")

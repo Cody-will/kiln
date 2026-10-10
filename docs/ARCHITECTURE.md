@@ -12,8 +12,10 @@ tokens
   │  kiln_parser       AST (+ diagnostics, error recovery)
   ▼
 AST
-  │  kiln_resolve      (planned) module tree, imports, name resolution → HIR
-  │  kiln_types        (planned) type inference, trait solving
+  │  kiln_resolve      module tree, imports, scopes, name resolution (+ prelude)
+  ▼
+resolved AST (path → Res, binding → LocalId side tables)
+  │  kiln_typeck       type inference, traits/impls, `?`, explicit returns, mutability
   │  kiln_mir          (planned) MIR lowering: CFG, explicit drops/moves
   │  kiln_borrowck     (planned) NLL borrow checking, missing-return checks
   │  kiln_codegen_llvm (planned) LLVM IR via inkwell, monomorphization
@@ -56,9 +58,28 @@ native binary + kiln_runtime (planned M:N scheduler, channels, netpoller)
     - **Recovery:** `recover_item` skips to the next item keyword at depth 0. `recover_stmt` skips to the next statement boundary.
 - **`lib.rs`:** the public API, `parse(src) -> Parse { file, errors }` and `parse_expr`.
 
+### `kiln_resolve`
+
+Name resolution over the AST, producing side tables keyed by span (no separate HIR yet).
+
+- **`prelude.kn`:** the prelude written in Kiln (`Option`, `Result`, `String`, `Vec`, `Box`, `Range`, core traits, `println` and friends, and body-less method signatures the compiler provides). It is parsed with the normal parser; only the prelude may write inherent `impl`s on primitive and prelude types.
+- **`scope.rs`:** three phases. (1) `collect_items` creates a `Def` for every item and variant, building per-module type and value namespaces. (2) `bind_imports` resolves `import` trees; `std`/`core` paths become opaque `External` defs. (3) `walk_items` resolves every path in types, patterns, and bodies with a lexical scope stack: locals (declaration order is enforced, a `:=` initializer can't see its own name), generic params, `Self`/`self`, loop labels, or-pattern binding consistency, and type/value namespace mismatches with targeted help.
+- **`lib.rs`:** `Resolved { defs, paths: Span → Res, bindings: Span → LocalId, locals, fns, impls, errors }`. `Res::Assoc { base, name }` defers `Type::item` lookups to the type checker.
+
+### `kiln_typeck`
+
+Type checking on top of `Resolved`.
+
+- **`ty.rs`:** `Ty` and the `InferTable` (unification with occurs check, integer/float literal variables that default to `i32`/`f64`, snapshots for trial unification).
+- **`collect.rs`:** lowers struct/enum fields, function and method signatures, impl headers, and traits; validates trait impls (missing/extra methods, signature mismatches), duplicate methods, and inherent impls on foreign types.
+- **`check.rs`:** checks each body: bidirectional-lite inference, coercions (`!`, `&mut T → &T`, `&String → &str`, `&Vec<T>`/`&[T; N]` → `&[T]`, `&Box<T> → &T`, `&T → &dyn Trait`), method lookup with autoderef (inherent impls, trait impls and default methods, generic bounds, `dyn`), trait-bound obligations solved at the end of each function, Rust-style match ergonomics, match exhaustiveness for enums and `bool`, `?` with `From` conversion, channel operations, and mutability of assignment targets and `&mut` borrows. The explicit-return rule (SPEC §3.1) is enforced here: a non-unit function whose body can fall off the end is an error, with a dedicated message when the last statement is a bare expression.
+- **`display.rs`:** renders types for diagnostics (`{integer}`, `<-chan T`, ...).
+
+Known gaps: lifetimes are parsed but ignored; no borrow checking or move checking; associated types (`T::Item`), `impl Trait` (treated as `dyn`), array lengths, `Send`/`Sync` field analysis, and std (external) items are opaque (`{unknown}` types that unify with anything). Exhaustiveness checks only top-level variants.
+
 ### `kiln_cli`
 
-This builds the `kiln` binary. Today it has the `lex` and `parse` subcommands. `build`, `run`, `fmt`, and `test` will be added as the matching phases land.
+This builds the `kiln` binary. Today it has the `lex`, `parse`, and `check` subcommands. `build`, `run`, `fmt`, and `test` will be added as the matching phases land.
 
 ## Design principles for the codebase
 

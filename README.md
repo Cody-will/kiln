@@ -7,7 +7,7 @@ Kiln is a compiled systems and backend programming language with **syntax as sim
 - Traits and generics.
 - Goroutine-style tasks with `go`, channels using `<-`, and `select`.
 
-> **Status:** early development. The lexer and parser work; type checking, borrow checking, and code generation are not started. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status:** early development. The lexer, parser, name resolution, and type checker work (`kiln check`), and there are VS Code and Tree-sitter grammars. Borrow checking and code generation are not started yet. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ```kiln
 fn main() -> Result<(), io::Error> {
@@ -40,6 +40,7 @@ cargo build
 cargo test
 ./target/debug/kiln lex examples/hello.kn     # dump tokens
 ./target/debug/kiln parse examples/server.kn  # dump the AST
+./target/debug/kiln check examples/shapes.kn  # resolve names and type-check
 ```
 
 Example programs are in [`examples/`](examples/). Kiln source files use the `.kn` extension.
@@ -50,6 +51,8 @@ Example programs are in [`examples/`](examples/). Kiln source files use the `.kn
 |---|---|
 | `crates/kiln_lexer` | Tokens, lexer (with Go-style semicolon insertion), spans, diagnostics |
 | `crates/kiln_parser` | AST and recursive-descent/Pratt parser |
+| `crates/kiln_resolve` | Name resolution: modules, imports, scopes, prelude |
+| `crates/kiln_typeck` | Type checking: inference, traits/impls, generics, `?`, explicit returns |
 | `crates/kiln_cli` | The `kiln` binary |
 | `docs/` | Spec, architecture, roadmap |
 | `examples/` | Sample `.kn` programs (parsed in tests) |

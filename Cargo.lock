@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "kiln_lexer",
  "kiln_parser",
+ "kiln_typeck",
 ]
 
 [[package]]
@@ -19,4 +20,21 @@ name = "kiln_parser"
 version = "0.1.0"
 dependencies = [
  "kiln_lexer",
+]
+
+[[package]]
+name = "kiln_resolve"
+version = "0.1.0"
+dependencies = [
+ "kiln_lexer",
+ "kiln_parser",
+]
+
+[[package]]
+name = "kiln_typeck"
+version = "0.1.0"
+dependencies = [
+ "kiln_lexer",
+ "kiln_parser",
+ "kiln_resolve",
 ]
