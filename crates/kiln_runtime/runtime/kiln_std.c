@@ -300,10 +300,17 @@ int64_t kn_time_unix(void) {
 
 /* ----- timers: sleeping parks the task ----------------------------------- */
 
+/* A timer: wakes `task` (a sleep), or when `sock` is set, times out that
+ * socket's wait number `seq` in one direction (see wait_io). */
 typedef struct {
 	int64_t when;
 	void *task;
+	void *sock;
+	int write;
+	uint64_t seq;
 } TimerEnt;
+
+static void io_timeout(TimerEnt *e);
 
 static lock_t tlock = LOCK_INIT;
 static cond_t tcond = COND_INIT;
@@ -355,6 +362,10 @@ static void timer_thread(void) {
 		int64_t now = kn_time_mono();
 		if (theap[0].when <= now) {
 			TimerEnt e = heap_pop();
+			if (e.sock) {
+				io_timeout(&e);
+				continue;
+			}
 			kn_sched_ready(e.task);
 			kn_sched_wait_end();
 			continue;
@@ -369,7 +380,7 @@ void kn_time_sleep(int64_t ns) {
 		kn_yield();
 		return;
 	}
-	TimerEnt e = {kn_time_mono() + ns, kn_sched_current()};
+	TimerEnt e = {kn_time_mono() + ns, kn_sched_current(), NULL, 0, 0};
 	lk(&tlock);
 	if (!tstarted) {
 		tstarted = 1;
@@ -636,10 +647,24 @@ typedef struct KnSock {
 	void *rtask, *wtask; /* tasks waiting to read / write */
 	int registered;      /* epoll: added to the set */
 	int armed;           /* WSAPoll: in the armed list */
+	int64_t rto, wto;    /* read / write timeouts in ns (0: none) */
+	uint64_t rseq, wseq; /* number of the current wait per direction */
+	int rexp, wexp;      /* the current wait's timer fired before it was armed */
+	int rhit, whit;      /* the current wait ended by timing out */
+	int refs;            /* the handle plus pending timeout timers */
 } KnSock;
 
 static lock_t plock = LOCK_INIT;
 static int pstarted;
+
+static void sock_disarm(void *s);
+static void sock_unref(KnSock *s) {
+	lk(&s->lock);
+	int left = --s->refs;
+	ulk(&s->lock);
+	if (left == 0)
+		free(s);
+}
 
 #if defined(_WIN32)
 static KnSock **armed;
@@ -691,6 +716,10 @@ static void poller_thread(void) {
 		fds[0].revents = 0;
 		for (size_t i = 0; i < narmed; i++) {
 			KnSock *s = armed[i];
+			/* Keep the socket alive while polling without the lock. */
+			lk(&s->lock);
+			s->refs++;
+			ulk(&s->lock);
 			socks[i + 1] = s;
 			fds[i + 1].fd = s->fd;
 			fds[i + 1].events = (short)((s->rtask ? POLLRDNORM : 0) | (s->wtask ? POLLWRNORM : 0));
@@ -727,6 +756,8 @@ static void poller_thread(void) {
 			ulk(&plock);
 			wake_all(ts, k);
 		}
+		for (size_t i = 1; i < n; i++)
+			sock_unref(socks[i]);
 	}
 }
 
@@ -804,13 +835,58 @@ typedef struct {
 	KnSock *s;
 	int write;
 	void *task;
+	uint64_t seq;
 } ArmReq;
+
+/* Timer thread (tlock held): a socket wait's deadline passed. If that wait
+ * is still parked, wake it as timed out; if it has not been armed yet, mark
+ * it so arm() wakes it at once. Stale timers (a later wait) do nothing. */
+static void io_timeout(TimerEnt *e) {
+	KnSock *s = (KnSock *)e->sock;
+	void *t = NULL;
+	lk(&s->lock);
+	if (e->write ? s->wseq == e->seq : s->rseq == e->seq) {
+		void **slot = e->write ? &s->wtask : &s->rtask;
+		if (*slot) {
+			t = *slot;
+			*slot = NULL;
+			if (e->write)
+				s->whit = 1;
+			else
+				s->rhit = 1;
+		} else if (e->write) {
+			s->wexp = 1;
+		} else {
+			s->rexp = 1;
+		}
+	}
+	ulk(&s->lock);
+	if (t) {
+		kn_sched_ready(t);
+		kn_sched_wait_end();
+	}
+	sock_unref(s);
+}
 
 /* Runs on the scheduler after the waiting task is parked. */
 static void arm(void *p) {
 	ArmReq *r = (ArmReq *)p;
 	KnSock *s = r->s;
 	lk(&s->lock);
+	if (r->write ? s->wexp : s->rexp) {
+		/* Already timed out: don't wait at all. */
+		if (r->write) {
+			s->wexp = 0;
+			s->whit = 1;
+		} else {
+			s->rexp = 0;
+			s->rhit = 1;
+		}
+		ulk(&s->lock);
+		kn_sched_ready(r->task);
+		kn_sched_wait_end();
+		return;
+	}
 	if (r->write)
 		s->wtask = r->task;
 	else
@@ -850,12 +926,44 @@ static void arm(void *p) {
 }
 
 /* Parks the current task until `s` is readable (write = 0) or writable. */
-static void wait_io(KnSock *s, int write) {
+/* Returns 1 if the wait timed out (per the socket's timeout), else 0. */
+static int wait_io(KnSock *s, int write) {
 	poller_start();
-	ArmReq r = {s, write, kn_sched_current()};
+	lk(&s->lock);
+	uint64_t seq = write ? ++s->wseq : ++s->rseq;
+	int64_t to = write ? s->wto : s->rto;
+	if (write) {
+		s->wexp = 0;
+		s->whit = 0;
+	} else {
+		s->rexp = 0;
+		s->rhit = 0;
+	}
+	if (to > 0)
+		s->refs++;
+	ulk(&s->lock);
+	if (to > 0) {
+		TimerEnt e = {kn_time_mono() + to, NULL, s, write, seq};
+		lk(&tlock);
+		if (!tstarted) {
+			tstarted = 1;
+			if (start_thread(timer_thread) != 0)
+				kn_panic_str("cannot start the timer thread");
+		}
+		heap_push(e);
+		cv_signal(&tcond);
+		ulk(&tlock);
+	}
+	ArmReq r = {s, write, kn_sched_current(), seq};
 	kn_sched_wait_begin();
 	kn_sched_park(arm, &r);
+	lk(&s->lock);
+	int hit = write ? s->whit : s->rhit;
+	ulk(&s->lock);
+	return hit;
 }
+
+static int64_t timed_out(void) { return mkerr(KN_E_TIMED_OUT, 0); }
 
 static int would_block(void) {
 #ifdef _WIN32
@@ -900,6 +1008,7 @@ static KnSock *sock_wrap(sock_t fd) {
 	if (!s)
 		kn_panic_str("out of memory");
 	s->fd = fd;
+	s->refs = 1;
 	lk_init(&s->lock);
 	return s;
 }
@@ -978,12 +1087,14 @@ int64_t kn_net_accept(int64_t h) {
 #endif
 			return sock_err();
 		}
-		wait_io(s, 0);
+		if (wait_io(s, 0))
+			return timed_out();
 	}
 }
 
 /* `TcpStream::connect`: tries each resolved address. */
-int64_t kn_net_connect(const uint8_t *host, size_t hl, int64_t port) {
+int64_t kn_net_connect(const uint8_t *host, size_t hl, int64_t port, int64_t timeout_ns) {
+	int64_t deadline = timeout_ns > 0 ? kn_time_mono() + timeout_ns : 0;
 	struct addrinfo *ai, *p;
 	int64_t err = resolve(host, hl, port, SOCK_STREAM, 0, &ai);
 	if (err)
@@ -1003,7 +1114,18 @@ int64_t kn_net_connect(const uint8_t *host, size_t hl, int64_t port) {
 		KnSock *s = sock_wrap(fd);
 		int r = connect(fd, p->ai_addr, (int)p->ai_addrlen);
 		if (r != 0 && would_block()) {
-			wait_io(s, 1);
+			if (deadline) {
+				int64_t left = deadline - kn_time_mono();
+				s->wto = left > 0 ? left : 1;
+			}
+			if (wait_io(s, 1)) {
+				sock_disarm(s);
+				close_sock(fd);
+				sock_unref(s);
+				freeaddrinfo(ai);
+				return timed_out();
+			}
+			s->wto = 0;
 			int soerr = 0;
 #ifdef _WIN32
 			int len = sizeof soerr;
@@ -1029,8 +1151,9 @@ int64_t kn_net_connect(const uint8_t *host, size_t hl, int64_t port) {
 			freeaddrinfo(ai);
 			return (int64_t)(intptr_t)s;
 		}
+		sock_disarm(s);
 		close_sock(fd);
-		free(s);
+		sock_unref(s);
 	}
 	freeaddrinfo(ai);
 	return err;
@@ -1052,7 +1175,8 @@ int64_t kn_net_read(int64_t h, uint8_t *buf, size_t n) {
 #endif
 			return sock_err();
 		}
-		wait_io(s, 0);
+		if (wait_io(s, 0))
+			return timed_out();
 	}
 }
 
@@ -1076,7 +1200,8 @@ int64_t kn_net_write(int64_t h, const uint8_t *buf, size_t n) {
 #endif
 			return sock_err();
 		}
-		wait_io(s, 1);
+		if (wait_io(s, 1))
+			return timed_out();
 	}
 }
 
@@ -1091,14 +1216,47 @@ int64_t kn_net_shutdown(int64_t h, int64_t how) {
 	return shutdown(s->fd, m) == 0 ? 0 : sock_err();
 }
 
+/* Removes `s` from the poller's watch list before it is closed. */
+static void sock_disarm(void *sp) {
+	KnSock *s = (KnSock *)sp;
+#if defined(_WIN32)
+	lk(&plock);
+	lk(&s->lock);
+	if (s->armed) {
+		s->armed = 0;
+		for (size_t j = 0; j < narmed; j++)
+			if (armed[j] == s) {
+				armed[j] = armed[--narmed];
+				break;
+			}
+	}
+	ulk(&s->lock);
+	ulk(&plock);
+#else
+	(void)s;
+#endif
+}
+
 void kn_net_close(int64_t h) {
 	KnSock *s = (KnSock *)(intptr_t)h;
+	sock_disarm(s);
 #if !defined(_WIN32) && !defined(__APPLE__)
 	if (s->registered)
 		epoll_ctl(pfd, EPOLL_CTL_DEL, s->fd, NULL);
 #endif
 	close_sock(s->fd);
-	free(s);
+	sock_unref(s);
+}
+
+/* Sets the read (which = 0) or write (1) timeout in ns; 0 means none. */
+void kn_net_set_timeout(int64_t h, int64_t which, int64_t ns) {
+	KnSock *s = (KnSock *)(intptr_t)h;
+	lk(&s->lock);
+	if (which)
+		s->wto = ns;
+	else
+		s->rto = ns;
+	ulk(&s->lock);
 }
 
 static void fmt_addr(const struct sockaddr *sa, KnVec *out) {
@@ -1174,7 +1332,10 @@ int64_t kn_net_send_to(int64_t h, const uint8_t *buf, size_t n, const uint8_t *h
 			freeaddrinfo(ai);
 			return err;
 		}
-		wait_io(s, 1);
+		if (wait_io(s, 1)) {
+			freeaddrinfo(ai);
+			return timed_out();
+		}
 	}
 }
 
@@ -1195,7 +1356,8 @@ int64_t kn_net_recv_from(int64_t h, uint8_t *buf, size_t n, KnVec *from) {
 		}
 		if (!would_block())
 			return sock_err();
-		wait_io(s, 0);
+		if (wait_io(s, 0))
+			return timed_out();
 	}
 }
 

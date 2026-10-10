@@ -1,0 +1,6 @@
+accept: TimedOut after >=50ms: true
+read: TimedOut
+then read 2 bytes: hi
+cannot set a zero or negative timeout
+udp: TimedOut
+20 timed reads ok

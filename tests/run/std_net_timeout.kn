@@ -1,0 +1,62 @@
+import std::net::{TcpListener, TcpStream, UdpSocket}
+import std::io
+import std::time
+
+fn main() -> Result<(), io::Error> {
+	ln := TcpListener::bind("127.0.0.1:0")?
+	addr := ln.local_addr()?
+	ln.set_accept_timeout(Some(time::millis(50)))?
+	start := time::Instant::now()
+	match ln.accept() {
+		Ok(_) => println("unexpected"),
+		Err(e) => println("accept: {e.kind():?} after >=50ms: {start.elapsed().as_millis() >= 50}"),
+	}
+	c := TcpStream::connect_timeout(&addr, time::secs(2))?
+	s := ln.accept()?
+	c.set_read_timeout(Some(time::millis(30)))?
+	buf mut := [0 as u8; 16]
+	match c.read(&mut buf) {
+		Ok(n) => println("unexpected {n}"),
+		Err(e) => println("read: {e.kind():?}"),
+	}
+	// Still usable after a timeout.
+	s.write_str("hi")?
+	n := c.read(&mut buf)?
+	println("then read {n} bytes: {String::from_utf8_lossy(&buf[0..n])}")
+	c.set_read_timeout(None)?
+	match c.set_read_timeout(Some(time::secs(0))) {
+		Ok(_) => println("unexpected"),
+		Err(e) => println("{e}"),
+	}
+	u := UdpSocket::bind("127.0.0.1:0")?
+	u.set_read_timeout(Some(time::millis(20)))?
+	match u.recv_from(&mut buf) {
+		Ok(_) => println("unexpected"),
+		Err(e) => println("udp: {e.kind():?}"),
+	}
+	// Many timed reads in parallel tasks.
+	(tx, rx) := chan::<bool>(20)
+	for i in 0..20 {
+		t := tx.clone()
+		a := addr.clone()
+		go move {
+			x := TcpStream::connect(&a).unwrap()
+			x.set_read_timeout(Some(time::millis(10 + i))).unwrap()
+			b mut := [0 as u8; 4]
+			r := x.read(&mut b)
+			t <- r.is_err()
+		}
+	}
+	held mut := Vec::new()
+	for _ in 0..20 {
+		held.push(ln.accept()?)
+	}
+	ok mut := 0
+	for _ in 0..20 {
+		if <-rx {
+			ok += 1
+		}
+	}
+	println("{ok} timed reads ok")
+	return Ok(())
+}

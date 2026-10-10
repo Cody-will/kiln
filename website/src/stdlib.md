@@ -343,10 +343,12 @@ Addresses are `"host:port"` strings: `"127.0.0.1:8080"`, `"localhost:80"`, `"[::
 
 | Item | Description |
 |---|---|
-| `TcpListener::bind(addr)` | `accept()`, `incoming()` (a channel of connections), `local_addr()`, `port()` |
-| `TcpStream::connect(addr)` | `read`, `write`, `write_all`, `write_str` (through `&self`, so one task can read while another writes), `shutdown`, `peer_addr()`, `local_addr()`; implements `Read` and `Write` |
-| `UdpSocket::bind(addr)` | `send_to(buf, addr)`, `recv_from(&mut buf)` returns `(n, from)`, `local_addr()` |
+| `TcpListener::bind(addr)` | `accept()`, `incoming()` (a channel of connections), `local_addr()`, `port()`, `set_accept_timeout(Some(d))` |
+| `TcpStream::connect(addr)`, `TcpStream::connect_timeout(addr, d)` | `read`, `write`, `write_all`, `write_str` (through `&self`, so one task can read while another writes), `shutdown`, `peer_addr()`, `local_addr()`, `set_read_timeout(Some(d))`, `set_write_timeout(...)`; implements `Read` and `Write` |
+| `UdpSocket::bind(addr)` | `send_to(buf, addr)`, `recv_from(&mut buf)` returns `(n, from)`, `local_addr()`, `set_read_timeout`, `set_write_timeout` |
 | `net::split_host_port(addr)` | `"host:80"` becomes `("host", 80)` |
+
+Timeouts work as in Rust: each wait that takes longer than the timeout fails with `io::ErrorKind::TimedOut`, and the socket stays usable. `None` (the default) waits forever. The timer parks only the waiting task. `connect_timeout` covers connecting to all resolved addresses together; resolving the host name is not covered yet.
 
 ```kiln
 import std::io

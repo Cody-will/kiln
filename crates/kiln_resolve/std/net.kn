@@ -15,10 +15,26 @@
 
 import std::io
 import std::io::{Read, Write}
+import std::time::Duration
+
+// A timeout setting as nanoseconds for the runtime: None is 0 (no timeout);
+// a zero duration is an error, as in Rust.
+fn timeout_ns(d: Option<Duration>) -> Result<i64, io::Error> {
+	match d {
+		None => return Ok(0),
+		Some(t) => {
+			if t.as_nanos() <= 0 {
+				return Err(io::Error::new(io::ErrorKind::InvalidInput, "cannot set a zero or negative timeout"))
+			}
+			return Ok(t.as_nanos())
+		},
+	}
+}
 
 fn kn_net_listen(host: &str, port: i64) -> i64
 fn kn_net_accept(h: i64) -> i64
-fn kn_net_connect(host: &str, port: i64) -> i64
+fn kn_net_connect(host: &str, port: i64, timeout_ns: i64) -> i64
+fn kn_net_set_timeout(h: i64, which: i64, ns: i64)
 fn kn_net_read(h: i64, buf: &mut [u8]) -> i64
 fn kn_net_write(h: i64, buf: &[u8]) -> i64
 fn kn_net_shutdown(h: i64, how: i64) -> i64
@@ -88,6 +104,13 @@ impl TcpListener {
 		return Ok(TcpStream { h: h })
 	}
 
+	// Makes `accept` fail with `ErrorKind::TimedOut` after waiting `d`
+	// (`None`: wait forever, the default).
+	pub fn set_accept_timeout(&self, d: Option<Duration>) -> Result<(), io::Error> {
+		kn_net_set_timeout(self.h, 0, timeout_ns(d)?)
+		return Ok(())
+	}
+
 	// The address the listener is bound to, like "127.0.0.1:41234".
 	pub fn local_addr(&self) -> Result<String, io::Error> {
 		s mut := String::new()
@@ -143,8 +166,32 @@ impl TcpStream {
 	// Connects to `addr` ("host:port"), trying each address the host resolves to.
 	pub fn connect(addr: &str) -> Result<TcpStream, io::Error> {
 		(host, port) := split_host_port(addr)?
-		h := with_ctx(io::check(kn_net_connect(host, port as i64)), "dial tcp", addr)?
+		h := with_ctx(io::check(kn_net_connect(host, port as i64, 0)), "dial tcp", addr)?
 		return Ok(TcpStream { h: h })
+	}
+
+	// Like `connect`, but fails with `ErrorKind::TimedOut` if connecting
+	// (to all resolved addresses together) takes longer than `timeout`.
+	// Name resolution is not covered by the timeout.
+	pub fn connect_timeout(addr: &str, timeout: Duration) -> Result<TcpStream, io::Error> {
+		(host, port) := split_host_port(addr)?
+		ns := timeout_ns(Some(timeout))?
+		h := with_ctx(io::check(kn_net_connect(host, port as i64, ns)), "dial tcp", addr)?
+		return Ok(TcpStream { h: h })
+	}
+
+	// Makes each read that waits longer than `d` fail with
+	// `ErrorKind::TimedOut` (`None`: wait forever, the default). The
+	// connection stays usable after a timeout.
+	pub fn set_read_timeout(&self, d: Option<Duration>) -> Result<(), io::Error> {
+		kn_net_set_timeout(self.h, 0, timeout_ns(d)?)
+		return Ok(())
+	}
+
+	// Makes each write that waits longer than `d` fail with `ErrorKind::TimedOut`.
+	pub fn set_write_timeout(&self, d: Option<Duration>) -> Result<(), io::Error> {
+		kn_net_set_timeout(self.h, 1, timeout_ns(d)?)
+		return Ok(())
 	}
 
 	// Reads up to `buf.len()` bytes; 0 means the peer closed the connection.
@@ -260,6 +307,18 @@ impl UdpSocket {
 		s mut := String::new()
 		io::check(kn_net_addr(self.h, 0, &mut s))?
 		return Ok(s)
+	}
+
+	// Makes `recv_from` fail with `ErrorKind::TimedOut` after waiting `d`.
+	pub fn set_read_timeout(&self, d: Option<Duration>) -> Result<(), io::Error> {
+		kn_net_set_timeout(self.h, 0, timeout_ns(d)?)
+		return Ok(())
+	}
+
+	// Makes `send_to` fail with `ErrorKind::TimedOut` after waiting `d`.
+	pub fn set_write_timeout(&self, d: Option<Duration>) -> Result<(), io::Error> {
+		kn_net_set_timeout(self.h, 1, timeout_ns(d)?)
+		return Ok(())
 	}
 }
 

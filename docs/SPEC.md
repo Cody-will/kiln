@@ -590,7 +590,7 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 | `std::fs` | `File`, `OpenOptions`, `read_to_string`, `write`, `read_dir`, `metadata`, `create_dir_all`, `remove_dir_all`, ... | ✅ |
 | `std::path` | string paths: `join`, `base`, `dir`, `ext`, `stem`, `clean`, `is_absolute` | ✅ |
 | `std::os` | `args`, `getenv`/`setenv`, `exit`, working directory, `Command` (run programs, capture output) | ✅ |
-| `std::net` | `TcpListener`, `TcpStream`, `UdpSocket`, `split_host_port` (DNS through the OS resolver) | ✅ |
+| `std::net` | `TcpListener`, `TcpStream`, `UdpSocket`, `split_host_port` (DNS through the OS resolver); `connect_timeout`, per-socket read/write/accept timeouts (Rust's per-operation model: a wait longer than the timeout fails with `TimedOut`, the socket stays usable) | ✅ |
 | `std::net::http` | HTTP/1.1 server (`Router`, keep-alive) and client (`get`, `post`, `send`); no TLS yet | ✅ |
 | `std::log` | leveled logging to stderr (`KILN_LOG=debug`) | ✅ |
 | `std::fmt` | `Display`, `Debug`, `Formatter`, `fmt::debug`/`fmt::pretty`; format specs in interpolation | ✅ |
