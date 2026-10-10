@@ -24,6 +24,10 @@ pub(crate) fn qualified_name(cg: &Codegen<'_, '_>, idx: usize) -> String {
             };
             format!("{ty}::{}", f.decl.name.name)
         }
+        // Free functions in `std` are qualified by their module (`mem::size_of`).
+        None if f.module != cg.r.prelude => {
+            format!("{}::{}", cg.r.def(f.module).name, f.decl.name.name)
+        }
         None => f.decl.name.name.clone(),
     }
 }
@@ -175,6 +179,101 @@ impl FnCx<'_, '_, '_, '_> {
         self.store(r, dest, 0);
     }
 
+    /// The generic argument `T` of the intrinsic being generated.
+    fn t_arg(&self) -> Ty {
+        self.intr_substs.get("T").cloned().unwrap_or(Ty::Unit)
+    }
+
+    /// `std::mem`, `std::ptr`, and `Box` raw-pointer intrinsics. Returns false
+    /// if `name` is not one of them.
+    fn mem_intrinsic(&mut self, name: &str, args: &[Operand], dest: Value, dt: &Ty) -> bool {
+        match name {
+            "mem::size_of" | "mem::align_of" => {
+                let t = self.t_arg();
+                let l = self.cg.layout(&t);
+                let v = if name == "mem::size_of" {
+                    l.size
+                } else {
+                    l.align
+                };
+                let v = self.iconst(v as i64);
+                self.store(v, dest, 0);
+            }
+            // The value was moved into the call; not dropping it is the point.
+            "mem::forget" => {
+                if let Operand::Move(p) = &args[0] {
+                    self.moved(p);
+                }
+            }
+            "mem::swap" => {
+                let t = self.t_arg();
+                let size = self.cg.layout(&t).size;
+                let a = self.op_scalar(&args[0]);
+                let b = self.op_scalar(&args[1]);
+                let tmp = self.slot_for(&t);
+                self.copy(tmp, a, size);
+                self.copy(a, b, size);
+                self.copy(b, tmp, size);
+            }
+            "mem::replace" => {
+                let t = self.t_arg();
+                let size = self.cg.layout(&t).size;
+                let p = self.op_scalar(&args[0]);
+                self.copy(dest, p, size);
+                self.store_op(&args[1], p);
+            }
+            "ptr::null" => {
+                let z = self.iconst(0);
+                self.store(z, dest, 0);
+            }
+            "ptr::is_null" => {
+                let p = self.op_scalar(&args[0]);
+                let b = self.b.ins().icmp_imm(IntCC::Equal, p, 0);
+                self.store(b, dest, 0);
+            }
+            "ptr::add" => {
+                let t = self.t_arg();
+                let size = self.cg.layout(&t).size as i64;
+                let p = self.op_scalar(&args[0]);
+                let n = self.op_scalar(&args[1]);
+                let off = self.b.ins().imul_imm(n, size);
+                let r = self.b.ins().iadd(p, off);
+                self.store(r, dest, 0);
+            }
+            "ptr::read" => {
+                let size = self.cg.layout(dt).size;
+                let p = self.op_scalar(&args[0]);
+                self.copy(dest, p, size);
+            }
+            "ptr::write" => {
+                let p = self.op_scalar(&args[0]);
+                self.store_op(&args[1], p);
+            }
+            "ptr::drop_in_place" => {
+                let t = self.t_arg();
+                let p = self.op_scalar(&args[0]);
+                if self.cg.needs_drop(&t) {
+                    self.drop_in_place(p, &t);
+                }
+            }
+            "ptr::copy" => {
+                let t = self.t_arg();
+                let size = self.cg.layout(&t).size as i64;
+                let src = self.op_scalar(&args[0]);
+                let dst = self.op_scalar(&args[1]);
+                let n = self.op_scalar(&args[2]);
+                let bytes = self.b.ins().imul_imm(n, size);
+                self.call_rt("kn_memmove", &[dst, src, bytes]);
+            }
+            "Box::into_raw" | "Box::from_raw" => {
+                let p = self.op_scalar(&args[0]);
+                self.store(p, dest, 0);
+            }
+            _ => return false,
+        }
+        true
+    }
+
     pub(crate) fn intrinsic(&mut self, name: &str, args: &[Operand], dest: Value, dt: &Ty) {
         let short = name.rsplit("::").next().unwrap_or(name);
         let ty_name = name.split("::").next().unwrap_or("");
@@ -188,7 +287,72 @@ impl FnCx<'_, '_, '_, '_> {
         {
             return;
         }
+        if self.mem_intrinsic(name, args, dest, dt) {
+            return;
+        }
         match (ty_name, short) {
+            (_, "slice_range") => {
+                // args: &base, start, end, flags (bit 0: has end, bit 1: inclusive).
+                let bt = match self.op_ty(&args[0]) {
+                    Ty::Ref(_, t) => *t,
+                    t => t,
+                };
+                let ba = self.op_scalar(&args[0]);
+                let (data, len, size, is_str) =
+                    if self.cg.is_lang(&bt, "Vec") || self.cg.is_lang(&bt, "String") {
+                        let size = if self.cg.is_lang(&bt, "String") {
+                            1
+                        } else {
+                            self.cg.layout(&self.elem_of(&bt)).size
+                        };
+                        (
+                            self.load(types::I64, ba, 0),
+                            self.load(types::I64, ba, 16),
+                            size,
+                            self.cg.is_lang(&bt, "String"),
+                        )
+                    } else if let Ty::Array(et, n) = &bt {
+                        let size = self.cg.layout(et).size;
+                        (ba, self.iconst(*n as i64), size, false)
+                    } else {
+                        // `&str` / `&[T]`: the reference operand is fat.
+                        let a = self.op_addr(&args[0]);
+                        let is_str = matches!(bt, Ty::Prim(kiln_resolve::PrimTy::Str));
+                        let size = if is_str {
+                            1
+                        } else {
+                            self.cg.layout(&self.elem_of(&bt)).size
+                        };
+                        (
+                            self.load(types::I64, a, 0),
+                            self.load(types::I64, a, 8),
+                            size,
+                            is_str,
+                        )
+                    };
+                let to64 = |cx: &mut Self, o: &Operand| {
+                    let (v, t) = cx.scalar_through_refs(o);
+                    match cx.cg.scalar(&t) {
+                        Some(st) if st.bits() < 64 => cx.b.ins().uextend(types::I64, v),
+                        _ => v,
+                    }
+                };
+                let start = to64(self, &args[1]);
+                let end_v = to64(self, &args[2]);
+                let flags = to64(self, &args[3]);
+                let is_str_v = self.iconst(is_str as i64);
+                let end = self
+                    .call_rt(
+                        "kn_slice_check",
+                        &[data, len, start, end_v, flags, is_str_v],
+                    )
+                    .unwrap();
+                let off = self.b.ins().imul_imm(start, size as i64);
+                let p = self.b.ins().iadd(data, off);
+                let n = self.b.ins().isub(end, start);
+                self.store(p, dest, 0);
+                self.store(n, dest, 8);
+            }
             (_, "go_handle") => {
                 let h = match self.last_task {
                     Some(s) => self.b.ins().stack_load(types::I64, s, 0),

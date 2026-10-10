@@ -20,8 +20,16 @@ pub struct Parse {
 
 /// Lexes and parses a complete Kiln source file.
 pub fn parse(src: &str) -> Parse {
-    let lexed = lex(src);
+    parse_at(src, 0)
+}
+
+/// Parses `src` as if it started at byte offset `base` (all spans are shifted
+/// by `base`). Used for built-in sources, which live above
+/// [`kiln_lexer::BUILTIN_BASE`].
+pub fn parse_at(src: &str, base: usize) -> Parse {
+    let lexed = kiln_lexer::lex_at(src, base);
     let mut p = parser::Parser::new(src, lexed.tokens, lexed.doc_comments);
+    p.base = base;
     let file = p.parse_file();
     let mut errors = lexed.errors;
     errors.extend(p.errors);

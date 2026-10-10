@@ -85,6 +85,8 @@ pub struct Codegen<'r, 'a> {
     pub(crate) shims: HashMap<FuncId, FuncId>,
     pub(crate) strings: HashMap<String, DataId>,
     pub(crate) rt: HashMap<&'static str, FuncId>,
+    /// Runtime functions declared by `std` (`kn_*` without a body).
+    pub(crate) externs: HashMap<String, FuncId>,
     pub(crate) errors: Vec<Diagnostic>,
     pub(crate) counter: usize,
     /// Span of the item being compiled, for errors without a better location.
@@ -205,6 +207,19 @@ const RUNTIME: &[(&str, &[Type], Option<Type>)] = &[
         &[types::I64, types::I64, types::I64],
         Some(types::I64),
     ),
+    (
+        "kn_slice_check",
+        &[
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+        ],
+        Some(types::I64),
+    ),
+    ("kn_memmove", &[types::I64, types::I64, types::I64], None),
     ("kn_round", &[types::F64], Some(types::F64)),
     ("kn_powi", &[types::F64, types::I32], Some(types::F64)),
     ("kn_fmod", &[types::F64, types::F64], Some(types::F64)),
@@ -269,6 +284,7 @@ pub fn compile(typed: Typed<'_, '_>, opts: Options) -> Result<Vec<u8>, Vec<Diagn
         shims: HashMap::new(),
         strings: HashMap::new(),
         rt: HashMap::new(),
+        externs: HashMap::new(),
         errors: vec![],
         counter: 0,
         span: Span::new(0, 0),

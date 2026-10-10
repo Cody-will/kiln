@@ -52,6 +52,9 @@ pub(crate) struct Lower<'t, 'r, 'a> {
     in_defer: bool,
     /// Whether the closure just lowered moves a captured variable.
     last_consumes: bool,
+    /// Set while lowering a place that will be written or mutably borrowed, so
+    /// user `Deref` steps call `deref_mut` instead of `deref`.
+    want_mut: bool,
 }
 
 /// A `defer` statement.
@@ -126,6 +129,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             dead: HashSet::new(),
             in_defer: false,
             last_consumes: false,
+            want_mut: false,
         };
         l.new_block(); // entry
         l.new_block(); // exit
@@ -425,7 +429,10 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             }
             AstStmt::Assign { target, op, value } => {
                 let v = self.expr(value);
-                let Some(tp) = self.place(target) else {
+                let saved = std::mem::replace(&mut self.want_mut, true);
+                let tp = self.place(target);
+                self.want_mut = saved;
+                let Some(tp) = tp else {
                     self.push(StmtKind::Eval(Rvalue::Use(v)), s.span);
                     return;
                 };
@@ -805,25 +812,132 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
     // ----- places ----------------------------------------------------------------------
 
     /// Adds deref projections for each reference/box layer of `ty`, returning the inner type.
-    fn autoderef(&self, mut p: Place, mut ty: Ty, max: usize) -> (Place, Ty) {
+    fn autoderef(&mut self, mut p: Place, mut ty: Ty, max: usize) -> (Place, Ty) {
         for _ in 0..max {
-            match ty.clone() {
-                Ty::Ref(m, inner) => {
-                    p = p.project(Proj::Deref(DerefKind::Ref(m).into()));
-                    ty = *inner;
+            match self.deref_once(p.clone(), &ty, Span::default()) {
+                Some((np, nt)) => {
+                    p = np;
+                    ty = nt;
                 }
-                Ty::Ptr(_, inner) => {
-                    p = p.project(Proj::Deref(DerefKind::Ptr.into()));
-                    ty = *inner;
-                }
-                Ty::Adt(d, args) if self.lang(d, "Box") => {
-                    p = p.project(Proj::Deref(DerefKind::Box.into()));
-                    ty = args[0].clone();
-                }
-                _ => break,
+                None => break,
             }
         }
         (p, ty)
+    }
+
+    /// Auto-dereferences `p` while `go_on` says the current type is not yet
+    /// the one wanted (at most 8 steps).
+    fn autoderef_until(
+        &mut self,
+        mut p: Place,
+        mut ty: Ty,
+        span: Span,
+        done: impl Fn(&Self, &Ty) -> bool,
+    ) -> (Place, Ty) {
+        for _ in 0..8 {
+            if done(self, &ty) {
+                break;
+            }
+            match self.deref_once(p.clone(), &ty, span) {
+                Some((np, nt)) => {
+                    p = np;
+                    ty = nt;
+                }
+                None => break,
+            }
+        }
+        (p, ty)
+    }
+
+    /// One dereference step: through `&T`, `*T`, `Box<T>`, or a user `Deref`
+    /// impl (which calls `deref`, or `deref_mut` when the place is written).
+    fn deref_once(&mut self, p: Place, ty: &Ty, span: Span) -> Option<(Place, Ty)> {
+        match ty.clone() {
+            Ty::Ref(m, inner) => Some((p.project(Proj::Deref(DerefKind::Ref(m).into())), *inner)),
+            Ty::Ptr(_, inner) => Some((p.project(Proj::Deref(DerefKind::Ptr.into())), *inner)),
+            Ty::Adt(d, args) if self.lang(d, "Box") => Some((
+                p.project(Proj::Deref(DerefKind::Box.into())),
+                args[0].clone(),
+            )),
+            t @ Ty::Adt(..) => {
+                let mutable = self.want_mut && self.typed.deref_target(&t, true).is_some();
+                let (target, tf) = self.typed.deref_target(&t, mutable)?;
+                let r = self.temp(Ty::Ref(mutable, Box::new(t.clone())), span);
+                self.assign(Place::local(r), Rvalue::Ref { mutable, place: p }, span);
+                let res = self.temp(Ty::Ref(mutable, Box::new(target.clone())), span);
+                let mut subs = HashMap::new();
+                subs.insert("Self".to_string(), t);
+                subs.insert("T".to_string(), target.clone());
+                let rv = Rvalue::Call {
+                    callee: Callee::Fn(tf, sorted(&subs)),
+                    args: vec![Operand::Move(Place::local(r))],
+                    flows: vec![0],
+                };
+                self.assign(Place::local(res), rv, span);
+                Some((
+                    Place::local(res).project(Proj::Deref(DerefKind::Ref(mutable).into())),
+                    target,
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `t` has a named field `name` (no autoderef).
+    fn has_field(&self, t: &Ty, name: &str) -> bool {
+        match t {
+            Ty::Adt(..) => self
+                .typed
+                .adt_fields(t, None)
+                .iter()
+                .any(|(n, _)| n == name),
+            Ty::Tuple(_) => name.parse::<usize>().is_ok(),
+            _ => false,
+        }
+    }
+
+    /// `&base[start..end]` (or `&mut`): the intrinsic `slice_range(&base, start, end, flags)`
+    /// where flags bit 0 = has end, bit 1 = inclusive. `base` is auto-dereferenced to
+    /// the indexed value (`str`, `String`, `Vec<T>`, `[T]`, `[T; N]`).
+    #[allow(clippy::too_many_arguments)]
+    fn slice_range(
+        &mut self,
+        e: &Expr,
+        base: &Expr,
+        start: &Option<Box<Expr>>,
+        end: &Option<Box<Expr>>,
+        inclusive: bool,
+        mutable: bool,
+    ) -> Operand {
+        let usize_ty = Ty::Prim(kiln_resolve::PrimTy::Usize);
+        let s = match start {
+            Some(x) => self.expr(x),
+            None => Operand::constant(ConstKind::Int(0), usize_ty.clone()),
+        };
+        let en = match end {
+            Some(x) => self.expr(x),
+            None => Operand::constant(ConstKind::Int(0), usize_ty.clone()),
+        };
+        let flags = end.is_some() as i128 | ((inclusive as i128) << 1);
+        let bt = self.ty(base);
+        let bp = self.place_or_temp(base);
+        // Strip references (but not String/Vec, which the intrinsic understands).
+        let mut n = 0;
+        let mut t = bt.clone();
+        while let Ty::Ref(_, inner) = t {
+            t = *inner;
+            n += 1;
+        }
+        let (p, pt) = self.autoderef(bp, bt, n);
+        let rt = Ty::Ref(mutable, Box::new(pt));
+        let r = self.temp_of(rt, Rvalue::Ref { mutable, place: p }, e.span);
+        let ty = self.ty(e);
+        let rv = Rvalue::Call {
+            callee: Callee::Intrinsic("slice_range".into()),
+            args: vec![r, s, en, Operand::constant(ConstKind::Int(flags), usize_ty)],
+            flows: vec![0],
+        };
+        self.temp_of(ty, rv, e.span)
     }
 
     /// The place an expression denotes, if it is a place expression.
@@ -847,29 +961,37 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             ExprKind::Field(base, name) => {
                 let bt = self.ty(base);
                 let bp = self.place_or_temp(base);
-                let (p, _) = self.autoderef(bp, bt, 8);
+                let n = name.name.clone();
+                let (p, _) = self.autoderef_until(bp, bt, e.span, |s, t| s.has_field(t, &n));
                 Some(p.field(name.name.clone()))
             }
             ExprKind::TupleIndex(base, i) => {
                 let bt = self.ty(base);
                 let bp = self.place_or_temp(base);
-                let (p, _) = self.autoderef(bp, bt, 8);
+                let n = i.to_string();
+                let (p, _) = self.autoderef_until(bp, bt, e.span, |s, t| s.has_field(t, &n));
                 Some(p.field(i.to_string()))
             }
             ExprKind::Index(base, idx) => {
+                let saved = std::mem::replace(&mut self.want_mut, false);
                 let iv = self.expr(idx);
+                self.want_mut = saved;
                 let it = self.ty(idx);
                 let i = self.temp(it, idx.span);
                 self.assign(Place::local(i), Rvalue::Use(iv), idx.span);
                 let bt = self.ty(base);
                 let bp = self.place_or_temp(base);
-                let (p, _) = self.autoderef(bp, bt, 8);
+                let (p, _) = self.autoderef_until(bp, bt, e.span, |s, t| match t {
+                    Ty::Array(..) | Ty::Slice(_) => true,
+                    Ty::Adt(d, _) => s.lang(*d, "Vec") || s.lang(*d, "String"),
+                    _ => false,
+                });
                 Some(p.project(Proj::Index(i)))
             }
             ExprKind::Unary(ast::UnOp::Deref, x) => {
                 let xt = self.ty(x);
                 let xp = self.place_or_temp(x);
-                let (p, _) = self.autoderef(xp, xt, 1);
+                let (p, _) = self.deref_once(xp.clone(), &xt, e.span).unwrap_or((xp, xt));
                 Some(p)
             }
             _ => None,
@@ -947,7 +1069,27 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             }
             ExprKind::Unary(op, x) => match op {
                 ast::UnOp::Ref | ast::UnOp::RefMut => {
+                    // `&x[a..b]`: a bounds-checked sub-slice.
+                    if let ExprKind::Index(base, idx) = &x.kind {
+                        if let ExprKind::Range {
+                            start,
+                            end,
+                            inclusive,
+                        } = &idx.kind
+                        {
+                            return self.slice_range(
+                                e,
+                                base,
+                                start,
+                                end,
+                                *inclusive,
+                                *op == ast::UnOp::RefMut,
+                            );
+                        }
+                    }
+                    let saved = std::mem::replace(&mut self.want_mut, *op == ast::UnOp::RefMut);
                     let p = self.place_or_temp(x);
+                    self.want_mut = saved;
                     let rv = Rvalue::Ref {
                         mutable: *op == ast::UnOp::RefMut,
                         place: p,
@@ -1293,10 +1435,10 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         let Res::Def(d) = self.r.path(p.span) else {
             return None;
         };
-        let def = self.r.def(d);
-        if !def.is_prelude {
+        if !self.r.is_core(d) {
             return None;
         }
+        let def = self.r.def(d);
         match def.name.as_str() {
             "print" => Some(Op::Print {
                 newline: false,
@@ -1792,7 +1934,16 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             let n = ops.len();
             return (Callee::Intrinsic("unknown".into()), ops, (0..n).collect());
         };
-        let (p, _) = self.autoderef(base, self.ty(recv), info.steps);
+        let saved = std::mem::replace(
+            &mut self.want_mut,
+            matches!(
+                info.self_param,
+                Some(ast::SelfParam::Ref { mutable: true, .. })
+            ),
+        );
+        let rt0 = self.ty(recv);
+        let (p, _) = self.autoderef(base, rt0, info.steps);
+        self.want_mut = saved;
         let self_op = match &info.self_param {
             Some(ast::SelfParam::Ref { mutable, .. }) => {
                 let rt = Ty::Ref(*mutable, Box::new(info.recv_ty.clone()));
@@ -1814,7 +1965,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         };
         let scoped = info.fn_idx.is_some_and(|i| {
             let f = &self.r.fns[i];
-            f.is_prelude && f.decl.name.name == "spawn"
+            self.r.fn_is_core(i) && f.decl.name.name == "spawn"
         });
         let mut ops = vec![self_op];
         ops.extend(arg_ops);

@@ -82,6 +82,9 @@ impl<'a> Resolver<'a> {
         let root = s.new_module("<root>", None, false);
         s.r.root = root;
         s.collect_items(&file.items, root);
+        s.in_prelude = true;
+        s.bind_imports(&prelude.items, prelude_id);
+        s.in_prelude = false;
         s.bind_imports(&file.items, root);
         // Walk everything.
         s.in_prelude = true;
@@ -273,7 +276,7 @@ impl<'a> Resolver<'a> {
                             .unwrap_or_else(|| path.last().unwrap().clone());
                         (path, n)
                     };
-                if matches!(path[0].name.as_str(), "std" | "core") {
+                if path[0].name == "core" {
                     let id =
                         self.new_def(DefKind::External, &bind_name, Visibility::Private, module);
                     self.insert(module, Ns::Type, &bind_name, id);
@@ -306,8 +309,8 @@ impl<'a> Resolver<'a> {
             }
             ImportTree::Glob { prefix: p } => {
                 let path = full(p);
-                if matches!(path[0].name.as_str(), "std" | "core") {
-                    return; // nothing to bind until std exists
+                if path[0].name == "core" {
+                    return;
                 }
                 match self.lookup_import_path(&path, module).0 {
                     Some(m) if self.r.def(m).kind == DefKind::Mod => {
@@ -349,6 +352,8 @@ impl<'a> Resolver<'a> {
     fn lookup_import_path(&self, path: &[Ident], module: DefId) -> (Option<DefId>, Option<DefId>) {
         let start = if path[0].name == "self" {
             return self.lookup_in_module_path(&path[1..], module);
+        } else if path[0].name == "std" {
+            self.r.prelude
         } else if self.r.modules[&module].types.contains_key(&path[0].name)
             || self.r.modules[&module].values.contains_key(&path[0].name)
         {

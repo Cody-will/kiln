@@ -43,6 +43,8 @@ pub(crate) enum Target {
     /// Method number `k` of the trait object's vtable.
     Virtual(usize),
     Intrinsic(String),
+    /// A C function in the runtime (a bodiless `std` function named `kn_*`).
+    Extern(String),
     Missing(String),
 }
 
@@ -51,6 +53,8 @@ pub(crate) struct FnCx<'c, 'r, 'a, 'f> {
     pub b: FunctionBuilder<'f>,
     pub body: Body,
     pub substs: HashMap<String, Ty>,
+    /// Generic arguments of the intrinsic being generated.
+    pub intr_substs: HashMap<String, Ty>,
     pub fn_idx: usize,
     pub locals: Vec<LocalInfo>,
     pub blocks: Vec<ir::Block>,
@@ -100,6 +104,7 @@ impl Codegen<'_, '_> {
                 blocks: vec![],
                 defer_stack: None,
                 last_task: None,
+                intr_substs: HashMap::new(),
                 span,
             };
             cx.translate(abi);
@@ -270,6 +275,66 @@ impl FnCx<'_, '_, '_, '_> {
         let cfg = self.cg.module.target_config();
         self.b
             .emit_small_memory_copy(cfg, dst, src, size as u64, 1, 1, true, flags());
+    }
+
+    /// Calls a runtime C function declared in `std` as a bodiless `kn_*`
+    /// function. Scalars (integers, floats, `bool`, thin pointers and
+    /// references, channel ends) pass by value; `&str` and `&[T]` pass as
+    /// (pointer, length). The result must be a scalar or `()`.
+    fn extern_call(&mut self, name: &str, args: &[Operand], dest: Value, dt: &Ty) {
+        let mut sig = self.cg.module.make_signature();
+        let mut vals = vec![];
+        for a in args {
+            let t = self.op_ty(a);
+            if self.cg.is_fat(&t) {
+                let p = self.op_addr(a);
+                let (d, n) = (self.load(types::I64, p, 0), self.load(types::I64, p, 8));
+                vals.extend([d, n]);
+                sig.params.push(ir::AbiParam::new(types::I64));
+                sig.params.push(ir::AbiParam::new(types::I64));
+            } else if let Some(st) = self.cg.scalar(&t) {
+                vals.push(self.op_scalar(a));
+                sig.params.push(ir::AbiParam::new(st));
+            } else {
+                let tn = self.cg.typed.fmt_ty(&t);
+                return self.error(format!("runtime function `{name}` cannot take a `{tn}`"));
+            }
+        }
+        let ret = match dt {
+            Ty::Unit | Ty::Never => None,
+            t => match self.cg.scalar(t) {
+                Some(st) => Some(st),
+                None => {
+                    let tn = self.cg.typed.fmt_ty(t);
+                    return self.error(format!("runtime function `{name}` cannot return a `{tn}`"));
+                }
+            },
+        };
+        if let Some(rt) = ret {
+            sig.returns.push(ir::AbiParam::new(rt));
+        }
+        let id = match self.cg.externs.get(name) {
+            Some(id) => *id,
+            None => {
+                let id = self
+                    .cg
+                    .module
+                    .declare_function(name, cranelift_module::Linkage::Import, &sig)
+                    .expect("declare runtime function");
+                self.cg.externs.insert(name.to_string(), id);
+                id
+            }
+        };
+        let f = self.cg.module.declare_func_in_func(id, self.b.func);
+        let call = self.b.ins().call(f, &vals);
+        if let Some(v) = self.b.inst_results(call).first().copied() {
+            self.store(v, dest, 0);
+        }
+        if *dt == Ty::Never {
+            self.b.ins().trap(TrapCode::user(1).unwrap());
+            let nb = self.b.create_block();
+            self.b.switch_to_block(nb);
+        }
     }
 
     pub(crate) fn call_rt(&mut self, name: &str, args: &[Value]) -> Option<Value> {
@@ -713,7 +778,7 @@ impl FnCx<'_, '_, '_, '_> {
         t
     }
 
-    fn elem_of(&self, t: &Ty) -> Ty {
+    pub(crate) fn elem_of(&self, t: &Ty) -> Ty {
         match t {
             Ty::Adt(_, a) if self.cg.is_lang(t, "Vec") => a[0].clone(),
             Ty::Slice(x) | Ty::Array(x, _) => (**x).clone(),
@@ -1205,6 +1270,9 @@ impl FnCx<'_, '_, '_, '_> {
             };
         }
         if f.decl.body.is_none() {
+            if f.decl.name.name.starts_with("kn_") && f.impl_idx.is_none() {
+                return Target::Extern(f.decl.name.name.clone());
+            }
             return Target::Intrinsic(crate::intrinsics::qualified_name(self.cg, idx));
         }
         Target::Direct(self.cg.instance(idx, 0, substs, Abi::Plain))
@@ -1247,7 +1315,7 @@ impl FnCx<'_, '_, '_, '_> {
                     .iter()
                     .map(|(k, v)| (k.clone(), self.subst(v)))
                     .collect();
-                match self.resolve(*i, s) {
+                match self.resolve(*i, s.clone()) {
                     Target::Direct(id) => {
                         let mut vals = vec![dest];
                         vals.extend(self.arg_slots(args));
@@ -1267,7 +1335,11 @@ impl FnCx<'_, '_, '_, '_> {
                         let sref = self.b.import_signature(sig);
                         self.b.ins().call_indirect(sref, code, &vals);
                     }
-                    Target::Intrinsic(name) => self.intrinsic(&name, args, dest, dt),
+                    Target::Intrinsic(name) => {
+                        self.intr_substs = s;
+                        self.intrinsic(&name, args, dest, dt)
+                    }
+                    Target::Extern(name) => self.extern_call(&name, args, dest, dt),
                     Target::Missing(m) => self.error(m),
                 }
             }
@@ -1378,8 +1450,23 @@ impl FnCx<'_, '_, '_, '_> {
             }
             Op::Cast(to) => {
                 let to = self.subst(to);
-                let (v, from) = self.scalar_through_refs(&ops[0]);
-                let r = self.cast(v, &from, &to);
+                let ot = self.op_ty(&ops[0]);
+                // Pointer casts (`&x as *const T`, `p as *mut u8`, `p as usize`)
+                // use the address itself.
+                let (v, from) = if matches!(to, Ty::Ptr(..)) || matches!(ot, Ty::Ptr(..)) {
+                    let fat = self.cg.is_fat(&ot);
+                    let a = self.op_addr(&ops[0]);
+                    let _ = fat; // the data pointer is the first word either way
+                    (self.load(types::I64, a, 0), Ty::Prim(PrimTy::Usize))
+                } else {
+                    self.scalar_through_refs(&ops[0])
+                };
+                let to_s = if matches!(to, Ty::Ptr(..)) {
+                    Ty::Prim(PrimTy::Usize)
+                } else {
+                    to.clone()
+                };
+                let r = self.cast(v, &from, &to_s);
                 self.store(r, dest, 0);
             }
             Op::Discriminant => {

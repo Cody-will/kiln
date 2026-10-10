@@ -25,7 +25,11 @@ pub trait Eq {}
 pub trait Ord {}
 pub trait Hash {}
 pub trait Debug {}
-pub trait Display {}
+// Text form used by string interpolation (`"{x}"`) and `to_string()`.
+pub trait Display {
+	fn to_string(&self) -> String
+}
+
 pub trait Default {}
 pub unsafe trait Send {}
 pub unsafe trait Sync {}
@@ -69,6 +73,17 @@ impl Scope {
 }
 
 pub fn scope(body: fn(&Scope))
+
+// `*x`, method calls, and field access look through `Deref` (as for `&T`
+// and `Box<T>`): `Arc<T>` derefs to `T`, a `MutexGuard<T>` to the locked `T`.
+pub trait Deref<T> {
+	fn deref(&self) -> &T
+}
+
+// Mutable access through `Deref` (`*guard = v`, `guard.push(x)`).
+pub trait DerefMut<T> {
+	fn deref_mut(&mut self) -> &mut T
+}
 
 pub trait From<T> {
 	fn from(value: T) -> Self
@@ -205,6 +220,12 @@ impl<T> Vec<T> {
 
 impl<T> Box<T> {
 	pub fn new(value: T) -> Box<T>
+
+	// Gives up ownership: the caller must later rebuild the box with `from_raw`.
+	pub fn into_raw(b: Box<T>) -> *mut T
+
+	// Takes ownership of a pointer made by `into_raw`.
+	pub unsafe fn from_raw(p: *mut T) -> Box<T>
 }
 
 impl f64 {

@@ -23,17 +23,73 @@ use kiln_lexer::Diagnostic;
 use kiln_parser::ast::*;
 use std::collections::HashMap;
 
-/// Source of the built-in prelude.
+/// Source of the core prelude (types and traits visible in every module).
 pub const PRELUDE_SRC: &str = include_str!("prelude.kn");
 
-/// Parses the prelude. Panics if the prelude itself fails to parse (a compiler bug).
+/// The standard library: `(module path, source)`, parents before children.
+/// Each module becomes `pub mod <name> { ... }` inside `std`, which lives in
+/// the prelude.
+pub const STD_MODULES: &[(&str, &str)] = &[
+    ("mem", include_str!("../std/mem.kn")),
+    ("ptr", include_str!("../std/ptr.kn")),
+];
+
+/// The prelude and standard library as one source text, plus each file's
+/// `(offset, display name, text)`.
+pub struct BuiltinSource {
+    /// The combined source, parsed at [`kiln_lexer::BUILTIN_BASE`].
+    pub text: String,
+    /// Where each file starts within `text`.
+    pub files: Vec<(usize, &'static str, &'static str)>,
+}
+
+/// The combined prelude and standard library source (built once).
+pub fn builtin() -> &'static BuiltinSource {
+    static B: std::sync::OnceLock<BuiltinSource> = std::sync::OnceLock::new();
+    B.get_or_init(|| {
+        let mut text = String::new();
+        let mut files = vec![(0, "<prelude>", PRELUDE_SRC)];
+        text.push_str(PRELUDE_SRC);
+        text.push_str("\npub mod std {\n");
+        // Emit modules as a tree: open/close `pub mod` blocks along each path.
+        let mut open: Vec<&str> = vec![];
+        for (path, src) in STD_MODULES {
+            let segs: Vec<&str> = path.split("::").collect();
+            let common = open.iter().zip(&segs).take_while(|(a, b)| a == b).count();
+            while open.len() > common {
+                open.pop();
+                text.push_str("}\n");
+            }
+            for seg in &segs[common..] {
+                text.push_str(&format!("pub mod {seg} {{\n"));
+                open.push(seg);
+            }
+            let name: &'static str =
+                Box::leak(format!("<std>/{}.kn", path.replace("::", "/")).into_boxed_str());
+            files.push((text.len(), name, *src));
+            text.push_str(src);
+            text.push('\n');
+        }
+        for _ in open {
+            text.push_str("}\n");
+        }
+        text.push_str("}\n");
+        for (off, name, src) in &files {
+            kiln_lexer::register_source(kiln_lexer::BUILTIN_BASE + off, name, src);
+        }
+        BuiltinSource { text, files }
+    })
+}
+
+/// Parses the prelude and standard library. Panics if they fail to parse (a
+/// compiler bug).
 pub fn parse_prelude() -> File {
-    let p = kiln_parser::parse(PRELUDE_SRC);
-    assert!(
-        p.errors.is_empty(),
-        "prelude failed to parse: {:?}",
-        p.errors
-    );
+    let b = builtin();
+    let p = kiln_parser::parse_at(&b.text, kiln_lexer::BUILTIN_BASE);
+    if !p.errors.is_empty() {
+        let msgs: String = p.errors.iter().map(|d| d.render("<builtin>", "")).collect();
+        panic!("the standard library failed to parse:\n{msgs}");
+    }
     p.file
 }
 
@@ -279,6 +335,18 @@ impl<'a> Resolved<'a> {
     /// Resolution of a path, or [`Res::Err`] if it was not recorded.
     pub fn path(&self, span: Span) -> Res {
         self.paths.get(&span).cloned().unwrap_or(Res::Err)
+    }
+
+    /// Whether `d` is declared directly in the core prelude (not in `std`).
+    pub fn is_core(&self, d: DefId) -> bool {
+        let def = self.def(d);
+        def.is_prelude && def.module == self.prelude
+    }
+
+    /// Whether function `i` is declared directly in the core prelude (not in `std`).
+    pub fn fn_is_core(&self, i: usize) -> bool {
+        let f = &self.fns[i];
+        f.is_prelude && f.module == self.prelude
     }
 
     /// Looks up a type-namespace name in the prelude (e.g. `Option`).

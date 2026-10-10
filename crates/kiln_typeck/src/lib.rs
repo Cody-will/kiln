@@ -121,6 +121,48 @@ impl<'r, 'a> Typed<'r, 'a> {
         self.c.sigs[i].has_body
     }
 
+    /// For a type with a user `Deref` (or, when `mutable`, `DerefMut`) impl:
+    /// the target type and the trait method (`deref` / `deref_mut`) to call.
+    pub fn deref_target(&mut self, t: &Ty, mutable: bool) -> Option<(Ty, usize)> {
+        let r = self.c.r;
+        let Ty::Adt(d, _) = t else { return None };
+        if ["Box", "String", "Vec"]
+            .iter()
+            .any(|n| r.prelude_type(n) == Some(*d))
+        {
+            return None;
+        }
+        let (tn, mn) = if mutable {
+            ("DerefMut", "deref_mut")
+        } else {
+            ("Deref", "deref")
+        };
+        let tr = r.prelude_type(tn)?;
+        let tf = (0..r.fns.len())
+            .find(|&i| r.fns[i].trait_def == Some(tr) && r.fns[i].decl.name.name == mn)?;
+        for imp in self.c.impls.clone() {
+            let Some((itr, iargs)) = &imp.trait_ref else {
+                continue;
+            };
+            if *itr != tr {
+                continue;
+            }
+            let snap = self.c.infer.snapshot();
+            let map: std::collections::HashMap<String, Ty> = imp
+                .generics
+                .iter()
+                .map(|g| (g.clone(), self.c.infer.fresh(ty::VarKind::General)))
+                .collect();
+            if self.c.infer.unify(&imp.self_ty.subst(&map), t) {
+                let target = iargs.first().map(|a| self.c.infer.zonk(&a.subst(&map)));
+                self.c.infer.restore(snap);
+                return target.map(|x| (x, tf));
+            }
+            self.c.infer.restore(snap);
+        }
+        None
+    }
+
     /// Resolves a call of trait method `trait_fn` (an index into `Resolved::fns`)
     /// for the concrete types in `substs` (which must contain `Self` and the
     /// trait's generic parameters). Returns the implementing function and its

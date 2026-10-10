@@ -77,6 +77,7 @@ impl<'r, 'a> Codegen<'r, 'a> {
                 blocks: vec![],
                 defer_stack: None,
                 last_task: None,
+                intr_substs: HashMap::new(),
                 span,
             };
             f(&mut cx, &ps);

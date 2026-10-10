@@ -521,7 +521,7 @@ impl Body<'_, '_, '_> {
             Ty::Dyn(ts) => ts.iter().any(|d| self.supertrait_closure(*d).contains(&tr)),
             Ty::Adt(d, args) => {
                 let d = *d;
-                if self.c.r.def(d).is_prelude
+                if self.c.r.is_core(d)
                     && !self.c.adts[&d].is_enum
                     && self.c.r.def(d).name == "String"
                 {
@@ -529,7 +529,7 @@ impl Body<'_, '_, '_> {
                         "Clone", "Eq", "Ord", "Hash", "Debug", "Display", "Default", "Send", "Sync",
                     ]) || self.has_impl(&t, tr);
                 }
-                if self.c.r.def(d).is_prelude {
+                if self.c.r.is_core(d) {
                     let args = args.clone();
                     let structural = marker(&[
                         "Clone", "Eq", "Ord", "Hash", "Debug", "Default", "Send", "Sync",
@@ -683,8 +683,39 @@ impl Body<'_, '_, '_> {
         None
     }
 
+    /// The target of a user `Deref` (`trait_name` = "Deref") or `DerefMut`
+    /// impl for `t`, if any.
+    pub(crate) fn overloaded_deref(&mut self, t: &Ty, trait_name: &str) -> Option<Ty> {
+        let t = self.shallow(t);
+        let Ty::Adt(d, _) = &t else { return None };
+        if ["Box", "String", "Vec"]
+            .iter()
+            .any(|n| self.c.is_lang(*d, n))
+        {
+            return None;
+        }
+        let tr = self.c.r.prelude_type(trait_name)?;
+        for idx in 0..self.c.impls.len() {
+            let Some((itr, args)) = self.c.impls[idx].trait_ref.clone() else {
+                continue;
+            };
+            if itr != tr {
+                continue;
+            }
+            let (st, map) = self.instantiate_impl(idx);
+            if self.c.infer.can_unify(&st, &t) {
+                self.c.infer.unify(&st, &t);
+                return args.first().map(|a| a.subst(&map));
+            }
+        }
+        None
+    }
+
     /// One autoderef step.
-    fn deref_step(&self, t: &Ty) -> Option<Ty> {
+    fn deref_step(&mut self, t: &Ty) -> Option<Ty> {
+        if let Some(u) = self.overloaded_deref(t, "Deref") {
+            return Some(u);
+        }
         match self.shallow(t) {
             Ty::Ref(_, x) | Ty::Ptr(_, x) => Some(*x),
             Ty::Adt(d, args) if self.c.is_lang(d, "Box") => Some(args[0].clone()),
@@ -854,6 +885,26 @@ impl Body<'_, '_, '_> {
     }
 
     /// Checks that `e` is a mutable place; `what` is e.g. "assign to".
+    /// Mutating through a user `Deref` type `t` (the value of `base`): needs a
+    /// `DerefMut` impl and a mutable `base`.
+    fn check_deref_mut(&mut self, t: &Ty, base: &Expr, what: &str) {
+        if self.overloaded_deref(t, "DerefMut").is_none() {
+            let tn = self.fmt(t);
+            self.error_help(
+                format!("cannot {what} data through `{tn}`"),
+                base.span,
+                format!(
+                    "`{tn}` implements `Deref` but not `DerefMut`, so it only gives shared access"
+                ),
+            );
+            return;
+        }
+        match self.shallow(t) {
+            Ty::Ref(true, _) => {}
+            _ => self.check_place_mut(base, "borrow"),
+        }
+    }
+
     fn check_place_mut(&mut self, e: &Expr, what: &str) {
         match &e.kind {
             ExprKind::Path(p) => match self.c.r.path(p.span) {
@@ -889,6 +940,23 @@ impl Body<'_, '_, '_> {
             },
             ExprKind::Field(base, _) | ExprKind::TupleIndex(base, _) | ExprKind::Index(base, _) => {
                 let bt = self.tys.get(&base.span).cloned().unwrap_or(Ty::Unknown);
+                // Writing a field reached through a user `Deref` needs `DerefMut`.
+                if let (ExprKind::Field(_, name), Ty::Adt(d, _)) = (&e.kind, self.shallow(&bt)) {
+                    let direct = match &self.c.adts[&d].shape {
+                        Shape::Named(fs) => fs.iter().any(|(n, _)| *n == name.name),
+                        _ => false,
+                    };
+                    if !direct && self.overloaded_deref(&bt, "Deref").is_some() {
+                        self.check_deref_mut(&bt, base, what);
+                        return;
+                    }
+                }
+                if let (ExprKind::Index(..), Ty::Adt(..)) = (&e.kind, self.shallow(&bt)) {
+                    if self.overloaded_deref(&bt, "Deref").is_some() {
+                        self.check_deref_mut(&bt, base, what);
+                        return;
+                    }
+                }
                 match self.shallow(&bt) {
                     Ty::Ref(true, _) | Ty::Ptr(true, _) => {}
                     Ty::Ref(false, _) => self.error_help(
@@ -901,6 +969,10 @@ impl Body<'_, '_, '_> {
             }
             ExprKind::Unary(UnOp::Deref, inner) => {
                 let it = self.tys.get(&inner.span).cloned().unwrap_or(Ty::Unknown);
+                if let Ty::Adt(..) = self.shallow(&it) {
+                    self.check_deref_mut(&it, inner, what);
+                    return;
+                }
                 if let Ty::Ref(false, _) = self.shallow(&it) {
                     self.error_help(
                         format!("cannot {what} data behind a `&` reference"),
@@ -1611,10 +1683,9 @@ impl Body<'_, '_, '_> {
         let Res::Def(d) = self.c.r.path(p.span) else {
             return false;
         };
-        let def = self.c.r.def(d);
-        def.is_prelude
+        self.c.r.is_core(d)
             && matches!(
-                def.name.as_str(),
+                self.c.r.def(d).name.as_str(),
                 "print" | "println" | "eprint" | "eprintln"
             )
     }
@@ -1763,7 +1834,20 @@ impl Body<'_, '_, '_> {
                 };
                 self.methods.insert(span, info);
                 if let Some(SelfParam::Ref { mutable: true, .. }) = m.self_param {
-                    if steps == 0 {
+                    // The first user-`Deref` step on the way, if any.
+                    let overloaded = (0..steps).find(|&k| {
+                        let c = cands[k].clone();
+                        self.overloaded_deref(&c, "Deref").is_some()
+                    });
+                    if let Some(k) = overloaded {
+                        let c = cands[k].clone();
+                        if k == 0 {
+                            self.check_deref_mut(&c, recv, "borrow");
+                        } else if self.overloaded_deref(&c, "DerefMut").is_none() {
+                            let tn = self.fmt(&c);
+                            self.error(format!("cannot borrow data through `{tn}` mutably: it does not implement `DerefMut`"), recv.span);
+                        }
+                    } else if steps == 0 {
                         self.check_place_mut(recv, "borrow");
                     } else if let Ty::Ref(false, _) = self.shallow(&cands[0]) {
                         self.error_help(
@@ -1864,13 +1948,9 @@ impl Body<'_, '_, '_> {
                 Ty::Unknown => return Ty::Unknown,
                 _ => {}
             }
+            let is_vec_or_string = matches!(self.shallow(&t), Ty::Adt(d, _) if self.c.is_lang(d, "String") || self.c.is_lang(d, "Vec"));
             match self.deref_step(&t) {
-                Some(n)
-                    if !matches!(self.shallow(&t), Ty::Adt(..))
-                        || matches!(self.shallow(&t), Ty::Adt(d, _) if self.c.is_lang(d, "Box")) =>
-                {
-                    t = n
-                }
+                Some(n) if !is_vec_or_string => t = n,
                 _ => break,
             }
         }
@@ -1909,7 +1989,13 @@ impl Body<'_, '_, '_> {
     }
 
     fn index(&mut self, bt: &Ty, it: &Ty, span: Span) -> Ty {
-        let t = self.strip_refs(bt);
+        let mut t = self.strip_refs(bt);
+        for _ in 0..8 {
+            match self.overloaded_deref(&t, "Deref") {
+                Some(u) => t = self.strip_refs(&u),
+                None => break,
+            }
+        }
         let elem = match &t {
             Ty::Adt(d, args) if self.c.is_lang(*d, "Vec") => args[0].clone(),
             Ty::Array(x, _) | Ty::Slice(x) => (**x).clone(),
@@ -2173,6 +2259,9 @@ impl Body<'_, '_, '_> {
             }
             UnOp::Deref => match self.shallow(&t) {
                 Ty::Ref(_, i) | Ty::Ptr(_, i) => *i,
+                ot @ Ty::Adt(..) if self.overloaded_deref(&ot, "Deref").is_some() => {
+                    self.overloaded_deref(&ot, "Deref").unwrap()
+                }
                 Ty::Adt(d, args) if self.c.is_lang(d, "Box") => args[0].clone(),
                 Ty::Unknown => Ty::Unknown,
                 other => {

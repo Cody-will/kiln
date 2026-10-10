@@ -12,6 +12,8 @@ type PResult<R> = Result<R, Reported>;
 /// The parser state.
 pub(crate) struct Parser<'s> {
     src: &'s str,
+    /// Offset of `src` within the span space (see [`crate::parse_at`]).
+    pub(crate) base: usize,
     tokens: Vec<Token>,
     pos: usize,
     docs: Vec<(Span, String)>,
@@ -71,6 +73,7 @@ impl<'s> Parser<'s> {
     pub(crate) fn new(src: &'s str, tokens: Vec<Token>, docs: Vec<(Span, String)>) -> Self {
         Parser {
             src,
+            base: 0,
             tokens,
             pos: 0,
             docs,
@@ -406,7 +409,11 @@ impl<'s> Parser<'s> {
                 self.bump();
             }
             let close = self.bump().span;
-            args = Some(self.src[open.end..close.start].trim().to_string());
+            args = Some(
+                self.src[open.end - self.base..close.start - self.base]
+                    .trim()
+                    .to_string(),
+            );
         }
         let end = self.expect(&T::RBracket)?;
         Ok(Attribute {
@@ -1901,6 +1908,7 @@ impl<'s> Parser<'s> {
                     let lexed = lex_at(src, *offset);
                     self.errors.extend(lexed.errors);
                     let mut sub = Parser::new(self.src, lexed.tokens, Vec::new());
+                    sub.base = self.base;
                     let expr = match sub.parse_expr() {
                         Ok(e) => {
                             sub.skip_semis();

@@ -1,0 +1,17 @@
+// Memory primitives used to build the rest of the standard library.
+// Functions without bodies are provided by the compiler.
+
+// Size of `T` in bytes.
+pub fn size_of<T>() -> usize
+
+// Alignment of `T` in bytes.
+pub fn align_of<T>() -> usize
+
+// Takes ownership of `value` without running its destructor.
+pub fn forget<T>(value: T)
+
+// Swaps two values.
+pub fn swap<T>(a: &mut T, b: &mut T)
+
+// Replaces `*dest` with `value`, returning the old value.
+pub fn replace<T>(dest: &mut T, value: T) -> T

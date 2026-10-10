@@ -375,3 +375,36 @@ int64_t kn_defer_pop(KnDefer *d) {
 double kn_round(double v) { return round(v); }
 double kn_powi(double v, int32_t n) { return pow(v, (double)n); }
 double kn_fmod(double a, double b) { return fmod(a, b); }
+
+/* ----- slicing ----------------------------------------------------------- */
+
+/* Checks `start..end` against `len` for `&x[start..end]` and returns the
+ * exclusive end. flags: bit 0 = has end (else `len`), bit 1 = inclusive.
+ * For strings, both ends must fall on UTF-8 character boundaries. */
+int64_t kn_slice_check(const uint8_t *data, int64_t len, int64_t start, int64_t end, int64_t flags, int64_t is_str) {
+	if (!(flags & 1))
+		end = len;
+	else if (flags & 2)
+		end += 1;
+	if ((uint64_t)start > (uint64_t)end) {
+		char msg[96];
+		snprintf(msg, sizeof msg, "slice index starts at %lld but ends at %lld", (long long)start, (long long)end);
+		kn_panic_str(msg);
+	}
+	if ((uint64_t)end > (uint64_t)len) {
+		char msg[96];
+		snprintf(msg, sizeof msg, "range end index %lld out of range for slice of length %lld", (long long)end, (long long)len);
+		kn_panic_str(msg);
+	}
+	if (is_str) {
+		if ((start < len && (data[start] & 0xC0) == 0x80) || (end < len && (data[end] & 0xC0) == 0x80))
+			kn_panic_str("byte index is not a char boundary");
+	}
+	return end;
+}
+
+/* `ptr::copy`: overlapping copies are fine. */
+void kn_memmove(void *dst, const void *src, size_t n) {
+	if (n)
+		memmove(dst, src, n);
+}

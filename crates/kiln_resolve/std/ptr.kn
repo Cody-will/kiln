@@ -1,0 +1,23 @@
+// Raw pointer operations. All of them are `unsafe`: the caller promises the
+// pointer is valid (and, for `read`/`write`, aligned and initialized as needed).
+
+// A null pointer.
+pub fn null<T>() -> *mut T
+
+// Whether `p` is null.
+pub fn is_null<T>(p: *mut T) -> bool
+
+// `p` advanced by `n` elements of `T`.
+pub unsafe fn add<T>(p: *mut T, n: usize) -> *mut T
+
+// Moves the value out of `*p` without dropping what is left behind.
+pub unsafe fn read<T>(p: *mut T) -> T
+
+// Moves `value` into `*p` without dropping the old contents.
+pub unsafe fn write<T>(p: *mut T, value: T)
+
+// Runs the destructor of `*p`.
+pub unsafe fn drop_in_place<T>(p: *mut T)
+
+// Copies `n` elements from `src` to `dst` (the ranges may overlap).
+pub unsafe fn copy<T>(src: *mut T, dst: *mut T, n: usize)

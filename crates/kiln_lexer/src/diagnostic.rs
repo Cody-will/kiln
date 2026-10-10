@@ -2,6 +2,36 @@
 
 use crate::span::{LineIndex, Span};
 use std::fmt::Write;
+use std::sync::Mutex;
+
+/// Spans at or above this offset belong to built-in sources (the prelude and
+/// the standard library), which are parsed at this base so their spans never
+/// collide with the user's file.
+pub const BUILTIN_BASE: usize = 1 << 40;
+
+/// Built-in source files: `(base, name, text)`.
+static SOURCES: Mutex<Vec<(usize, &'static str, &'static str)>> = Mutex::new(Vec::new());
+
+/// Registers a built-in source file whose spans start at `base`, so
+/// diagnostics pointing into it render with its name and text.
+pub fn register_source(base: usize, name: &'static str, text: &'static str) {
+    let mut v = SOURCES.lock().unwrap_or_else(|e| e.into_inner());
+    if !v.iter().any(|(b, _, _)| *b == base) {
+        v.push((base, name, text));
+    }
+}
+
+/// The registered built-in source containing `span`, if any.
+fn builtin_source(span: Span) -> Option<(usize, &'static str, &'static str)> {
+    if span.start < BUILTIN_BASE {
+        return None;
+    }
+    let v = SOURCES.lock().unwrap_or_else(|e| e.into_inner());
+    v.iter()
+        .copied()
+        .filter(|(b, _, t)| *b <= span.start && span.start <= b + t.len())
+        .max_by_key(|(b, _, _)| *b)
+}
 
 /// How severe a diagnostic is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +119,14 @@ impl Diagnostic {
 /// Writes a `--> file:line:col` header and the source line with a caret
 /// under `span`. Returns the gutter width.
 fn snippet(out: &mut String, idx: &LineIndex, file: &str, src: &str, span: Span) -> usize {
+    if let Some((base, name, text)) = builtin_source(span) {
+        let local = Span::new(span.start - base, span.end.saturating_sub(base));
+        return snippet(out, &LineIndex::new(text), name, text, local);
+    }
+    if span.start > src.len() {
+        let _ = writeln!(out, " --> {file}");
+        return 1;
+    }
     let (line, col) = idx.line_col(span.start.min(src.len()));
     let (ls, le) = idx.line_range(line, src);
     let text = &src[ls..le];
