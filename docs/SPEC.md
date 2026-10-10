@@ -596,7 +596,7 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 | `std::errors` | `AnyError` (any error plus context; `?` converts), `errors::new`, `Result::context`, `Message` | ✅ |
 | `std::flag`, `std::context` | | 🚧 phase 2 |
 | `std::encoding` | JSON, base64, hex, CSV | 🚧 phase 2 |
-| `std::crypto`, `std::hash` | SHA-256, MD5 | 🚧 phase 2 |
+| `std::crypto` | `sha256`, `sha1`, `md5` (one-shot `sum`/`hex`, streaming hashers that implement `io::Write`, digests are fixed arrays like `[u8; 32]`), `hmac` (SHA-256/SHA-1, `verify_sha256`), `constant_time_eq` | ✅ |
 | `std::regexp`, `std::testing` (`kiln test`) | | 🚧 phase 2 |
 | `std::compress`, `std::mime`, `std::url`, templates | | 🚧 phase 3 |
 

@@ -1,0 +1,34 @@
+import std::crypto
+import std::crypto::{sha256, sha1, md5, hmac}
+import std::encoding::hex
+import std::io
+
+fn main() -> Result<(), io::Error> {
+	for s in ["", "abc", "The quick brown fox jumps over the lazy dog", "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"].iter() {
+		b := s.as_bytes()
+		println("{sha256::hex(b)} {sha1::hex(b)} {md5::hex(b)}")
+	}
+	// Streaming in uneven pieces matches one-shot hashing, and works through io::copy.
+	data mut := Vec::new()
+	for i in 0..1000 {
+		data.push((i % 251) as u8)
+	}
+	h mut := sha256::Sha256::new()
+	h.update(&data[0..3])
+	h.update(&data[3..200])
+	h.update(&data[200..])
+	println("{h.finish() == sha256::sum(&data)}")
+	m mut := md5::Md5::new()
+	r mut := io::Cursor::new(data.clone())
+	io::copy(&mut r, &mut m)?
+	println("{hex::encode(&m.finish()) == md5::hex(&data)}")
+	// RFC 4231 test case 2 and a long key (case 6).
+	println(hex::encode(&hmac::sha256("Jefe".as_bytes(), "what do ya want for nothing?".as_bytes())))
+	big := [0xaa as u8; 131]
+	println(hex::encode(&hmac::sha256(&big, "Test Using Larger Than Block-Size Key - Hash Key First".as_bytes())))
+	println(hex::encode(&hmac::sha1("key".as_bytes(), "The quick brown fox jumps over the lazy dog".as_bytes())))
+	tag := hmac::sha256("k".as_bytes(), "m".as_bytes())
+	println("{hmac::verify_sha256("k".as_bytes(), "m".as_bytes(), &tag)} {hmac::verify_sha256("k".as_bytes(), "x".as_bytes(), &tag)}")
+	println("{crypto::constant_time_eq("ab".as_bytes(), "ab".as_bytes())} {crypto::constant_time_eq("ab".as_bytes(), "ac".as_bytes())}")
+	return Ok(())
+}

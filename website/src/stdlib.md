@@ -17,6 +17,7 @@ The standard library is written in Kiln, on top of a small C runtime for system 
 | [`std::sync`](#stdsync) | `Arc`, `Mutex`, `RwLock`, `WaitGroup`, `Once`, atomics |
 | [`std::io`](#stdio) | `Read`, `Write`, buffering, standard streams, errors |
 | [`std::bytes`](#stdbytes) | byte-slice helpers and `Buffer` |
+| [`std::crypto`](#stdcrypto) | SHA-256, SHA-1, MD5, HMAC |
 | [`std::fs`](#stdfs) | files and directories |
 | [`std::path`](#stdpath) | path manipulation |
 | [`std::os`](#stdos) | arguments, environment, exit, running programs |
@@ -143,6 +144,30 @@ Functions mirror Go's `bytes` package and work on `&[u8]` (write a byte slice as
 | `split(b, sep)`, `fields(b)`, `cut(b, sep)` | splitting into borrowed pieces |
 | `join(parts, sep)`, `repeat`, `replace_all`, `to_lower`, `to_upper` | building new `Vec<u8>`s |
 | `Buffer` | written at the end, read from the front: `write_byte`, `write_char`, `read_byte`, `read_until`, `next(n)`, `len`, `reset`, `to_string_lossy`; implements `io::Read` and `io::Write` |
+
+## std::crypto
+
+| Item | Description |
+|---|---|
+| `sha256::sum(b)`, `sha256::hex(b)` | SHA-256 digest as `[u8; 32]` or lowercase hex |
+| `sha256::Sha256` | streaming: `new()`, `update(b)`, `finish()`, `reset()`; implements `io::Write` |
+| `sha1`, `md5` | the same API (`Sha1`, `Md5`); both are broken for security, so use them only for checksums and compatibility |
+| `hmac::sha256(key, msg)`, `hmac::sha1(key, msg)` | HMAC tags; `hmac::verify_sha256(key, msg, tag)` checks in constant time |
+| `crypto::constant_time_eq(a, b)` | compare secrets without leaking where they differ |
+
+```kiln
+import std::crypto::sha256
+import std::fs
+import std::io
+
+fn main() -> Result<(), io::Error> {
+	f mut := fs::File::open("data.bin")?
+	h mut := sha256::Sha256::new()
+	io::copy(&mut f, &mut h)?
+	println(std::encoding::hex::encode(&h.finish()))
+	return Ok(())
+}
+```
 
 ## std::fs
 

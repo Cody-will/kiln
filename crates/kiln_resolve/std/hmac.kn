@@ -1,0 +1,52 @@
+// HMAC (RFC 2104) over SHA-256 and SHA-1.
+//
+//	tag := hmac::sha256(key, msg)                  // [u8; 32]
+//	ok := hmac::verify_sha256(key, msg, &tag)      // constant-time check
+
+import std::crypto::sha256::Sha256
+import std::crypto::sha1::Sha1
+
+fn pads(key: &[u8], hashed: &[u8]) -> ([u8; 64], [u8; 64]) {
+	k := if key.len() > 64 { hashed } else { key }
+	ipad mut := [0x36 as u8; 64]
+	opad mut := [0x5c as u8; 64]
+	for i in 0..k.len() {
+		ipad[i] = ipad[i] ^ k[i]
+		opad[i] = opad[i] ^ k[i]
+	}
+	return (ipad, opad)
+}
+
+// HMAC-SHA256 of `msg` under `key`.
+pub fn sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
+	hk := std::crypto::sha256::sum(key)
+	(ipad, opad) := pads(key, &hk)
+	inner mut := Sha256::new()
+	inner.update(&ipad)
+	inner.update(msg)
+	ih := inner.finish()
+	outer mut := Sha256::new()
+	outer.update(&opad)
+	outer.update(&ih)
+	return outer.finish()
+}
+
+// HMAC-SHA1 of `msg` under `key`.
+pub fn sha1(key: &[u8], msg: &[u8]) -> [u8; 20] {
+	hk := std::crypto::sha1::sum(key)
+	(ipad, opad) := pads(key, &hk)
+	inner mut := Sha1::new()
+	inner.update(&ipad)
+	inner.update(msg)
+	ih := inner.finish()
+	outer mut := Sha1::new()
+	outer.update(&opad)
+	outer.update(&ih)
+	return outer.finish()
+}
+
+// Whether `tag` is the HMAC-SHA256 of `msg` under `key` (constant time).
+pub fn verify_sha256(key: &[u8], msg: &[u8], tag: &[u8]) -> bool {
+	want := sha256(key, msg)
+	return std::crypto::constant_time_eq(&want, tag)
+}

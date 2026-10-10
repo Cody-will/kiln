@@ -1,0 +1,155 @@
+// MD5 (RFC 1321). Broken for security: use it only for checksums and
+// compatibility.
+//
+//	println(md5::hex("abc".as_bytes()))   // "90015098..."
+//
+// `Md5` streams like `sha256::Sha256` and implements `io::Write`.
+
+import std::io
+
+const S: [u32; 64] = [
+	7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+	5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+	4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+	6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+]
+
+const K: [u32; 64] = [
+	0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+	0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+	0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+	0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+	0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+	0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+	0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+	0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+]
+
+// Digest size in bytes.
+pub const SIZE: usize = 16
+
+// Block size in bytes.
+pub const BLOCK_SIZE: usize = 64
+
+// A streaming MD5 hasher.
+pub struct Md5 {
+	h: [u32; 4],
+	buf: [u8; 64],
+	nbuf: usize,
+	len: u64,
+}
+
+impl Md5 {
+	// A fresh hasher.
+	pub fn new() -> Md5 {
+		return Md5 {
+			h: [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476],
+			buf: [0 as u8; 64],
+			nbuf: 0,
+			len: 0,
+		}
+	}
+
+	// Feeds more data.
+	pub fn update(&mut self, data: &[u8]) {
+		self.len += data.len() as u64
+		i mut := 0
+		while i < data.len() {
+			if self.nbuf == 0 && data.len() - i >= 64 {
+				self.block(&data[i..(i + 64)])
+				i += 64
+			} else {
+				self.buf[self.nbuf] = data[i]
+				self.nbuf += 1
+				i += 1
+				if self.nbuf == 64 {
+					b := self.buf
+					self.block(&b)
+					self.nbuf = 0
+				}
+			}
+		}
+	}
+
+	// The digest of everything fed so far. The hasher can keep going.
+	pub fn finish(&self) -> [u8; 16] {
+		d mut := Md5 { h: self.h, buf: self.buf, nbuf: self.nbuf, len: self.len }
+		bits := d.len * 8
+		pad mut := [0 as u8; 72]
+		pad[0] = 128
+		n := if d.nbuf < 56 { 56 - d.nbuf } else { 120 - d.nbuf }
+		for i in 0..8 {
+			pad[n + i] = (bits >> (8 * i as u64)) as u8
+		}
+		d.update(&pad[0..(n + 8)])
+		out mut := [0 as u8; 16]
+		for i in 0..4 {
+			for j in 0..4 {
+				out[i * 4 + j] = (d.h[i] >> (8 * j as u32)) as u8
+			}
+		}
+		return out
+	}
+
+	// Starts over.
+	pub fn reset(&mut self) {
+		*self = Md5::new()
+	}
+
+	fn block(&mut self, p: &[u8]) {
+		m mut := [0 as u32; 16]
+		for i in 0..16 {
+			m[i] = (p[4 * i] as u32) | ((p[4 * i + 1] as u32) << 8) | ((p[4 * i + 2] as u32) << 16) | ((p[4 * i + 3] as u32) << 24)
+		}
+		a mut := self.h[0]
+		b mut := self.h[1]
+		c mut := self.h[2]
+		d mut := self.h[3]
+		for i in 0..64 {
+			f mut := 0 as u32
+			g mut := 0 as usize
+			if i < 16 {
+				f = (b & c) | (!b & d)
+				g = i
+			} else if i < 32 {
+				f = (d & b) | (!d & c)
+				g = (5 * i + 1) % 16
+			} else if i < 48 {
+				f = b ^ c ^ d
+				g = (3 * i + 5) % 16
+			} else {
+				f = c ^ (b | !d)
+				g = (7 * i) % 16
+			}
+			t := d
+			d = c
+			c = b
+			b = b.wrapping_add(a.wrapping_add(f).wrapping_add(K[i]).wrapping_add(m[g]).rotate_left(S[i]))
+			a = t
+		}
+		self.h[0] = self.h[0].wrapping_add(a)
+		self.h[1] = self.h[1].wrapping_add(b)
+		self.h[2] = self.h[2].wrapping_add(c)
+		self.h[3] = self.h[3].wrapping_add(d)
+	}
+}
+
+impl io::Write for Md5 {
+	fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
+		self.update(buf)
+		return Ok(buf.len())
+	}
+}
+
+// The MD5 digest of `data`.
+pub fn sum(data: &[u8]) -> [u8; 16] {
+	h mut := Md5::new()
+	h.update(data)
+	return h.finish()
+}
+
+// The MD5 digest of `data` as lowercase hex.
+pub fn hex(data: &[u8]) -> String {
+	d := sum(data)
+	return std::encoding::hex::encode(&d)
+}

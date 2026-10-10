@@ -1,0 +1,18 @@
+// Cryptographic hashes and message authentication:
+// `crypto::sha256`, `crypto::sha1`, `crypto::md5`, and `crypto::hmac`.
+//
+// SHA-1 and MD5 are broken for security purposes; use them only for
+// checksums and compatibility. Comparing secrets should use
+// `crypto::constant_time_eq`, which does not leak where they differ.
+
+// Whether `a` and `b` are equal, taking the same time wherever they differ.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+	if a.len() != b.len() {
+		return false
+	}
+	d mut := 0 as u8
+	for i in 0..a.len() {
+		d = d | (a[i] ^ b[i])
+	}
+	return d == 0
+}
