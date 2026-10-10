@@ -18,6 +18,7 @@ The standard library is written in Kiln, on top of a small C runtime for system 
 | [`std::io`](#stdio) | `Read`, `Write`, buffering, standard streams, errors |
 | [`std::bytes`](#stdbytes) | byte-slice helpers and `Buffer` |
 | [`std::crypto`](#stdcrypto) | SHA-256, SHA-1, MD5, HMAC |
+| [`std::encoding::csv`](#stdencodingcsv) | reading and writing CSV |
 | [`std::fs`](#stdfs) | files and directories |
 | [`std::path`](#stdpath) | path manipulation |
 | [`std::os`](#stdos) | arguments, environment, exit, running programs |
@@ -165,6 +166,31 @@ fn main() -> Result<(), io::Error> {
 	h mut := sha256::Sha256::new()
 	io::copy(&mut f, &mut h)?
 	println(std::encoding::hex::encode(&h.finish()))
+	return Ok(())
+}
+```
+
+## std::encoding::csv
+
+RFC 4180 CSV, like Go's `encoding/csv`. Quoted fields can hold commas, newlines, and `""` for a quote; lines end in `\n` or `\r\n`; empty lines are skipped.
+
+| Item | Description |
+|---|---|
+| `csv::parse(text)` | every record of an in-memory document, as `Vec<Vec<String>>` |
+| `csv::format(rows)` | the reverse, quoting only where needed |
+| `Reader::new(r)` | streams from any `io::Read`: `next_record()` (`None` at the end), `read_all()`, `line()`; settings `delimiter`, `comment`, `flexible` (allow differing field counts), `trim_leading_space` |
+| `Writer::new(w)` | `write_record(&["a", "b"])`, `write_strings(&vec)`, `flush()`; settings `delimiter`, `use_crlf` |
+| `csv::Error` | `Io(io::Error)`, `Parse(line, column, message)`, `FieldCount(line, got, expected)`; `?` converts `io::Error` into it |
+
+```kiln
+import std::encoding::csv
+import std::fs
+
+fn main() -> Result<(), csv::Error> {
+	r mut := csv::Reader::new(fs::File::open("people.csv")?)
+	while let Some(rec) = r.next_record()? {
+		println("{rec[0]} is {rec[1]}")
+	}
 	return Ok(())
 }
 ```

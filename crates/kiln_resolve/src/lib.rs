@@ -44,6 +44,7 @@ pub const STD_MODULES: &[(&str, &str)] = &[
     ("encoding::hex", include_str!("../std/hex.kn")),
     ("encoding::base64", include_str!("../std/base64.kn")),
     ("encoding::json", include_str!("../std/json.kn")),
+    ("encoding::csv", include_str!("../std/csv.kn")),
     ("hash", include_str!("../std/hash.kn")),
     ("crypto", include_str!("../std/crypto.kn")),
     ("crypto::sha256", include_str!("../std/sha256.kn")),

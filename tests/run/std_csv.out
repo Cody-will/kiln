@@ -1,0 +1,16 @@
+["name", "age", "note"]
+["Smith, J", "42", "said \"hi\""]
+["Lee", "7", "two\nlines"]
+["last", "1", ""]
+name,age,note
+"Smith, J",42,"said ""hi"""
+Lee,7,"two
+lines"
+last,1,
+
+[["a", "b ", "c"]] line 2
+csv: line 2: record has 1 fields, expected 2
+csv: line 1: unterminated quoted field
+csv: line 1, column 4: bare " in non-quoted field
+csv: line 1, column 4: extraneous or missing " in quoted field
+plain," lead","q""uote",
