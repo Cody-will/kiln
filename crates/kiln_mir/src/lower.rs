@@ -331,6 +331,15 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         for l in all.into_iter().rev() {
             self.push(StmtKind::StorageDead(l), end);
         }
+        // A task owns its captures: whatever the body didn't move out is dropped
+        // when it finishes.
+        if self.body.kind == BodyKind::GoBlock {
+            for i in 0..self.body.locals.len() {
+                if self.body.locals[i].kind == LocalKind::Upvar {
+                    self.push(StmtKind::StorageDead(Local(i as u32)), end);
+                }
+            }
+        }
         self.terminate(Terminator::Return, end);
         (self.body, self.upvars, self.extra)
     }
@@ -429,11 +438,12 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             AstStmt::Send { chan, value } => {
                 let c = self.read(chan);
                 let v = self.expr(value);
-                self.unsupported("channel send", s.span);
-                self.push(
-                    StmtKind::Eval(Rvalue::Pure(Op::Unsupported("send".into()), vec![c, v])),
-                    s.span,
-                );
+                let rv = Rvalue::Call {
+                    callee: Callee::Intrinsic("chan_send".into()),
+                    args: vec![c, v],
+                    flows: vec![],
+                };
+                self.push(StmtKind::Eval(rv), s.span);
             }
             AstStmt::Defer(e) => {
                 let id = self.defers.len() as u32;
@@ -445,50 +455,6 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     in_loop,
                     now,
                 });
-            }
-            AstStmt::Go(GoTarget::Call(e)) => {
-                self.unsupported(
-                    "`go` tasks (the concurrency runtime is a later milestone)",
-                    s.span,
-                );
-                let operands = match &e.kind {
-                    ExprKind::Call(f, args) => self.call_operands(f, args).1,
-                    ExprKind::MethodCall { receiver, args, .. } => {
-                        self.method_operands(e, receiver, args).1
-                    }
-                    _ => vec![self.expr(e)],
-                };
-                self.push(
-                    StmtKind::Spawn {
-                        kind: SpawnKind::GoCall,
-                        operands,
-                        captures: vec![],
-                    },
-                    e.span,
-                );
-            }
-            AstStmt::Go(GoTarget::Block { is_move, body }) => {
-                self.unsupported(
-                    "`go` tasks (the concurrency runtime is a later milestone)",
-                    s.span,
-                );
-                let (operands, captures) = self.nested(
-                    &[],
-                    None,
-                    NestedBody::Block(body),
-                    *is_move,
-                    BodyKind::GoBlock,
-                    s.span,
-                    Ty::Unit,
-                );
-                self.push(
-                    StmtKind::Spawn {
-                        kind: SpawnKind::GoBlock { is_move: *is_move },
-                        operands,
-                        captures,
-                    },
-                    s.span,
-                );
             }
             AstStmt::Item(_) => {}
             AstStmt::Expr(e) => self.expr_into(e, None),
@@ -990,12 +956,12 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 }
                 ast::UnOp::Recv => {
                     let o = self.read(x);
-                    self.unsupported("channel receive", e.span);
-                    self.temp_of(
-                        ty,
-                        Rvalue::Pure(Op::Unsupported("recv".into()), vec![o]),
-                        e.span,
-                    )
+                    let rv = Rvalue::Call {
+                        callee: Callee::Intrinsic("chan_recv".into()),
+                        args: vec![o],
+                        flows: vec![],
+                    };
+                    self.temp_of(ty, rv, e.span)
                 }
                 ast::UnOp::Neg => {
                     // `-123` is a constant (so `-2147483648` is a valid `i32`).
@@ -1352,6 +1318,199 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         }
     }
 
+    /// `go f(args)` / `go [move] { ... }`: starts a task and returns its `Task<T>`.
+    ///
+    /// Both forms lower to a nested body (kind [`BodyKind::GoBlock`]) whose
+    /// captures move into the task. For `go f(args)` the body is synthesized:
+    /// the callee and arguments are evaluated now and captured, and the body
+    /// makes the call.
+    fn go(&mut self, e: &Expr, g: &GoTarget) -> Operand {
+        let ty = self.ty(e);
+        let ret = match &ty {
+            Ty::Adt(_, a) if !a.is_empty() => a[0].clone(),
+            _ => Ty::Unit,
+        };
+        let (kind, operands, captures) = match g {
+            GoTarget::Call(call) => {
+                let (callee, ops, flows) = match &call.kind {
+                    ExprKind::Call(f, args) => self.call_operands(f, args),
+                    ExprKind::MethodCall { receiver, args, .. } => {
+                        self.method_operands(call, receiver, args)
+                    }
+                    _ => (Callee::Intrinsic("unknown".into()), vec![], vec![]),
+                };
+                let tys: Vec<Ty> = ops.iter().map(|o| self.operand_ty(o)).collect();
+                let name = format!("{}::{{go}}", self.body.name);
+                let res = self.res.clone();
+                let mut inner = Lower::new(&mut *self.typed, res, name, BodyKind::GoBlock, e.span);
+                inner.new_local(ret.clone(), None, e.span, LocalKind::Return, true, None);
+                let ups: Vec<Local> = tys
+                    .iter()
+                    .map(|t| {
+                        inner.new_local(t.clone(), None, call.span, LocalKind::Upvar, false, None)
+                    })
+                    .collect();
+                let args = ups
+                    .iter()
+                    .zip(&tys)
+                    .map(|(u, t)| inner.operand_of(Place::local(*u), t))
+                    .collect();
+                inner.assign(
+                    Place::local(Local(0)),
+                    Rvalue::Call {
+                        callee,
+                        args,
+                        flows,
+                    },
+                    call.span,
+                );
+                let end = Span::new(e.span.end.saturating_sub(1), e.span.end);
+                let (mut nb, _, extra) = inner.finish(end);
+                nb.captures = ups.iter().map(|u| (*u, CaptureMode::Move)).collect();
+                self.extra.push(nb);
+                self.extra.extend(extra);
+                (SpawnKind::GoCall, ops, vec![])
+            }
+            GoTarget::Block { is_move, body } => {
+                let (ops, caps) = self.nested(
+                    &[],
+                    None,
+                    NestedBody::Block(body),
+                    *is_move,
+                    BodyKind::GoBlock,
+                    e.span,
+                    ret,
+                );
+                (SpawnKind::GoBlock { is_move: *is_move }, ops, caps)
+            }
+        };
+        self.push(
+            StmtKind::Spawn {
+                kind,
+                operands,
+                captures,
+                body: e.span,
+            },
+            e.span,
+        );
+        let rv = Rvalue::Call {
+            callee: Callee::Intrinsic("go_handle".into()),
+            args: vec![],
+            flows: vec![],
+        };
+        self.temp_of(ty, rv, e.span)
+    }
+
+    /// `select { ... }`: channel operands and sent values are evaluated first,
+    /// in order; the runtime picks a ready case (or `_` when none is) and
+    /// returns its index; the arms are then chosen by comparing the index.
+    fn select(&mut self, arms: &[ast::SelectArm], span: Span) {
+        let mut ops = vec![];
+        let mut kinds = String::new();
+        // Per arm: the case index and the receive buffer or sent value.
+        let mut cases: Vec<(usize, Option<Local>)> = vec![];
+        let mut default = None;
+        for arm in arms {
+            match &arm.op {
+                SelectOp::Recv { chan, .. } => {
+                    let mut ct = self.ty(chan);
+                    while let Ty::Ref(_, x) = ct {
+                        ct = *x;
+                    }
+                    let et = match ct {
+                        Ty::ChanRecv(t) => *t,
+                        _ => Ty::Unknown,
+                    };
+                    let c = self.read(chan);
+                    // The runtime writes the received value straight into `buf`.
+                    let buf = self.temp(et, chan.span);
+                    cases.push((kinds.len(), Some(buf)));
+                    kinds.push('r');
+                    ops.push(c);
+                    ops.push(Operand::Copy(Place::local(buf)));
+                }
+                SelectOp::Send { chan, value } => {
+                    let c = self.read(chan);
+                    let vt = self.ty(value);
+                    let v = self.expr(value);
+                    let sv = self.temp(vt, value.span);
+                    self.assign(Place::local(sv), Rvalue::Use(v), value.span);
+                    cases.push((kinds.len(), Some(sv)));
+                    kinds.push('s');
+                    ops.push(c);
+                    ops.push(Operand::Copy(Place::local(sv)));
+                }
+                SelectOp::Default => {
+                    default = Some(cases.len());
+                    cases.push((usize::MAX, None));
+                }
+            }
+        }
+        let n = kinds.len();
+        let name = format!("select:{kinds}:{}", default.is_some() as u8);
+        let idx = self.temp_of(
+            usize_ty(),
+            Rvalue::Call {
+                callee: Callee::Intrinsic(name),
+                args: ops,
+                flows: vec![],
+            },
+            span,
+        );
+        let join = self.new_block();
+        for (arm, (k, local)) in arms.iter().zip(cases) {
+            let k = if k == usize::MAX { n } else { k };
+            let (armb, next) = (self.new_block(), self.new_block());
+            let c = self.temp_of(
+                bool_ty(),
+                Rvalue::Pure(
+                    Op::Bin(BinOp::Eq),
+                    vec![
+                        idx.clone(),
+                        Operand::constant(ConstKind::Int(k as i128), usize_ty()),
+                    ],
+                ),
+                arm.span,
+            );
+            self.switch(c, armb, next, arm.span);
+            self.cur = armb;
+            self.push_scope();
+            match (&arm.op, local) {
+                (SelectOp::Recv { bind, chan }, Some(buf)) => {
+                    let id = bind
+                        .as_ref()
+                        .and_then(|b| b.name.as_ref())
+                        .and_then(|n| self.r.bindings.get(&n.span));
+                    let v = Operand::Move(Place::local(buf));
+                    match id {
+                        Some(&id) => {
+                            let l = self.declare(id);
+                            self.assign(Place::local(l), Rvalue::Use(v), chan.span);
+                        }
+                        // Not bound: the value is dropped.
+                        None => self.push(StmtKind::Eval(Rvalue::Use(v)), chan.span),
+                    }
+                }
+                (SelectOp::Send { .. }, Some(sv)) => {
+                    // The runtime moved the value into the channel.
+                    let rv = Rvalue::Call {
+                        callee: Callee::Intrinsic("select_sent".into()),
+                        args: vec![Operand::Move(Place::local(sv))],
+                        flows: vec![],
+                    };
+                    self.push(StmtKind::Eval(rv), arm.span);
+                }
+                _ => {}
+            }
+            self.expr_into(&arm.body, None);
+            self.pop_scope(arm.span);
+            self.goto(join, arm.span);
+            self.cur = next;
+        }
+        self.terminate(Terminator::Unreachable, span);
+        self.cur = join;
+    }
+
     /// For `defer f(args)` and `defer x.m(args)`: evaluates the callee and
     /// arguments now (Go semantics) into a tuple local that lives until
     /// function exit. Other deferred expressions (blocks) run at exit as written.
@@ -1582,9 +1741,6 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             }
         }
         let (callee, ops, flows) = self.call_operands(f, args);
-        if callee == Callee::Intrinsic("chan".into()) {
-            self.unsupported("channels", e.span);
-        }
         self.finish_call(e, callee, ops, flows)
     }
 
@@ -1667,28 +1823,22 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             None => (0..ops.len()).collect(),
         };
         if scoped {
-            self.unsupported(
-                "scoped tasks (the concurrency runtime is a later milestone)",
-                e.span,
-            );
+            // Checked by the borrow checker (captures must be `Send`/`Sync`);
+            // the task itself is started by the `Scope::spawn` call.
             let captures = self.last_captures.take().unwrap_or_default();
             self.push(
                 StmtKind::Spawn {
                     kind: SpawnKind::Scoped,
                     operands: vec![],
                     captures,
+                    body: e.span,
                 },
                 e.span,
             );
         }
         let callee = match info.fn_idx {
             Some(i) => Callee::Fn(i, sorted(&info.substs)),
-            None => {
-                if matches!(info.recv_ty, Ty::ChanSend(_) | Ty::ChanRecv(_)) {
-                    self.unsupported("channel methods", e.span);
-                }
-                Callee::Intrinsic(name)
-            }
+            None => Callee::Intrinsic(name),
         };
         (callee, ops, flows)
     }
@@ -1885,47 +2035,14 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 self.goto(self.exit, e.span);
                 self.cur = self.new_block();
             }
-            ExprKind::Select(arms) => {
-                self.unsupported("`select`", e.span);
-                let join = self.new_block();
-                let targets: Vec<BlockId> = arms.iter().map(|_| self.new_block()).collect();
-                self.terminate(Terminator::Branch(targets.clone()), e.span);
-                for (arm, bb) in arms.iter().zip(targets) {
-                    self.cur = bb;
-                    self.push_scope();
-                    let un = || Op::Unsupported("select".into());
-                    match &arm.op {
-                        SelectOp::Recv { bind, chan } => {
-                            let c = self.read(chan);
-                            match bind
-                                .as_ref()
-                                .and_then(|b| b.name.as_ref())
-                                .and_then(|n| self.r.bindings.get(&n.span))
-                            {
-                                Some(&id) => {
-                                    let l = self.declare(id);
-                                    self.assign(
-                                        Place::local(l),
-                                        Rvalue::Pure(un(), vec![c]),
-                                        chan.span,
-                                    );
-                                }
-                                None => self
-                                    .push(StmtKind::Eval(Rvalue::Pure(un(), vec![c])), chan.span),
-                            }
-                        }
-                        SelectOp::Send { chan, value } => {
-                            let c = self.read(chan);
-                            let v = self.expr(value);
-                            self.push(StmtKind::Eval(Rvalue::Pure(un(), vec![c, v])), arm.span);
-                        }
-                        SelectOp::Default => {}
-                    }
-                    self.expr_into(&arm.body, None);
-                    self.pop_scope(arm.span);
-                    self.goto(join, arm.span);
+            ExprKind::Select(arms) => self.select(arms, e.span),
+            ExprKind::Go(g) => {
+                let op = self.go(e, g);
+                match dest {
+                    Some(d) => self.assign(d, Rvalue::Use(op), e.span),
+                    // A `go` statement detaches the task.
+                    None => self.push(StmtKind::Eval(Rvalue::Use(op)), e.span),
                 }
-                self.cur = join;
             }
             _ => {
                 let op = self.expr(e);
@@ -2043,6 +2160,36 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                         Op::Bin(BinOp::Add),
                         vec![Operand::Copy(start), one(t.clone())],
                     ),
+                    sp,
+                );
+                (el, t)
+            }
+            Ty::ChanRecv(t) => {
+                // `for v in rx`: receive until the channel is closed.
+                let t = (**t).clone();
+                let opt_ty = match self.r.prelude_type("Option") {
+                    Some(o) => Ty::Adt(o, vec![t.clone()]),
+                    None => Ty::Unknown,
+                };
+                let opt = self.temp(opt_ty, sp);
+                self.assign(
+                    Place::local(opt),
+                    Rvalue::Call {
+                        callee: Callee::Intrinsic("recv".into()),
+                        args: vec![Operand::Copy(Place::local(it))],
+                        flows: vec![],
+                    },
+                    sp,
+                );
+                // `Some` is variant 0.
+                self.test_variant(&Place::local(opt), 0, exit_loop, sp);
+                self.goto(bodyb, sp);
+                self.cur = bodyb;
+                self.push_scope();
+                let el = self.temp(t.clone(), pat.span);
+                self.assign(
+                    Place::local(el),
+                    Rvalue::Use(Operand::Move(Place::local(opt).field("Some.0"))),
                     sp,
                 );
                 (el, t)

@@ -1,0 +1,7 @@
+fn main() {
+	(tx, rx) := chan::<i32>(1)
+	tx <- 1
+	drop(tx)
+	println("first {<-rx}")
+	println("second {<-rx}")
+}

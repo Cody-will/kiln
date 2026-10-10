@@ -1,0 +1,36 @@
+struct N {
+	id: i32,
+}
+
+impl Drop for N {
+	fn drop(&mut self) {
+		println("drop {self.id}")
+	}
+}
+
+fn make(id: i32) -> N {
+	return N { id: id }
+}
+
+fn main() {
+	a := N { id: 1 }
+	b := N { id: 2 }
+	t := go move {
+		println("task sees {a.id}")
+	}
+	t.join()
+	println("after join")
+	t2 := go make(3)
+	match t2.join() {
+		Ok(n) => println("joined {n.id}"),
+		Err(_) => println("panic"),
+	}
+	(tx, rx) := chan::<N>(4)
+	tx <- N { id: 4 }
+	tx <- N { id: 5 }
+	first := <-rx
+	println("received {first.id}")
+	drop(tx)
+	drop(rx)
+	println("end")
+}

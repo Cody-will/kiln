@@ -1,0 +1,30 @@
+struct Counter {
+	hits: i64,
+}
+
+fn main() {
+	data := vec_of(10)
+	total mut := 0
+	c mut := Counter { hits: 0 }
+	scope(|s| {
+		s.spawn(|| {
+			sum mut := 0
+			for x in &data {
+				sum += *x
+			}
+			println("sum {sum}")
+		})
+		s.spawn(|| {
+			c.hits += 5
+		})
+	})
+	println("hits {c.hits} len {data.len()}")
+}
+
+fn vec_of(n: i64) -> Vec<i64> {
+	v mut := Vec::new()
+	for i in 0..n {
+		v.push(i)
+	}
+	return v
+}

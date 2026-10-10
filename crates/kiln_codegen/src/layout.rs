@@ -88,6 +88,7 @@ impl Codegen<'_, '_> {
             },
             Ty::Ref(..) | Ty::Ptr(..) if !self.is_fat(t) => types::I64,
             Ty::Adt(..) if self.is_lang(t, "Box") && !self.is_fat(t) => types::I64,
+            Ty::ChanSend(_) | Ty::ChanRecv(_) => types::I64,
             _ => return None,
         })
     }
@@ -121,6 +122,9 @@ impl Codegen<'_, '_> {
                 sequential(&ls).1
             }
             Ty::Adt(..) if self.is_lang(t, "Box") => Layout { size: 16, align: 8 },
+            // Channel ends and task handles point to runtime objects.
+            Ty::ChanSend(_) | Ty::ChanRecv(_) => word,
+            Ty::Adt(..) if self.is_lang(t, "Task") => word,
             Ty::Adt(..) if self.is_lang(t, "String") || self.is_lang(t, "Vec") => {
                 Layout { size: 24, align: 8 }
             }
@@ -263,6 +267,8 @@ impl Codegen<'_, '_> {
                 true
             }
             Ty::Adt(..) if self.is_lang(t, "Range") => false,
+            Ty::Adt(..) if self.is_lang(t, "Task") => true,
+            Ty::ChanSend(_) | Ty::ChanRecv(_) => true,
             Ty::Adt(d, _) => {
                 self.typed.has_drop_impl(t) || {
                     let variants: Vec<Option<kiln_resolve::DefId>> = match self.r.def(*d).kind {

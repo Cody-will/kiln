@@ -48,10 +48,237 @@ impl FnCx<'_, '_, '_, '_> {
         (et, l.size, l.align)
     }
 
+    /// The runtime handle of a channel end (looking through references), and
+    /// whether it is the sending end.
+    fn chan_handle(&mut self, o: &Operand) -> Option<(Value, bool)> {
+        let mut t = self.op_ty(o);
+        if !matches!(t, Ty::Ref(..) | Ty::ChanSend(_) | Ty::ChanRecv(_)) {
+            return None;
+        }
+        let mut a = self.op_addr(o);
+        while let Ty::Ref(_, x) = t {
+            a = self.load(types::I64, a, 0);
+            t = *x;
+        }
+        let send = match t {
+            Ty::ChanSend(_) => true,
+            Ty::ChanRecv(_) => false,
+            _ => return None,
+        };
+        Some((self.load(types::I64, a, 0), send))
+    }
+
+    /// Stores enum variant `index`'s tag (the payload is written separately).
+    fn set_tag(&mut self, dest: Value, index: Value) {
+        self.store(index, dest, 0);
+    }
+
+    /// Channel methods: `try_send`, `try_recv`, `recv`, `close`, `len`, `cap`, `clone`.
+    fn chan_method(&mut self, short: &str, args: &[Operand], dest: Value, dt: &Ty) -> bool {
+        let Some((h, send)) = args.first().and_then(|a| self.chan_handle(a)) else {
+            return false;
+        };
+        match short {
+            "recv" => {
+                // Option<T>: Some = 0, None = 1.
+                let (off, _) = self.cg.field(dt, "Some.0");
+                let p = self.b.ins().iadd_imm(dest, off as i64);
+                let ok = self.call_rt("kn_chan_recv", &[h, p]).unwrap();
+                let tag = self.b.ins().bxor_imm(ok, 1);
+                self.set_tag(dest, tag);
+            }
+            "try_recv" => {
+                // Result<T, TryRecvError>: 0 received, 1 empty, 2 closed.
+                let (off, _) = self.cg.field(dt, "Ok.0");
+                let p = self.b.ins().iadd_imm(dest, off as i64);
+                let r = self.call_rt("kn_chan_try_recv", &[h, p]).unwrap();
+                let failed = self.b.ins().icmp_imm(IntCC::NotEqual, r, 0);
+                let tag = self.b.ins().uextend(types::I32, failed);
+                self.set_tag(dest, tag);
+                let dt2 = dt.clone();
+                self.when(failed, |cx| {
+                    let (eoff, _) = cx.cg.field(&dt2, "Err.0");
+                    let e = cx.b.ins().iadd_imm(dest, eoff as i64);
+                    let kind = cx.b.ins().iadd_imm(r, -1);
+                    cx.set_tag(e, kind);
+                });
+            }
+            "try_send" => {
+                // Result<(), TrySendError<T>>: 0 sent, 1 full, 2 closed.
+                let vt = self.op_ty(&args[1]);
+                let size = self.cg.layout(&vt).size;
+                let s = self.slot_for(&vt);
+                self.store_op(&args[1], s);
+                let r = self.call_rt("kn_chan_try_send", &[h, s]).unwrap();
+                let failed = self.b.ins().icmp_imm(IntCC::NotEqual, r, 0);
+                let tag = self.b.ins().uextend(types::I32, failed);
+                self.set_tag(dest, tag);
+                let dt2 = dt.clone();
+                self.when(failed, |cx| {
+                    // The value comes back in the error.
+                    let (eoff, et) = cx.cg.field(&dt2, "Err.0");
+                    let e = cx.b.ins().iadd_imm(dest, eoff as i64);
+                    let kind = cx.b.ins().iadd_imm(r, -1);
+                    cx.set_tag(e, kind);
+                    let (poff, _) = cx.cg.field(&et, "Full.0");
+                    let p = cx.b.ins().iadd_imm(e, poff as i64);
+                    cx.copy(p, s, size);
+                });
+            }
+            "close" => {
+                self.call_rt("kn_chan_close", &[h]);
+            }
+            "len" | "cap" => {
+                let f = if short == "len" {
+                    "kn_chan_len"
+                } else {
+                    "kn_chan_cap"
+                };
+                let n = self.call_rt(f, &[h]).unwrap();
+                self.store(n, dest, 0);
+            }
+            "clone" => {
+                let s = self.b.ins().iconst(types::I32, send as i64);
+                self.call_rt("kn_chan_clone_end", &[h, s]);
+                self.store(h, dest, 0);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// `select:<kinds>:<has default>` (see `kiln_mir`'s select lowering): the
+    /// operands are (channel, receive buffer or sent value) per case.
+    fn select(&mut self, name: &str, args: &[Operand], dest: Value) {
+        let mut parts = name.split(':').skip(1);
+        let kinds: Vec<char> = parts.next().unwrap_or("").chars().collect();
+        let has_default = parts.next() == Some("1");
+        let n = kinds.len();
+        let cases = self.slot(24 * n.max(1) as u32, 8);
+        for (i, k) in kinds.iter().enumerate() {
+            let (h, _) = self.chan_handle(&args[2 * i]).unwrap_or_else(|| {
+                let z = self.iconst(0);
+                (z, false)
+            });
+            let elem = match args[2 * i + 1].place() {
+                Some(p) => self.place_addr(p).0,
+                None => self.iconst(0),
+            };
+            let send = self.iconst((*k == 's') as i64);
+            let base = 24 * i as i32;
+            self.store(h, cases, base);
+            self.store(elem, cases, base + 8);
+            self.store(send, cases, base + 16);
+        }
+        let (nv, dv) = (self.iconst(n as i64), self.iconst(has_default as i64));
+        let r = self.call_rt("kn_select", &[cases, nv, dv]).unwrap();
+        self.store(r, dest, 0);
+    }
+
     pub(crate) fn intrinsic(&mut self, name: &str, args: &[Operand], dest: Value, dt: &Ty) {
         let short = name.rsplit("::").next().unwrap_or(name);
         let ty_name = name.split("::").next().unwrap_or("");
+        if name.starts_with("select:") {
+            return self.select(name, args, dest);
+        }
+        if matches!(
+            short,
+            "recv" | "try_recv" | "try_send" | "close" | "len" | "cap" | "clone"
+        ) && self.chan_method(short, args, dest, dt)
+        {
+            return;
+        }
         match (ty_name, short) {
+            (_, "go_handle") => {
+                let h = match self.last_task {
+                    Some(s) => self.b.ins().stack_load(types::I64, s, 0),
+                    None => self.iconst(0),
+                };
+                self.store(h, dest, 0);
+            }
+            ("Task", "join") => {
+                // Result<T, Panic>: Ok = 0. (Panics end the program, so never Err.)
+                let s = self.slot(8, 8);
+                self.store_op(&args[0], s);
+                let h = self.load(types::I64, s, 0);
+                let (off, _) = self.cg.field(dt, "Ok.0");
+                let p = self.b.ins().iadd_imm(dest, off as i64);
+                self.call_rt("kn_task_join", &[h, p]);
+                let z = self.b.ins().iconst(types::I32, 0);
+                self.set_tag(dest, z);
+            }
+            (_, "scope") => {
+                // scope(body): run `body(&scope)`, then wait for the scope's tasks.
+                let sc = self.call_rt("kn_scope_new", &[]).unwrap();
+                let fa = self.op_addr(&args[0]);
+                let code = self.load(types::I64, fa, 0);
+                let env = self.load(types::I64, fa, 8);
+                let arg = self.slot(8, 8);
+                self.store(sc, arg, 0);
+                let ret = self.slot(8, 8);
+                let sig = self.cg.ptr_sig(3);
+                let sref = self.b.import_signature(sig);
+                self.b.ins().call_indirect(sref, code, &[ret, env, arg]);
+                self.call_rt("kn_scope_wait", &[sc]);
+            }
+            ("Scope", "spawn") => {
+                let sc = self.op_scalar(&args[0]);
+                let fa = self.op_addr(&args[1]);
+                let code = self.load(types::I64, fa, 0);
+                let env = self.load(types::I64, fa, 8);
+                self.call_rt("kn_scope_spawn", &[sc, code, env]);
+            }
+            (_, "chan") => {
+                // chan::<T>(cap) -> (chan<- T, <-chan T), both pointing at one channel.
+                let et = match dt {
+                    Ty::Tuple(ts) => match ts.first() {
+                        Some(Ty::ChanSend(t)) => (**t).clone(),
+                        _ => Ty::Unit,
+                    },
+                    _ => Ty::Unit,
+                };
+                let size = self.cg.layout(&et).size as i64;
+                let size = self.iconst(size);
+                let cap = match args.first() {
+                    Some(a) => {
+                        let (v, t) = self.scalar_through_refs(a);
+                        let st = self.cg.scalar(&t).unwrap_or(types::I64);
+                        if st.bits() < 64 {
+                            self.b.ins().uextend(types::I64, v)
+                        } else {
+                            v
+                        }
+                    }
+                    None => self.iconst(0),
+                };
+                let drop = self.drop_fn_ptr(&et);
+                let h = self.call_rt("kn_chan_new", &[size, cap, drop]).unwrap();
+                self.store(h, dest, 0);
+                self.store(h, dest, 8);
+            }
+            (_, "chan_send") => {
+                let Some((h, _)) = self.chan_handle(&args[0]) else {
+                    return self.error("internal error: send on a non-channel");
+                };
+                let vt = self.op_ty(&args[1]);
+                let s = self.slot_for(&vt);
+                self.store_op(&args[1], s);
+                self.call_rt("kn_chan_send", &[h, s]);
+            }
+            (_, "chan_recv") => {
+                let Some((h, _)) = self.chan_handle(&args[0]) else {
+                    return self.error("internal error: receive on a non-channel");
+                };
+                let ok = self.call_rt("kn_chan_recv", &[h, dest]).unwrap();
+                let closed = self.b.ins().icmp_imm(IntCC::Equal, ok, 0);
+                self.when(closed, |cx| cx.panic_msg("receive on a closed channel"));
+            }
+            (_, "select_sent") => {
+                // The runtime already moved the value into the channel.
+                if let Some(p) = args[0].place() {
+                    self.moved(p);
+                }
+            }
             ("String", "new") => self.init_string(dest),
             ("String", "from") | ("str", "to_string") => {
                 let (p, n) = self.str_of(&args[0]);

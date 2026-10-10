@@ -1,0 +1,10 @@
+task sees 1
+drop 1
+after join
+joined 3
+drop 3
+received 4
+drop 5
+end
+drop 4
+drop 2

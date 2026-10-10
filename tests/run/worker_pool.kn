@@ -1,0 +1,49 @@
+struct Job {
+	id: i32,
+	n: i64,
+}
+
+struct Output {
+	id: i32,
+	sum: i64,
+}
+
+fn work(n: i64) -> i64 {
+	total mut := 0
+	for i in 0..n {
+		total += i
+	}
+	return total
+}
+
+fn worker(jobs: <-chan Job, results: chan<- Output) {
+	for job in jobs {
+		results <- Output { id: job.id, sum: work(job.n) }
+	}
+}
+
+fn main() {
+	(jobs_tx, jobs_rx) := chan::<Job>(16)
+	(res_tx, res_rx) := chan::<Output>(16)
+	workers mut := Vec::new()
+	for w in 0..4 {
+		workers.push(go worker(jobs_rx.clone(), res_tx.clone()))
+	}
+	drop(jobs_rx)
+	drop(res_tx)
+	go move {
+		for id in 0..100 {
+			jobs_tx <- Job { id: id, n: id as i64 * 1000 }
+		}
+	}
+	grand mut := 0
+	count mut := 0
+	for out in res_rx {
+		grand += out.sum
+		count += 1
+	}
+	for t in workers {
+		t.join()
+	}
+	println("{count} results, total {grand}")
+}

@@ -367,6 +367,8 @@ pub enum StmtKind {
         kind: SpawnKind,
         operands: Vec<Operand>,
         captures: Vec<Capture>,
+        /// Span of the task's body (a [`BodyKind::GoBlock`] body); unused for scoped tasks.
+        body: Span,
     },
 }
 

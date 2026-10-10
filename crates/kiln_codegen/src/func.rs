@@ -55,6 +55,8 @@ pub(crate) struct FnCx<'c, 'r, 'a, 'f> {
     pub locals: Vec<LocalInfo>,
     pub blocks: Vec<ir::Block>,
     pub defer_stack: Option<StackSlot>,
+    /// Handle of the task most recently started by a `go` in this function.
+    pub last_task: Option<StackSlot>,
     pub span: kiln_lexer::Span,
 }
 
@@ -75,7 +77,7 @@ impl Codegen<'_, '_> {
             return;
         };
         self.span = body.span;
-        if !body.unsupported.is_empty() || body.kind == BodyKind::GoBlock {
+        if !body.unsupported.is_empty() {
             for (what, span) in &body.unsupported {
                 self.error_at(format!("code generation does not support {what}"), *span);
             }
@@ -97,6 +99,7 @@ impl Codegen<'_, '_> {
                 locals: vec![],
                 blocks: vec![],
                 defer_stack: None,
+                last_task: None,
                 span,
             };
             cx.translate(abi);
@@ -138,13 +141,14 @@ impl Codegen<'_, '_> {
         sig.params.push(ir::AbiParam::new(types::I32));
         sig.params.push(ir::AbiParam::new(types::I64));
         sig.returns.push(ir::AbiParam::new(types::I32));
-        let id = match self
-            .module
-            .declare_function("main", cranelift_module::Linkage::Export, &sig)
-        {
-            Ok(id) => id,
-            Err(e) => return self.fatal(format!("could not declare main: {e}")),
-        };
+        let id =
+            match self
+                .module
+                .declare_function("kn_main", cranelift_module::Linkage::Export, &sig)
+            {
+                Ok(id) => id,
+                Err(e) => return self.fatal(format!("could not declare main: {e}")),
+            };
         let l = self.layout(&ret);
         let is_result = self.is_lang(&ret, "Result");
         let err_info = if is_result {
@@ -385,7 +389,15 @@ impl FnCx<'_, '_, '_, '_> {
                 },
                 _ => self.slot_for(&ty),
             };
-            let flag = if matches!(decl.kind, LocalKind::Return | LocalKind::Upvar)
+            // A task owns its moved captures, so they get drop flags too.
+            let owned_upvar = decl.kind == LocalKind::Upvar
+                && self.body.kind == BodyKind::GoBlock
+                && matches!(
+                    env_offsets.get(&kiln_mir::Local(i as u32)),
+                    Some((_, CaptureMode::Move))
+                );
+            let flag = if (matches!(decl.kind, LocalKind::Return | LocalKind::Upvar)
+                && !owned_upvar)
                 || !self.cg.needs_drop(&ty)
             {
                 None
@@ -395,10 +407,10 @@ impl FnCx<'_, '_, '_, '_> {
                     1,
                     0,
                 ));
-                let v = self
-                    .b
-                    .ins()
-                    .iconst(types::I8, (decl.kind == LocalKind::Arg) as i64);
+                let v = self.b.ins().iconst(
+                    types::I8,
+                    (decl.kind == LocalKind::Arg || owned_upvar) as i64,
+                );
                 self.b.ins().stack_store(v, s, 0);
                 Some(s)
             };
@@ -533,8 +545,69 @@ impl FnCx<'_, '_, '_, '_> {
                 );
                 self.call_rt("kn_free", &[p, sz, al]);
             }
-            StmtKind::Spawn { .. } => self.error("code generation does not support tasks yet"),
+            StmtKind::Spawn {
+                kind,
+                operands,
+                body,
+                ..
+            } => {
+                if *kind != kiln_mir::SpawnKind::Scoped {
+                    self.spawn(operands, *body);
+                }
+            }
         }
+    }
+
+    /// `go`: moves the captures into a heap environment and starts the task
+    /// body (a closure-ABI instance) on the scheduler. The handle is read by
+    /// the following `go_handle` intrinsic.
+    fn spawn(&mut self, ops: &[Operand], body: kiln_lexer::Span) {
+        let bi = self
+            .cg
+            .bodies(self.fn_idx)
+            .iter()
+            .position(|b| b.kind == BodyKind::GoBlock && b.span == body);
+        let Some(bi) = bi else {
+            return self.error("internal error: task body not found");
+        };
+        let ret_ty = self.cg.bodies(self.fn_idx)[bi].locals[0].ty.clone();
+        let ret_ty = self.subst(&ret_ty);
+        let id = self
+            .cg
+            .instance(self.fn_idx, bi, self.substs.clone(), Abi::Closure);
+        let tys: Vec<Ty> = ops.iter().map(|o| self.op_ty(o)).collect();
+        let ls: Vec<crate::Layout> = tys.iter().map(|t| self.cg.layout(t)).collect();
+        let (offs, l) = crate::layout::sequential(&ls);
+        let size = self.iconst(l.size as i64);
+        let align = self.iconst(l.align as i64);
+        let env = self.call_rt("kn_alloc", &[size, align]).unwrap();
+        for (o, off) in ops.iter().zip(offs) {
+            let a = self.b.ins().iadd_imm(env, off as i64);
+            self.store_op(o, a);
+        }
+        let f = self.cg.module.declare_func_in_func(id, self.b.func);
+        let code = self.b.ins().func_addr(types::I64, f);
+        let ret_size = self.cg.layout(&ret_ty).size as i64;
+        let ret_size = self.iconst(ret_size);
+        let drop = self.drop_fn_ptr(&ret_ty);
+        let h = self
+            .call_rt("kn_go", &[code, env, size, ret_size, drop])
+            .unwrap();
+        let s = *self.last_task.get_or_insert_with(|| {
+            self.b
+                .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3))
+        });
+        self.b.ins().stack_store(h, s, 0);
+    }
+
+    /// The drop glue of `t` as a function pointer (0 if `t` needs no drop).
+    pub(crate) fn drop_fn_ptr(&mut self, t: &Ty) -> Value {
+        if !self.cg.needs_drop(t) {
+            return self.iconst(0);
+        }
+        let g = self.cg.drop_glue_for(t);
+        let f = self.cg.module.declare_func_in_func(g, self.b.func);
+        self.b.ins().func_addr(types::I64, f)
     }
 
     fn assign(&mut self, p: &Place, rv: &Rvalue) {

@@ -76,6 +76,7 @@ impl<'r, 'a> Codegen<'r, 'a> {
                 locals: vec![],
                 blocks: vec![],
                 defer_stack: None,
+                last_task: None,
                 span,
             };
             f(&mut cx, &ps);
@@ -199,6 +200,20 @@ impl FnCx<'_, '_, '_, '_> {
                 }
                 return;
             }
+        }
+        if let Ty::ChanSend(_) | Ty::ChanRecv(_) = t {
+            let h = self.load(types::I64, p, 0);
+            let s = self
+                .b
+                .ins()
+                .iconst(types::I32, matches!(t, Ty::ChanSend(_)) as i64);
+            self.call_rt("kn_chan_drop_end", &[h, s]);
+            return;
+        }
+        if self.cg.is_lang(t, "Task") {
+            let h = self.load(types::I64, p, 0);
+            self.call_rt("kn_task_drop", &[h]);
+            return;
         }
         // User `Drop` impl first.
         if matches!(t, Ty::Adt(..)) && self.cg.typed.has_drop_impl(t) {
@@ -373,6 +388,16 @@ impl FnCx<'_, '_, '_, '_> {
                 self.store(p, dst, 0);
                 return;
             }
+        }
+        if let Ty::ChanSend(_) | Ty::ChanRecv(_) = t {
+            let h = self.load(types::I64, src, 0);
+            let s = self
+                .b
+                .ins()
+                .iconst(types::I32, matches!(t, Ty::ChanSend(_)) as i64);
+            self.call_rt("kn_chan_clone_end", &[h, s]);
+            self.store(h, dst, 0);
+            return;
         }
         match t {
             Ty::Array(et, n) => {

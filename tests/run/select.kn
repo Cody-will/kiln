@@ -1,0 +1,53 @@
+fn main() {
+	(tx, rx) := chan::<i32>(0)
+	(qtx, qrx) := chan::<String>(1)
+	go move {
+		for i in 0..3 {
+			tx <- i
+		}
+		qtx <- String::from("quit")
+	}
+	loop {
+		select {
+			v := <-rx => println("value {v}"),
+			msg := <-qrx => {
+				println("got {msg}")
+				break
+			},
+		}
+	}
+	(btx, brx) := chan::<i32>(2)
+	r1 := btx.try_send(1)
+	r2 := btx.try_send(2)
+	match btx.try_send(3) {
+		Ok(()) => println("sent 3?"),
+		Err(TrySendError::Full(v)) => println("full, got back {v}"),
+		Err(TrySendError::Closed(v)) => println("closed, got back {v}"),
+	}
+	println("len {brx.len()} cap {brx.cap()}")
+	select {
+		v := <-brx => println("ready {v}"),
+		_ => println("nothing ready"),
+	}
+	btx.close()
+	for v in brx {
+		println("drained {v}")
+	}
+	(etx, erx) := chan::<i32>(0)
+	match erx.try_recv() {
+		Ok(v) => println("value {v}?"),
+		Err(TryRecvError::Empty) => println("empty"),
+		Err(TryRecvError::Closed) => println("closed"),
+	}
+	drop(etx)
+	match erx.recv() {
+		Some(v) => println("value {v}?"),
+		None => println("recv: closed"),
+	}
+	(stx, srx) := chan::<i32>(1)
+	select {
+		stx <- 42 => println("sent in select"),
+		_ => println("send not ready"),
+	}
+	println("srx {<-srx}")
+}

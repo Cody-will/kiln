@@ -1,0 +1,12 @@
+value 0
+value 1
+value 2
+got quit
+full, got back 3
+len 2 cap 2
+ready 1
+drained 2
+empty
+recv: closed
+sent in select
+srx 42

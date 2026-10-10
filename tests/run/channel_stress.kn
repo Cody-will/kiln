@@ -1,0 +1,56 @@
+fn producer(id: i64, n: i64, out: chan<- i64) {
+	for i in 0..n {
+		out <- id * 1000000 + i
+	}
+}
+
+fn main() {
+	(tx, rx) := chan::<i64>(0)
+	(dtx, drx) := chan::<i64>(3)
+	for p in 0..8 {
+		go producer(p, 2000, tx.clone())
+	}
+	drop(tx)
+	// Several consumers sum what they receive and report through another channel.
+	for c in 0..3 {
+		r := rx.clone()
+		d := dtx.clone()
+		go move {
+			s mut := 0
+			n mut := 0
+			for v in r {
+				s += v % 1000000
+				n += 1
+			}
+			d <- s * 100000 + n
+		}
+	}
+	drop(rx)
+	drop(dtx)
+	total mut := 0
+	count mut := 0
+	for r in drx {
+		total += r / 100000
+		count += r % 100000
+	}
+	println("count {count} total {total}")
+	// Many short tasks joined in order.
+	tasks mut := Vec::new()
+	for i in 0..1000 {
+		tasks.push(go square(i))
+	}
+	acc mut := 0
+	for t in tasks {
+		match t.join() {
+			Ok(v) => {
+				acc += v
+			},
+			Err(_) => {},
+		}
+	}
+	println("squares {acc}")
+}
+
+fn square(x: i64) -> i64 {
+	return x * x
+}

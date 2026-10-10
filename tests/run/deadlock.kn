@@ -1,0 +1,7 @@
+fn main() {
+	(tx, rx) := chan::<i32>(0)
+	println("waiting")
+	v := <-rx
+	println("never {v}")
+	tx <- 1
+}

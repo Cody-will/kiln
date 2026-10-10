@@ -130,23 +130,27 @@ fn kiln_run_forwards_exit_status() {
 #[test]
 fn unsupported_features_are_reported_not_miscompiled() {
     let dir = scratch("unsupported");
-    let src = dir.join("go.kn");
-    std::fs::write(&src, "fn work() {\n}\n\nfn main() {\n\tgo work()\n}\n").unwrap();
+    let src = dir.join("slice.kn");
+    std::fs::write(
+        &src,
+        "fn main() {\n\tv := [1, 2, 3]\n\tmatch &v[..] {\n\t\t[a, ..] => println(\"{a}\"),\n\t\t_ => {},\n\t}\n}\n",
+    )
+    .unwrap();
     let out = Command::new(kiln())
         .arg("build")
         .arg(&src)
         .arg("-o")
-        .arg(dir.join("go"))
+        .arg(dir.join("slice"))
         .output()
         .unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(out.status.code(), Some(1));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        err.contains("code generation does not support `go` tasks"),
+        err.contains("code generation does not support slice patterns"),
         "{err}"
     );
-    assert!(err.contains("go.kn:5:"), "{err}");
+    assert!(err.contains("slice.kn:4:"), "{err}");
 }
 
 #[test]

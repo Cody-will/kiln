@@ -126,6 +126,7 @@ impl fmt::Display for Body {
                         kind,
                         operands,
                         captures,
+                        ..
                     } => {
                         let caps: Vec<String> = captures
                             .iter()

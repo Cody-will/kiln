@@ -970,6 +970,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                     kind,
                     operands,
                     captures,
+                    ..
                 } = &s.kind
                 else {
                     continue;
