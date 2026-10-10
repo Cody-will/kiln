@@ -1,0 +1,19 @@
+[package]
+name = "kiln_cli"
+description = "The `kiln` command-line driver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kiln"
+path = "src/main.rs"
+
+[dependencies]
+kiln_lexer = { path = "../kiln_lexer" }
+kiln_parser = { path = "../kiln_parser" }
+
+[lints]
+workspace = true
