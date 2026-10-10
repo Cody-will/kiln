@@ -21,7 +21,11 @@ Non-goals for 1.0: inheritance, implicit numeric conversions, macros that rewrit
 - Source files are UTF-8 with the `.kn` extension (decided).
 - Comments are `//` for a line, `/* */` for a block (nestable), and `///` for doc comments.
 - Identifiers match `[A-Za-z_][A-Za-z0-9_]*`. Visibility is set with `pub`, not by capitalization (unlike Go).
-- **Semicolons**: newlines terminate statements, using Go-style automatic insertion. A line ending in an operator, `,`, `(`, `{`, or `.` continues on the next line.
+- **Semicolons**: newlines terminate statements, using Go-style automatic insertion.
+  - A `;` is inserted at a newline when the line ends with an identifier, a literal, a lifetime, `break`, `continue`, `return`, `true`, `false`, `self`, `Self`, `)`, `]`, `}`, `?`, or `_`. A line ending in anything else (an operator, `,`, `(`, `{`, `.`) continues.
+  - A line that begins with `.` (but not `..`) continues the previous line, so method chains can be split across lines.
+  - Inside `(...)`, `[...]`, `<...>`, and `{...}` lists, newlines between elements are ignored, so a missing trailing comma before a newline still parses. `kiln fmt` adds the comma.
+  - Statement-level consequence: `} else {` and a `where` clause must stay on the same line as what precedes them, as in Go.
 - **Literals**:
   - Integers: `42`, `0xFF`, `0b1010`, `1_000`, with optional suffixes `42u8` and `3i64`.
   - Floats: `3.14` and `1e9f32`.
