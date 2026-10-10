@@ -1320,11 +1320,361 @@ impl f64 {
 	pub fn powi(self, n: i32) -> f64
 	pub fn min(self, other: f64) -> f64
 	pub fn max(self, other: f64) -> f64
+
+	pub fn sin(self) -> f64 {
+		return std::math::sin(self)
+	}
+	pub fn cos(self) -> f64 {
+		return std::math::cos(self)
+	}
+	pub fn tan(self) -> f64 {
+		return std::math::tan(self)
+	}
+	pub fn asin(self) -> f64 {
+		return std::math::asin(self)
+	}
+	pub fn acos(self) -> f64 {
+		return std::math::acos(self)
+	}
+	pub fn atan(self) -> f64 {
+		return std::math::atan(self)
+	}
+	pub fn sinh(self) -> f64 {
+		return std::math::sinh(self)
+	}
+	pub fn cosh(self) -> f64 {
+		return std::math::cosh(self)
+	}
+	pub fn tanh(self) -> f64 {
+		return std::math::tanh(self)
+	}
+	pub fn asinh(self) -> f64 {
+		return std::math::asinh(self)
+	}
+	pub fn acosh(self) -> f64 {
+		return std::math::acosh(self)
+	}
+	pub fn atanh(self) -> f64 {
+		return std::math::atanh(self)
+	}
+	pub fn exp(self) -> f64 {
+		return std::math::exp(self)
+	}
+	pub fn exp2(self) -> f64 {
+		return std::math::exp2(self)
+	}
+	pub fn exp_m1(self) -> f64 {
+		return std::math::exp_m1(self)
+	}
+	pub fn ln(self) -> f64 {
+		return std::math::ln(self)
+	}
+	pub fn log2(self) -> f64 {
+		return std::math::log2(self)
+	}
+	pub fn log10(self) -> f64 {
+		return std::math::log10(self)
+	}
+	pub fn ln_1p(self) -> f64 {
+		return std::math::ln_1p(self)
+	}
+	pub fn cbrt(self) -> f64 {
+		return std::math::cbrt(self)
+	}
+	pub fn trunc(self) -> f64 {
+		return std::math::trunc(self)
+	}
+	pub fn erf(self) -> f64 {
+		return std::math::erf(self)
+	}
+	pub fn erfc(self) -> f64 {
+		return std::math::erfc(self)
+	}
+	pub fn gamma(self) -> f64 {
+		return std::math::gamma(self)
+	}
+	pub fn ln_gamma(self) -> f64 {
+		return std::math::ln_gamma(self)
+	}
+	pub fn powf(self, y: f64) -> f64 {
+		return std::math::powf(self, y)
+	}
+	// `self.atan2(x)` is the angle of the point (x, self).
+	pub fn atan2(self, x: f64) -> f64 {
+		return std::math::atan2(self, x)
+	}
+	pub fn hypot(self, y: f64) -> f64 {
+		return std::math::hypot(self, y)
+	}
+	pub fn fmod(self, y: f64) -> f64 {
+		return std::math::fmod(self, y)
+	}
+	pub fn copysign(self, y: f64) -> f64 {
+		return std::math::copysign(self, y)
+	}
+	pub fn ieee_remainder(self, y: f64) -> f64 {
+		return std::math::ieee_remainder(self, y)
+	}
+	pub fn next_after(self, y: f64) -> f64 {
+		return std::math::next_after(self, y)
+	}
+	pub fn mul_add(self, y: f64, z: f64) -> f64 {
+		return std::math::mul_add(self, y, z)
+	}
+
+	pub fn log(self, base: f64) -> f64 {
+		return std::math::log(self, base)
+	}
+
+	pub fn is_nan(self) -> bool {
+		return self != self
+	}
+
+	pub fn is_infinite(self) -> bool {
+		return std::math::is_infinite(self)
+	}
+
+	pub fn is_finite(self) -> bool {
+		return !self.is_nan() && !self.is_infinite()
+	}
+
+	pub fn is_sign_negative(self) -> bool {
+		return self < 0.0 || (self == 0.0 && 1.0 / self < 0.0)
+	}
+
+	// The fractional part: `self - self.trunc()`.
+	pub fn fract(self) -> f64 {
+		return self - self.trunc()
+	}
+
+	// 1.0 for positive (and +0.0), -1.0 for negative (and -0.0), NaN for NaN.
+	pub fn signum(self) -> f64 {
+		if self.is_nan() {
+			return self
+		}
+		if self.is_sign_negative() {
+			return -1.0
+		}
+		return 1.0
+	}
+
+	pub fn to_degrees(self) -> f64 {
+		return self * 180.0 / std::math::PI
+	}
+
+	pub fn to_radians(self) -> f64 {
+		return self * std::math::PI / 180.0
+	}
+
+	pub fn recip(self) -> f64 {
+		return 1.0 / self
+	}
+
+	// `self` limited to `lo..=hi`.
+	pub fn clamp(self, lo: f64, hi: f64) -> f64 {
+		if self < lo {
+			return lo
+		}
+		if self > hi {
+			return hi
+		}
+		return self
+	}
 }
 
 impl f32 {
 	pub fn sqrt(self) -> f32
 	pub fn abs(self) -> f32
+
+	pub fn floor(self) -> f32 {
+		return (self as f64).floor() as f32
+	}
+
+	pub fn ceil(self) -> f32 {
+		return (self as f64).ceil() as f32
+	}
+
+	pub fn round(self) -> f32 {
+		return (self as f64).round() as f32
+	}
+
+	pub fn powi(self, n: i32) -> f32 {
+		return (self as f64).powi(n) as f32
+	}
+
+	pub fn min(self, other: f32) -> f32 {
+		if other < self {
+			return other
+		}
+		return self
+	}
+
+	pub fn max(self, other: f32) -> f32 {
+		if other > self {
+			return other
+		}
+		return self
+	}
+
+	pub fn sin(self) -> f32 {
+		return (std::math::sin(self as f64)) as f32
+	}
+	pub fn cos(self) -> f32 {
+		return (std::math::cos(self as f64)) as f32
+	}
+	pub fn tan(self) -> f32 {
+		return (std::math::tan(self as f64)) as f32
+	}
+	pub fn asin(self) -> f32 {
+		return (std::math::asin(self as f64)) as f32
+	}
+	pub fn acos(self) -> f32 {
+		return (std::math::acos(self as f64)) as f32
+	}
+	pub fn atan(self) -> f32 {
+		return (std::math::atan(self as f64)) as f32
+	}
+	pub fn sinh(self) -> f32 {
+		return (std::math::sinh(self as f64)) as f32
+	}
+	pub fn cosh(self) -> f32 {
+		return (std::math::cosh(self as f64)) as f32
+	}
+	pub fn tanh(self) -> f32 {
+		return (std::math::tanh(self as f64)) as f32
+	}
+	pub fn asinh(self) -> f32 {
+		return (std::math::asinh(self as f64)) as f32
+	}
+	pub fn acosh(self) -> f32 {
+		return (std::math::acosh(self as f64)) as f32
+	}
+	pub fn atanh(self) -> f32 {
+		return (std::math::atanh(self as f64)) as f32
+	}
+	pub fn exp(self) -> f32 {
+		return (std::math::exp(self as f64)) as f32
+	}
+	pub fn exp2(self) -> f32 {
+		return (std::math::exp2(self as f64)) as f32
+	}
+	pub fn exp_m1(self) -> f32 {
+		return (std::math::exp_m1(self as f64)) as f32
+	}
+	pub fn ln(self) -> f32 {
+		return (std::math::ln(self as f64)) as f32
+	}
+	pub fn log2(self) -> f32 {
+		return (std::math::log2(self as f64)) as f32
+	}
+	pub fn log10(self) -> f32 {
+		return (std::math::log10(self as f64)) as f32
+	}
+	pub fn ln_1p(self) -> f32 {
+		return (std::math::ln_1p(self as f64)) as f32
+	}
+	pub fn cbrt(self) -> f32 {
+		return (std::math::cbrt(self as f64)) as f32
+	}
+	pub fn trunc(self) -> f32 {
+		return (std::math::trunc(self as f64)) as f32
+	}
+	pub fn erf(self) -> f32 {
+		return (std::math::erf(self as f64)) as f32
+	}
+	pub fn erfc(self) -> f32 {
+		return (std::math::erfc(self as f64)) as f32
+	}
+	pub fn gamma(self) -> f32 {
+		return (std::math::gamma(self as f64)) as f32
+	}
+	pub fn ln_gamma(self) -> f32 {
+		return (std::math::ln_gamma(self as f64)) as f32
+	}
+	pub fn powf(self, y: f32) -> f32 {
+		return (std::math::powf(self as f64, y as f64)) as f32
+	}
+	// `self.atan2(x)` is the angle of the point (x, self).
+	pub fn atan2(self, x: f32) -> f32 {
+		return (std::math::atan2(self as f64, x as f64)) as f32
+	}
+	pub fn hypot(self, y: f32) -> f32 {
+		return (std::math::hypot(self as f64, y as f64)) as f32
+	}
+	pub fn fmod(self, y: f32) -> f32 {
+		return (std::math::fmod(self as f64, y as f64)) as f32
+	}
+	pub fn copysign(self, y: f32) -> f32 {
+		return (std::math::copysign(self as f64, y as f64)) as f32
+	}
+	pub fn ieee_remainder(self, y: f32) -> f32 {
+		return (std::math::ieee_remainder(self as f64, y as f64)) as f32
+	}
+	pub fn next_after(self, y: f32) -> f32 {
+		return (std::math::next_after(self as f64, y as f64)) as f32
+	}
+	pub fn mul_add(self, y: f32, z: f32) -> f32 {
+		return (std::math::mul_add(self as f64, y as f64, z as f64)) as f32
+	}
+
+	pub fn log(self, base: f32) -> f32 {
+		return (std::math::log(self as f64, base as f64)) as f32
+	}
+
+	pub fn is_nan(self) -> bool {
+		return self != self
+	}
+
+	pub fn is_infinite(self) -> bool {
+		return std::math::is_infinite(self as f64)
+	}
+
+	pub fn is_finite(self) -> bool {
+		return !self.is_nan() && !self.is_infinite()
+	}
+
+	pub fn is_sign_negative(self) -> bool {
+		return self < 0.0 || (self == 0.0 && 1.0 / self < 0.0)
+	}
+
+	// The fractional part: `self - self.trunc()`.
+	pub fn fract(self) -> f32 {
+		return self - self.trunc()
+	}
+
+	// 1.0 for positive (and +0.0), -1.0 for negative (and -0.0), NaN for NaN.
+	pub fn signum(self) -> f32 {
+		if self.is_nan() {
+			return self
+		}
+		if self.is_sign_negative() {
+			return -1.0
+		}
+		return 1.0
+	}
+
+	pub fn to_degrees(self) -> f32 {
+		return self * (180.0 / std::math::PI) as f32
+	}
+
+	pub fn to_radians(self) -> f32 {
+		return self * (std::math::PI / 180.0) as f32
+	}
+
+	pub fn recip(self) -> f32 {
+		return 1.0 / self
+	}
+
+	// `self` limited to `lo..=hi`.
+	pub fn clamp(self, lo: f32, hi: f32) -> f32 {
+		if self < lo {
+			return lo
+		}
+		if self > hi {
+			return hi
+		}
+		return self
+	}
 }
 
 pub fn print(s: &str)

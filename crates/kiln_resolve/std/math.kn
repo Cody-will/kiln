@@ -1,0 +1,245 @@
+// Floating-point math, in the spirit of Go's `math` package. Every function
+// here is also a method on `f64` (and `f32`): `math::sqrt(x)` is `x.sqrt()`.
+//
+//	r := math::hypot(3.0, 4.0)       // 5
+//	a := (1.0f64).atan2(1.0)         // pi/4
+//	math::PI, math::E, math::INFINITY, math::NAN
+//
+// Results come from the platform C library.
+
+fn kn_math1(op: i32, x: f64) -> f64
+fn kn_math2(op: i32, x: f64, y: f64) -> f64
+fn kn_math_fma(x: f64, y: f64, z: f64) -> f64
+
+pub const PI: f64 = 3.14159265358979323846264338327950288
+pub const TAU: f64 = 6.28318530717958647692528676655900577
+pub const E: f64 = 2.71828182845904523536028747135266250
+pub const SQRT_2: f64 = 1.41421356237309504880168872420969808
+pub const LN_2: f64 = 0.693147180559945309417232121458176568
+pub const LN_10: f64 = 2.30258509299404568401799145468436421
+pub const LOG2_E: f64 = 1.44269504088896340735992468100189214
+pub const LOG10_E: f64 = 0.434294481903251827651128918916605082
+pub const INFINITY: f64 = 1.0 / 0.0
+pub const NEG_INFINITY: f64 = -1.0 / 0.0
+pub const NAN: f64 = 0.0 / 0.0
+// The largest finite f64.
+pub const MAX: f64 = 1.7976931348623157e308
+// The smallest positive normal f64.
+pub const MIN_POSITIVE: f64 = 2.2250738585072014e-308
+// The difference between 1.0 and the next larger f64.
+pub const EPSILON: f64 = 2.220446049250313e-16
+
+// The square root (NaN for negative numbers).
+pub fn sqrt(x: f64) -> f64 {
+	return x.sqrt()
+}
+
+// The absolute value.
+pub fn abs(x: f64) -> f64 {
+	return x.abs()
+}
+
+// The largest integer not greater than `x`.
+pub fn floor(x: f64) -> f64 {
+	return x.floor()
+}
+
+// The smallest integer not less than `x`.
+pub fn ceil(x: f64) -> f64 {
+	return x.ceil()
+}
+
+// The nearest integer, rounding half away from zero.
+pub fn round(x: f64) -> f64 {
+	return x.round()
+}
+
+// `x * y + z` with a single rounding.
+pub fn mul_add(x: f64, y: f64, z: f64) -> f64 {
+	return kn_math_fma(x, y, z)
+}
+
+// Whether `x` is NaN.
+pub fn is_nan(x: f64) -> bool {
+	return x != x
+}
+
+// Whether `x` is positive or negative infinity.
+pub fn is_infinite(x: f64) -> bool {
+	return x == INFINITY || x == NEG_INFINITY
+}
+
+// Whether `x` is neither infinite nor NaN.
+pub fn is_finite(x: f64) -> bool {
+	return !is_nan(x) && !is_infinite(x)
+}
+
+// The logarithm of `x` in base `b`.
+pub fn log(x: f64, b: f64) -> f64 {
+	return ln(x) / ln(b)
+}
+
+// Raises `x` to an integer power.
+pub fn powi(x: f64, n: i32) -> f64 {
+	return x.powi(n)
+}
+
+// Sine (radians).
+pub fn sin(x: f64) -> f64 {
+	return kn_math1(0, x)
+}
+
+// Cosine (radians).
+pub fn cos(x: f64) -> f64 {
+	return kn_math1(1, x)
+}
+
+// Tangent (radians).
+pub fn tan(x: f64) -> f64 {
+	return kn_math1(2, x)
+}
+
+// Arcsine, in radians.
+pub fn asin(x: f64) -> f64 {
+	return kn_math1(3, x)
+}
+
+// Arccosine, in radians.
+pub fn acos(x: f64) -> f64 {
+	return kn_math1(4, x)
+}
+
+// Arctangent, in radians.
+pub fn atan(x: f64) -> f64 {
+	return kn_math1(5, x)
+}
+
+// Hyperbolic sine.
+pub fn sinh(x: f64) -> f64 {
+	return kn_math1(6, x)
+}
+
+// Hyperbolic cosine.
+pub fn cosh(x: f64) -> f64 {
+	return kn_math1(7, x)
+}
+
+// Hyperbolic tangent.
+pub fn tanh(x: f64) -> f64 {
+	return kn_math1(8, x)
+}
+
+// Inverse hyperbolic sine.
+pub fn asinh(x: f64) -> f64 {
+	return kn_math1(9, x)
+}
+
+// Inverse hyperbolic cosine.
+pub fn acosh(x: f64) -> f64 {
+	return kn_math1(10, x)
+}
+
+// Inverse hyperbolic tangent.
+pub fn atanh(x: f64) -> f64 {
+	return kn_math1(11, x)
+}
+
+// e to the power `x`.
+pub fn exp(x: f64) -> f64 {
+	return kn_math1(12, x)
+}
+
+// 2 to the power `x`.
+pub fn exp2(x: f64) -> f64 {
+	return kn_math1(13, x)
+}
+
+// `exp(x) - 1`, accurate near zero.
+pub fn exp_m1(x: f64) -> f64 {
+	return kn_math1(14, x)
+}
+
+// Natural logarithm.
+pub fn ln(x: f64) -> f64 {
+	return kn_math1(15, x)
+}
+
+// Base-2 logarithm.
+pub fn log2(x: f64) -> f64 {
+	return kn_math1(16, x)
+}
+
+// Base-10 logarithm.
+pub fn log10(x: f64) -> f64 {
+	return kn_math1(17, x)
+}
+
+// `ln(1 + x)`, accurate near zero.
+pub fn ln_1p(x: f64) -> f64 {
+	return kn_math1(18, x)
+}
+
+// Cube root.
+pub fn cbrt(x: f64) -> f64 {
+	return kn_math1(19, x)
+}
+
+// The integer part (rounds toward zero).
+pub fn trunc(x: f64) -> f64 {
+	return kn_math1(20, x)
+}
+
+// The error function.
+pub fn erf(x: f64) -> f64 {
+	return kn_math1(21, x)
+}
+
+// `1 - erf(x)`.
+pub fn erfc(x: f64) -> f64 {
+	return kn_math1(22, x)
+}
+
+// The gamma function.
+pub fn gamma(x: f64) -> f64 {
+	return kn_math1(23, x)
+}
+
+// Natural log of the absolute value of gamma.
+pub fn ln_gamma(x: f64) -> f64 {
+	return kn_math1(24, x)
+}
+
+// Raises `x` to the power `y`.
+pub fn powf(x: f64, y: f64) -> f64 {
+	return kn_math2(0, x, y)
+}
+
+// The angle, in radians, of the point (`x`, `y`) given as `atan2(y, x)` (as in C and Go).
+pub fn atan2(y: f64, x: f64) -> f64 {
+	return kn_math2(1, y, x)
+}
+
+// `sqrt(x*x + y*y)` without overflow.
+pub fn hypot(x: f64, y: f64) -> f64 {
+	return kn_math2(2, x, y)
+}
+
+// The remainder of `x / y`, with the sign of `x` (like `%`).
+pub fn fmod(x: f64, y: f64) -> f64 {
+	return kn_math2(3, x, y)
+}
+
+// `x` with the sign of `y`.
+pub fn copysign(x: f64, y: f64) -> f64 {
+	return kn_math2(4, x, y)
+}
+
+// The IEEE 754 remainder of `x / y`.
+pub fn ieee_remainder(x: f64, y: f64) -> f64 {
+	return kn_math2(5, x, y)
+}
+
+// The next representable number after `x` toward `y`.
+pub fn next_after(x: f64, y: f64) -> f64 {
+	return kn_math2(6, x, y)
+}
