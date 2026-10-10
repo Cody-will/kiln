@@ -30,6 +30,7 @@
 #include <windows.h>
 #else
 #include <pthread.h>
+#include <signal.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #endif
@@ -155,7 +156,15 @@ static uint64_t next_rand(void) {
 
 /* ----- context switching ------------------------------------------------- */
 
-#define KN_STACK_SIZE ((size_t)1 << 20)
+/* Each task reserves 8 MiB of address space for its stack. Pages are only
+ * committed when touched, so small tasks stay small. Overflowing it hits a
+ * guard page (functions with big frames probe each page on entry) and the
+ * program stops with a clear "stack overflow" message. */
+#define KN_STACK_SIZE ((size_t)8 << 20)
+
+static const char STACK_OVERFLOW_MSG[] =
+	"fatal error: stack overflow (each goroutine has an 8 MiB stack)\n"
+	"note: deep recursion or a large local array can cause this; keep big data on the heap (Vec, Box)\n";
 
 void kn_task_start(KnTask *t);
 
@@ -180,7 +189,20 @@ static void switch_to_sched(KnTask *t) {
 	SwitchToFiber(current_worker()->sched_fiber);
 }
 
+static LONG CALLBACK overflow_handler(PEXCEPTION_POINTERS info) {
+	if (info->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW) {
+		DWORD n;
+		WriteFile(GetStdHandle(STD_ERROR_HANDLE), STACK_OVERFLOW_MSG, (DWORD)(sizeof STACK_OVERFLOW_MSG - 1), &n, NULL);
+		TerminateProcess(GetCurrentProcess(), 134);
+	}
+	return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static volatile LONG overflow_installed;
+
 static void worker_enter(KnWorker *w) {
+	if (InterlockedExchange(&overflow_installed, 1) == 0)
+		AddVectoredExceptionHandler(1, overflow_handler);
 	w->sched_fiber = ConvertThreadToFiberEx(NULL, FIBER_FLAG_FLOAT_SWITCH);
 }
 
@@ -317,7 +339,11 @@ static char *stack_alloc(void) {
 		return s;
 	}
 	mutex_unlock(&stack_lock);
+#ifdef MAP_NORESERVE
+	void *p = mmap(NULL, KN_STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+#else
 	void *p = mmap(NULL, KN_STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+#endif
 	if (p == MAP_FAILED)
 		return NULL;
 	mprotect(p, page_size, PROT_NONE);
@@ -347,7 +373,42 @@ static void switch_to_task(KnWorker *w, KnTask *t) { kn_ctx_switch(&w->sched_sp,
 
 static void switch_to_sched(KnTask *t) { kn_ctx_switch(&t->sp, current_worker()->sched_sp); }
 
-static void worker_enter(KnWorker *w) { (void)w; }
+/* A fault inside the current task's guard page is a stack overflow. The
+ * handler runs on a per-thread alternate stack, since the task's own stack
+ * is exhausted. Any other fault falls through to the default action. */
+static void segv_handler(int sig, siginfo_t *info, void *uctx) {
+	(void)uctx;
+	KnWorker *w = tls_worker;
+	KnTask *t = w ? w->cur : NULL;
+	char *addr = (char *)info->si_addr;
+	if (t && t->stack && addr >= t->stack - page_size && addr < t->stack + 2 * page_size) {
+		ssize_t r = write(2, STACK_OVERFLOW_MSG, sizeof STACK_OVERFLOW_MSG - 1);
+		(void)r;
+		_exit(134);
+	}
+	signal(sig, SIG_DFL);
+}
+
+static void worker_enter(KnWorker *w) {
+	(void)w;
+	stack_t ss;
+	ss.ss_size = 64 * 1024;
+	ss.ss_sp = malloc(ss.ss_size);
+	ss.ss_flags = 0;
+	if (ss.ss_sp)
+		sigaltstack(&ss, NULL);
+	static int installed;
+	if (!installed) {
+		installed = 1;
+		struct sigaction sa;
+		memset(&sa, 0, sizeof sa);
+		sa.sa_sigaction = segv_handler;
+		sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+		sigemptyset(&sa.sa_mask);
+		sigaction(SIGSEGV, &sa, NULL);
+		sigaction(SIGBUS, &sa, NULL);
+	}
+}
 
 #endif
 

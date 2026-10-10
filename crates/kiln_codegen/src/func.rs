@@ -68,6 +68,9 @@ pub(crate) struct FnCx<'c, 'r, 'a, 'f> {
     pub span: kiln_lexer::Span,
 }
 
+/// Largest stack frame a function may have (see `define_fn`).
+const FRAME_LIMIT: u64 = 4 << 20;
+
 pub(crate) fn flags() -> MemFlags {
     MemFlags::trusted()
 }
@@ -116,6 +119,25 @@ impl Codegen<'_, '_> {
             cx.translate(abi);
             cx.b.seal_all_blocks();
             cx.b.finalize();
+        }
+        // Goroutine stacks are 8 MiB: a frame needing half of that is
+        // almost certainly a large local array, better caught here than as
+        // a stack overflow at run time.
+        let frame: u64 = ctx
+            .func
+            .sized_stack_slots
+            .values()
+            .map(|s| u64::from(s.size))
+            .sum();
+        if frame > FRAME_LIMIT {
+            let mib = frame as f64 / (1024.0 * 1024.0);
+            let d = kiln_lexer::Diagnostic::error(
+                format!("this function needs {mib:.1} MiB of stack, more than half of a goroutine's 8 MiB stack"),
+                self.span,
+            )
+            .with_help("keep large arrays on the heap: a `Vec` (`v.resize(n, 0)`) or a `Box`");
+            self.errors.push(d);
+            return;
         }
         if let Err(e) = self.module.define_function(id, &mut ctx) {
             self.fatal(format!("internal code generation error: {e:?}"));

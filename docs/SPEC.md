@@ -696,7 +696,7 @@ kiln/
 
 - An M:N work-stealing scheduler like Go's G-M-P model:
   - Each worker thread (one per CPU by default, `KILN_WORKERS` to override) has a run queue, and idle workers steal half of a random victim's queue.
-  - Task stacks are fixed 1 MiB stacks (reserved address space, committed on use) with a guard page, reused through a pool. Growable stacks are planned.
+  - Task stacks are fixed 8 MiB stacks (reserved address space, committed on use) with a guard page, reused through a pool. Functions with large frames probe each page on entry, so overflowing always hits the guard page; the runtime then prints `fatal error: stack overflow` and exits with status 134 (a handler on an alternate signal stack on Unix, a vectored exception handler on Windows). A function whose frame needs more than 4 MiB is a compile-time error that points at it and suggests `Vec`/`Box`. Growable stacks are planned.
   - Context switching is cooperative: tasks yield at channel operations, `select`, `join`, and scope waits. Yield points at loop back-edges (or signal-based preemption) are planned, so today a task in a long loop without channel operations keeps its worker busy.
 - Netpoller: epoll (Linux), kqueue (macOS), WSAPoll (Windows; IOCP is a later optimization).
 - Timers: a timer heap.

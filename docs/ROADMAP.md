@@ -18,7 +18,7 @@ Status key: ✅ done · 🚧 in progress · ⬜ not started
 
 1. **Standard library phase 2:** ✅ done (strings through `context`, `kiln test`, net timeouts). Leftovers: HTTP client/server timeouts built on `context`, DNS covered by connect timeouts, Unicode case folding in `regexp`, `std::flag` duration flags, and docs sections for the earlier phase 2 modules.
 2. **Standard library phase 3:** `compress`, `mime`, `url`, templates.
-3. **Runtime refinements:** growable task stacks, per-task panics that `join` reports as `Err(Panic)` instead of ending the program, IOCP on Windows and stack overflow detection: a large local array currently crashes with SIGSEGV and no message.
+3. **Runtime refinements:** growable task stacks, per-task panics that `join` reports as `Err(Panic)` instead of ending the program, IOCP on Windows (stack overflow is now detected and reported; frames over 4 MiB are rejected at compile time). Codegen still copies large array temporaries (a 1 MB local array uses ~4 MB of frame).
 4. **Type checker gaps:** associated types, `impl Trait` as a distinct type, deeper exhaustiveness (nested patterns, integer ranges), method resolution on integer literals before defaulting.
 5. **Codegen gaps:** `static` items, unwinding (or at least running `defer` on panic), debug info, slice patterns, `|` patterns with bindings, an optimizing LLVM backend for release builds.
 6. **Lossless CST decision:** choose whether to build a lossless syntax tree (in the rowan style) before the formatter and language server depend on the AST.

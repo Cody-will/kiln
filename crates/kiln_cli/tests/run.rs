@@ -207,3 +207,36 @@ fn examples_build() {
         }
     }
 }
+
+#[test]
+fn stack_overflow_is_reported_clearly() {
+    let dir = scratch("overflow");
+    let src = dir.join("rec.kn");
+    std::fs::write(
+        &src,
+        "fn rec(n: i64) -> i64 {\n\tif n == 0 {\n\t\treturn 0\n\t}\n\treturn rec(n - 1) + 1\n}\n\nfn main() {\n\ta := [1 as u8; 1000000]\n\tprintln(\"{a[999999]}\")\n\t(ch, done) := chan::<i64>(0)\n\tgo move {\n\t\tch <- rec(1 << 40)\n\t}\n\tprintln(\"{<-done}\")\n}\n",
+    )
+    .unwrap();
+    let out = Command::new(kiln()).arg("run").arg(&src).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("fatal error: stack overflow"), "{err}");
+    assert_ne!(out.status.code(), Some(0));
+
+    // A frame too big for any goroutine stack is a compile-time error.
+    std::fs::write(
+        &src,
+        "fn main() {\n\ta := [1 as u8; 50000000]\n\tprintln(\"{a[1]}\")\n}\n",
+    )
+    .unwrap();
+    let out = Command::new(kiln())
+        .arg("build")
+        .arg(&src)
+        .arg("-o")
+        .arg(dir.join("big"))
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(err.contains("MiB of stack"), "{err}");
+}
