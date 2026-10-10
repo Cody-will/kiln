@@ -19,6 +19,7 @@ The standard library is written in Kiln, on top of a small C runtime for system 
 | [`std::bytes`](#stdbytes) | byte-slice helpers and `Buffer` |
 | [`std::crypto`](#stdcrypto) | SHA-256, SHA-1, MD5, HMAC |
 | [`std::encoding::csv`](#stdencodingcsv) | reading and writing CSV |
+| [`std::flag`](#stdflag) | command-line flags |
 | [`std::fs`](#stdfs) | files and directories |
 | [`std::path`](#stdpath) | path manipulation |
 | [`std::os`](#stdos) | arguments, environment, exit, running programs |
@@ -192,6 +193,35 @@ fn main() -> Result<(), csv::Error> {
 		println("{rec[0]} is {rec[1]}")
 	}
 	return Ok(())
+}
+```
+
+## std::flag
+
+Command-line flags with Go's syntax: `-name value`, `-name=value`, `--name value`, and bare `-v` for booleans. Parsing stops at the first positional argument or `--`.
+
+| Item | Description |
+|---|---|
+| `FlagSet::new(name)` | an empty set; `name` appears in the usage text |
+| `bool`, `int`, `float`, `string` `(name, default, usage)` | define flags (integers accept `0x`, `0o`, `0b`) |
+| `parse(&args)` | returns `Result<(), flag::Error>` (`Help`, `Unknown`, `MissingValue`, `Invalid`) |
+| `parse_or_exit(&args)` | prints the error and usage and exits with status 2 (0 for `-h`) |
+| `get_bool`, `get_int`, `get_float`, `get_string` | values after parsing |
+| `args()`, `is_set(name)`, `usage()` | positional arguments, whether a flag was given, the help text |
+
+```kiln
+import std::flag
+import std::os
+
+fn main() {
+	fs mut := flag::FlagSet::new("greet")
+	fs.string("name", "world", "who to greet")
+	fs.int("times", 1, "how many greetings")
+	args := os::args()
+	fs.parse_or_exit(&args[1..])
+	for _ in 0..fs.get_int("times") {
+		println("hello, {fs.get_string("name")}")
+	}
 }
 ```
 

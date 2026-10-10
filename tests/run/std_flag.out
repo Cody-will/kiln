@@ -1,0 +1,19 @@
+:9000 16 2.5 true ["file.txt", "-x"]
+true false
+false 4 ["-workers"]
+flag provided but not defined: -nope
+invalid value "ten" for flag -workers: expected int
+flag needs an argument: -addr
+invalid value "maybe" for flag -v: expected bool
+flag: help requested
+Usage of server:
+  -addr string
+    	address to listen on (default ":8080")
+  -name string
+    	instance name
+  -ratio float
+    	sampling ratio (default 0.5)
+  -v
+    	verbose logging
+  -workers int
+    	number of worker tasks (default 4)

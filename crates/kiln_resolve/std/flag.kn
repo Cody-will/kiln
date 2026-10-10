@@ -1,0 +1,334 @@
+// Command-line flag parsing, like Go's `flag`.
+//
+//	fs mut := flag::FlagSet::new("server")
+//	fs.string("addr", ":8080", "address to listen on")
+//	fs.int("workers", 4, "number of worker tasks")
+//	fs.bool("v", false, "verbose logging")
+//	fs.parse_or_exit(&os::args()[1..])
+//	addr := fs.get_string("addr")
+//	rest := fs.args()                     // positional arguments
+//
+// Accepted forms: `-name value`, `-name=value`, `--name value`,
+// `--name=value`; boolean flags take no value (`-v`), or `-v=false`.
+// Parsing stops at the first positional argument or at `--`.
+// `-h` / `-help` / `--help` returns `Error::Help` unless defined.
+
+import std::strconv
+import super::super::Error as ErrorTrait
+
+#[derive(Clone, Debug)]
+enum Value {
+	Bool(bool),
+	Int(i64),
+	Float(f64),
+	Str(String),
+}
+
+impl Value {
+	fn kind(&self) -> &str {
+		match self {
+			Value::Bool(_) => return "",
+			Value::Int(_) => return "int",
+			Value::Float(_) => return "float",
+			Value::Str(_) => return "string",
+		}
+	}
+
+	fn show(&self) -> String {
+		match self {
+			Value::Bool(b) => return "{b}",
+			Value::Int(i) => return "{i}",
+			Value::Float(f) => return "{f}",
+			Value::Str(s) => return "{s:?}",
+		}
+	}
+}
+
+struct Flag {
+	name: String,
+	usage: String,
+	default: Value,
+	value: Value,
+	set: bool,
+}
+
+// Why parsing failed.
+#[derive(Debug, Clone, Eq)]
+pub enum Error {
+	// `-h` or `-help` was given.
+	Help,
+	// A flag that was not defined.
+	Unknown(String),
+	// A non-boolean flag at the end with no value.
+	MissingValue(String),
+	// The value could not be parsed: flag, value, expected type.
+	Invalid(String, String, String),
+}
+
+impl Display for Error {
+	fn to_string(&self) -> String {
+		match self {
+			Error::Help => return "flag: help requested".to_string(),
+			Error::Unknown(n) => return "flag provided but not defined: -{n}",
+			Error::MissingValue(n) => return "flag needs an argument: -{n}",
+			Error::Invalid(n, v, t) => return "invalid value {v:?} for flag -{n}: expected {t}",
+		}
+	}
+}
+
+impl ErrorTrait for Error {}
+
+// A set of defined flags.
+pub struct FlagSet {
+	name: String,
+	flags: Vec<Flag>,
+	rest: Vec<String>,
+}
+
+impl FlagSet {
+	// An empty set for the program or subcommand `name` (shown in usage).
+	pub fn new(name: &str) -> FlagSet {
+		return FlagSet { name: name.to_string(), flags: Vec::new(), rest: Vec::new() }
+	}
+
+	fn define(&mut self, name: &str, v: Value, usage: &str) {
+		if self.find(name).is_some() {
+			panic("flag redefined: {name}")
+		}
+		self.flags.push(Flag { name: name.to_string(), usage: usage.to_string(), default: v.clone(), value: v, set: false })
+	}
+
+	// Defines a boolean flag.
+	pub fn bool(&mut self, name: &str, default: bool, usage: &str) {
+		self.define(name, Value::Bool(default), usage)
+	}
+
+	// Defines an integer flag (decimal, or `0x`/`0o`/`0b` prefixed).
+	pub fn int(&mut self, name: &str, default: i64, usage: &str) {
+		self.define(name, Value::Int(default), usage)
+	}
+
+	// Defines a floating-point flag.
+	pub fn float(&mut self, name: &str, default: f64, usage: &str) {
+		self.define(name, Value::Float(default), usage)
+	}
+
+	// Defines a string flag.
+	pub fn string(&mut self, name: &str, default: &str, usage: &str) {
+		self.define(name, Value::Str(default.to_string()), usage)
+	}
+
+	fn find(&self, name: &str) -> Option<usize> {
+		for i in 0..self.flags.len() {
+			if self.flags[i].name == name {
+				return Some(i)
+			}
+		}
+		return None
+	}
+
+	fn get(&self, name: &str) -> &Value {
+		match self.find(name) {
+			Some(i) => return &self.flags[i].value,
+			None => panic("flag not defined: {name}"),
+		}
+	}
+
+	// The value of boolean flag `name`. Panics if it is not a defined bool flag.
+	pub fn get_bool(&self, name: &str) -> bool {
+		match self.get(name) {
+			Value::Bool(b) => return *b,
+			_ => panic("flag -{name} is not a bool"),
+		}
+	}
+
+	// The value of integer flag `name`.
+	pub fn get_int(&self, name: &str) -> i64 {
+		match self.get(name) {
+			Value::Int(i) => return *i,
+			_ => panic("flag -{name} is not an int"),
+		}
+	}
+
+	// The value of float flag `name`.
+	pub fn get_float(&self, name: &str) -> f64 {
+		match self.get(name) {
+			Value::Float(f) => return *f,
+			_ => panic("flag -{name} is not a float"),
+		}
+	}
+
+	// The value of string flag `name`.
+	pub fn get_string(&self, name: &str) -> String {
+		match self.get(name) {
+			Value::Str(s) => return s.clone(),
+			_ => panic("flag -{name} is not a string"),
+		}
+	}
+
+	// Whether `name` was given on the command line (not just defaulted).
+	pub fn is_set(&self, name: &str) -> bool {
+		match self.find(name) {
+			Some(i) => return self.flags[i].set,
+			None => return false,
+		}
+	}
+
+	// The arguments left after the flags.
+	pub fn args(&self) -> &[String] {
+		return &self.rest
+	}
+
+	fn assign(&mut self, i: usize, raw: &str) -> Result<(), Error> {
+		name := self.flags[i].name.clone()
+		bad := Error::Invalid(name, raw.to_string(), self.flags[i].default.kind().to_string())
+		v := match &self.flags[i].default {
+			Value::Bool(_) => match strconv::parse_bool(raw) {
+				Ok(b) => Value::Bool(b),
+				Err(_) => return Err(Error::Invalid(self.flags[i].name.clone(), raw.to_string(), "bool".to_string())),
+			},
+			Value::Int(_) => match parse_int(raw) {
+				Some(n) => Value::Int(n),
+				None => return Err(bad),
+			},
+			Value::Float(_) => match strconv::parse_float(raw) {
+				Ok(f) => Value::Float(f),
+				Err(_) => return Err(bad),
+			},
+			Value::Str(_) => Value::Str(raw.to_string()),
+		}
+		self.flags[i].value = v
+		self.flags[i].set = true
+		return Ok(())
+	}
+
+	// Parses `args` (without the program name). Later flags override earlier ones.
+	pub fn parse(&mut self, args: &[String]) -> Result<(), Error> {
+		self.rest = Vec::new()
+		i mut := 0
+		while i < args.len() {
+			a := &args[i]
+			if a == "--" {
+				i += 1
+				break
+			}
+			if !a.starts_with("-") || a.len() == 1 {
+				break
+			}
+			body := if a.starts_with("--") { &a[2..] } else { &a[1..] }
+			(name, inline) := match body.split_once("=") {
+				Some((n, v)) => (n, Some(v)),
+				None => (body, None),
+			}
+			idx := match self.find(name) {
+				Some(k) => k,
+				None => {
+					if name == "h" || name == "help" {
+						return Err(Error::Help)
+					}
+					return Err(Error::Unknown(name.to_string()))
+				},
+			}
+			is_bool := match &self.flags[idx].default {
+				Value::Bool(_) => true,
+				_ => false,
+			}
+			match inline {
+				Some(v) => self.assign(idx, v)?,
+				None => {
+					if is_bool {
+						self.assign(idx, "true")?
+					} else {
+						if i + 1 >= args.len() {
+							return Err(Error::MissingValue(name.to_string()))
+						}
+						i += 1
+						self.assign(idx, &args[i])?
+					}
+				},
+			}
+			i += 1
+		}
+		while i < args.len() {
+			self.rest.push(args[i].clone())
+			i += 1
+		}
+		return Ok(())
+	}
+
+	// Parses `args`; on error prints the message and usage to stderr and
+	// exits with status 2 (0 for `-h`), as Go programs do.
+	pub fn parse_or_exit(&mut self, args: &[String]) {
+		match self.parse(args) {
+			Ok(()) => return,
+			Err(Error::Help) => {
+				eprint(&self.usage())
+				std::os::exit(0)
+			},
+			Err(e) => {
+				eprintln("{e}")
+				eprint(&self.usage())
+				std::os::exit(2)
+			},
+		}
+	}
+
+	// The usage text: one entry per flag, sorted by name.
+	pub fn usage(&self) -> String {
+		out mut := "Usage of {self.name}:\n"
+		order mut := Vec::new()
+		for i in 0..self.flags.len() {
+			order.push(i)
+		}
+		order.sort_by(|a, b| self.flags[*a].name.cmp(&self.flags[*b].name))
+		for k in order.iter() {
+			f := &self.flags[*k]
+			kind := f.default.kind()
+			if kind.len() == 0 {
+				out.push("  -{f.name}\n")
+			} else {
+				out.push("  -{f.name} {kind}\n")
+			}
+			out.push("    \t{f.usage}")
+			show := match &f.default {
+				Value::Bool(b) => *b,
+				Value::Int(n) => *n != 0,
+				Value::Float(x) => *x != 0.0,
+				Value::Str(s) => s.len() > 0,
+			}
+			if show {
+				out.push(" (default {f.default.show()})")
+			}
+			out.push("\n")
+		}
+		return out
+	}
+}
+
+fn parse_int(s: &str) -> Option<i64> {
+	(neg, body) := match s.strip_prefix("-") {
+		Some(r) => (true, r),
+		None => (false, s),
+	}
+	radix mut := 10 as u32
+	digits mut := body
+	if body.starts_with("0x") || body.starts_with("0X") {
+		radix = 16
+		digits = &body[2..]
+	} else if body.starts_with("0o") {
+		radix = 8
+		digits = &body[2..]
+	} else if body.starts_with("0b") {
+		radix = 2
+		digits = &body[2..]
+	}
+	match strconv::parse_digits(digits, radix, false, 63) {
+		Ok(v) => {
+			if neg {
+				return Some(0 - v as i64)
+			}
+			return Some(v as i64)
+		},
+		Err(_) => return None,
+	}
+}
