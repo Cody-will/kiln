@@ -19,6 +19,7 @@ regexp: duplicate capture group name at offset 13
 regexp: invalid character class range at offset 4
 regexp: trailing backslash at end of expression at offset 2
 false
+key
 [(1,4)][(6,8)]
 [(0,0)][(1,4)][(5,5)]
 [(0,4)]

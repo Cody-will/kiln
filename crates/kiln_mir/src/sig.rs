@@ -341,7 +341,30 @@ pub fn decl_flows(
             .collect();
         t.names.extend(extra);
     }
-    return_flows(&params, &ret, ref_self, &outlives(&gs))
+    let mut flows = return_flows(&params, &ret, ref_self, &outlives(&gs));
+    // `&self` of a type with lifetime parameters (`impl<'a> Iter<'a>`): a
+    // result naming one of them (`-> &'a T`) borrows what `self` refers
+    // to, not `self` itself. That is a deep flow from `self`, so reading a
+    // `&'a` field out of `&self` is allowed and callers don't keep `self`
+    // borrowed.
+    if ref_self {
+        let impl_lts: Vec<&str> = outer_generics
+            .iter()
+            .flat_map(|g| g.params.iter())
+            .filter_map(|p| match p {
+                GenericParam::Lifetime { name, .. } => Some(name.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        if ret.named.iter().any(|n| impl_lts.contains(&n.as_str()))
+            && !flows.contains(&0)
+            && !flows.contains(&(crate::DEEP_FLOW))
+        {
+            flows.push(crate::DEEP_FLOW);
+            flows.sort();
+        }
+    }
+    flows
 }
 
 /// Groups of type parameters that bounds tie together: `K: Borrow<Q>`

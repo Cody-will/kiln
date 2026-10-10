@@ -762,3 +762,21 @@ fn reassigning_a_reference_keeps_borrows_through_it() {
         "cannot assign to `v` because it is borrowed",
     );
 }
+
+#[test]
+fn references_stored_in_structs_outlive_the_struct() {
+    let ty = "struct S<'a> {\n r: &'a str,\n owned: String,\n}\n";
+    // A `&'a` field read through `&self` lives as long as the original data.
+    let good = format!("{ty}impl<'a> S<'a> {{\n fn head(&self) -> &'a str {{\n  return &self.r[0..1]\n }}\n fn all(&self) -> &'a str {{\n  return self.r\n }}\n}}\nfn main() {{\n text := \"hello\".to_string()\n x mut := \"\"\n {{\n  s := S {{ r: text.as_str(), owned: String::new() }}\n  x = s.head()\n }}\n println(x)\n}}");
+    ok(&good);
+    // But data the struct owns does not.
+    err1(
+        &format!("{ty}impl<'a> S<'a> {{\n fn bad(&self) -> &'a String {{\n  return &self.owned\n }}\n}}\nfn main() {{}}"),
+        "lifetime may not live long enough",
+    );
+    // And the original data stays borrowed while the result is used.
+    has(
+        &format!("{ty}impl<'a> S<'a> {{\n fn all(&self) -> &'a str {{\n  return self.r\n }}\n}}\nfn main() {{\n text mut := \"hello\".to_string()\n s := S {{ r: text.as_str(), owned: String::new() }}\n x := s.all()\n text = String::new()\n println(x)\n}}"),
+        "because it is borrowed",
+    );
+}

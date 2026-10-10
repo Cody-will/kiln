@@ -690,7 +690,7 @@ pub struct Captures<'t> {
 
 impl<'t> Captures<'t> {
 	// The text of group `i`, if it took part in the match.
-	pub fn get(&self, i: usize) -> Option<&str> {
+	pub fn get(&self, i: usize) -> Option<&'t str> {
 		match self.pos(i) {
 			Some(m) => return Some(&self.text[m.start..m.end]),
 			None => return None,
@@ -706,7 +706,7 @@ impl<'t> Captures<'t> {
 	}
 
 	// The text of the group named `name`.
-	pub fn name(&self, name: &str) -> Option<&str> {
+	pub fn name(&self, name: &str) -> Option<&'t str> {
 		for n in self.names.iter() {
 			if n.0 == name {
 				return self.get(n.1)

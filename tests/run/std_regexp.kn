@@ -85,4 +85,14 @@ fn api() {
 		long.push("a")
 	}
 	println("{Regex::must("(a|aa)*(a|aa)*(a|aa)*c").is_match(&long)}")
+
+	// A group's text outlives the Captures it came from.
+	src := "key=value".to_string()
+	kv := key_of(&src)
+	println("{kv}")
+}
+
+fn key_of(s: &str) -> &str {
+	re := Regex::must("(\\w+)=")
+	return re.captures(s).unwrap().get(1).unwrap()
 }

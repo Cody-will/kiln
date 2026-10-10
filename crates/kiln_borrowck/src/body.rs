@@ -35,6 +35,10 @@ struct Loan {
     span: Span,
     /// For parameter loans: the parameter index (`self` first).
     param: Option<usize>,
+    /// For parameter loans: the borrows the parameter's referent holds
+    /// (what a `&'a` field read through `&self` carries), rather than the
+    /// parameter's own borrow.
+    deep: bool,
 }
 
 /// Where a place became moved or was never initialized.
@@ -228,10 +232,19 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                     mutable: false,
                     span: self.b.locals[i].span,
                     param: Some(i - 1),
+                    deep: false,
                 });
                 self.holds[i].insert(id);
                 if !self.no_deep[i] {
-                    self.holds[n + i].insert(id);
+                    let deep = self.loans.len();
+                    self.loans.push(Loan {
+                        place: None,
+                        mutable: false,
+                        span: self.b.locals[i].span,
+                        param: Some(i - 1),
+                        deep: true,
+                    });
+                    self.holds[n + i].insert(deep);
                 }
             }
         }
@@ -247,6 +260,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                         mutable: *mutable,
                         span: s.span,
                         param: None,
+                        deep: false,
                     });
                 }
             }
@@ -308,7 +322,25 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
     fn op_holds_in(&self, st: &[BTreeSet<usize>], o: &Operand) -> BTreeSet<usize> {
         o.place()
             .filter(|p| !self.inert.contains(p))
-            .map(|p| st[p.local.0 as usize].clone())
+            .map(|p| {
+                // A value copied out from behind a reference (a `&T` field
+                // read through `&self`) holds what the referent holds, not
+                // the reference's own borrow.
+                let l = p.local.0 as usize;
+                if p.through_ref() {
+                    let n = self.b.locals.len();
+                    let mut s = st[n + l].clone();
+                    s.extend(
+                        st[l]
+                            .iter()
+                            .copied()
+                            .filter(|id| self.loans[*id].param.is_none()),
+                    );
+                    s
+                } else {
+                    st[l].clone()
+                }
+            })
             .unwrap_or_default()
     }
 
@@ -372,8 +404,29 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                         // What the new reference points to holds the base's
                         // loans (and, through a reference, its referent's).
                         let mut d = st[base].clone();
-                        if place.through_ref() {
+                        let derefs = place
+                            .proj
+                            .iter()
+                            .filter(|x| matches!(x, Proj::Deref(_)))
+                            .count();
+                        if derefs >= 2 {
+                            // Reborrowing through a reference read from
+                            // behind another (`&*self.r`): the inner
+                            // reference holds what the referent holds.
+                            s.extend(st[n + base].iter().copied());
+                            s.extend(
+                                st[base]
+                                    .iter()
+                                    .copied()
+                                    .filter(|id| self.loans[*id].param.is_none()),
+                            );
+                            d.extend(st[n + base].iter().copied());
+                        } else if place.through_ref() {
                             s.extend(st[base].iter().copied());
+                            // The pointee lives behind `base`: it holds what
+                            // `base`'s referent holds, not `base`'s own
+                            // incoming parameter borrow.
+                            d.retain(|id| self.loans[*id].param.is_none());
                             d.extend(st[n + base].iter().copied());
                         }
                         (s, d)
@@ -1048,17 +1101,18 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                     );
                 }
                 (None, Some(idx)) => {
-                    let allowed: Vec<usize> = self
-                        .b
-                        .return_flows
-                        .clone()
-                        .unwrap_or_default()
-                        .iter()
-                        .map(|f| f & !DEEP_FLOW)
-                        .collect();
-                    if allowed.contains(&idx) {
+                    let flows = self.b.return_flows.clone().unwrap_or_default();
+                    // A deep flow allows returning what the parameter's
+                    // referent holds, but not a borrow of the parameter.
+                    // (A generic result keeps the older, looser rule: its
+                    // deep flow may carry either.)
+                    let generic_ret = format!("{:?}", self.b.locals[0].ty).contains("Param(");
+                    let ok = flows.contains(&idx)
+                        || ((loan.deep || generic_ret) && flows.contains(&(idx | DEEP_FLOW)));
+                    if ok {
                         continue;
                     }
+                    let allowed: Vec<usize> = flows.iter().map(|f| f & !DEEP_FLOW).collect();
                     let pname = self.b.locals[idx + 1]
                         .name
                         .clone()
