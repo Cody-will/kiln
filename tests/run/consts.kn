@@ -1,0 +1,27 @@
+// Constants: literal and computed values, associated constants, and
+// calling a function value through a reference.
+struct Grid {}
+
+impl Grid {
+	pub const W: i32 = 4 * 4
+	pub const NAME: &str = "grid"
+}
+
+const NEG: i64 = -5
+const AREA: i32 = Grid::W * 3
+const WORDS: [&str; 2] = ["a", "b"]
+const BIG: u64 = u64::MAX / 2
+
+fn twice(f: &mut fn mut(i32) -> i32, x: i32) -> i32 {
+	return f(f(x))
+}
+
+fn main() {
+	println("{Grid::W} {Grid::NAME} {NEG} {AREA} {WORDS[1]} {BIG} {i16::MIN}")
+	calls mut := 0
+	g mut := |x: i32| {
+		calls += 1
+		return x * 10
+	}
+	println("{twice(&mut g, 1)} {calls}")
+}

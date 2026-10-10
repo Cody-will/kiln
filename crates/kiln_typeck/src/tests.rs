@@ -730,3 +730,25 @@ fn statics() {
         vec!["mismatched types: expected `i32`, found `&str`"]
     );
 }
+
+#[test]
+fn closure_mutability_inference_and_calls_through_references() {
+    // An un-annotated closure that mutates a capture is a `fn mut`, so it
+    // can be passed as `&mut fn mut(..)`.
+    ok("fn twice(f: &mut fn mut(i32) -> i32, x: i32) -> i32 {\n return f(f(x))\n}\nfn main() {\n n mut := 0\n g mut := |x: i32| {\n  n += 1\n  return x\n }\n y := twice(&mut g, 1)\n}");
+    // One that only reads is a `fn`, callable through `&`.
+    ok("fn call(f: &fn(i32) -> i32) -> i32 {\n return f(1)\n}\nfn main() {\n k := 2\n g := |x: i32| x * k\n y := call(&g)\n}");
+    assert_eq!(
+        errs("fn call(f: &fn mut(i32) -> i32) -> i32 {\n return f(1)\n}\nfn main() {}"),
+        vec!["cannot call a `fn mut` through a shared reference"]
+    );
+}
+
+#[test]
+fn associated_and_computed_constants() {
+    ok("struct S {}\nimpl S {\n pub const N: i32 = 2 * 3\n}\nconst M: i32 = S::N + 1\nfn main() {\n x := S::N + M + i32::MAX - u8::MAX as i32\n}");
+    assert_eq!(
+        errs("const C: i32 = \"s\"\nfn main() {}"),
+        vec!["mismatched types: expected `i32`, found `&str`"]
+    );
+}

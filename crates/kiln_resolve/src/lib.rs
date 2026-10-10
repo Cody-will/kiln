@@ -15,7 +15,7 @@
 //! Spans are unique per AST node within a file, so they are used as keys.
 
 mod scope;
-pub use scope::kind_name;
+pub use scope::{kind_name, static_lifetimes};
 #[cfg(test)]
 mod tests;
 
@@ -36,6 +36,9 @@ pub const STD_MODULES: &[(&str, &str)] = &[
     ("utf8", include_str!("../std/utf8.kn")),
     ("strings", include_str!("../std/strings.kn")),
     ("cmp", include_str!("../std/cmp.kn")),
+    ("slice", include_str!("../std/slice.kn")),
+    ("num", include_str!("../std/num.kn")),
+    ("strconv", include_str!("../std/strconv.kn")),
     ("hash", include_str!("../std/hash.kn")),
     ("ptr", include_str!("../std/ptr.kn")),
     ("time", include_str!("../std/time.kn")),
@@ -339,6 +342,12 @@ pub struct Resolved<'a> {
     /// Static items and their initializer functions (`fn <init X>() -> T`,
     /// indexes into `fns`), in declaration order.
     pub statics: Vec<(DefId, usize)>,
+    /// Functions synthesized for `const` values: a use of the constant
+    /// calls the function. Keyed by the constant (module-level consts).
+    pub const_fns: HashMap<DefId, usize>,
+    /// All such functions, including associated consts in impls (which are
+    /// registered as associated functions named after the constant).
+    pub const_fn_set: std::collections::HashSet<usize>,
     /// Name-resolution diagnostics.
     pub errors: Vec<Diagnostic>,
 }

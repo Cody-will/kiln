@@ -60,6 +60,11 @@ pub struct FnResults {
     pub callees: HashMap<Span, usize>,
     /// Generic substitutions for those callees.
     pub callee_substs: HashMap<Span, HashMap<String, Ty>>,
+    /// Paths naming a constant whose value is computed by calling its callee.
+    pub const_uses: std::collections::HashSet<Span>,
+    /// Callee expressions that are references to function values, with the
+    /// number of derefs to reach the function (`f(x)` with `f: &mut fn mut(..)`).
+    pub fn_derefs: HashMap<Span, usize>,
     /// Implicit coercions: expression span → the type it was coerced to.
     pub coercions: HashMap<Span, Ty>,
     /// Trait bounds in scope (`(param, trait)`).
@@ -91,6 +96,11 @@ pub struct Body<'c, 'r, 'a> {
     methods: HashMap<Span, MethodInfo>,
     callees: HashMap<Span, usize>,
     callee_substs: HashMap<Span, HashMap<String, Ty>>,
+    const_uses: std::collections::HashSet<Span>,
+    fn_derefs: HashMap<Span, usize>,
+    /// Closures being checked (innermost last) and whether each mutates a
+    /// variable declared outside it, which makes an un-annotated closure `fn mut`.
+    closure_stack: Vec<(Span, bool)>,
     iter_items: HashMap<Span, Ty>,
     coercions: Vec<(Span, Ty, Ty)>,
     /// Spans of interpolated string literals (which may coerce to `&str`).
@@ -123,6 +133,9 @@ impl<'c, 'r, 'a> Body<'c, 'r, 'a> {
             methods: HashMap::new(),
             callees: HashMap::new(),
             callee_substs: HashMap::new(),
+            const_uses: Default::default(),
+            fn_derefs: HashMap::new(),
+            closure_stack: Vec::new(),
             iter_items: HashMap::new(),
             coercions: vec![],
             interp_spans: HashSet::new(),
@@ -231,6 +244,9 @@ impl Checker<'_, '_> {
             methods: HashMap::new(),
             callees: HashMap::new(),
             callee_substs: HashMap::new(),
+            const_uses: Default::default(),
+            fn_derefs: HashMap::new(),
+            closure_stack: Vec::new(),
             iter_items: HashMap::new(),
             coercions: vec![],
             interp_spans: HashSet::new(),
@@ -307,6 +323,8 @@ impl Body<'_, '_, '_> {
                 })
                 .collect(),
             callees: self.callees.clone(),
+            const_uses: self.const_uses.clone(),
+            fn_derefs: self.fn_derefs.clone(),
             callee_substs: self
                 .callee_substs
                 .iter()
@@ -816,6 +834,11 @@ impl Body<'_, '_, '_> {
                 return trait_method(self, traits, &t);
             }
             Ty::Dyn(traits) => return trait_method(self, traits.clone(), &t),
+            // An integer or float literal of not-yet-known type has the
+            // `Eq`/`Ord`/`Hash` methods every numeric type has.
+            Ty::Var(v) if !matches!(self.c.infer.kind(*v), VarKind::General) => {
+                return self.builtin_trait_method(&t, name);
+            }
             Ty::Var(_) | Ty::Unknown => return None,
             _ => {}
         }
@@ -855,13 +878,18 @@ impl Body<'_, '_, '_> {
                 }
             }
         }
-        // Built-in and derived implementations of `Eq`, `Ord`, and `Hash`
-        // have no impl block; their methods are the traits' defaults. (On a
-        // reference, autoderef finds them on the referent.)
+        if matches!(t, Ty::Ref(..)) {
+            // Autoderef finds them on the referent.
+            return None;
+        }
+        self.builtin_trait_method(&t, name)
+    }
+
+    /// Built-in and derived implementations of `Eq`, `Ord`, and `Hash` have
+    /// no impl block; their methods are the traits' defaults.
+    fn builtin_trait_method(&mut self, t: &Ty, name: &str) -> Option<Method> {
+        let t = t.clone();
         for tn in ["Eq", "Ord", "Hash"] {
-            if matches!(t, Ty::Ref(..)) {
-                break;
-            }
             let Some(tr) = self.c.r.prelude_type(tn) else {
                 continue;
             };
@@ -1106,6 +1134,11 @@ impl Body<'_, '_, '_> {
             ExprKind::Path(p) => match self.c.r.path(p.span) {
                 Res::Local(id) => {
                     let l = self.c.r.local(id).clone();
+                    for (cs, mutates) in self.closure_stack.iter_mut() {
+                        if l.span.start < cs.start || l.span.start >= cs.end {
+                            *mutates = true;
+                        }
+                    }
                     let deferred = what == "assign to" && self.deferred_init.contains(&id);
                     if !(l.mutable || deferred) {
                         let msg = if what == "assign to" {
@@ -1513,6 +1546,7 @@ impl Body<'_, '_, '_> {
                     Some(Ty::Fn(ps, _, m)) if ps.len() == params.len() => (Some(ps), m),
                     _ => (None, false),
                 };
+                let expected_given = expected.is_some();
                 let pts: Vec<Ty> = params
                     .iter()
                     .enumerate()
@@ -1531,6 +1565,7 @@ impl Body<'_, '_, '_> {
                 };
                 self.rets.push(rt.clone());
                 let saved = std::mem::take(&mut self.loops);
+                self.closure_stack.push((e.span, false));
                 match &body.kind {
                     ExprKind::Block(b) => {
                         let bt = self.block(b, false);
@@ -1552,6 +1587,10 @@ impl Body<'_, '_, '_> {
                 }
                 self.loops = saved;
                 self.rets.pop();
+                let (_, mutates) = self.closure_stack.pop().unwrap_or_default();
+                // Without an expected type, a closure that mutates what it
+                // captures is a `fn mut`.
+                let is_mut = if expected_given { is_mut } else { mutates };
                 Ty::Fn(pts, Box::new(rt), is_mut)
             }
             ExprKind::Go(g) => {
@@ -1811,9 +1850,17 @@ impl Body<'_, '_, '_> {
                         self.method_fn_ty(m, span)
                     }
                     DefKind::Const | DefKind::Static => match def.item.map(|i| &i.kind) {
-                        Some(ItemKind::Const { ty, .. }) => {
+                        Some(ItemKind::Const { ty, value, .. }) => {
+                            let literal =
+                                matches!(value, Some(v) if matches!(v.kind, ExprKind::Lit(_)));
+                            if let (false, Some(&i)) = (literal, self.c.r.const_fns.get(&d)) {
+                                self.callees.insert(span, i);
+                                self.callee_substs.insert(span, HashMap::new());
+                                self.const_uses.insert(span);
+                            }
                             let ty = ty.clone();
-                            self.c.lower_ty(&ty, None, false)
+                            self.c
+                                .lower_ty(&kiln_resolve::static_lifetimes(&ty), None, false)
                         }
                         Some(ItemKind::Static { ty, mutable, .. }) => {
                             if *mutable {
@@ -1931,6 +1978,13 @@ impl Body<'_, '_, '_> {
             }
         }
         match self.method_on(&base_ty, name) {
+            Some(m) if m.fn_idx.is_some_and(|i| self.c.r.const_fn_set.contains(&i)) => {
+                // An associated constant: its value is a call.
+                let ret = m.ret.clone();
+                self.method_fn_ty(m, span);
+                self.const_uses.insert(span);
+                ret
+            }
             Some(m) => self.with_self_param(m, base_ty, span),
             None => {
                 let msg = match &base_ty {
@@ -2020,7 +2074,28 @@ impl Body<'_, '_, '_> {
             }
             return Ty::Unit;
         }
-        let ft = self.expr(f);
+        let mut ft = self.expr(f);
+        // Calling through references: `f(x)` with `f: &fn(..)` or `&mut fn mut(..)`.
+        let mut derefs = 0;
+        let mut shared = false;
+        while let Ty::Ref(m, inner) = self.shallow(&ft) {
+            if !matches!(self.shallow(&inner), Ty::Fn(..) | Ty::Ref(..)) {
+                break;
+            }
+            shared |= !m;
+            ft = *inner;
+            derefs += 1;
+        }
+        if derefs > 0 {
+            if shared && matches!(self.shallow(&ft), Ty::Fn(_, _, true)) {
+                self.error_help(
+                    "cannot call a `fn mut` through a shared reference",
+                    f.span,
+                    "pass it as `&mut fn mut(...)`",
+                );
+            }
+            self.fn_derefs.insert(f.span, derefs);
+        }
         match self.shallow(&ft) {
             Ty::Fn(params, ret, _) => {
                 self.check_args(&params, args, span);

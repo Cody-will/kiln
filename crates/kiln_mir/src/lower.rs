@@ -1474,6 +1474,16 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
     /// unit structs, constants.
     fn path_value(&mut self, e: &Expr, p: &ast::Path, ty: Ty) -> Operand {
         let res = self.r.path(p.span);
+        if self.res.const_uses.contains(&e.span) {
+            let i = self.res.callees[&e.span];
+            let substs = self
+                .res
+                .callee_substs
+                .get(&e.span)
+                .map(sorted)
+                .unwrap_or_default();
+            return self.finish_call(e, Callee::Fn(i, substs), vec![], vec![]);
+        }
         if let Some(i) = self.res.callees.get(&e.span).copied() {
             let substs = self
                 .res
@@ -2023,6 +2033,25 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     .map(sorted)
                     .unwrap_or_default(),
             ),
+            _ if self.res.fn_derefs.contains_key(&f.span) => {
+                // A reference to a function value: call the referent.
+                let mut t = self.ty(f);
+                let mut p = match self.place(f) {
+                    Some(p) => p,
+                    None => {
+                        let tmp = self.temp(t.clone(), f.span);
+                        self.expr_into(f, Some(Place::local(tmp)));
+                        Place::local(tmp)
+                    }
+                };
+                for _ in 0..self.res.fn_derefs[&f.span] {
+                    let Ty::Ref(m, inner) = t else { break };
+                    p = p.project(Proj::Deref(DerefKind::Ref(m).into()));
+                    t = *inner;
+                }
+                ops.push(Operand::Copy(p));
+                Callee::Value
+            }
             _ => {
                 let c = match self.place(f) {
                     Some(p) if p.proj.is_empty() && self.once.contains(&p.local) => {

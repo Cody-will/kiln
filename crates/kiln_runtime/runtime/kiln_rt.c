@@ -457,3 +457,83 @@ void kn_hash_bytes(uint64_t *h, const uint8_t *p, size_t n) {
 uint64_t kn_hash_finish(uint64_t h) {
     return kn_fold_mul(h, KN_H2) ^ h;
 }
+
+/* Whether NUL-terminated a equals b ignoring ASCII case. */
+static int strcasecmp_ascii(const char *a, const char *b) {
+    for (; *a && *b; a++, b++) {
+        char x = *a >= 'A' && *a <= 'Z' ? *a + 32 : *a;
+        if (x != *b) return 0;
+    }
+    return *a == 0 && *b == 0;
+}
+
+/* ---- Number parsing (std::strconv) ----
+ * Parses a decimal floating-point number: [+-] digits [. digits] [e [+-] digits],
+ * or inf / infinity / nan (any case). The whole input must match. Returns 1 and
+ * stores the correctly rounded value on success, 0 on bad syntax. The program
+ * never calls setlocale, so strtod uses '.' as the decimal point. */
+int32_t kn_parse_f64(const uint8_t *p, size_t n, double *out) {
+    size_t i = 0;
+    char buf[512];
+    if (n == 0 || n >= sizeof buf) {
+        if (n >= sizeof buf) {
+            /* Long inputs (many digits) are valid; parse from a heap copy. */
+            char *h = malloc(n + 1);
+            if (!h) return 0;
+            memcpy(h, p, n);
+            h[n] = 0;
+            int32_t ok = 0;
+            size_t j = 0;
+            if (h[j] == '+' || h[j] == '-') j++;
+            size_t d = 0;
+            while (j < n && h[j] >= '0' && h[j] <= '9') j++, d++;
+            if (j < n && h[j] == '.') {
+                j++;
+                while (j < n && h[j] >= '0' && h[j] <= '9') j++, d++;
+            }
+            if (d > 0 && j < n && (h[j] == 'e' || h[j] == 'E')) {
+                j++;
+                if (j < n && (h[j] == '+' || h[j] == '-')) j++;
+                size_t e = 0;
+                while (j < n && h[j] >= '0' && h[j] <= '9') j++, e++;
+                if (e == 0) d = 0;
+            }
+            if (d > 0 && j == n) {
+                *out = strtod(h, NULL);
+                ok = 1;
+            }
+            free(h);
+            return ok;
+        }
+        return 0;
+    }
+    memcpy(buf, p, n);
+    buf[n] = 0;
+    if (buf[i] == '+' || buf[i] == '-') i++;
+    const char *rest = buf + i;
+    if (strcasecmp_ascii(rest, "inf") || strcasecmp_ascii(rest, "infinity")) {
+        *out = buf[0] == '-' ? -INFINITY : INFINITY;
+        return 1;
+    }
+    if (strcasecmp_ascii(rest, "nan")) {
+        *out = NAN;
+        return 1;
+    }
+    size_t digits = 0;
+    while (i < n && buf[i] >= '0' && buf[i] <= '9') i++, digits++;
+    if (i < n && buf[i] == '.') {
+        i++;
+        while (i < n && buf[i] >= '0' && buf[i] <= '9') i++, digits++;
+    }
+    if (digits == 0) return 0;
+    if (i < n && (buf[i] == 'e' || buf[i] == 'E')) {
+        i++;
+        if (i < n && (buf[i] == '+' || buf[i] == '-')) i++;
+        size_t e = 0;
+        while (i < n && buf[i] >= '0' && buf[i] <= '9') i++, e++;
+        if (e == 0) return 0;
+    }
+    if (i != n) return 0;
+    *out = strtod(buf, NULL);
+    return 1;
+}

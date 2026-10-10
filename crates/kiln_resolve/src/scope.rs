@@ -51,6 +51,8 @@ impl<'a> Resolver<'a> {
                 impls: Vec::new(),
                 fns: Vec::new(),
                 statics: Vec::new(),
+                const_fns: HashMap::new(),
+                const_fn_set: HashSet::new(),
                 errors: Vec::new(),
             },
             module: DefId(0),
@@ -649,11 +651,20 @@ impl<'a> Resolver<'a> {
                 for it in &decl.items {
                     match &it.kind {
                         ItemKind::Fn(f) => self.walk_fn(f, it, Some(idx), None, None),
-                        ItemKind::Const { ty, value, .. } => {
+                        ItemKind::Const {
+                            name,
+                            ty,
+                            value: Some(v),
+                        } => {
+                            // `Type::NAME` calls an associated function that
+                            // returns the value.
+                            let decl = const_fn(name.name.clone(), name, ty, v);
+                            self.walk_fn(decl, it, Some(idx), None, None);
+                            self.r.const_fn_set.insert(self.r.fns.len() - 1);
+                        }
+                        ItemKind::Const { ty, .. } => {
                             self.walk_type(ty);
-                            if let Some(v) = value {
-                                self.walk_expr(v);
-                            }
+                            self.error("a constant in an `impl` needs a value", it.span);
                         }
                         ItemKind::TypeAlias { ty, .. } => {
                             if let Some(t) = ty {
@@ -669,11 +680,25 @@ impl<'a> Resolver<'a> {
                 self.self_ty_allowed = saved;
                 self.ty_params.pop();
             }
-            ItemKind::Const { ty, value, .. } => {
-                self.walk_type(ty);
-                if let Some(v) = value {
-                    self.walk_expr(v);
+            ItemKind::Const {
+                name,
+                ty,
+                value: Some(v),
+            } => {
+                // The value is checked as a hidden function `fn <const X>() -> T`;
+                // uses of a non-literal constant call it.
+                let def = self.r.modules[&self.module].values.get(&name.name).copied();
+                let decl = const_fn(format!("<const {}>", name.name), name, ty, v);
+                self.walk_fn(decl, item, None, None, def);
+                let i = self.r.fns.len() - 1;
+                self.r.const_fn_set.insert(i);
+                if let Some(d) = def {
+                    self.r.const_fns.insert(d, i);
                 }
+            }
+            ItemKind::Const { ty, .. } => {
+                self.walk_type(ty);
+                self.error("a constant needs a value", item.span);
             }
             ItemKind::Static {
                 name, ty, value, ..
@@ -1624,7 +1649,7 @@ pub fn kind_name(k: DefKind) -> &'static str {
 
 /// `ty` with every elided reference lifetime made `'static` (references in a
 /// static's type live forever).
-fn static_lifetimes(ty: &Type) -> Type {
+pub fn static_lifetimes(ty: &Type) -> Type {
     let mut t = ty.clone();
     fn fix(t: &mut Type) {
         match &mut t.kind {
@@ -1657,4 +1682,30 @@ fn static_lifetimes(ty: &Type) -> Type {
     }
     fix(&mut t);
     t
+}
+
+/// A hidden function `fn name() -> ty { return value }` for a constant.
+fn const_fn(name: String, ident: &Ident, ty: &Type, value: &Expr) -> &'static FnDecl {
+    let ret = Expr {
+        kind: ExprKind::Return(Some(Box::new(value.clone()))),
+        span: ident.span,
+    };
+    Box::leak(Box::new(FnDecl {
+        name: Ident {
+            name,
+            span: ident.span,
+        },
+        is_unsafe: false,
+        generics: Generics::default(),
+        self_param: None,
+        params: vec![],
+        ret: Some(static_lifetimes(ty)),
+        body: Some(Block {
+            stmts: vec![Stmt {
+                kind: StmtKind::Expr(ret),
+                span: ident.span,
+            }],
+            span: value.span,
+        }),
+    }))
 }

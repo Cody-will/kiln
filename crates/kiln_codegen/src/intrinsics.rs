@@ -366,6 +366,9 @@ impl FnCx<'_, '_, '_, '_> {
         if self.mem_intrinsic(name, args, dest, dt) {
             return;
         }
+        if self.num_intrinsic(ty_name, short, args, dest, dt) {
+            return;
+        }
         if let Some(op) = name
             .strip_prefix("cmp::derived_")
             .or(name.strip_prefix("hash::derived_"))
@@ -978,5 +981,137 @@ impl FnCx<'_, '_, '_, '_> {
             }
             _ => self.error(format!("code generation does not support `{name}` yet")),
         }
+    }
+
+    /// Integer intrinsics behind the methods in `std/num.kn`: arithmetic
+    /// that wraps or reports overflow, and bit operations. Returns false if
+    /// `ty`/`name` is not one of them.
+    fn num_intrinsic(
+        &mut self,
+        ty: &str,
+        name: &str,
+        args: &[Operand],
+        dest: Value,
+        dt: &Ty,
+    ) -> bool {
+        const INTS: [&str; 10] = [
+            "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64", "usize",
+        ];
+        if !INTS.contains(&ty) {
+            return false;
+        }
+        let signed = ty.starts_with('i');
+        let a = self.op_scalar(&args[0]);
+        let it = self.b.func.dfg.value_type(a);
+        let ins_b = |cx: &mut Self| {
+            if args.len() > 1 {
+                Some(cx.op_scalar(&args[1]))
+            } else {
+                None
+            }
+        };
+        let v = match name {
+            "wrapping_add" | "wrapping_sub" | "wrapping_mul" => {
+                let b = ins_b(self).unwrap();
+                match name {
+                    "wrapping_add" => self.b.ins().iadd(a, b),
+                    "wrapping_sub" => self.b.ins().isub(a, b),
+                    _ => self.b.ins().imul(a, b),
+                }
+            }
+            "wrapping_neg" => self.b.ins().ineg(a),
+            "wrapping_shl" => {
+                let b = ins_b(self).unwrap();
+                self.b.ins().ishl(a, b)
+            }
+            "wrapping_shr" => {
+                let b = ins_b(self).unwrap();
+                if signed {
+                    self.b.ins().sshr(a, b)
+                } else {
+                    self.b.ins().ushr(a, b)
+                }
+            }
+            "rotate_left" | "rotate_right" => {
+                let b = ins_b(self).unwrap();
+                if name == "rotate_left" {
+                    self.b.ins().rotl(a, b)
+                } else {
+                    self.b.ins().rotr(a, b)
+                }
+            }
+            "swap_bytes" => {
+                if it == types::I8 {
+                    a
+                } else {
+                    self.b.ins().bswap(a)
+                }
+            }
+            "reverse_bits" => self.b.ins().bitrev(a),
+            "count_ones" | "leading_zeros" | "trailing_zeros" => {
+                let r = match name {
+                    "count_ones" => self.b.ins().popcnt(a),
+                    "leading_zeros" => self.b.ins().clz(a),
+                    _ => self.b.ins().ctz(a),
+                };
+                // The result is a `u32`.
+                match it.bits().cmp(&32) {
+                    std::cmp::Ordering::Less => self.b.ins().uextend(types::I32, r),
+                    std::cmp::Ordering::Greater => self.b.ins().ireduce(types::I32, r),
+                    std::cmp::Ordering::Equal => r,
+                }
+            }
+            "overflowing_add" | "overflowing_sub" | "overflowing_mul" => {
+                let b = ins_b(self).unwrap();
+                let (r, o) = match name {
+                    "overflowing_add" => {
+                        let r = self.b.ins().iadd(a, b);
+                        let o = if signed {
+                            // Overflow iff both operands differ in sign from the result.
+                            let x = self.b.ins().bxor(a, r);
+                            let y = self.b.ins().bxor(b, r);
+                            let m = self.b.ins().band(x, y);
+                            self.b.ins().icmp_imm(IntCC::SignedLessThan, m, 0)
+                        } else {
+                            self.b.ins().icmp(IntCC::UnsignedLessThan, r, a)
+                        };
+                        (r, o)
+                    }
+                    "overflowing_sub" => {
+                        let r = self.b.ins().isub(a, b);
+                        let o = if signed {
+                            let x = self.b.ins().bxor(a, b);
+                            let y = self.b.ins().bxor(a, r);
+                            let m = self.b.ins().band(x, y);
+                            self.b.ins().icmp_imm(IntCC::SignedLessThan, m, 0)
+                        } else {
+                            self.b.ins().icmp(IntCC::UnsignedLessThan, a, b)
+                        };
+                        (r, o)
+                    }
+                    _ => {
+                        let r = self.b.ins().imul(a, b);
+                        let o = if signed {
+                            // The high half must be the sign extension of the low half.
+                            let hi = self.b.ins().smulhi(a, b);
+                            let sign = self.b.ins().sshr_imm(r, (it.bits() - 1) as i64);
+                            self.b.ins().icmp(IntCC::NotEqual, hi, sign)
+                        } else {
+                            let hi = self.b.ins().umulhi(a, b);
+                            self.b.ins().icmp_imm(IntCC::NotEqual, hi, 0)
+                        };
+                        (r, o)
+                    }
+                };
+                let (o0, _) = self.cg.field(dt, "0");
+                let (o1, _) = self.cg.field(dt, "1");
+                self.store(r, dest, o0 as i32);
+                self.store(o, dest, o1 as i32);
+                return true;
+            }
+            _ => return false,
+        };
+        self.store(v, dest, 0);
+        true
     }
 }

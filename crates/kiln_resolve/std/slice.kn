@@ -1,0 +1,612 @@
+// Methods on slices and vectors: searching, reordering, sorting, and
+// editing in place. They are inherent methods on `[T]` (and so on arrays and
+// `Vec<T>`), so this module needs no import.
+//
+//	v.sort()                          // stable; T: Ord
+//	v.sort_by(|a, b| b.cmp(a))        // descending
+//	v.sort_by_key(|p| p.age)
+//	i := v.binary_search(&42)        // Ok(index) or Err(insertion point)
+//
+// The sorts move elements bitwise. That is sound because a panic (say, in a
+// comparison function) ends the program rather than unwinding.
+
+import std::ptr
+import std::mem
+
+impl<T> [T] {
+	// Swaps the elements at `i` and `j`.
+	pub fn swap(&mut self, i: usize, j: usize) {
+		if i >= self.len() || j >= self.len() {
+			panic("swap index out of bounds: {i}, {j} (len {self.len()})")
+		}
+		p := ptr::slice_ptr(self)
+		unsafe {
+			swap_at(p, i, j)
+		}
+	}
+
+	// Reverses the order of the elements.
+	pub fn reverse(&mut self) {
+		n := self.len()
+		p := ptr::slice_ptr(self)
+		i mut := 0
+		while i < n / 2 {
+			unsafe {
+				swap_at(p, i, n - 1 - i)
+			}
+			i += 1
+		}
+	}
+
+	// Rotates left by `k`: `[1, 2, 3, 4]` by 1 becomes `[2, 3, 4, 1]`.
+	pub fn rotate_left(&mut self, k: usize) {
+		n := self.len()
+		if n == 0 {
+			return
+		}
+		k := k % n
+		self[..k].reverse()
+		self[k..].reverse()
+		self.reverse()
+	}
+
+	// Rotates right by `k`.
+	pub fn rotate_right(&mut self, k: usize) {
+		n := self.len()
+		if n == 0 {
+			return
+		}
+		self.rotate_left(n - k % n)
+	}
+
+	// The first element.
+	pub fn first(&self) -> Option<&T> {
+		if self.len() == 0 {
+			return None
+		}
+		return Some(&self[0])
+	}
+
+	// The last element.
+	pub fn last(&self) -> Option<&T> {
+		if self.len() == 0 {
+			return None
+		}
+		return Some(&self[self.len() - 1])
+	}
+
+	// The element at `i`, or `None` if out of bounds.
+	pub fn get(&self, i: usize) -> Option<&T> {
+		if i >= self.len() {
+			return None
+		}
+		return Some(&self[i])
+	}
+
+	// The two halves `[..mid]` and `[mid..]`.
+	pub fn split_at(&self, mid: usize) -> (&[T], &[T]) {
+		return (&self[..mid], &self[mid..])
+	}
+
+	// Consecutive pieces of `n` elements (the last may be shorter).
+	pub fn chunks(&self, n: usize) -> Vec<&[T]> {
+		if n == 0 {
+			panic("chunk size must be positive")
+		}
+		out mut := Vec::new()
+		i mut := 0
+		while i < self.len() {
+			end := if i + n < self.len() {
+				i + n
+			} else {
+				self.len()
+			}
+			out.push(&self[i..end])
+			i = end
+		}
+		return out
+	}
+
+	// Every run of `n` consecutive elements: `[1, 2, 3]` by 2 gives
+	// `[1, 2]`, `[2, 3]`.
+	pub fn windows(&self, n: usize) -> Vec<&[T]> {
+		if n == 0 {
+			panic("window size must be positive")
+		}
+		out mut := Vec::new()
+		i mut := 0
+		while i + n <= self.len() {
+			out.push(&self[i..i + n])
+			i += 1
+		}
+		return out
+	}
+
+	// The index of the first element for which `f` is true, if any.
+	pub fn position_of(&self, f: fn mut(&T) -> bool) -> Option<usize> {
+		for i in 0..self.len() {
+			if f(&self[i]) {
+				return Some(i)
+			}
+		}
+		return None
+	}
+
+	// Sorts with `cmp`, keeping equal elements in their original order.
+	// O(n log n); allocates a buffer of `len()` elements.
+	pub fn sort_by(&mut self, cmp: fn mut(&T, &T) -> Ordering) {
+		n := self.len()
+		if n < 2 {
+			return
+		}
+		p := ptr::slice_ptr(self)
+		c mut := cmp
+		if n <= 20 {
+			unsafe {
+				insertion(p, n, &mut c)
+			}
+			return
+		}
+		// The buffer never owns elements (its length stays 0), so dropping
+		// it only frees the memory.
+		let mut buf: Vec<T> = Vec::with_capacity(n / 2 + 1)
+		unsafe {
+			merge_sort(p, buf.as_ptr(), n, &mut c)
+		}
+	}
+
+	// Sorts by a key, keeping equal elements in order.
+	pub fn sort_by_key<K: Ord>(&mut self, key: fn mut(&T) -> K) {
+		self.sort_by(|a, b| key(a).cmp(&key(b)))
+	}
+
+	// Sorts with `cmp` without allocating; equal elements may be reordered.
+	// O(n log n) in the worst case (introsort).
+	pub fn sort_unstable_by(&mut self, cmp: fn mut(&T, &T) -> Ordering) {
+		n := self.len()
+		p := ptr::slice_ptr(self)
+		depth mut := 0
+		m mut := n
+		while m > 0 {
+			depth += 2
+			m /= 2
+		}
+		c mut := cmp
+		unsafe {
+			quick(p, n, &mut c, depth)
+		}
+	}
+
+	// Binary search with `f`, which says how an element compares to the
+	// target. The slice must be sorted consistently with `f`. Returns
+	// `Ok(index)` of a match, or `Err(index)` where the target would go.
+	pub fn binary_search_by(&self, f: fn mut(&T) -> Ordering) -> Result<usize, usize> {
+		lo mut := 0
+		hi mut := self.len()
+		while lo < hi {
+			mid := lo + (hi - lo) / 2
+			c := f(&self[mid])
+			if c == Ordering::Less {
+				lo = mid + 1
+			} else if c == Ordering::Greater {
+				hi = mid
+			} else {
+				return Ok(mid)
+			}
+		}
+		return Err(lo)
+	}
+
+	// The index of the first element for which `pred` is false, assuming
+	// the slice is partitioned (all true, then all false).
+	pub fn partition_point(&self, pred: fn mut(&T) -> bool) -> usize {
+		lo mut := 0
+		hi mut := self.len()
+		while lo < hi {
+			mid := lo + (hi - lo) / 2
+			if pred(&self[mid]) {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+
+	// Whether `cmp` puts every element no later than the next.
+	pub fn is_sorted_by(&self, cmp: fn mut(&T, &T) -> Ordering) -> bool {
+		i mut := 1
+		while i < self.len() {
+			if cmp(&self[i - 1], &self[i]) == Ordering::Greater {
+				return false
+			}
+			i += 1
+		}
+		return true
+	}
+}
+
+impl<T: Ord> [T] {
+	// Sorts in ascending order, keeping equal elements in order.
+	pub fn sort(&mut self) {
+		self.sort_by(|a, b| a.cmp(b))
+	}
+
+	// Sorts in ascending order without allocating.
+	pub fn sort_unstable(&mut self) {
+		self.sort_unstable_by(|a, b| a.cmp(b))
+	}
+
+	// Searches a sorted slice: `Ok(index)` of `x`, or `Err(index)` where it
+	// would be inserted to keep the order.
+	pub fn binary_search(&self, x: &T) -> Result<usize, usize> {
+		return self.binary_search_by(|e| e.cmp(x))
+	}
+
+	pub fn is_sorted(&self) -> bool {
+		return self.is_sorted_by(|a, b| a.cmp(b))
+	}
+
+	// The largest element.
+	pub fn max_elem(&self) -> Option<&T> {
+		if self.len() == 0 {
+			return None
+		}
+		m mut := &self[0]
+		for x in self {
+			if x.cmp(m) == Ordering::Greater {
+				m = x
+			}
+		}
+		return Some(m)
+	}
+
+	// The smallest element.
+	pub fn min_elem(&self) -> Option<&T> {
+		if self.len() == 0 {
+			return None
+		}
+		m mut := &self[0]
+		for x in self {
+			if x.cmp(m) == Ordering::Less {
+				m = x
+			}
+		}
+		return Some(m)
+	}
+}
+
+impl<T: Eq> [T] {
+	// Whether some element equals `x`.
+	pub fn contains(&self, x: &T) -> bool {
+		for e in self {
+			if e.eq(x) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// The index of the first element equal to `x`.
+	pub fn index_of(&self, x: &T) -> Option<usize> {
+		for i in 0..self.len() {
+			if self[i].eq(x) {
+				return Some(i)
+			}
+		}
+		return None
+	}
+
+	pub fn starts_with(&self, prefix: &[T]) -> bool {
+		if prefix.len() > self.len() {
+			return false
+		}
+		for i in 0..prefix.len() {
+			if !self[i].eq(&prefix[i]) {
+				return false
+			}
+		}
+		return true
+	}
+
+	pub fn ends_with(&self, suffix: &[T]) -> bool {
+		if suffix.len() > self.len() {
+			return false
+		}
+		off := self.len() - suffix.len()
+		for i in 0..suffix.len() {
+			if !self[off + i].eq(&suffix[i]) {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+impl<T: Clone> [T] {
+	// A new vector with clones of the elements.
+	pub fn to_vec(&self) -> Vec<T> {
+		v mut := Vec::with_capacity(self.len())
+		for x in self {
+			v.push(x.clone())
+		}
+		return v
+	}
+
+	// Sets every element to a clone of `value`.
+	pub fn fill(&mut self, value: T) {
+		for x in self.iter_mut() {
+			*x = value.clone()
+		}
+	}
+}
+
+impl<T> Vec<T> {
+	// Keeps only the elements for which `f` is true, in order.
+	pub fn retain(&mut self, f: fn mut(&T) -> bool) {
+		n := self.len()
+		p := self.as_ptr()
+		kept mut := 0
+		unsafe {
+			self.set_len(0)
+			for i in 0..n {
+				e := ptr::add(p, i)
+				if f(&*e) {
+					if kept != i {
+						ptr::copy(e, ptr::add(p, kept), 1)
+					}
+					kept += 1
+				} else {
+					ptr::drop_in_place(e)
+				}
+			}
+			self.set_len(kept)
+		}
+	}
+
+	// Removes the element at `i` by moving the last element into its place:
+	// O(1), but changes the order.
+	pub fn swap_remove(&mut self, i: usize) -> T {
+		n := self.len()
+		if i >= n {
+			panic("swap_remove index {i} out of bounds (len {n})")
+		}
+		p := self.as_ptr()
+		unsafe {
+			x := ptr::read(ptr::add(p, i))
+			if i != n - 1 {
+				ptr::copy(ptr::add(p, n - 1), ptr::add(p, i), 1)
+			}
+			self.set_len(n - 1)
+			return x
+		}
+	}
+
+	// Appends every item of `it`.
+	pub fn extend<I: Iterator<T>>(&mut self, it: I) {
+		src mut := it
+		while true {
+			match src.next() {
+				Some(x) => self.push(x),
+				None => break,
+			}
+		}
+	}
+
+	// Moves all of `other`'s elements to the end of this vector.
+	pub fn append(&mut self, other: &mut Vec<T>) {
+		n := other.len()
+		self.reserve(n)
+		unsafe {
+			ptr::copy(other.as_ptr(), ptr::add(self.as_ptr(), self.len()), n)
+			other.set_len(0)
+			self.set_len(self.len() + n)
+		}
+	}
+
+	// Splits off the elements from `at` on into a new vector.
+	pub fn split_off(&mut self, at: usize) -> Vec<T> {
+		n := self.len()
+		if at > n {
+			panic("split_off index {at} out of bounds (len {n})")
+		}
+		let mut out: Vec<T> = Vec::with_capacity(n - at)
+		unsafe {
+			ptr::copy(ptr::add(self.as_ptr(), at), out.as_ptr(), n - at)
+			out.set_len(n - at)
+			self.set_len(at)
+		}
+		return out
+	}
+
+	// Removes and returns the elements in `start..end`, keeping the rest.
+	pub fn drain(&mut self, start: usize, end: usize) -> Vec<T> {
+		n := self.len()
+		if start > end || end > n {
+			panic("drain range {start}..{end} out of bounds (len {n})")
+		}
+		let mut out: Vec<T> = Vec::with_capacity(end - start)
+		p := self.as_ptr()
+		unsafe {
+			ptr::copy(ptr::add(p, start), out.as_ptr(), end - start)
+			out.set_len(end - start)
+			ptr::copy(ptr::add(p, end), ptr::add(p, start), n - end)
+			self.set_len(n - (end - start))
+		}
+		return out
+	}
+}
+
+impl<T: Eq> Vec<T> {
+	// Removes consecutive repeated elements (all repeats, if sorted).
+	pub fn dedup(&mut self) {
+		n := self.len()
+		if n < 2 {
+			return
+		}
+		p := self.as_ptr()
+		kept mut := 1
+		unsafe {
+			self.set_len(0)
+			for i in 1..n {
+				e := ptr::add(p, i)
+				if (*e).eq(&*ptr::add(p, kept - 1)) {
+					ptr::drop_in_place(e)
+				} else {
+					if kept != i {
+						ptr::copy(e, ptr::add(p, kept), 1)
+					}
+					kept += 1
+				}
+			}
+			self.set_len(kept)
+		}
+	}
+}
+
+impl<T: Clone> Vec<T> {
+	// Grows or shrinks to `n` elements, filling with clones of `value`.
+	pub fn resize(&mut self, n: usize, value: T) {
+		if n <= self.len() {
+			self.truncate(n)
+			return
+		}
+		self.reserve(n - self.len())
+		while self.len() < n {
+			self.push(value.clone())
+		}
+	}
+}
+
+unsafe fn swap_at<T>(p: *mut T, i: usize, j: usize) {
+	if i == j {
+		return
+	}
+	t := ptr::read(ptr::add(p, i))
+	ptr::copy(ptr::add(p, j), ptr::add(p, i), 1)
+	ptr::write(ptr::add(p, j), t)
+}
+
+unsafe fn insertion<T>(p: *mut T, n: usize, cmp: &mut fn mut(&T, &T) -> Ordering) {
+	for i in 1..n {
+		if cmp(&*ptr::add(p, i), &*ptr::add(p, i - 1)) == Ordering::Less {
+			t := ptr::read(ptr::add(p, i))
+			j mut := i
+			while j > 0 && cmp(&t, &*ptr::add(p, j - 1)) == Ordering::Less {
+				ptr::copy(ptr::add(p, j - 1), ptr::add(p, j), 1)
+				j -= 1
+			}
+			ptr::write(ptr::add(p, j), t)
+		}
+	}
+}
+
+// Stable top-down merge sort of `n` elements at `p`, using `buf` (room for
+// n/2 + 1 elements) for the left half of each merge.
+unsafe fn merge_sort<T>(p: *mut T, buf: *mut T, n: usize, cmp: &mut fn mut(&T, &T) -> Ordering) {
+	if n <= 20 {
+		insertion(p, n, cmp)
+		return
+	}
+	mid := n / 2
+	merge_sort(p, buf, mid, cmp)
+	r := ptr::add(p, mid)
+	merge_sort(r, buf, n - mid, cmp)
+	// Already in order: nothing to merge.
+	if cmp(&*r, &*ptr::add(p, mid - 1)) != Ordering::Less {
+		return
+	}
+	ptr::copy(p, buf, mid)
+	i mut := 0
+	j mut := mid
+	k mut := 0
+	while i < mid && j < n {
+		// Ties take the left element, which keeps the sort stable.
+		if cmp(&*ptr::add(p, j), &*ptr::add(buf, i)) == Ordering::Less {
+			ptr::copy(ptr::add(p, j), ptr::add(p, k), 1)
+			j += 1
+		} else {
+			ptr::copy(ptr::add(buf, i), ptr::add(p, k), 1)
+			i += 1
+		}
+		k += 1
+	}
+	ptr::copy(ptr::add(buf, i), ptr::add(p, k), mid - i)
+}
+
+// Introsort: quicksort with three-way partitioning (so many equal keys stay
+// fast), insertion sort for small ranges, heapsort past the depth limit.
+unsafe fn quick<T>(p: *mut T, n: usize, cmp: &mut fn mut(&T, &T) -> Ordering, depth: usize) {
+	if n <= 20 {
+		insertion(p, n, cmp)
+		return
+	}
+	if depth == 0 {
+		heapsort(p, n, cmp)
+		return
+	}
+	// Median of three as the pivot.
+	mid := n / 2
+	if cmp(&*ptr::add(p, mid), &*p) == Ordering::Less {
+		swap_at(p, mid, 0)
+	}
+	if cmp(&*ptr::add(p, n - 1), &*ptr::add(p, mid)) == Ordering::Less {
+		swap_at(p, n - 1, mid)
+		if cmp(&*ptr::add(p, mid), &*p) == Ordering::Less {
+			swap_at(p, mid, 0)
+		}
+	}
+	// A bitwise copy of the pivot to compare against; it is never dropped.
+	pivot := ptr::read(ptr::add(p, mid))
+	lt mut := 0
+	i mut := 0
+	gt mut := n
+	while i < gt {
+		c := cmp(&*ptr::add(p, i), &pivot)
+		if c == Ordering::Less {
+			swap_at(p, lt, i)
+			lt += 1
+			i += 1
+		} else if c == Ordering::Greater {
+			gt -= 1
+			swap_at(p, i, gt)
+		} else {
+			i += 1
+		}
+	}
+	mem::forget(pivot)
+	quick(p, lt, cmp, depth - 1)
+	quick(ptr::add(p, gt), n - gt, cmp, depth - 1)
+}
+
+unsafe fn heapsort<T>(p: *mut T, n: usize, cmp: &mut fn mut(&T, &T) -> Ordering) {
+	i mut := n / 2
+	while i > 0 {
+		i -= 1
+		sift_down(p, i, n, cmp)
+	}
+	end mut := n
+	while end > 1 {
+		end -= 1
+		swap_at(p, 0, end)
+		sift_down(p, 0, end, cmp)
+	}
+}
+
+unsafe fn sift_down<T>(p: *mut T, start: usize, n: usize, cmp: &mut fn mut(&T, &T) -> Ordering) {
+	root mut := start
+	while true {
+		child mut := 2 * root + 1
+		if child >= n {
+			return
+		}
+		if child + 1 < n && cmp(&*ptr::add(p, child), &*ptr::add(p, child + 1)) == Ordering::Less {
+			child += 1
+		}
+		if cmp(&*ptr::add(p, root), &*ptr::add(p, child)) != Ordering::Less {
+			return
+		}
+		swap_at(p, root, child)
+		root = child
+	}
+}

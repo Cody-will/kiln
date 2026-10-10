@@ -1,0 +1,19 @@
+import std::strconv
+
+fn main() {
+	println("{i8::MIN} {i8::MAX} {u8::MAX} {i64::MIN} {u64::MAX} {i32::BITS} {usize::MAX}")
+	println("{(200 as u8).checked_add(100).is_none()} {(200 as u8).wrapping_add(100)} {(200 as u8).saturating_add(100)} {(-100 as i8).saturating_sub(100)}")
+	(r, o) := i32::MAX.overflowing_add(1)
+	println("{r} {o} {i64::MAX.checked_mul(2).is_none()} {(3 as i64).checked_mul(-4).unwrap()} {i32::MIN.checked_div(-1).is_none()} {(5 as i32).checked_div(0).is_none()}")
+	println("{(2 as i32).pow(10)} {(3 as u64).checked_pow(41).is_none()} {(2 as i32).wrapping_pow(31)} {(-2 as i32).saturating_pow(31)} {(10 as i64).saturating_pow(30)}")
+	println("{(-7 as i32).div_euclid(2)} {(-7 as i32).rem_euclid(2)} {(7 as i32).rem_euclid(-2)} {(-5 as i32).abs()} {i8::MIN.unsigned_abs()} {(-3 as i64).signum()}")
+	println("{(0b1011 as u8).count_ones()} {(1 as u32).leading_zeros()} {(8 as u16).trailing_zeros()} {(0x12345678 as u32).swap_bytes() == 0x78563412} {(1 as u8).rotate_right(1)} {(1 as u8).reverse_bits()}")
+	println("{(1000 as i32).ilog10()} {(1024 as u32).ilog2()} {(99 as i64).isqrt()} {(17 as u32).next_power_of_two()} {(64 as u64).is_power_of_two()} {(3 as i32).abs_diff(-5)}")
+	println("{(5 as i32).min(3)} {(5 as i32).max(30)} {(50 as i32).clamp(0, 10)} {(255 as u8).to_string()}")
+	println("{i32::parse("-2147483648").unwrap()} {i32::parse("2147483648").unwrap_err()} {i8::parse("-129").unwrap_err()}")
+	println("{u8::from_str_radix("ff", 16).unwrap()} {u8::parse("-0").unwrap()} {u8::parse("-1").unwrap_err()} {u64::parse("18446744073709551615").unwrap()}")
+	println("{i64::parse("1_000_000").unwrap()} {i64::parse("").unwrap_err()} {i64::parse("12a").unwrap_err()} {i64::parse("_1").is_err()} {i64::parse("1_").is_err()} {i64::parse("+7").unwrap()} {i64::parse(" 7").is_err()}")
+	println("{strconv::parse_float("2.5e3").unwrap()} {strconv::parse_float(".5").unwrap()} {strconv::parse_float("-inf").unwrap()} {strconv::parse_float("1e").is_err()} {strconv::parse_float("0.1").unwrap()} {strconv::parse_float("x").unwrap_err()}")
+	println("{strconv::parse_bool("true").unwrap()} {strconv::format_int(-255, 16)} {strconv::format_uint(5, 2)} {strconv::quote("a\"b\n\t\\")}")
+	println("{strconv::parse_int("99999999999999999999").unwrap_err().kind() == strconv::ParseErrorKind::PosOverflow}")
+}
