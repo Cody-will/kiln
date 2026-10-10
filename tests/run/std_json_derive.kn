@@ -1,0 +1,50 @@
+import std::encoding::json
+
+#[derive(Json, Debug, Eq, Clone)]
+struct Point {
+	x: i64,
+	y: i64,
+}
+
+#[derive(Json, Debug, Eq, Clone)]
+struct Id(i64)
+
+#[derive(Json, Debug, Eq, Clone)]
+enum Shape {
+	Empty,
+	Dot(Point),
+	Line(Point, Point),
+	Rect { w: i64, h: i64 },
+}
+
+#[derive(Json, Debug)]
+struct Doc {
+	name: String,
+	tags: Vec<String>,
+	shapes: Vec<Shape>,
+	id: Option<Id>,
+}
+
+fn main() -> Result<(), json::Error> {
+	d := Doc {
+		name: "pic".to_string(),
+		tags: ["a".to_string(), "b".to_string()].to_vec(),
+		shapes: [
+			Shape::Empty,
+			Shape::Dot(Point { x: 1, y: 2 }),
+			Shape::Line(Point { x: 0, y: 0 }, Point { x: 3, y: 4 }),
+			Shape::Rect { w: 5, h: 6 },
+		].to_vec(),
+		id: Some(Id(7)),
+	}
+	s := json::to_string(&d)
+	println(s)
+	let back: Doc = json::from_str(&s)?
+	println("{back:?}")
+	let p: Result<Point, json::Error> = json::from_str(r#"{"x": 1}"#)
+	match p {
+		Ok(_) => println("unexpected"),
+		Err(e) => println("error: {e}"),
+	}
+	return Ok(())
+}

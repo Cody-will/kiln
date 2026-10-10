@@ -5,7 +5,10 @@
 //! item and statement boundaries, so one mistake does not hide the rest of the file.
 
 pub mod ast;
+mod derive;
 mod parser;
+
+pub use derive::DERIVE_BASE;
 
 use kiln_lexer::{lex, Diagnostic};
 
@@ -27,6 +30,13 @@ pub fn parse(src: &str) -> Parse {
 /// by `base`). Used for built-in sources, which live above
 /// [`kiln_lexer::BUILTIN_BASE`].
 pub fn parse_at(src: &str, base: usize) -> Parse {
+    let mut p = parse_inner(src, base);
+    derive::expand(&mut p.file, &mut p.errors);
+    p
+}
+
+/// [`parse_at`] without derive expansion (generated code has no derives).
+fn parse_inner(src: &str, base: usize) -> Parse {
     let lexed = kiln_lexer::lex_at(src, base);
     let mut p = parser::Parser::new(src, lexed.tokens, lexed.doc_comments);
     p.base = base;
