@@ -19,6 +19,7 @@
 //! (`kiln run` exits with the program's status).
 
 mod fmt;
+mod package;
 mod test;
 
 use kiln_lexer::{lex, Diagnostic, LineIndex, TokenKind};
@@ -28,14 +29,19 @@ const USAGE: &str = "\
 kiln - the Kiln language toolchain
 
 USAGE:
+    kiln new <name> [--lib] Create a package (kiln.toml, src/main.kn or src/lib.kn)
+    kiln check [file.kn]    Resolve names, type-check, and borrow-check
+    kiln build [--release] [file.kn] [-o <output>]
+                            Compile to a native executable (a package goes to
+                            target/debug/<name> or target/release/<name>)
+    kiln run [--release] [file.kn] [args...]
+                            Build and run (in a package: kiln run [-- args...])
     kiln lex <file.kn>      Print the token stream
     kiln parse <file.kn>    Print the syntax tree
-    kiln check <file.kn>    Resolve names, type-check, and borrow-check
     kiln mir <file.kn>      Print the mid-level IR (compiler debugging)
-    kiln build [--release] <file.kn> [-o <output>]
-                            Compile to a native executable
-    kiln run [--release] <file.kn> [args...]
-                            Build and run
+
+    Without a file, check/build/run/test use the package containing the
+    current directory (the nearest kiln.toml).
     kiln test [--release] [--run <substr>] [--ignored] [--timeout <secs>] [paths...]
                             Run #[test] functions in the given files, or in every
                             .kn file under the given directories (default: .)
@@ -51,9 +57,16 @@ USAGE:
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
-        [cmd, file] if cmd == "lex" || cmd == "parse" || cmd == "check" || cmd == "mir" => {
+        [cmd, file]
+            if (cmd == "lex" || cmd == "parse" || cmd == "mir")
+                && !std::path::Path::new(file).is_dir() =>
+        {
             run(cmd, file)
         }
+        [cmd, rest @ ..] if cmd == "check" && rest.len() <= 1 => {
+            check(rest.first().map(String::as_str))
+        }
+        [cmd, rest @ ..] if cmd == "new" => package::new(rest),
         [cmd, rest @ ..] if cmd == "build" => {
             let mut opts = kiln_codegen::Options::default();
             let (mut file, mut out) = (None, None);
@@ -66,9 +79,9 @@ fn main() -> ExitCode {
                     _ => return usage_error(),
                 }
             }
-            match (file, rest.iter().any(|a| a == "-o") == out.is_some()) {
-                (Some(f), true) => build(f, out, opts),
-                _ => usage_error(),
+            match rest.iter().any(|a| a == "-o") == out.is_some() {
+                true => build(file.map(String::as_str), out, opts),
+                false => usage_error(),
             }
         }
         [cmd, rest @ ..] if cmd == "run" => {
@@ -79,8 +92,21 @@ fn main() -> ExitCode {
                 opts.release = true;
                 i += 1;
             }
+            // `kiln run [file.kn | dir] [args]`; in a package, `kiln run [-- args]`.
             match rest.get(i) {
-                Some(f) if !f.starts_with('-') => run_program(f, &rest[i + 1..], opts),
+                Some(f) if f == "--" => run_program(None, &rest[i + 1..], opts),
+                Some(f)
+                    if !f.starts_with('-')
+                        && (f.ends_with(".kn") || std::path::Path::new(f).is_dir()) =>
+                {
+                    let args = match rest.get(i + 1) {
+                        Some(d) if d == "--" => &rest[i + 2..],
+                        _ => &rest[i + 1..],
+                    };
+                    run_program(Some(f), args, opts)
+                }
+                None => run_program(None, &[], opts),
+                Some(f) if !f.starts_with('-') => run_program(Some(f), &rest[i + 1..], opts),
                 _ => usage_error(),
             }
         }
@@ -129,12 +155,6 @@ fn run(cmd: &str, file: &str) -> ExitCode {
             println!("{line}:{col}\t{}", describe(&t.kind));
         }
         lexed.errors
-    } else if cmd == "check" {
-        let errors = kiln_borrowck::check_source(&src);
-        if errors.is_empty() {
-            println!("{file}: ok");
-        }
-        errors
     } else if cmd == "mir" {
         mir(&src)
     } else {
@@ -143,16 +163,6 @@ fn run(cmd: &str, file: &str) -> ExitCode {
         parsed.errors
     };
     report(file, &src, &errors)
-}
-
-fn read(file: &str) -> Option<String> {
-    match std::fs::read_to_string(file) {
-        Ok(s) => Some(s),
-        Err(e) => {
-            eprintln!("error: cannot read `{file}`: {e}");
-            None
-        }
-    }
 }
 
 fn default_output(file: &str) -> std::path::PathBuf {
@@ -169,14 +179,13 @@ fn usage_error() -> ExitCode {
 }
 
 fn build_to(
-    file: &str,
-    src: &str,
+    p: &package::Program,
     out: &std::path::Path,
     opts: kiln_codegen::Options,
 ) -> Result<(), ExitCode> {
-    match kiln_codegen::build_source(src, out, opts) {
+    match kiln_codegen::build_parsed(p.pkg.parse.clone(), out, opts) {
         Ok(()) => Ok(()),
-        Err(kiln_codegen::BuildError::Diagnostics(errs)) => Err(report(file, src, &errs)),
+        Err(kiln_codegen::BuildError::Diagnostics(errs)) => Err(report(&p.name(), p.src(), &errs)),
         Err(kiln_codegen::BuildError::Other(msg)) => {
             eprintln!("error: {msg}");
             Err(ExitCode::from(1))
@@ -184,38 +193,102 @@ fn build_to(
     }
 }
 
-fn build(file: &str, out: Option<&String>, opts: kiln_codegen::Options) -> ExitCode {
-    let Some(src) = read(file) else {
-        return ExitCode::from(2);
+/// `kiln check [file.kn | dir]`.
+fn check(target: Option<&str>) -> ExitCode {
+    let p = match package::load(target, true) {
+        Ok(p) => p,
+        Err(c) => return c,
     };
-    let out = out
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| default_output(file));
-    match build_to(file, &src, &out, opts) {
-        Ok(()) => {
-            println!("built {}", out.display());
+    let errors = kiln_borrowck::check_parse(&p.pkg.parse);
+    if errors.is_empty() {
+        println!("{}: ok", p.name());
+    }
+    report(&p.name(), p.src(), &errors)
+}
+
+/// Builds a package (skipping the build when its inputs are unchanged) or a
+/// single file. Returns the executable's path.
+fn build_program(
+    p: &package::Program,
+    out: Option<&String>,
+    opts: kiln_codegen::Options,
+) -> Result<(std::path::PathBuf, bool), ExitCode> {
+    let out = match (out, &p.manifest) {
+        (Some(o), _) => std::path::PathBuf::from(o),
+        (None, Some(m)) if p.root.ends_with("src/main.kn") => package::output_path(m, opts.release),
+        _ => default_output(&p.name()),
+    };
+    let stamp = out.with_extension("fingerprint");
+    let fp = package::fingerprint(p, opts.release);
+    let cached = p.manifest.is_some()
+        && out.is_file()
+        && std::fs::read_to_string(&stamp).is_ok_and(|s| s == fp);
+    if cached {
+        return Ok((out, true));
+    }
+    if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            eprintln!("error: cannot create {}: {e}", dir.display());
+            return Err(ExitCode::from(1));
+        }
+    }
+    build_to(p, &out, opts)?;
+    if p.manifest.is_some() {
+        let _ = std::fs::write(&stamp, fp);
+    }
+    Ok((out, false))
+}
+
+fn build(target: Option<&str>, out: Option<&String>, opts: kiln_codegen::Options) -> ExitCode {
+    let p = match package::load(target, false) {
+        Ok(p) => p,
+        Err(c) => return c,
+    };
+    match build_program(&p, out, opts) {
+        Ok((out, cached)) => {
+            println!(
+                "{} {}",
+                if cached { "up to date:" } else { "built" },
+                out.display()
+            );
             ExitCode::SUCCESS
         }
         Err(c) => c,
     }
 }
 
-fn run_program(file: &str, args: &[String], opts: kiln_codegen::Options) -> ExitCode {
-    let Some(src) = read(file) else {
-        return ExitCode::from(2);
+fn run_program(target: Option<&str>, args: &[String], opts: kiln_codegen::Options) -> ExitCode {
+    let p = match package::load(target, false) {
+        Ok(p) => p,
+        Err(c) => return c,
     };
-    let dir = std::env::temp_dir().join(format!("kiln-run-{}", std::process::id()));
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!("error: cannot create {}: {e}", dir.display());
-        return ExitCode::from(1);
-    }
-    let exe = dir.join(default_output(file));
-    if let Err(c) = build_to(file, &src, &exe, opts) {
-        let _ = std::fs::remove_dir_all(&dir);
-        return c;
-    }
+    // Packages build into target/ (and are cached); single files into a
+    // temporary directory.
+    let tmp = std::env::temp_dir().join(format!("kiln-run-{}", std::process::id()));
+    let exe = if p.manifest.is_some() && p.root.ends_with("src/main.kn") {
+        match build_program(&p, None, opts) {
+            Ok((e, _)) => e,
+            Err(c) => return c,
+        }
+    } else {
+        if let Err(e) = std::fs::create_dir_all(&tmp) {
+            eprintln!("error: cannot create {}: {e}", tmp.display());
+            return ExitCode::from(1);
+        }
+        let exe = tmp.join(default_output(&p.name()));
+        if let Err(c) = build_to(&p, &exe, opts) {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return c;
+        }
+        exe
+    };
+    let exe = if exe.is_relative() && exe.parent().is_some_and(|d| d.as_os_str().is_empty()) {
+        std::path::Path::new(".").join(exe)
+    } else {
+        exe
+    };
     let status = std::process::Command::new(&exe).args(args).status();
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&tmp);
     match status {
         Ok(s) => match s.code() {
             Some(c) => ExitCode::from(c.clamp(0, 255) as u8),

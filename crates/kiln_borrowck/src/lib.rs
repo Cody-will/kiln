@@ -74,9 +74,14 @@ fn check_impl(typed: &mut Typed<'_, '_>, with_std: bool) -> Vec<Diagnostic> {
 /// Runs the whole front end on `src`: parse, resolve, type-check, and
 /// borrow-check, stopping after the first phase that reports errors.
 pub fn check_source(src: &str) -> Vec<Diagnostic> {
-    let parsed = kiln_parser::parse(src);
+    check_parse(&kiln_parser::parse(src))
+}
+
+/// [`check_source`] on an already-parsed program (for example a multi-file
+/// package from [`kiln_parser::package::load`]).
+pub fn check_parse(parsed: &kiln_parser::Parse) -> Vec<Diagnostic> {
     if !parsed.errors.is_empty() {
-        return parsed.errors;
+        return parsed.errors.clone();
     }
     let timing = std::env::var_os("KILN_TIMING").is_some();
     let t0 = std::time::Instant::now();

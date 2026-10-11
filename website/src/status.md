@@ -23,7 +23,8 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 | Standard library phase 2: `strings`, `strconv`, `bytes`, `collections`, `math`, `rand`, `errors`, `flag`, `encoding` (JSON with `#[derive(Json)]`, base64, hex, CSV), `crypto`, `regexp`, `context`, net timeouts | ✅ Implemented |
 | HTTPS (TLS) | ✅ `std::net::tls` and `https://` in `std::net::http` (rustls) |
 | `static` items | 🚧 Type-checked but not yet compiled |
-| Multi-file packages, `kiln.toml`, registry | 🚧 Not yet: `kiln check` works on a single file (inline `mod` blocks are supported) |
+| Multi-file packages, `kiln.toml` | ✅ `mod name` files, `kiln new`, path dependencies, build caching |
+| Package registry, lockfile | 🚧 Not yet |
 | `kiln build`, `kiln run` | ✅ Implemented (single file) |
 | `kiln test` (`#[test]`, `#[should_panic]`, `#[ignore]`, process-per-test, parallel) | ✅ Implemented (single files and directories) |
 | `kiln fmt` | ✅ canonical formatter with `--check` and `--stdin` |

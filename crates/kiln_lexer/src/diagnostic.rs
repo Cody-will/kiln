@@ -12,20 +12,23 @@ pub const BUILTIN_BASE: usize = 1 << 40;
 /// Built-in source files: `(base, name, text)`.
 static SOURCES: Mutex<Vec<(usize, &'static str, &'static str)>> = Mutex::new(Vec::new());
 
-/// Registers a built-in source file whose spans start at `base`, so
+/// Registers a source file (built-in, or a package file) whose spans start at `base`, so
 /// diagnostics pointing into it render with its name and text.
 pub fn register_source(base: usize, name: &'static str, text: &'static str) {
     let mut v = SOURCES.lock().unwrap_or_else(|e| e.into_inner());
+    // Package files are reloaded (by the language server, say): the newest wins.
+    if base < BUILTIN_BASE {
+        v.retain(|(b, _, _)| *b != base);
+    }
     if !v.iter().any(|(b, _, _)| *b == base) {
         v.push((base, name, text));
     }
 }
 
-/// The registered built-in source containing `span`, if any.
+/// The registered source (built-in, or another file of a package)
+/// containing `span`, if any. Offsets below the first registered base belong
+/// to the file being rendered.
 fn builtin_source(span: Span) -> Option<(usize, &'static str, &'static str)> {
-    if span.start < BUILTIN_BASE {
-        return None;
-    }
     let v = SOURCES.lock().unwrap_or_else(|e| e.into_inner());
     v.iter()
         .copied()

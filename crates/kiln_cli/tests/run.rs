@@ -353,3 +353,71 @@ fn json_str(s: &str) -> String {
     o.push('"');
     o
 }
+
+/// `kiln new`, modules in files, a path dependency, build caching, `kiln test`
+/// on a package, and errors pointing into module files.
+#[test]
+fn packages_modules_and_dependencies() {
+    let dir = scratch("pkg");
+    let k = |args: &[&str], cwd: &std::path::Path| {
+        Command::new(kiln())
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap()
+    };
+    assert!(k(&["new", "app"], &dir).status.success());
+    assert!(k(&["new", "util", "--lib"], &dir).status.success());
+    let app = dir.join("app");
+    std::fs::create_dir_all(app.join("src/geo")).unwrap();
+    std::fs::write(
+        app.join("src/main.kn"),
+        "mod geo\n\nimport geo::Point\nimport util::add\n\nfn main() {\n\tp := Point { x: 2, y: 3 }\n\tprintln(\"{add(p.x, p.y)} {geo::shapes::area(4)}\")\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("src/geo/mod.kn"),
+        "pub mod shapes\n\npub struct Point {\n\tpub x: i64,\n\tpub y: i64,\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("src/geo/shapes.kn"),
+        "pub fn area(s: i64) -> i64 {\n\treturn s * s\n}\n\n#[test]\nfn squares() {\n\tassert_eq(area(3), 9)\n}\n",
+    )
+    .unwrap();
+    let mut toml = std::fs::read_to_string(app.join("kiln.toml")).unwrap();
+    toml.push_str("util = { path = \"../util\" }\n");
+    std::fs::write(app.join("kiln.toml"), toml).unwrap();
+
+    let out = k(&["run"], &app);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "5 16\n",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = k(&["build"], &app);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("up to date"));
+    assert!(app
+        .join("target/debug/app")
+        .with_extension(std::env::consts::EXE_EXTENSION)
+        .exists());
+    let out = k(&["test"], &app);
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        s.contains("geo::shapes::squares ... ok") && s.contains("1 passed"),
+        "{s}"
+    );
+    let out = k(&["test"], &dir.join("util"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"));
+
+    std::fs::write(
+        app.join("src/geo/shapes.kn"),
+        "pub fn area(s: i64) -> i64 {\n\treturn s * true\n}\n",
+    )
+    .unwrap();
+    let out = k(&["check"], &app);
+    let _ = std::fs::remove_dir_all(&dir);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("shapes.kn:2:"), "{err}");
+}

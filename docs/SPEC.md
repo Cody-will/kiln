@@ -540,7 +540,8 @@ fn main() {
 
 ## 7. Modules, Packages, Build Tool
 
-- Each file is a module, and each directory containing `mod.kn` is a module. A package is a directory with `kiln.toml`.
+- Modules live in files as in Rust: `mod name` (no body) in `dir/file.kn` loads `dir/name.kn` or `dir/name/mod.kn`; the children of a module declared in `dir/a.kn` live in `dir/a/`. A package is a directory with `kiln.toml`; its root file is `src/main.kn` (program) or `src/lib.kn` (library). ✅ implemented, with path dependencies (`name = { path = "../x" }`), which become top-level modules named after the dependency (their tests are excluded). Compilation is whole-program: every file is parsed at its own span base and merged into one tree. `kiln build` writes `target/{debug,release}/<name>` and skips the build when a fingerprint of all sources, options, and the compiler is unchanged.
+- Decided: modules are declared with `mod` rather than discovered from the directory tree, so the module structure is visible in code and stray files are not compiled.
 - `import std::fs` brings in a path, and `import foo::{A, B as C}` imports specific items. Items are private unless marked `pub`. `pub(pkg)` limits visibility to the package.
 - An example manifest:
 

@@ -190,7 +190,7 @@ impl<'a> Resolver<'a> {
                     match body {
                         Some(items) => self.collect_items(items, id),
                         None => self.error(
-                            format!("out-of-line module `{}` is not supported yet; write `mod {} {{ ... }}`", name.name, name.name),
+                            format!("module `{}` is declared without a body, but no file was loaded for it (build the package, or write `mod {} {{ ... }}`)", name.name, name.name),
                             name.span,
                         ),
                     }

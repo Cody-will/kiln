@@ -91,7 +91,17 @@ enum Outcome {
 
 /// Runs the tests; exit status 0 when all pass, 1 otherwise, 2 on usage errors.
 pub fn run(o: TestOpts) -> ExitCode {
-    let files = discover(&o.paths);
+    // In a package with no paths given, the package is one test program
+    // (its modules' tests included).
+    let in_package = o.paths.is_empty() && crate::package::find_manifest(Path::new(".")).is_some();
+    let files = if in_package {
+        match crate::package::load(None, true) {
+            Ok(p) => vec![p.root],
+            Err(c) => return c,
+        }
+    } else {
+        discover(&o.paths)
+    };
     if files.is_empty() {
         println!("no test files found");
         return ExitCode::SUCCESS;
@@ -116,7 +126,17 @@ pub fn run(o: TestOpts) -> ExitCode {
             }
         };
         let exe = dir.join(format!("t{fi}{}", std::env::consts::EXE_SUFFIX));
-        let tests = match kiln_codegen::build_tests(&src, &exe, o.codegen) {
+        let _ = &src;
+        let program = match crate::package::load(Some(&file.to_string_lossy()), true) {
+            Ok(p) => p,
+            Err(_) => {
+                failed += 1;
+                failures.push(format!("{shown} (does not load)"));
+                continue;
+            }
+        };
+        let src = program.src().to_string();
+        let tests = match kiln_codegen::build_tests_parsed(program.pkg.parse, &exe, o.codegen) {
             Ok(t) => t,
             Err(kiln_codegen::BuildError::Diagnostics(errs)) => {
                 crate::report(&shown, &src, &errs);

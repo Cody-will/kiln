@@ -42,11 +42,12 @@ The `kiln` binary has these commands today:
 | `kiln check <file.kn>` | Resolve names, type-check, and borrow-check, printing diagnostics |
 | `kiln build <file.kn> [-o out]` | Compile to a native executable |
 | `kiln run <file.kn>` | Compile and run |
+| `kiln new <name> [--lib]` | Create a package |
 | `kiln test [paths...]` | Run `#[test]` functions |
 | `kiln fmt [--check] [paths...]` | Format source files |
 
 <div class="status">
-🚧 <code>kiln new</code> is specified but not implemented yet. <code>kiln build</code>, <code>kiln run</code>, and <code>kiln test</code> work on single files.
+<code>kiln build</code>, <code>kiln run</code>, <code>kiln test</code>, and <code>kiln check</code> work on single files and on packages (<code>kiln new</code>; see <a href="tutorial/10-packages.html">Packages and modules</a>).
 </div>
 
 ## Editor support

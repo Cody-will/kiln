@@ -12,6 +12,9 @@ mod testgen;
 pub use derive::DERIVE_BASE;
 pub use testgen::{test_harness, TestCase};
 
+pub mod manifest;
+pub mod package;
+
 use kiln_lexer::{lex, Diagnostic};
 
 /// Result of parsing a source file.

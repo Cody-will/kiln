@@ -213,7 +213,7 @@ fn std_imports_are_external() {
 fn out_of_line_modules_not_supported() {
     assert_eq!(
         errors("mod net"),
-        vec!["out-of-line module `net` is not supported yet; write `mod net { ... }`"]
+        vec!["module `net` is declared without a body, but no file was loaded for it (build the package, or write `mod net { ... }`)"]
     );
 }
 

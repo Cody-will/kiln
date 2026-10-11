@@ -640,11 +640,7 @@ pub enum BuildError {
 /// Checks `src` (parse, resolve, type-check, borrow-check), generates code, and
 /// links an executable at `out`.
 pub fn build_source(src: &str, out: &std::path::Path, opts: Options) -> Result<(), BuildError> {
-    let parsed = kiln_parser::parse(src);
-    if !parsed.errors.is_empty() {
-        return Err(BuildError::Diagnostics(parsed.errors));
-    }
-    build_parsed(parsed, out, opts)
+    build_parsed(kiln_parser::parse(src), out, opts)
 }
 
 /// Builds the test executable for `src` (see [`kiln_parser::test_harness`]):
@@ -654,7 +650,15 @@ pub fn build_tests(
     out: &std::path::Path,
     opts: Options,
 ) -> Result<Vec<kiln_parser::TestCase>, BuildError> {
-    let mut parsed = kiln_parser::parse(src);
+    build_tests_parsed(kiln_parser::parse(src), out, opts)
+}
+
+/// [`build_tests`] for an already-parsed program.
+pub fn build_tests_parsed(
+    mut parsed: kiln_parser::Parse,
+    out: &std::path::Path,
+    opts: Options,
+) -> Result<Vec<kiln_parser::TestCase>, BuildError> {
     if !parsed.errors.is_empty() {
         return Err(BuildError::Diagnostics(parsed.errors));
     }
@@ -666,11 +670,16 @@ pub fn build_tests(
     Ok(tests)
 }
 
-fn build_parsed(
+/// Builds an already-parsed program (a package loaded with
+/// [`kiln_parser::package::load`]).
+pub fn build_parsed(
     parsed: kiln_parser::Parse,
     out: &std::path::Path,
     opts: Options,
 ) -> Result<(), BuildError> {
+    if !parsed.errors.is_empty() {
+        return Err(BuildError::Diagnostics(parsed.errors));
+    }
     let prelude = kiln_resolve::parse_prelude();
     let resolved = kiln_resolve::resolve(&parsed.file, &prelude);
     if !resolved.errors.is_empty() {
