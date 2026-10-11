@@ -1,0 +1,45 @@
+// JSON: encode 50,000 records to text and decode them back, 4 times.
+import std::encoding::json
+
+#[derive(Json, Clone)]
+struct User {
+	id: i64,
+	name: String,
+	email: String,
+	active: bool,
+	scores: Vec<f64>,
+	tags: Vec<String>,
+}
+
+fn main() -> Result<(), json::Error> {
+	users mut := Vec::new()
+	for i in 0..50000 {
+		scores mut := Vec::new()
+		scores.push(i as f64 * 0.5)
+		scores.push(1.25)
+		scores.push(99.0)
+		tags mut := Vec::new()
+		tags.push("alpha".to_string())
+		tags.push("beta \"quoted\"".to_string())
+		users.push(User {
+			id: i,
+			name: "user {i}".to_string(),
+			email: "user{i}@example.com".to_string(),
+			active: i % 3 == 0,
+			scores: scores,
+			tags: tags,
+		})
+	}
+	bytes mut := 0
+	ids mut := 0
+	for _ in 0..4 {
+		text := json::to_string(&users)
+		bytes += text.len()
+		let back: Vec<User> = json::from_str(&text)?
+		for u in &back {
+			ids += u.id
+		}
+	}
+	println("{bytes} {ids}")
+	return Ok(())
+}

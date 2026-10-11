@@ -1,0 +1,17 @@
+// HTTP server for the req/s benchmark: GET /hello -> "hello, world!\n" on
+// 127.0.0.1:8080, with keep-alive. The load comes from `oha` (see run.sh).
+import std::io
+import std::net::TcpListener
+import std::net::http
+
+fn hello(req: http::Request) -> http::Response {
+	return http::Response::text(200, "hello, world!\n")
+}
+
+fn main() -> Result<(), io::Error> {
+	listener := TcpListener::bind("127.0.0.1:8080")?
+	router mut := http::Router::new()
+	router.get("/hello", hello)
+	router.serve(listener)?
+	return Ok(())
+}

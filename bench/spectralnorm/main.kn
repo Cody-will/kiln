@@ -1,0 +1,54 @@
+// spectral-norm (Benchmarks Game), n = 2000, single-threaded.
+import std::math
+
+fn a(i: usize, j: usize) -> f64 {
+	return 1.0 / (((i + j) * (i + j + 1) / 2 + i + 1) as f64)
+}
+
+fn mul_av(v: &Vec<f64>, out: &mut Vec<f64>) {
+	n := v.len()
+	for i in 0..n {
+		s mut := 0.0
+		for j in 0..n {
+			s += a(i, j) * v[j]
+		}
+		out[i] = s
+	}
+}
+
+fn mul_atv(v: &Vec<f64>, out: &mut Vec<f64>) {
+	n := v.len()
+	for i in 0..n {
+		s mut := 0.0
+		for j in 0..n {
+			s += a(j, i) * v[j]
+		}
+		out[i] = s
+	}
+}
+
+fn mul_atav(v: &Vec<f64>, out: &mut Vec<f64>, tmp: &mut Vec<f64>) {
+	mul_av(v, tmp)
+	mul_atv(tmp, out)
+}
+
+fn main() {
+	n := 2000
+	u mut := Vec::new()
+	u.resize(n, 1.0)
+	v mut := Vec::new()
+	v.resize(n, 0.0)
+	tmp mut := Vec::new()
+	tmp.resize(n, 0.0)
+	for _ in 0..10 {
+		mul_atav(&u, &mut v, &mut tmp)
+		mul_atav(&v, &mut u, &mut tmp)
+	}
+	vbv mut := 0.0
+	vv mut := 0.0
+	for i in 0..n {
+		vbv += u[i] * v[i]
+		vv += v[i] * v[i]
+	}
+	println("{math::sqrt(vbv / vv):.9}")
+}

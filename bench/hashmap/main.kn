@@ -1,0 +1,31 @@
+// HashMap: 1M integer inserts, 2M lookups, 500k removes; 200k string keys.
+import std::collections::HashMap
+
+fn main() {
+	m mut := HashMap::new()
+	let n: i64 = 1000000
+	for i in 0..n {
+		m.insert(i * 7, i)
+	}
+	hits mut := 0
+	for i in 0..2 * n {
+		if let Some(v) = m.get(&i) {
+			hits += *v
+		}
+	}
+	for i in 0..n / 2 {
+		m.remove(&(i * 14))
+	}
+	s mut := HashMap::new()
+	for i in 0..200000 as i64 {
+		s.insert("key-{i}", i)
+	}
+	shits mut := 0
+	for i in 0..200000 {
+		k := "key-{i * 3}"
+		if s.contains_key(&k) {
+			shits += 1
+		}
+	}
+	println("{hits} {m.len()} {shits}")
+}

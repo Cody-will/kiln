@@ -1,0 +1,60 @@
+# Rust versions of the benchmarks (sources live next to the Kiln and Go
+# versions, in ../<name>/main.rs).
+[package]
+name = "kiln-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "thin"
+
+[[bin]]
+name = "fib"
+path = "../fib/main.rs"
+
+[[bin]]
+name = "nbody"
+path = "../nbody/main.rs"
+
+[[bin]]
+name = "binarytrees"
+path = "../binarytrees/main.rs"
+
+[[bin]]
+name = "spectralnorm"
+path = "../spectralnorm/main.rs"
+
+[[bin]]
+name = "fannkuch"
+path = "../fannkuch/main.rs"
+
+[[bin]]
+name = "json"
+path = "../json/main.rs"
+
+[[bin]]
+name = "hashmap"
+path = "../hashmap/main.rs"
+
+[[bin]]
+name = "pingpong"
+path = "../pingpong/main.rs"
+
+[[bin]]
+name = "workerpool"
+path = "../workerpool/main.rs"
+
+[[bin]]
+name = "http"
+path = "../http/main.rs"

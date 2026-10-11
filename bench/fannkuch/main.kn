@@ -1,0 +1,65 @@
+// fannkuch-redux (Benchmarks Game), n = 10, single-threaded.
+fn main() {
+	n := 10
+	perm1 mut := Vec::new()
+	for i in 0..n {
+		perm1.push(i)
+	}
+	perm mut := Vec::new()
+	perm.resize(n, 0)
+	count mut := Vec::new()
+	count.resize(n, 0)
+	max_flips mut := 0
+	checksum mut := 0
+	perm_count mut := 0
+	r mut := n
+	loop {
+		while r != 1 {
+			count[r - 1] = r
+			r -= 1
+		}
+		for i in 0..n {
+			perm[i] = perm1[i]
+		}
+		flips mut := 0
+		k mut := perm[0]
+		while k != 0 {
+			i mut := 0
+			j mut := k
+			while i < j {
+				t := perm[i]
+				perm[i] = perm[j]
+				perm[j] = t
+				i += 1
+				j -= 1
+			}
+			flips += 1
+			k = perm[0]
+		}
+		if flips > max_flips {
+			max_flips = flips
+		}
+		if perm_count % 2 == 0 {
+			checksum += flips
+		} else {
+			checksum -= flips
+		}
+		loop {
+			if r == n {
+				println("{checksum}\nPfannkuchen({n}) = {max_flips}")
+				return
+			}
+			p0 := perm1[0]
+			for i in 0..r {
+				perm1[i] = perm1[i + 1]
+			}
+			perm1[r] = p0
+			count[r] -= 1
+			if count[r] > 0 {
+				break
+			}
+			r += 1
+		}
+		perm_count += 1
+	}
+}

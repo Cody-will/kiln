@@ -1,0 +1,44 @@
+// binary-trees (Benchmarks Game), depth 18, single-threaded.
+struct Node {
+	left: Option<Box<Node>>,
+	right: Option<Box<Node>>,
+}
+
+fn make(d: i64) -> Box<Node> {
+	if d == 0 {
+		return Box::new(Node { left: None, right: None })
+	}
+	return Box::new(Node { left: Some(make(d - 1)), right: Some(make(d - 1)) })
+}
+
+fn check(n: &Node) -> i64 {
+	match &n.left {
+		Some(l) => {
+			match &n.right {
+				Some(r) => return 1 + check(l) + check(r),
+				None => return 1,
+			}
+		}
+		None => return 1,
+	}
+}
+
+fn main() {
+	max := 18
+	stretch := make(max + 1)
+	println("stretch tree of depth {max + 1}\t check: {check(&stretch)}")
+	drop(stretch)
+	long := make(max)
+	d mut := 4
+	while d <= max {
+		iters := 1 << (max - d + 4)
+		c mut := 0
+		for _ in 0..iters {
+			t := make(d)
+			c += check(&t)
+		}
+		println("{iters}\t trees of depth {d}\t check: {c}")
+		d += 2
+	}
+	println("long lived tree of depth {max}\t check: {check(&long)}")
+}

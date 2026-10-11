@@ -1,0 +1,19 @@
+// Channel ping-pong: two goroutines pass a counter back and forth 500,000
+// times over unbuffered channels.
+fn main() {
+	(ping_tx, ping_rx) := chan::<i64>(0)
+	(pong_tx, pong_rx) := chan::<i64>(0)
+	t := go move {
+		for v in ping_rx {
+			pong_tx <- v + 1
+		}
+	}
+	v mut := 0
+	for _ in 0..500000 {
+		ping_tx <- v
+		v = <-pong_rx
+	}
+	drop(ping_tx)
+	t.join()
+	println("{v}")
+}
