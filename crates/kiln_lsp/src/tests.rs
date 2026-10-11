@@ -96,3 +96,30 @@ fn symbols_hints_completion() {
             && c.contains(&"add".to_string())
     );
 }
+
+#[test]
+fn definitions_and_references_across_files() {
+    use std::path::{Path, PathBuf};
+    let main = "mod util\n\nfn main() {\n\tprintln(\"{util::twice(2)}\")\n}\n";
+    let util = "pub fn twice(x: i64) -> i64 {\n\treturn x * 2\n}\n";
+    let dir = PathBuf::from("/nonexistent-kiln-lsp-test");
+    let overlay = |p: &Path| -> Option<String> {
+        if p == dir.join("main.kn") {
+            Some(main.into())
+        } else if p == dir.join("util.kn") {
+            Some(util.into())
+        } else {
+            None
+        }
+    };
+    let pkg = kiln_parser::package::load(&dir.join("main.kn"), &[], &overlay).unwrap();
+    let a = crate::analysis::analyze_package(&pkg);
+    assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
+    assert_eq!(a.files.len(), 2);
+    let use_at = main.find("twice").unwrap();
+    let d = a.definition(use_at).unwrap();
+    let (uoff, _, _) = a.files[1];
+    assert_eq!(d.start, uoff + util.find("twice").unwrap());
+    // References from the definition include the use in main.kn.
+    assert!(a.references(d.start).iter().any(|s| s.start == use_at));
+}

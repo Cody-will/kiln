@@ -70,6 +70,11 @@ pub struct Analysis {
     pub members: HashMap<String, Vec<Completion>>,
     /// Expression spans with the name of their type (for `.` completion).
     pub expr_type_names: Vec<(Span, String)>,
+    /// The package's files laid end to end: (offset, path, length). All
+    /// spans in this struct are offsets into that concatenation.
+    pub files: Vec<(usize, std::path::PathBuf, usize)>,
+    /// The concatenated text.
+    pub text: String,
     /// Function bodies: (body span, local binding spans in it).
     pub scopes: Vec<(Span, Vec<Span>)>,
 }
@@ -171,18 +176,65 @@ fn method_name_span(src: &str, call: Span, name: &str) -> Option<Span> {
     found
 }
 
-/// Runs the front end over `src`.
+/// Runs the front end over a single file.
 pub fn analyze(src: &str) -> Analysis {
+    let pkg = kiln_parser::package::Package {
+        parse: kiln_parser::parse(src),
+        files: vec![(0, std::path::PathBuf::from("main.kn"), src.to_string())],
+    };
+    analyze_package(&pkg)
+}
+
+/// Runs the front end over a loaded package (all its files).
+///
+/// The compiler gives each file its own span base (`k << 32`). Here the
+/// files are laid end to end in one string, `text`, and every span is
+/// converted to an offset in it, so the queries below work across files.
+/// [`Analysis::files`] maps offsets back to files.
+pub fn analyze_package(pkg: &kiln_parser::package::Package) -> Analysis {
+    let parsed = &pkg.parse;
+    let mut layout = Vec::new();
+    let mut text = String::new();
+    for (base, path, t) in &pkg.files {
+        layout.push((*base, text.len(), path.clone(), t.len()));
+        text.push_str(t);
+        text.push('\n');
+    }
+    let map = |s: Span| -> Option<Span> {
+        let (base, v, _, len) = layout
+            .iter()
+            .filter(|(b, _, _, _)| *b <= s.start)
+            .max_by_key(|(b, _, _, _)| *b)?;
+        if s.end > base + len || s.start >= kiln_lexer::BUILTIN_BASE {
+            return None;
+        }
+        Some(Span::new(s.start - base + v, s.end - base + v))
+    };
     let mut a = Analysis {
-        diagnostics: kiln_borrowck::check_source(src),
+        diagnostics: kiln_borrowck::check_parse(parsed)
+            .into_iter()
+            .map(|mut d| {
+                d.span = map(d.span).unwrap_or(Span::new(0, 0));
+                d.notes = d
+                    .notes
+                    .into_iter()
+                    .map(|(m, sp)| (m, sp.and_then(map)))
+                    .collect();
+                d
+            })
+            .collect(),
+        files: layout
+            .iter()
+            .map(|(_, v, p, len)| (*v, p.clone(), *len))
+            .collect(),
         ..Default::default()
     };
-    let parsed = kiln_parser::parse(src);
+    let src = text.as_str();
     let prelude = kiln_resolve::parse_prelude();
     let r = kiln_resolve::resolve(&parsed.file, &prelude);
     let t = kiln_typeck::typeck(&r);
-    let n = src.len();
-    let in_file = |s: Span| s.end <= n;
+    let in_file = |s: Span| map(s).is_some();
+    let m = |s: Span| map(s).unwrap_or(s);
     let builtin = kiln_resolve::builtin();
     let std_text = |s: Span| -> Option<(&str, usize)> {
         let base = kiln_lexer::BUILTIN_BASE;
@@ -199,16 +251,17 @@ pub fn analyze(src: &str) -> Analysis {
             continue;
         }
         if in_file(d.span) && d.span.start < d.span.end {
-            a.def_names.insert(d.span, d.name.clone());
-            let doc = doc_above(src, d.span.start);
-            let sig = signature(src, d.span.start);
-            a.def_hover.insert(d.span, hover_text(&sig, &doc));
+            let ds = m(d.span);
+            a.def_names.insert(ds, d.name.clone());
+            let doc = doc_above(src, ds.start);
+            let sig = signature(src, ds.start);
+            a.def_hover.insert(ds, hover_text(&sig, &doc));
             if d.module == r.root || matches!(d.kind, DefKind::Variant { .. }) {
-                let full = d.item.map_or(d.span, |i| i.span);
+                let full = m(d.item.map_or(d.span, |i| i.span));
                 a.symbols.push(Symbol {
                     name: d.name.clone(),
                     kind: kind_name(d.kind),
-                    span: d.span,
+                    span: ds,
                     full,
                     container: None,
                 });
@@ -245,12 +298,12 @@ pub fn analyze(src: &str) -> Analysis {
         if !in_file(*sp) {
             continue;
         }
-        let name_span = ident_at_end(src, *sp);
+        let name_span = ident_at_end(src, m(*sp));
         match res {
             Res::Def(id) => {
                 let d = r.def(*id);
                 if in_file(d.span) {
-                    a.refs.push((name_span, Target::Def(d.span)));
+                    a.refs.push((name_span, Target::Def(m(d.span))));
                 } else {
                     let key = format!("{}#{}", d.name, d.span.start);
                     if let Some((text, off)) = std_text(d.span) {
@@ -262,7 +315,7 @@ pub fn analyze(src: &str) -> Analysis {
                 }
             }
             Res::Local(l) => {
-                let ls = r.locals[l.0 as usize].span;
+                let ls = m(r.locals[l.0 as usize].span);
                 a.refs.push((name_span, Target::Local(ls)));
             }
             _ => {}
@@ -271,7 +324,8 @@ pub fn analyze(src: &str) -> Analysis {
     // Binding sites refer to themselves.
     for (sp, l) in &r.bindings {
         if in_file(*sp) {
-            let ls = r.locals[l.0 as usize].span;
+            let ls = m(r.locals[l.0 as usize].span);
+            let sp = &m(*sp);
             a.refs.push((*sp, Target::Local(ls)));
             // `x: T` (annotated binding or parameter) needs no hint.
             let rest = src[sp.end..].trim_start();
@@ -292,7 +346,7 @@ pub fn analyze(src: &str) -> Analysis {
             if let Some(tn) = self_name {
                 if f.decl.self_param.is_some() && !f.decl.name.name.starts_with('_') {
                     let detail = if in_this {
-                        signature(src, f.decl.name.span.start)
+                        signature(src, m(f.decl.name.span).start)
                     } else {
                         std_text(f.decl.name.span)
                             .map(|(t, o)| signature(t, o))
@@ -306,17 +360,17 @@ pub fn analyze(src: &str) -> Analysis {
                 }
                 if in_this {
                     a.def_names
-                        .insert(f.decl.name.span, f.decl.name.name.clone());
-                    let sig = signature(src, f.decl.name.span.start);
+                        .insert(m(f.decl.name.span), f.decl.name.name.clone());
+                    let sig = signature(src, m(f.decl.name.span).start);
                     a.def_hover.insert(
-                        f.decl.name.span,
-                        hover_text(&sig, &doc_above(src, f.decl.name.span.start)),
+                        m(f.decl.name.span),
+                        hover_text(&sig, &doc_above(src, m(f.decl.name.span).start)),
                     );
                     a.symbols.push(Symbol {
                         name: f.decl.name.name.clone(),
                         kind: "method",
-                        span: f.decl.name.span,
-                        full: f.item.span,
+                        span: m(f.decl.name.span),
+                        full: m(f.item.span),
                         container: Some(tn),
                     });
                 }
@@ -330,13 +384,15 @@ pub fn analyze(src: &str) -> Analysis {
         for (l, ty) in &res.locals {
             let loc = &r.locals[l.0 as usize];
             if in_file(loc.span) {
-                a.locals.insert(loc.span, (loc.name.clone(), t.fmt_ty(ty)));
-                scope.push(loc.span);
+                a.locals
+                    .insert(m(loc.span), (loc.name.clone(), t.fmt_ty(ty)));
+                scope.push(m(loc.span));
             }
         }
-        a.scopes.push((f.item.span, scope));
+        a.scopes.push((m(f.item.span), scope));
         for (sp, ty) in &res.tys {
             if in_file(*sp) {
+                let sp = &m(*sp);
                 a.expr_tys.push((*sp, t.fmt_ty(ty)));
                 if let Some(name) = adt_name(&r, ty) {
                     a.expr_type_names.push((*sp, name.clone()));
@@ -358,15 +414,15 @@ pub fn analyze(src: &str) -> Analysis {
                 }
             }
         }
-        for (call, m) in &res.methods {
-            let Some(fi) = m.fn_idx else { continue };
+        for (call, mi) in &res.methods {
+            let Some(fi) = mi.fn_idx else { continue };
             let callee = &r.fns[fi];
-            let Some(ns) = method_name_span(src, *call, &callee.decl.name.name) else {
+            let Some(ns) = method_name_span(src, m(*call), &callee.decl.name.name) else {
                 continue;
             };
             let def = callee.decl.name.span;
             if in_file(def) {
-                a.refs.push((ns, Target::Def(def)));
+                a.refs.push((ns, Target::Def(m(def))));
             } else {
                 let key = format!("{}#{}", callee.decl.name.name, def.start);
                 if let Some((text, off)) = std_text(def) {
@@ -387,6 +443,7 @@ pub fn analyze(src: &str) -> Analysis {
     a.refs.sort_by_key(|(s, _)| (s.start, s.end));
     a.refs.dedup();
     a.symbols.sort_by_key(|s| s.span.start);
+    a.text = text.clone();
     a.expr_tys
         .sort_by_key(|(s, _)| (s.start, std::cmp::Reverse(s.end)));
     a
