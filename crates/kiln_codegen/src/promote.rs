@@ -191,7 +191,7 @@ impl FnCx<'_, '_, '_, '_> {
             let mut off = 0u32;
             while off < size {
                 let rest = size - off;
-                let n = [8u32, 4, 2, 1].into_iter().find(|n| *n <= rest && off.is_multiple_of(*n)).unwrap_or(1);
+                let n = [8u32, 4, 2, 1].into_iter().find(|n| *n <= rest && off & (n - 1) == 0).unwrap_or(1);
                 let t = int_of(n).expect("chunk size");
                 let v = self.load(t, src, off as i32);
                 self.store(v, dst, off as i32);
