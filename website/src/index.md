@@ -6,15 +6,15 @@
 Kiln is a compiled programming language for **systems programming and backend services**. It pairs Rust's memory model (ownership, borrowing, no garbage collector, no manual `free`) with Go's small syntax and its goroutine-and-channel concurrency.
 
 ```kiln
-fn main() {
-	(tx, rx) := chan::<String>(0)
+fun main() {
+	(tx, rx) := chan::<string>(0)
 	go greet(tx)
 	msg := <-rx
 	println(msg)
 }
 
-fn greet(out: chan<- String) {
-	out <- String::from("Hello from a task!")
+fun greet(out chan<- string) {
+	out <- string::from("Hello from a task!")
 }
 ```
 
@@ -50,14 +50,14 @@ Newlines end statements, `x := v` declares a variable, there is one canonical fo
 
 ### Errors as values
 
-`Result<T, E>` and `?` let an error bubble up to the caller that can handle it, with no `if err != nil` after every call and no exceptions.
+`result<T, E>` and `?` let an error bubble up to the caller that can handle it, with no `if err != nil` after every call and no exceptions.
 
 </div>
 <div>
 
 ### Generics and traits
 
-Rust-style traits, generics with bounds, and `#[derive]`. Generics compile to specialized code (monomorphization), so they have no runtime cost.
+Rust-style traits, generics with bounds, and `@derive`. Generics compile to specialized code (monomorphization), so they have no runtime cost.
 
 </div>
 <div>

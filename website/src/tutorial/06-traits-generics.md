@@ -6,26 +6,26 @@ A trait is a set of methods a type can implement:
 
 ```kiln
 trait Describe {
-	fn describe(&self) -> String
+	fun describe(&self) string
 
 	// A default method; implementors get it for free.
-	fn shout(&self) -> String {
+	fun shout(&self) string {
 		return self.describe().to_upper()
 	}
 }
 
 struct Dog {
-	name: String,
+	name string,
 }
 
 impl Describe for Dog {
-	fn describe(&self) -> String {
+	fun describe(&self) string {
 		return "a dog named {self.name}"
 	}
 }
 
-fn main() {
-	d := Dog { name: String::from("Rex") }
+fun main() {
+	d := Dog { name: string::from("Rex") }
 	println(d.shout())
 }
 ```
@@ -37,7 +37,7 @@ The checker verifies that an `impl` provides every required method with the same
 Functions, structs, enums, and impls take type parameters in `<...>`. Bounds say what a type must support:
 
 ```kiln
-fn largest<T: Ord>(a: T, b: T) -> T {
+fun largest<T: Ord>(a T, b T) T {
 	if a > b {
 		return a
 	}
@@ -45,33 +45,33 @@ fn largest<T: Ord>(a: T, b: T) -> T {
 }
 
 struct Pair<T> {
-	first: T,
-	second: T,
+	first T,
+	second T,
 }
 
 impl<T> Pair<T> {
-	fn swap(self) -> Pair<T> {
+	fun swap(self) Pair<T> {
 		return Pair { first: self.second, second: self.first }
 	}
 }
 
-fn main() {
+fun main() {
 	println("{largest(3, 9)}")
 	p := Pair { first: "a", second: "b" }.swap()
 	println(p.first)
 }
 ```
 
-Type arguments are inferred from use. You can give them explicitly with the "turbofish" `::<>`: `Vec::<u8>::new()`, `chan::<String>(10)`.
+Type arguments are inferred from use. You can give them explicitly with the "turbofish" `::<>`: `Vec::<u8>::new()`, `chan::<string>(10)`.
 
 Longer bounds can go in a `where` clause:
 
 ```kiln
 trait Summary {
-	fn summary(&self) -> String
+	fun summary(&self) string
 }
 
-fn print_all<T>(items: &[T]) where T: Summary {
+fun print_all<T>(items &[T]) where T: Summary {
 	for it in items {
 		println(it.summary())
 	}
@@ -88,13 +88,13 @@ error: the trait `Ord` is not implemented for `Point`
 ## Deriving common traits
 
 ```kiln
-#[derive(Debug, Clone, Eq, Ord)]
+@derive(Debug, Clone, Eq, Ord)
 struct Version {
-	major: u32,
-	minor: u32,
+	major u32,
+	minor u32,
 }
 
-fn main() {
+fun main() {
 	a := Version { major: 1, minor: 2 }
 	b := a.clone()
 	println("{a == b}")
@@ -109,10 +109,10 @@ When you need values of different types behind one interface, use `dyn Trait` be
 
 ```kiln
 trait Describe {
-	fn describe(&self) -> String
+	fun describe(&self) string
 }
 
-fn show(x: &dyn Describe) {
+fun show(x &dyn Describe) {
 	println(x.describe())
 }
 ```

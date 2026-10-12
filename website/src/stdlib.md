@@ -2,7 +2,7 @@
 
 Kiln's standard library covers the ground of Go's: time, concurrency, files, processes, networking, and HTTP. Its APIs follow Rust's lead:
 
-- **Errors are values.** Anything that can fail returns `Result<T, io::Error>`, so `?` passes failures up. An `io::Error` has a `kind()` to match on (`io::ErrorKind::NotFound`) and a message that says what happened: `open config.toml: No such file or directory`.
+- **Errors are values.** Anything that can fail returns `result<T, io::Error>`, so `?` passes failures up. An `io::Error` has a `kind()` to match on (`io::ErrorKind::NotFound`) and a message that says what happened: `open config.toml: No such file or directory`.
 - **Resources are owned.** A `File`, `TcpStream`, or `TcpListener` closes when it is dropped. There is no `close` to forget.
 - **Sharing is explicit.** Values move into tasks; data shared between tasks goes in an `Arc`, behind a `Mutex` or `RwLock` when it changes.
 - **Blocking is cheap.** Sleeping, waiting for a lock, and network I/O park only the calling task. The scheduler runs other tasks meanwhile, as goroutines do in Go.
@@ -35,7 +35,7 @@ Phase 2 added text and data modules: `strings`, `strconv`, `bytes`, `collections
 | [`std::math`](#stdmath) | floating-point math |
 | [`std::rand`](#stdrand) | random numbers, including cryptographic |
 | [`std::errors`](#stderrors) | `AnyError` and `.context(...)` |
-| [`std::encoding::json`](#stdencodingjson) | JSON values and `#[derive(Json)]` |
+| [`std::encoding::json`](#stdencodingjson) | JSON values and `@derive(Json)` |
 | [`std::encoding::base64`, `hex`](#stdencodingbase64-and-stdencodinghex) | base64 and hex |
 | [`std::collections`](#stdcollections) | `HashMap`, `HashSet`, `BTreeMap`, `BTreeSet`, `VecDeque` |
 | [`std::mem`, `std::ptr`](#stdmem-and-stdptr) | low-level memory operations |
@@ -46,7 +46,7 @@ Phase 2 added text and data modules: `strings`, `strconv`, `bytes`, `collections
 |---|---|
 | `time::nanos(n)`, `micros`, `millis`, `secs`, `minutes`, `hours`, `secs_f64(x)` | make a `Duration` |
 | `Duration` | `as_millis()`, `as_secs()`, `as_secs_f64()`, `add`, `sub`, `mul`, `div`, `is_zero()`; displays as `1.5s`, `2h3m0s`, `250ms` |
-| `time::parse_duration(s)` | parse Go-style durations (`300ms`, `-1.5h`, `2h45m`, `1m30.5s`; units `ns` `us`/`µs` `ms` `s` `m` `h`); returns `Result<Duration, ParseDurationError>`; every displayed `Duration` parses back |
+| `time::parse_duration(s)` | parse Go-style durations (`300ms`, `-1.5h`, `2h45m`, `1m30.5s`; units `ns` `us`/`µs` `ms` `s` `m` `h`); returns `result<Duration, ParseDurationError>`; every displayed `Duration` parses back |
 | `Instant::now()` | a monotonic clock reading; `elapsed()`, `since(earlier)`, `add(d)` |
 | `SystemTime::now()` | the wall clock; `unix()`, `unix_millis()`, `unix_nanos()`, `utc()`; displays as RFC 3339 (`2026-10-10T15:24:05Z`) |
 | `time::sleep(d)` | park this task for `d` |
@@ -56,7 +56,7 @@ Phase 2 added text and data modules: `strings`, `strconv`, `bytes`, `collections
 ```kiln
 import std::time
 
-fn main() {
+fun main() {
 	start := time::Instant::now()
 	time::sleep(time::millis(20))
 	println("slept {start.elapsed().as_millis()}ms")
@@ -92,7 +92,7 @@ Waiting for a lock or a wait group parks the task instead of blocking the thread
 ```kiln
 import std::sync::{Arc, Mutex, WaitGroup}
 
-fn main() {
+fun main() {
 	totals := Arc::new(Mutex::new(Vec::new()))
 	wg := Arc::new(WaitGroup::new())
 	for id in 0..4 {
@@ -134,7 +134,7 @@ fn main() {
 import std::io
 import std::io::{BufReader, BufWriter, Write}
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	input := io::Cursor::from_str("first\nsecond\n")
 	r mut := BufReader::new(input)
 	out mut := BufWriter::new(io::stdout())
@@ -142,7 +142,7 @@ fn main() -> Result<(), io::Error> {
 		out.write_str("> {line}\n")?
 	}
 	out.flush()?
-	return Ok(())
+	return Ok()
 }
 ```
 
@@ -152,7 +152,7 @@ Functions mirror Go's `bytes` package and work on `&[u8]` (write a byte slice li
 
 | Item | Description |
 |---|---|
-| `index`, `last_index`, `index_byte` | position of a sub-slice or byte, as `Option<usize>` |
+| `index`, `last_index`, `index_byte` | position of a sub-slice or byte, as `option<usize>` |
 | `contains`, `count`, `equal`, `equal_fold` | searching and comparing (`equal_fold` ignores ASCII case) |
 | `trim_space`, `trim(b, set)`, `strip_prefix`, `strip_suffix` | trimming |
 | `split(b, sep)`, `fields(b)`, `cut(b, sep)` | splitting into borrowed pieces |
@@ -174,12 +174,12 @@ import std::crypto::sha256
 import std::fs
 import std::io
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	f mut := fs::File::open("data.bin")?
 	h mut := sha256::Sha256::new()
 	io::copy(&mut f, &mut h)?
 	println(std::encoding::hex::encode(&h.finish()))
-	return Ok(())
+	return Ok()
 }
 ```
 
@@ -189,7 +189,7 @@ RFC 4180 CSV, like Go's `encoding/csv`. Quoted fields can hold commas, newlines,
 
 | Item | Description |
 |---|---|
-| `csv::parse(text)` | every record of an in-memory document, as `Vec<Vec<String>>` |
+| `csv::parse(text)` | every record of an in-memory document, as `Vec<Vec<string>>` |
 | `csv::format(rows)` | the reverse, quoting only where needed |
 | `Reader::new(r)` | streams from any `io::Read`: `next_record()` (`None` at the end), `read_all()`, `line()`; settings `delimiter`, `comment`, `flexible` (allow differing field counts), `trim_leading_space` |
 | `Writer::new(w)` | `write_record(&["a", "b"])`, `write_strings(&vec)`, `flush()`; settings `delimiter`, `use_crlf` |
@@ -199,12 +199,12 @@ RFC 4180 CSV, like Go's `encoding/csv`. Quoted fields can hold commas, newlines,
 import std::encoding::csv
 import std::fs
 
-fn main() -> Result<(), csv::Error> {
+fun main() result<void, csv::Error> {
 	r mut := csv::Reader::new(fs::File::open("people.csv")?)
 	while let Some(rec) = r.next_record()? {
 		println("{rec[0]} is {rec[1]}")
 	}
-	return Ok(())
+	return Ok()
 }
 ```
 
@@ -216,7 +216,7 @@ Command-line flags with Go's syntax: `-name value`, `-name=value`, `--name value
 |---|---|
 | `FlagSet::new(name)` | an empty set; `name` appears in the usage text |
 | `bool`, `int`, `float`, `string`, `duration` `(name, default, usage)` | define flags (integers accept `0x`, `0o`, `0b`; durations use `time::parse_duration`, e.g. `-timeout 1m30s`) |
-| `parse(&args)` | returns `Result<(), flag::Error>` (`Help`, `Unknown`, `MissingValue`, `Invalid`) |
+| `parse(&args)` | returns `result<void, flag::Error>` (`Help`, `Unknown`, `MissingValue`, `Invalid`) |
 | `parse_or_exit(&args)` | prints the error and usage and exits with status 2 (0 for `-h`) |
 | `get_bool`, `get_int`, `get_float`, `get_string`, `get_duration` | values after parsing |
 | `args()`, `is_set(name)`, `usage()` | positional arguments, whether a flag was given, the help text |
@@ -225,7 +225,7 @@ Command-line flags with Go's syntax: `-name value`, `-name=value`, `--name value
 import std::flag
 import std::os
 
-fn main() {
+fun main() {
 	fs mut := flag::FlagSet::new("greet")
 	fs.string("name", "world", "who to greet")
 	fs.int("times", 1, "how many greetings")
@@ -243,7 +243,7 @@ Regular expressions with Go's RE2 semantics: matching always takes time linear i
 
 | Item | Description |
 |---|---|
-| `Regex::new(pattern)`, `Regex::must(pattern)` | compile (`Result`), or panic on a bad pattern |
+| `Regex::new(pattern)`, `Regex::must(pattern)` | compile (`result`), or panic on a bad pattern |
 | `is_match(text)`, `find(text)`, `find_at(text, i)`, `find_str(text)` | the first match (`Match { start, end }`) |
 | `find_all`, `find_all_str` | all non-overlapping matches |
 | `captures(text)`, `captures_all(text)` | groups: `get(i)`, `name("year")`, `pos(i)`, `len()` |
@@ -256,7 +256,7 @@ Syntax: `.` `[a-z]` `[^...]` `\d \w \s` (and `\D \W \S`) `^ $ \A \z \b \B` `( )`
 ```kiln
 import std::regexp::Regex
 
-fn main() {
+fun main() {
 	date := Regex::must(r"(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})")
 	println(date.replace_all("due 2026-10-10", r"${d}/${m}/${y}"))   // due 10/10/2026
 }
@@ -280,7 +280,7 @@ Cancellation and deadlines across tasks, like Go's `context`. A `Context` is a c
 import std::context
 import std::time
 
-fn main() {
+fun main() {
 	ctx := context::with_timeout(&context::background(), time::millis(50))
 	(tx, rx) := chan::<i32>(1)
 	go move {
@@ -315,7 +315,7 @@ import std::io
 import std::os
 import std::path
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	dir := path::join(&os::temp_dir(), "kiln-demo")
 	fs::create_dir_all(&dir)?
 	notes := path::join(&dir, "notes.txt")
@@ -329,7 +329,7 @@ fn main() -> Result<(), io::Error> {
 		Err(e) => println("as expected: {e}"),
 	}
 	fs::remove_dir_all(&dir)?
-	return Ok(())
+	return Ok()
 }
 ```
 
@@ -362,7 +362,7 @@ Paths are strings. `/` separates elements on every OS; on Windows `\` does too, 
 import std::io
 import std::os
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	args := os::args()
 	if args.len() < 2 {
 		eprintln("usage: {args[0]} <program> [args...]")
@@ -375,7 +375,7 @@ fn main() -> Result<(), io::Error> {
 	out := cmd.output()?
 	print(out.stdout_text())
 	println("exit status {out.status}")
-	return Ok(())
+	return Ok()
 }
 ```
 
@@ -397,15 +397,15 @@ import std::io
 import std::io::BufReader
 import std::net::{TcpListener, TcpStream}
 
-fn echo(conn: TcpStream) -> Result<(), io::Error> {
+fun echo(conn TcpStream) result<void, io::Error> {
 	r mut := BufReader::new(&conn)
 	while let Some(line) = r.next_line()? {
 		conn.write_str("{line}\n")?
 	}
-	return Ok(())
+	return Ok()
 }
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	listener := TcpListener::bind("127.0.0.1:7000")?
 	for conn in listener.incoming() {
 		c := conn?
@@ -415,7 +415,7 @@ fn main() -> Result<(), io::Error> {
 			}
 		}
 	}
-	return Ok(())
+	return Ok()
 }
 ```
 
@@ -443,16 +443,16 @@ import std::io
 import std::net::http
 import std::sync::{Arc, AtomicI64}
 
-fn hello(req: http::Request) -> http::Response {
+fun hello(req http::Request) http::Response {
 	name := req.query_param("name").unwrap_or("world".to_string())
 	return http::Response::text(200, "hello, {name}!\n")
 }
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	visits := Arc::new(AtomicI64::new(0))
 	router mut := http::Router::new()
 	router.get("/hello", hello)
-	router.get("/visits", move |req: http::Request| -> http::Response {
+	router.get("/visits", move |req http::Request| {
 		n := visits.add(1)
 		return http::Response::json(200, "{{\"visits\": {n}}}")
 	})
@@ -481,11 +481,11 @@ import std::io
 import std::net::http
 import std::net::tls
 
-fn hello(req: http::Request) -> http::Response {
+fun hello(req http::Request) http::Response {
 	return http::Response::text(200, "hello over TLS\n")
 }
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	router mut := http::Router::new()
 	router.get("/", hello)
 	cfg := tls::ServerConfig::from_files("cert.pem", "key.pem")?
@@ -509,17 +509,17 @@ Formatting is string interpolation: `"{x}"` uses `Display`, and `"{x:?}"` uses `
 import std::fmt
 
 struct Point {
-	x: f64,
-	y: f64,
+	x f64,
+	y f64,
 }
 
 impl fmt::Display for Point {
-	fn to_string(&self) -> String {
+	fun to_string(&self) string {
 		return "({self.x}, {self.y})"
 	}
 }
 
-fn main() {
+fun main() {
 	p := Point { x: 1.5, y: -2.0 }
 	println("p = {p}")
 }
@@ -527,7 +527,7 @@ fn main() {
 
 ## std::strings
 
-Most string operations are methods on `str` and `String`: `len`, `is_empty`, `contains`, `starts_with`, `ends_with`, `find`, `split`, `split_once`, `lines`, `trim`, `trim_start`, `trim_end`, `strip_prefix`, `strip_suffix`, `replace`, `repeat`, `to_lower`, `to_upper`, `eq_ignore_ascii_case`, `chars`, `char_indices`, `as_bytes`. Slicing (`&s[2..5]`) works on byte offsets, which must fall on character boundaries. The `strings` module adds what isn't a method:
+Most string operations are methods on `str` and `string`: `len`, `is_empty`, `contains`, `starts_with`, `ends_with`, `find`, `split`, `split_once`, `lines`, `trim`, `trim_start`, `trim_end`, `strip_prefix`, `strip_suffix`, `replace`, `repeat`, `to_lower`, `to_upper`, `eq_ignore_ascii_case`, `chars`, `char_indices`, `as_bytes`. Slicing (`&s[2..5]`) works on byte offsets, which must fall on character boundaries. The `strings` module adds what isn't a method:
 
 | Item | Description |
 |---|---|
@@ -537,7 +537,7 @@ Most string operations are methods on `str` and `String`: `len`, `is_empty`, `co
 ```kiln
 import std::strings
 
-fn main() {
+fun main() {
 	words := "  the quick  brown fox ".trim().split(" ")
 	b mut := strings::Builder::new()
 	for w in words {
@@ -557,7 +557,7 @@ Converting numbers and booleans to and from text. Every integer type also has `T
 
 | Item | Description |
 |---|---|
-| `parse_int(s)`, `parse_uint(s)` | `Result<i64, ParseError>` / `Result<u64, ParseError>`; `0x`, `0o`, `0b` prefixes are not accepted here (use `from_str_radix`) |
+| `parse_int(s)`, `parse_uint(s)` | `result<i64, ParseError>` / `result<u64, ParseError>`; `0x`, `0o`, `0b` prefixes are not accepted here (use `from_str_radix`) |
 | `parse_float(s)` | the closest `f64`; accepts `1e-9`, `.5`, `inf`, `NaN` |
 | `parse_bool(s)` | exactly `true` or `false` |
 | `format_int(v, radix)`, `format_uint(v, radix)` | text in base 2 to 36 |
@@ -568,7 +568,7 @@ Converting numbers and booleans to and from text. Every integer type also has `T
 ```kiln
 import std::strconv
 
-fn main() {
+fun main() {
 	match strconv::parse_int("-42") {
 		Ok(n) => println("{n + 1}"),
 		Err(e) => println("bad: {e}"),
@@ -598,14 +598,14 @@ Integer helpers (`checked_add`, `wrapping_mul`, `saturating_sub`, `pow`, `min`, 
 |---|---|
 | `rand::range(lo, hi)` | a random integer in `lo..hi` |
 | `next_u64()`, `next_u32()`, `next_f64()` (in `[0, 1)`), `next_bool()`, `chance(p)` | random values from a shared generator seeded by the OS; safe from any task |
-| `shuffle(&mut v)`, `choose(&v)` | shuffle a slice; pick an element (`Option<&T>`) |
+| `shuffle(&mut v)`, `choose(&v)` | shuffle a slice; pick an element (`option<&T>`) |
 | `Rng::new()`, `Rng::with_seed(n)` | a fast xoshiro256** generator for one task; a fixed seed repeats exactly. Same methods, plus `normal(mean, std_dev)`, `exponential(rate)`, `fill(&mut buf)` |
 | `secure_fill(&mut buf)`, `secure_u64()` | the operating system's cryptographic randomness: use these for keys and tokens, never the others |
 
 ```kiln
 import std::rand
 
-fn main() {
+fun main() {
 	die := rand::range(1, 7)
 	println("rolled {die}")
 	r mut := rand::Rng::with_seed(42)
@@ -615,12 +615,12 @@ fn main() {
 
 ## std::errors
 
-`errors::AnyError` holds an error of any type plus context messages, like Go's wrapped errors. A function that can fail in several ways can return `Result<T, AnyError>` and use `?` on any error type; `.context(...)` says what was being done.
+`errors::AnyError` holds an error of any type plus context messages, like Go's wrapped errors. A function that can fail in several ways can return `result<T, AnyError>` and use `?` on any error type; `.context(...)` says what was being done.
 
 | Item | Description |
 |---|---|
 | `errors::new(msg)` | an `AnyError` with just a message |
-| `result.context(msg)` | wraps the error with a message (works on any `Result` whose error implements `Error`) |
+| `result.context(msg)` | wraps the error with a message (works on any `result` whose error implements `Error`) |
 | `AnyError` | displays as the chain, outermost first: `parsing app.toml: line 3: expected '='`; `chain()` lists the messages, `root_cause()` is the innermost |
 | `Error` trait | implement it (with `Display` and `Debug`) for your own error types |
 
@@ -631,7 +631,7 @@ import std::errors
 import std::errors::AnyError
 import std::fs
 
-fn port(path: &str) -> Result<u16, AnyError> {
+fun port(path &str) result<u16, AnyError> {
 	text := fs::read_to_string(path).context("reading {path}")?
 	n := u16::parse(text.trim()).context("parsing {path}")?
 	if n == 0 {
@@ -640,7 +640,7 @@ fn port(path: &str) -> Result<u16, AnyError> {
 	return Ok(n)
 }
 
-fn main() {
+fun main() {
 	match port("port.txt") {
 		Ok(p) => println("port {p}"),
 		Err(e) => println("error: {e}"),
@@ -650,34 +650,34 @@ fn main() {
 
 ## std::encoding::json
 
-`json::parse(text)` gives a `json::Value` (`Null`, `Bool`, `Int`, `Float`, `String`, `Array`, `Object`); `#[derive(Json)]` converts your own types.
+`json::parse(text)` gives a `json::Value` (`Null`, `Bool`, `Int`, `Float`, `String`, `Array`, `Object`); `@derive(Json)` converts your own types.
 
 | Item | Description |
 |---|---|
-| `json::parse(s)` | `Result<Value, json::Error>`; errors say where (`line 3, column 7`) |
+| `json::parse(s)` | `result<Value, json::Error>`; errors say where (`line 3, column 7`) |
 | `Value` | `get(key)`, `at(i)`, `pointer("/a/0/b")`, `as_str()`, `as_i64()`, `as_f64()`, `as_bool()`, `as_array()`, `as_object()` (and `_mut`), `kind()`; `encode()` (compact) and `pretty()` |
 | `json::Map` | an object: keys keep insertion order (parsing keeps document order); `get`, `get_mut`, `insert`, `remove`, `contains_key`, `iter`, `keys`, `len` |
-| `#[derive(Json)]` | implements `ToJson` and `FromJson`: structs are objects with fields in declaration order; tuple structs are arrays; unit enum variants are strings, other variants `{"Variant": payload}` |
+| `@derive(Json)` | implements `ToJson` and `FromJson`: structs are objects with fields in declaration order; tuple structs are arrays; unit enum variants are strings, other variants `{"Variant": payload}` |
 | `json::to_string(&v)`, `to_string_pretty(&v)`, `json::from_str::<T>(s)` | typed encoding and decoding |
-| missing fields | an error, except that a missing `Option` field reads as `None`; unknown fields are ignored |
+| missing fields | an error, except that a missing `option` field reads as `None`; unknown fields are ignored |
 
 ```kiln
 import std::encoding::json
 
-#[derive(Json, Debug)]
+@derive(Json, Debug)
 struct User {
-	name: String,
-	age: i64,
-	email: Option<String>,
+	name string,
+	age i64,
+	email option<string>,
 }
 
-fn main() -> Result<(), json::Error> {
-	let u: User = json::from_str(r#"{"name": "Ada", "age": 36}"#)?
+fun main() result<void, json::Error> {
+	let u User = json::from_str(r#"{"name": "Ada", "age": 36}"#)?
 	println("{u:?}")
 	println(json::to_string(&u))
 	v := json::parse(r#"{"tags": ["a", "b"]}"#)?
 	println("{v.pointer("/tags/1"):?}")
-	return Ok(())
+	return Ok()
 }
 ```
 
@@ -695,7 +695,7 @@ fn main() -> Result<(), json::Error> {
 import std::encoding::base64
 import std::encoding::hex
 
-fn main() {
+fun main() {
 	s := base64::encode(b"hello")
 	println("{s} {base64::URL_SAFE_NO_PAD.encode(b"\xfb\xff")}")
 	println("{hex::encode(b"hi")} {hex::decode("6869"):?}")
@@ -712,7 +712,7 @@ fn main() {
 | `BTreeSet<T>` | sorted set: `first`, `last`, `range`, and the set operations, in order |
 | `VecDeque<T>` | ring buffer: `push_back`, `push_front`, `pop_back`, `pop_front`, `front`, `back`, `get`, `insert`, `remove`, `rotate_left`, `retain`, `iter`, `iter_mut` |
 
-Lookups take any borrowed form of the key, so a `HashMap<String, V>` is
+Lookups take any borrowed form of the key, so a `HashMap<string, V>` is
 searched with a `&str` and no allocation. `HashMap` iteration order is
 unspecified; use `BTreeMap` when order matters. Maps and sets implement
 `Eq` (independent of order for hash tables), `Clone`, and `Debug`.
@@ -720,7 +720,7 @@ unspecified; use `BTreeMap` when order matters. Maps and sets implement
 ```kiln
 import std::collections::{BTreeMap, HashMap}
 
-fn main() {
+fun main() {
     counts mut := HashMap::new()
     for w in "the cat and the hat".split(" ") {
         *counts.entry(w.to_string()).or_insert(0) += 1

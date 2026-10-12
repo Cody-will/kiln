@@ -1,22 +1,22 @@
 # Functions
 
 ```kiln
-fn add(a: i32, b: i32) -> i32 {
+fun add(a i32, b i32) i32 {
 	return a + b
 }
 
-fn greet(name: &str) {
+fun greet(name &str) {
 	println("hi, {name}")
 }
 
-fn main() {
+fun main() {
 	greet("ada")
 	println("{add(2, 3)}")
 }
 ```
 
-- Parameters always have types, and the return type follows `->`.
-- A function without `->` returns `()` (nothing).
+- Parameters are written `name Type` (no colon), and the return type follows the parameter list (no `->`).
+- A function without a return type returns `void` (nothing).
 - Function names use `snake_case`, and types use `PascalCase`.
 
 ## Returns are explicit
@@ -56,11 +56,11 @@ A path that ends in `panic(...)`, an infinite `loop`, or a `match` where every a
 Return a tuple and destructure it with `:=`:
 
 ```kiln
-fn divmod(a: u32, b: u32) -> (u32, u32) {
+fun divmod(a u32, b u32) (u32, u32) {
 	return (a / b, a % b)
 }
 
-fn main() {
+fun main() {
 	(q, r) := divmod(17, 5)
 	println("{q} remainder {r}")
 }
@@ -71,16 +71,16 @@ fn main() {
 Closures are anonymous functions written `|params| body`. Parameter types are usually inferred:
 
 ```kiln
-fn apply(f: fn(i32) -> i32, x: i32) -> i32 {
+fun apply(f fun(i32) i32, x i32) i32 {
 	return f(x)
 }
 
-fn main() {
+fun main() {
 	double := |x| x * 2
 	println("{apply(double, 21)}")
 
 	// A closure with a block body uses `return`, just like a function.
-	clamp := |x: i32| {
+	clamp := |x i32| {
 		if x > 100 {
 			return 100
 		}
@@ -92,16 +92,16 @@ fn main() {
 
 A single-expression closure (`|x| x * 2`) returns its expression; a closure with a `{ }` body follows the function rule.
 
-A function value of type `fn(..)` may be copied and shared, even between tasks, so a closure used as one may only *read* what it captures. A callback that changes captured variables has the type `fn mut(..)` instead:
+A function value of type `fun(..)` may be copied and shared, even between tasks, so a closure used as one may only *read* what it captures. A callback that changes captured variables has the type `fun mut(..)` instead:
 
 ```kiln
-fn each(xs: &[i32], f: fn mut(i32)) {
+fun each(xs &[i32], f fun mut(i32)) {
 	for x in xs {
 		f(*x)
 	}
 }
 
-fn main() {
+fun main() {
 	total mut := 0
 	each(&[1, 2, 3], |x| {
 		total += x
@@ -110,5 +110,5 @@ fn main() {
 }
 ```
 
-Any `fn` can be passed where a `fn mut` is expected. A closure that moves a captured value out (`move || drop(s)`) can only be called directly, since a second call would find the value gone.
+Any `fun` can be passed where a `fun mut` is expected. A closure that moves a captured value out (`move || drop(s)`) can only be called directly, since a second call would find the value gone.
 

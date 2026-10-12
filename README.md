@@ -3,14 +3,14 @@
 Kiln is a compiled systems and backend programming language with **syntax as simple as Go and functionality like Rust**:
 
 - Ownership and borrowing with no garbage collector.
-- `Result` and `?` for error handling.
+- `result` and `?` for error handling.
 - Traits and generics.
 - Goroutine-style tasks with `go`, channels using `<-`, and `select`.
 
-> **Status:** early development. The compiler type-checks and borrow-checks programs (`kiln check`) and compiles them to native executables with a Cranelift backend (`kiln build`, `kiln run`): functions, structs, enums and `match`, generics, traits including `dyn`, closures, `Result` and `?`, `defer`, `Drop`, fixed-size arrays, and Go-style concurrency (`go` tasks on an M:N work-stealing scheduler, channels, `select`, scoped tasks) all work. The standard library is next. There are VS Code and Tree-sitter grammars. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status:** early development. The compiler type-checks and borrow-checks programs (`kiln check`) and compiles them to native executables with a Cranelift backend (`kiln build`, `kiln run`): functions, structs, enums and `match`, generics, traits including `dyn`, closures, `result` and `?`, `defer`, `Drop`, fixed-size arrays, and Go-style concurrency (`go` tasks on an M:N work-stealing scheduler, channels, `select`, scoped tasks) all work. The standard library is next. There are VS Code and Tree-sitter grammars. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ```kiln
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	listener := TcpListener::bind("0.0.0.0:8080")?
 	for conn in listener.incoming() {
 		conn := conn?
@@ -20,7 +20,7 @@ fn main() -> Result<(), io::Error> {
 			}
 		}
 	}
-	return Ok(())
+	return Ok()
 }
 ```
 

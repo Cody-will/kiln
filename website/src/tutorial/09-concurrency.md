@@ -7,15 +7,15 @@ Everything in this chapter compiles and runs. Tasks run on an M:N scheduler: man
 ## Starting tasks with `go`
 
 ```kiln
-fn say(msg: &str) {
+fun say(msg &str) {
 	println(msg)
 }
 
-fn square(x: i64) -> i64 {
+fun square(x i64) i64 {
 	return x * x
 }
 
-fn main() {
+fun main() {
 	a := go say("from a task")
 	b := go move {
 		println("from a block")
@@ -34,7 +34,7 @@ fn main() {
 
 `go f(args)` runs a call in a new task, and `go move { ... }` runs a block. Tasks are cheap (each has its own small stack); you can start thousands.
 
-`go` is an expression: it returns a `Task<T>` handle, where `T` is what the call or block returns. `t.join()` waits for the task and gives back `Result<T, Panic>`. Like Go, a program ends when `main` returns, even if other tasks are still running, so join the tasks you need to finish. Dropping a `Task` without joining detaches it.
+`go` is an expression: it returns a `Task<T>` handle, where `T` is what the call or block returns. `t.join()` waits for the task and gives back `result<T, Panic>`. Like Go, a program ends when `main` returns, even if other tasks are still running, so join the tasks you need to finish. Dropping a `Task` without joining detaches it.
 
 <div class="status">
 🚧 A panic in any task currently ends the whole program (exit status 101), so <code>join</code> never returns <code>Err</code> yet.
@@ -60,7 +60,7 @@ error: argument to `go` borrows `data`, which may not live as long as the task
 When tasks only need to *borrow* data, start them inside `scope`. Every task spawned with `s.spawn` is joined before `scope` returns, so borrowing locals is safe. Shared borrows require the type to be `Sync`:
 
 ```kiln
-fn main() {
+fun main() {
 	data mut := Vec::new()
 	for i in 0..10 {
 		data.push(i)
@@ -89,7 +89,7 @@ The borrow checker treats the spawned closures like any other borrows: two tasks
 `chan::<T>(capacity)` creates a channel and returns its two ends: a **send-only** end `chan<- T` and a **receive-only** end `<-chan T`. A capacity of `0` makes an unbuffered channel.
 
 ```kiln
-fn main() {
+fun main() {
 	(tx, rx) := chan::<i32>(10)
 	tx <- 1          // send
 	tx <- 2
@@ -108,7 +108,7 @@ error: cannot send on a value of type `<-chan i32`
 Both ends can be cloned, so many tasks can send to or receive from the same channel. A `for` loop receives until the channel is closed, and the channel closes automatically when its last sender is dropped:
 
 ```kiln
-fn main() {
+fun main() {
 	(tx, rx) := chan::<i32>(0)
 	go move {
 		for i in 0..5 {
@@ -131,18 +131,18 @@ If every task is blocked on a channel and nothing can wake them, the program sto
 
 ```kiln
 struct Job {
-	id: u32,
+	id u32,
 }
 
-fn worker(id: u32, jobs: <-chan Job, results: chan<- String) {
+fun worker(id u32, jobs <-chan Job, results chan<- string) {
 	for job in jobs {           // ends when `jobs` is closed
 		results <- "worker {id} did job {job.id}"
 	}
 }
 
-fn main() {
+fun main() {
 	(job_tx, job_rx) := chan::<Job>(100)
-	(res_tx, res_rx) := chan::<String>(100)
+	(res_tx, res_rx) := chan::<string>(100)
 
 	for id in 0..4 {
 		go worker(id, job_rx.clone(), res_tx.clone())
@@ -163,8 +163,8 @@ fn main() {
 `select` waits on several channel operations at once and runs the first one that's ready:
 
 ```kiln
-fn main() {
-	(data_tx, data_rx) := chan::<String>(0)
+fun main() {
+	(data_tx, data_rx) := chan::<string>(0)
 	(quit_tx, quit_rx) := chan::<bool>(1)
 	go move {
 		for i in 0..3 {
@@ -187,7 +187,7 @@ fn main() {
 Arms can receive (`v := <-rx`, or `<-rx` to discard), send (`tx <- v`), or be a default arm (`_ => ...`) that runs when nothing is ready:
 
 ```kiln
-fn main() {
+fun main() {
 	(tx, rx) := chan::<i32>(1)
 	select {
 		v := <-rx => println("got {v}"),
@@ -220,7 +220,7 @@ Prefer channels. When tasks really must share data, use `Arc<Mutex<T>>` from `st
 ```kiln
 import std::sync::{Arc, Mutex, WaitGroup}
 
-fn main() {
+fun main() {
 	counter := Arc::new(Mutex::new(0))
 	wg := Arc::new(WaitGroup::new())
 	for _ in 0..8 {

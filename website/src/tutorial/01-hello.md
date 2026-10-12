@@ -3,7 +3,7 @@
 Create a file called `hello.kn`:
 
 ```kiln
-fn main() {
+fun main() {
 	println("Hello, Kiln!")
 }
 ```
@@ -11,7 +11,7 @@ fn main() {
 Things to notice:
 
 - Kiln source files use the `.kn` extension.
-- A program starts at `fn main()`.
+- A program starts at `fun main()`.
 - There are no semicolons. As in Go, a newline ends a statement when the line ends in something that can finish one (a name, a literal, `)`, `}`, `return`, ...).
 - Blocks use braces, and the opening brace goes on the same line (`kiln fmt` style). Indent with tabs.
 
@@ -47,7 +47,7 @@ Every diagnostic shows the file, line, and column, the source line, and a caret 
 Strings can embed expressions with `{...}`:
 
 ```kiln
-fn main() {
+fun main() {
 	name := "Kiln"
 	year := 2026
 	println("Hello from {name}, {year}!")

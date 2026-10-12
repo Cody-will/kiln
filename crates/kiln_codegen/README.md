@@ -11,7 +11,7 @@ Native code generation for Kiln with [Cranelift](https://cranelift.dev).
 
 ```rust
 let out = std::path::Path::new("hello");
-kiln_codegen::build_source("fn main() {\n\tprintln(\"hi\")\n}\n", out, kiln_codegen::Options::default())?;
+kiln_codegen::build_source("fun main() {\n\tprintln(\"hi\")\n}\n", out, kiln_codegen::Options::default())?;
 ```
 
 Unsupported constructs (`std` items, slice patterns, ...) are reported as diagnostics at their source location.

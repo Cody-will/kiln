@@ -17,12 +17,12 @@ This is the part of Kiln that comes from Rust. It is how Kiln is memory-safe wit
 Assigning a value or passing it to a function **moves** it, unless its type is `Copy` (integers, floats, `bool`, `char`, shared references, and tuples/arrays of those).
 
 ```kiln
-fn consume(s: String) {
+fun consume(s string) {
 	println(s)
 }
 
-fn main() {
-	s := String::from("hello")
+fun main() {
+	s := string::from("hello")
 	consume(s)        // ownership moves into `consume`
 	// println(s)     // error (M3): use of moved value `s`
 
@@ -30,7 +30,7 @@ fn main() {
 	m := n            // i32 is Copy: both are usable
 	println("{n} {m}")
 
-	a := String::from("x")
+	a := string::from("x")
 	b := a.clone()    // an explicit deep copy
 	println("{a} {b}")
 }
@@ -41,16 +41,16 @@ fn main() {
 To use a value without taking it, borrow it:
 
 ```kiln
-fn length(s: &String) -> usize {
+fun length(s &string) usize {
 	return s.len()
 }
 
-fn shout(s: &mut String) {
+fun shout(s &mut string) {
 	s.push("!")
 }
 
-fn main() {
-	s mut := String::from("hi")
+fun main() {
+	s mut := string::from("hi")
 	n := length(&s)    // shared borrow
 	shout(&mut s)      // mutable borrow: `s` must be declared `mut`
 	println("{s} ({n})")
@@ -64,17 +64,17 @@ error: cannot borrow `s`, as it is not declared as mutable
   = help: make it mutable: `s mut := ...` or `let mut s = ...`
 ```
 
-### `&str` and `&String`
+### `&str` and `&string`
 
-String literals have type `&str` (borrowed text). A `&String` converts to `&str` automatically, so functions should usually take `&str`:
+String literals have type `&str` (borrowed text). A `&string` converts to `&str` automatically, so functions should usually take `&str`:
 
 ```kiln
-fn greet(name: &str) {
+fun greet(name &str) {
 	println("hi {name}")
 }
 
-fn main() {
-	owned := String::from("ada")
+fun main() {
+	owned := string::from("ada")
 	greet(&owned)    // &String → &str
 	greet("grace")
 }
@@ -88,12 +88,12 @@ A lifetime names how long a borrow is valid. Kiln infers lifetimes when they are
 
 ```kiln
 // One input reference: the output borrows from it (inferred).
-fn trimmed(s: &str) -> &str {
+fun trimmed(s &str) &str {
 	return s.trim()
 }
 
 // Two inputs: say which one the result borrows from.
-fn longest<'a>(a: &'a str, b: &'a str) -> &'a str {
+fun longest<'a>(a &'a str, b &'a str) &'a str {
 	if a.len() > b.len() {
 		return a
 	}
@@ -104,7 +104,7 @@ fn longest<'a>(a: &'a str, b: &'a str) -> &'a str {
 The rules for leaving lifetimes out (*elision*): if a function takes `&self` or `&mut self`, a returned reference borrows from `self`; otherwise, if exactly one parameter is a reference, the result borrows from it. Anything else needs annotations. A reference that doesn't borrow from any parameter must be `'static`, like a string literal:
 
 ```kiln
-fn greeting(formal: bool) -> &'static str {
+fun greeting(formal bool) &'static str {
 	if formal {
 		return "Good day"
 	}
@@ -128,12 +128,12 @@ A struct that stores a reference declares a lifetime parameter, and the checker 
 
 ```kiln
 struct Parser<'src> {
-	input: &'src str,
-	pos: usize,
+	input &'src str,
+	pos usize,
 }
 
-fn main() {
-	text := String::from("let x = 1")
+fun main() {
+	text := string::from("let x = 1")
 	p := Parser { input: text.as_str(), pos: 0 }
 	println(p.input)
 }
@@ -161,7 +161,7 @@ note: value moved here
 Borrows end at their **last use**, not at the end of the block (*non-lexical lifetimes*), so this is fine:
 
 ```kiln
-fn main() {
+fun main() {
 	v mut := Vec::new()
 	v.push(1)
 	first := &v[0]
@@ -179,7 +179,7 @@ Closures borrow what they use: shared if they only read a variable, mutable if t
 Values are dropped in reverse order of declaration when their scope ends, so files and locks close themselves. For other cleanup, `defer` runs a call when the function returns:
 
 ```kiln
-fn work() {
+fun work() {
 	defer println("done")
 	println("working")
 }
@@ -188,7 +188,7 @@ fn work() {
 Deferred calls run after the return value is computed and before local variables are dropped, last-in first-out. As in Go, the arguments are evaluated when the `defer` line runs, not when the call does:
 
 ```kiln
-fn main() {
+fun main() {
 	x mut := 1
 	defer println("x was {x}")
 	x = 2
@@ -201,7 +201,7 @@ fn main() {
 
 This prints `x is 2`, then `cleanup 2`, `cleanup 1`, `cleanup 0`, and finally `x was 1`.
 
-Arguments follow the usual ownership rules at the `defer`: a `String` passed by value moves into the deferred call, and a borrowed argument such as `defer read(&s)` keeps `s` borrowed until the function returns, so `s` can't be moved or changed after it. To run code that sees variables as they are at exit, defer a block instead: `defer { ... }`.
+Arguments follow the usual ownership rules at the `defer`: a `string` passed by value moves into the deferred call, and a borrowed argument such as `defer read(&s)` keeps `s` borrowed until the function returns, so `s` can't be moved or changed after it. To run code that sees variables as they are at exit, defer a block instead: `defer { ... }`.
 
 When values with a `Drop` impl hold references, the borrow checker uses drop order: a value declared *before* the thing it borrows would be dropped *after* it, which is reported as "does not live long enough".
 

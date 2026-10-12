@@ -1,16 +1,16 @@
-# Errors with `Result` and `?`
+# Errors with `result` and `?`
 
-Kiln has no exceptions. A function that can fail returns `Result<T, E>`, which is either `Ok(value)` or `Err(error)`:
+Kiln has no exceptions. A function that can fail returns `result<T, E>`, which is either `Ok(value)` or `Err(error)`:
 
 ```kiln
-fn parse_port(s: &str) -> Result<u16, String> {
+fun parse_port(s &str) result<u16, string> {
 	if s.is_empty() {
-		return Err(String::from("empty port"))
+		return Err(string::from("empty port"))
 	}
 	return Ok(8080)
 }
 
-fn main() {
+fun main() {
 	match parse_port("8080") {
 		Ok(p) => println("port {p}"),
 		Err(e) => eprintln("bad port: {e}"),
@@ -24,23 +24,23 @@ Checking every call by hand is what Go's `if err != nil` does. In Kiln, `?` does
 
 ```kiln
 struct Config {
-	host: String,
-	port: u16,
+	host string,
+	port u16,
 }
 
-fn parse_port(s: &str) -> Result<u16, String> {
+fun parse_port(s &str) result<u16, string> {
 	if s.is_empty() {
-		return Err(String::from("empty port"))
+		return Err(string::from("empty port"))
 	}
 	return Ok(8080)
 }
 
-fn load(host: &str, port: &str) -> Result<Config, String> {
+fun load(host &str, port &str) result<Config, string> {
 	p := parse_port(port)?      // returns early on error
 	return Ok(Config { host: host.to_string(), port: p })
 }
 
-fn main() {
+fun main() {
 	match load("localhost", "8080") {
 		Ok(cfg) => println("{cfg.host}:{cfg.port}"),
 		Err(e) => eprintln("config error: {e}"),
@@ -50,7 +50,7 @@ fn main() {
 
 Errors bubble up to the caller that knows how to handle them, so a single `match` near the top can handle errors from deep inside.
 
-`?` also works on `Option<T>` in a function that returns `Option`.
+`?` also works on `option<T>` in a function that returns `option`.
 
 ## Converting error types
 
@@ -58,30 +58,30 @@ When the error types differ, `?` converts them with the `From` trait:
 
 ```kiln
 struct IoError {
-	code: i32,
+	code i32,
 }
 
 enum AppError {
 	Io(IoError),
-	Invalid(String),
+	Invalid(string),
 }
 
 impl From<IoError> for AppError {
-	fn from(e: IoError) -> AppError {
+	fun from(e IoError) AppError {
 		return AppError::Io(e)
 	}
 }
 
-fn read_file() -> Result<String, IoError> {
+fun read_file() result<string, IoError> {
 	return Err(IoError { code: 2 })
 }
 
-fn run() -> Result<(), AppError> {
+fun run() result<void, AppError> {
 	text := read_file()?    // IoError → AppError via From
 	if text.is_empty() {
-		return Err(AppError::Invalid(String::from("empty file")))
+		return Err(AppError::Invalid(string::from("empty file")))
 	}
-	return Ok(())
+	return Ok()
 }
 ```
 
@@ -92,11 +92,11 @@ error: `?` couldn't convert the error to `AppError`
   = help: the error type is `IoError`; implement `From<IoError> for AppError`
 ```
 
-## `main` can return a `Result`
+## `main` can return a `result`
 
 ```kiln
-fn main() -> Result<(), String> {
-	return Ok(())
+fun main() result<void, string> {
+	return Ok()
 }
 ```
 
@@ -104,4 +104,4 @@ If `main` returns `Err`, the program prints the error and exits with status 1.
 
 ## Panics
 
-`panic("message")` stops the program. Use it only for bugs ("this can't happen"), not for errors a caller could handle. `.unwrap()` and `.expect("why")` on `Option`/`Result` panic on `None`/`Err`.
+`panic("message")` stops the program. Use it only for bugs ("this can't happen"), not for errors a caller could handle. `.unwrap()` and `.expect("why")` on `option`/`result` panic on `None`/`Err`.

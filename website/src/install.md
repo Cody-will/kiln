@@ -43,7 +43,7 @@ The `kiln` binary has these commands today:
 | `kiln build <file.kn> [-o out]` | Compile to a native executable |
 | `kiln run <file.kn>` | Compile and run |
 | `kiln new <name> [--lib]` | Create a package |
-| `kiln test [paths...]` | Run `#[test]` functions |
+| `kiln test [paths...]` | Run `@test` functions |
 | `kiln fmt [--check] [paths...]` | Format source files |
 
 <div class="status">

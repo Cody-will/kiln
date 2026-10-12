@@ -7,20 +7,20 @@ A module is a namespace of items. You can write one inline, or (more often) in i
 ```kiln
 mod geometry {
 	pub struct Point {
-		pub x: f64,
-		pub y: f64,
+		pub x f64,
+		pub y f64,
 	}
 
-	pub fn origin() -> Point {
+	pub fun origin() Point {
 		return Point { x: 0.0, y: 0.0 }
 	}
 
-	fn helper() {}   // private: only visible inside `geometry`
+	fun helper() {}   // private: only visible inside `geometry`
 }
 
 import geometry::{Point, origin}
 
-fn main() {
+fun main() {
 	p := origin()
 	q := Point { x: 1.0, y: p.y }
 	println("{q.x}")
@@ -81,7 +81,7 @@ Inside a package, the commands need no file name. They find the nearest `kiln.to
 |---|---|
 | `kiln build [--release]` | builds `target/debug/hello` (or `target/release/hello`); skipped when no source, option, or compiler changed |
 | `kiln run [-- args]` | builds (or reuses) and runs it |
-| `kiln test` | runs every `#[test]` in the package's modules |
+| `kiln test` | runs every `@test` in the package's modules |
 | `kiln check` | type- and borrow-checks the package |
 
 A **dependency** is a library package. It becomes a top-level module named after the dependency, so `import mathx::add` works in any file. Dependencies of dependencies are loaded too. Only path dependencies exist so far. A dependency's tests don't run as part of your package's tests.

@@ -4,29 +4,29 @@
 
 ```kiln
 struct Point {
-	x: f64,
-	y: f64,
+	x f64,
+	y f64,
 }
 
 impl Point {
 	// An associated function (no `self`), called as `Point::new(...)`.
-	fn new(x: f64, y: f64) -> Point {
+	fun new(x f64, y f64) Point {
 		return Point { x: x, y: y }
 	}
 
 	// A method that reads `self`.
-	fn len(&self) -> f64 {
+	fun len(&self) f64 {
 		return (self.x * self.x + self.y * self.y).sqrt()
 	}
 
 	// A method that modifies `self`.
-	fn scale(&mut self, k: f64) {
+	fun scale(&mut self, k f64) {
 		self.x *= k
 		self.y *= k
 	}
 }
 
-fn main() {
+fun main() {
 	p mut := Point::new(3.0, 4.0)
 	p.scale(2.0)
 	println("length {p.len()}")
@@ -44,7 +44,7 @@ Tuple structs and unit structs:
 struct Meters(f64)
 struct Marker
 
-fn main() {
+fun main() {
 	m := Meters(5.0)
 	println("{m.0} meters")
 	flag := Marker
@@ -58,11 +58,11 @@ An enum value is one of several variants, and each variant can carry data:
 ```kiln
 enum Shape {
 	Circle(f64),
-	Rect { w: f64, h: f64 },
+	Rect { w f64, h f64 },
 	Empty,
 }
 
-fn area(s: &Shape) -> f64 {
+fun area(s &Shape) f64 {
 	return match s {
 		Shape::Circle(r) => 3.14159 * r * r,
 		Shape::Rect { w, h } => w * h,
@@ -70,7 +70,7 @@ fn area(s: &Shape) -> f64 {
 	}
 }
 
-fn main() {
+fun main() {
 	shapes := [Shape::Circle(1.0), Shape::Rect { w: 2.0, h: 3.0 }, Shape::Empty]
 	total mut := 0.0
 	for s in &shapes {
@@ -89,12 +89,12 @@ error: non-exhaustive match: `Empty` not covered
   = help: add arms for the missing cases or a `_ => ...` arm
 ```
 
-## `Option`
+## `option`
 
-There is no `null`. A value that may be absent has type `Option<T>`, which is either `Some(value)` or `None`:
+There is no `null`. A value that may be absent has type `option<T>`, which is either `Some(value)` or `None`:
 
 ```kiln
-fn find(names: &[&str], target: &str) -> Option<usize> {
+fun find(names &[&str], target &str) option<usize> {
 	for i in 0..names.len() {
 		if names[i] == target {
 			return Some(i)
@@ -103,7 +103,7 @@ fn find(names: &[&str], target: &str) -> Option<usize> {
 	return None
 }
 
-fn main() {
+fun main() {
 	names := ["ada", "grace"]
 	match find(&names, "grace") {
 		Some(i) => println("found at {i}"),
@@ -119,16 +119,16 @@ Exhaustiveness checking looks inside patterns: <code>Some(true)</code>, <code>So
 ## Printing values
 
 Interpolation takes Rust-style format specs after a colon. `:?` prints the
-debug form, which `#[derive(Debug)]` builds from the type's structure:
+debug form, which `@derive(Debug)` builds from the type's structure:
 
 ```kiln
-#[derive(Debug)]
+@derive(Debug)
 struct Point {
-    x: i32,
-    y: f64,
+    x i32,
+    y f64,
 }
 
-fn main() {
+fun main() {
     p := Point { x: 1, y: 2.5 }
     println("{p:?}")        // Point { x: 1, y: 2.5 }
     println("{p.y:>8.2}|")  //     2.50|

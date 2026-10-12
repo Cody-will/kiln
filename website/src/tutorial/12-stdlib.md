@@ -4,13 +4,13 @@ This chapter puts the standard library to work. We'll build a small guest book: 
 
 ## Reading and writing files
 
-`fs::read_to_string` reads a whole file. Like everything that can fail, it returns a `Result`, so `?` hands errors to the caller:
+`fs::read_to_string` reads a whole file. Like everything that can fail, it returns a `result`, so `?` hands errors to the caller:
 
 ```kiln
 import std::fs
 import std::io
 
-fn load(file: &str) -> Result<Vec<String>, io::Error> {
+fun load(file &str) result<Vec<string>, io::Error> {
 	if !fs::exists(file) {
 		return Ok(Vec::new())
 	}
@@ -22,20 +22,20 @@ fn load(file: &str) -> Result<Vec<String>, io::Error> {
 	return Ok(entries)
 }
 
-fn save(file: &str, entries: &Vec<String>) -> Result<(), io::Error> {
-	text mut := String::new()
+fun save(file &str, entries &Vec<string>) result<void, io::Error> {
+	text mut := string::new()
 	for e in entries {
 		text.push("{e}\n")
 	}
 	return fs::write_string(file, &text)
 }
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	entries mut := load("guestbook.txt")?
 	entries.push("hello from the tutorial".to_string())
 	save("guestbook.txt", &entries)?
 	println("{entries.len()} entries")
-	return Ok(())
+	return Ok()
 }
 ```
 
@@ -45,7 +45,7 @@ When something goes wrong, the error says what and where. If the file exists but
 import std::fs
 import std::io
 
-fn main() {
+fun main() {
 	match fs::read_to_string("settings.toml") {
 		Ok(text) => println("{text.len()} bytes of settings"),
 		Err(e) => {
@@ -61,12 +61,12 @@ fn main() {
 
 ## Configuration from the environment
 
-`os::getenv` returns an `Option<String>`; `unwrap_or` supplies a default. `os::args()` holds the command line.
+`os::getenv` returns an `option<string>`; `unwrap_or` supplies a default. `os::args()` holds the command line.
 
 ```kiln
 import std::os
 
-fn main() {
+fun main() {
 	addr := os::getenv("ADDR").unwrap_or(":8080".to_string())
 	file := match os::args().len() {
 		0 | 1 => "guestbook.txt".to_string(),
@@ -88,24 +88,24 @@ import std::net::http
 import std::os
 import std::sync::{Arc, Mutex}
 
-fn save(file: &str, entries: &Vec<String>) -> Result<(), io::Error> {
-	text mut := String::new()
+fun save(file &str, entries &Vec<string>) result<void, io::Error> {
+	text mut := string::new()
 	for e in entries {
 		text.push("{e}\n")
 	}
 	return fs::write_string(file, &text)
 }
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	file := "guestbook.txt"
 	book := Arc::new(Mutex::new(Vec::new()))
 	router mut := http::Router::new()
 
 	// GET /: list the entries.
 	b := book.clone()
-	router.get("/", move |req: http::Request| -> http::Response {
+	router.get("/", move |req http::Request| {
 		entries := b.lock()
-		page mut := String::new()
+		page mut := string::new()
 		for e in &*entries {
 			page.push("- {e}\n")
 		}
@@ -114,7 +114,7 @@ fn main() -> Result<(), io::Error> {
 
 	// POST /sign with the message as the body.
 	b2 := book.clone()
-	router.post("/sign", move |req: http::Request| -> http::Response {
+	router.post("/sign", move |req http::Request| {
 		msg := req.body_text()
 		if msg.trim().is_empty() {
 			return http::Response::text(400, "empty message\n")
@@ -147,7 +147,7 @@ $ curl localhost:8080/
 - hello kiln
 ```
 
-The lock guard (`entries`) unlocks when it goes out of scope at the end of the handler. `&*entries` borrows the `Vec` inside the guard. 🚧 Kiln will soon do this conversion for you where a `&Vec<String>` is expected, as Rust does. While one task holds the lock, others that want it park; their threads go on running other tasks.
+The lock guard (`entries`) unlocks when it goes out of scope at the end of the handler. `&*entries` borrows the `Vec` inside the guard. 🚧 Kiln will soon do this conversion for you where a `&Vec<string>` is expected, as Rust does. While one task holds the lock, others that want it park; their threads go on running other tasks.
 
 ## Calling other services
 
@@ -157,14 +157,14 @@ The same module has a client. `http::get` returns the response, whatever its sta
 import std::io
 import std::net::http
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	resp := http::get("http://127.0.0.1:8080/")?
 	if resp.status != 200 {
 		eprintln("server said {resp.status}")
-		return Ok(())
+		return Ok()
 	}
 	print(resp.body_text())
-	return Ok(())
+	return Ok()
 }
 ```
 
@@ -176,14 +176,14 @@ fn main() -> Result<(), io::Error> {
 import std::io
 import std::os
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	out := os::Command::new("git").args(&["log", "--oneline", "-3"]).output()?
 	if !out.success() {
 		eprintln("git failed: {out.stderr_text()}")
-		return Ok(())
+		return Ok()
 	}
 	print(out.stdout_text())
-	return Ok(())
+	return Ok()
 }
 ```
 
@@ -198,15 +198,15 @@ import std::io
 import std::io::BufReader
 import std::net::{TcpListener, TcpStream}
 
-fn shout(conn: TcpStream) -> Result<(), io::Error> {
+fun shout(conn TcpStream) result<void, io::Error> {
 	r mut := BufReader::new(&conn)
 	while let Some(line) = r.next_line()? {
 		conn.write_str("{line.to_upper()}\n")?
 	}
-	return Ok(())
+	return Ok()
 }
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	listener := TcpListener::bind("127.0.0.1:7000")?
 	for conn in listener.incoming() {
 		c := conn?
@@ -216,7 +216,7 @@ fn main() -> Result<(), io::Error> {
 			}
 		}
 	}
-	return Ok(())
+	return Ok()
 }
 ```
 

@@ -11,7 +11,7 @@ Kiln ships one `kiln` command for everything, like `go` and `cargo`.
 | `kiln lex <file.kn>` | Print tokens, including the semicolons inserted at line ends. |
 | `kiln build <file.kn> [-o out]` | Compile to a native executable (needs a C linker: `cc`, or the Visual Studio build tools on Windows). |
 | `kiln run <file.kn> [args...]` | Build into a temporary directory and run; exits with the program's status. |
-| `kiln test [paths...]` | Run `#[test]` functions in the given files, or in every `.kn` file under the given directories (default: the current one). `--run <text>` picks tests by name, `--ignored` runs `#[ignore]` tests, `--timeout <secs>` changes the 10-minute limit. |
+| `kiln test [paths...]` | Run `@test` functions in the given files, or in every `.kn` file under the given directories (default: the current one). `--run <text>` picks tests by name, `--ignored` runs `@ignore` tests, `--timeout <secs>` changes the 10-minute limit. |
 | `kiln mir <file.kn>` | Print the mid-level IR (for debugging the compiler). |
 | `kiln --version` | Print the version. |
 
@@ -27,27 +27,27 @@ error: mismatched types: expected `i32`, found `bool`
 
 ## Testing
 
-Write tests next to your code as functions marked `#[test]`:
+Write tests next to your code as functions marked `@test`:
 
 ```kiln
-fn add(a: i64, b: i64) -> i64 {
+fun add(a i64, b i64) i64 {
 	return a + b
 }
 
-#[test]
-fn adds() {
+@test
+fun adds() {
 	assert_eq(add(2, 2), 4)
 }
 
-#[test]
-fn parses() -> Result<(), std::strconv::ParseError> {
+@test
+fun parses() result<void, std::strconv::ParseError> {
 	assert_eq(i64::parse("42")?, 42)
-	return Ok(())
+	return Ok()
 }
 
-#[test]
-#[should_panic(expected = "divide by zero")]
-fn divides_by_zero() {
+@test
+@should_panic(expected = "divide by zero")
+fun divides_by_zero() {
 	z := 0
 	println("{10 / z}")
 }
@@ -64,7 +64,7 @@ test divides_by_zero ... ok
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.41s
 ```
 
-Each test runs in its own process, in parallel, so a panic fails only that test. A test's output is shown only when it fails. A test that returns `Err` fails and prints the error. `#[ignore]` skips a slow test unless you pass `--ignored`.
+Each test runs in its own process, in parallel, so a panic fails only that test. A test's output is shown only when it fails. A test that returns `Err` fails and prints the error. `@ignore` skips a slow test unless you pass `--ignored`.
 
 ## Editors
 
