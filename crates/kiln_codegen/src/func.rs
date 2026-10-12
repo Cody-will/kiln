@@ -66,6 +66,7 @@ pub(crate) struct FnCx<'c, 'r, 'a, 'f> {
     /// Handle of the task most recently started by a `go` in this function.
     pub last_task: Option<StackSlot>,
     pub span: kiln_lexer::Span,
+    pub promo: crate::promote::Promo,
 }
 
 /// Largest stack frame a function may have (see `define_fn`).
@@ -76,6 +77,43 @@ pub(crate) fn flags() -> MemFlags {
 }
 
 impl Codegen<'_, '_> {
+    fn translate_body(
+        &mut self,
+        ctx: &mut cranelift_codegen::Context,
+        body: Body,
+        substs: HashMap<String, Ty>,
+        fn_idx: usize,
+        abi: Abi,
+        promoted: Option<std::collections::HashSet<u32>>,
+    ) -> crate::promote::Promo {
+        let extra = if abi == Abi::Closure { 2 } else { 1 };
+        ctx.func.signature = self.ptr_sig(body.arg_count + extra);
+        let mut fbc = FunctionBuilderContext::new();
+        let b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
+        let span = body.span;
+        let promo = crate::promote::Promo { enabled: !self.checked, promoted, ..Default::default() };
+        let mut cx = FnCx {
+            cg: self,
+            b,
+            body,
+            substs,
+            fn_idx,
+            locals: vec![],
+            blocks: vec![],
+            defer_stack: None,
+            last_task: None,
+            intr_substs: HashMap::new(),
+            cur_block: 0,
+            preempt: None,
+            span,
+            promo,
+        };
+        cx.translate(abi);
+        cx.b.seal_all_blocks();
+        cx.b.finalize();
+        cx.promo
+    }
+
     pub(crate) fn define_fn(
         &mut self,
         id: FuncId,
@@ -94,32 +132,20 @@ impl Codegen<'_, '_> {
             }
             return;
         }
-        let extra = if abi == Abi::Closure { 2 } else { 1 };
-        let mut ctx = self.module.make_context();
-        ctx.func.signature = self.ptr_sig(body.arg_count + extra);
-        let mut fbc = FunctionBuilderContext::new();
-        {
-            let b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
-            let span = body.span;
-            let mut cx = FnCx {
-                cg: self,
-                b,
-                body,
-                substs,
-                fn_idx,
-                locals: vec![],
-                blocks: vec![],
-                defer_stack: None,
-                last_task: None,
-                intr_substs: HashMap::new(),
-                cur_block: 0,
-                preempt: None,
-                span,
-            };
-            cx.translate(abi);
-            cx.b.seal_all_blocks();
-            cx.b.finalize();
+        // Release builds translate twice: once to find the stack slots that
+        // can live in registers, then for real (see `promote`).
+        let mut promoted = None;
+        if !self.checked {
+            let errs = self.errors.len();
+            let mut ctx = self.module.make_context();
+            let promo = self.translate_body(&mut ctx, body.clone(), substs.clone(), fn_idx, abi, None);
+            if self.errors.len() > errs {
+                return;
+            }
+            promoted = Some(promo.analyze(&ctx.func));
         }
+        let mut ctx = self.module.make_context();
+        self.translate_body(&mut ctx, body, substs, fn_idx, abi, promoted);
         // Goroutine stacks are 8 MiB: a frame needing half of that is
         // almost certainly a large local array, better caught here than as
         // a stack overflow at run time.
@@ -337,7 +363,12 @@ impl FnCx<'_, '_, '_, '_> {
             size.max(1),
             shift,
         ));
-        self.b.ins().stack_addr(types::I64, s, 0)
+        let v = self.b.ins().stack_addr(types::I64, s, 0);
+        if self.promo.enabled {
+            self.promo.bases.insert(v, self.promo.next_slot);
+            self.promo.next_slot += 1;
+        }
+        v
     }
 
     pub(crate) fn slot_for(&mut self, t: &Ty) -> Value {
@@ -347,23 +378,6 @@ impl FnCx<'_, '_, '_, '_> {
 
     pub(crate) fn iconst(&mut self, v: i64) -> Value {
         self.b.ins().iconst(types::I64, v)
-    }
-
-    pub(crate) fn load(&mut self, t: ir::Type, addr: Value, off: i32) -> Value {
-        self.b.ins().load(t, flags(), addr, off)
-    }
-
-    pub(crate) fn store(&mut self, v: Value, addr: Value, off: i32) {
-        self.b.ins().store(flags(), v, addr, off);
-    }
-
-    pub(crate) fn copy(&mut self, dst: Value, src: Value, size: u32) {
-        if size == 0 {
-            return;
-        }
-        let cfg = self.cg.module.target_config();
-        self.b
-            .emit_small_memory_copy(cfg, dst, src, size as u64, 1, 1, true, flags());
     }
 
     /// Calls a runtime C function declared in `std` as a bodiless `kn_*`

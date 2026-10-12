@@ -20,6 +20,7 @@
 //! per-local drop flags set on initialization and cleared on moves.
 
 mod func;
+mod promote;
 mod glue;
 mod intrinsics;
 mod layout;

@@ -3,7 +3,7 @@
 //!
 //! The expected file holds the program's stdout, then its stderr, then
 //! `[exit N]` when the exit status is not 0. A first line `// flags: ...` passes
-//! extra `kiln build` flags (e.g. `--release`). Set `KILN_BLESS=1` to rewrite the
+//! extra `kiln build` flags (e.g. `--release`); `KILN_RUN_FLAGS` adds flags to every program. Set `KILN_BLESS=1` to rewrite the
 //! expected files from the actual output.
 
 use std::path::{Path, PathBuf};
@@ -29,12 +29,19 @@ fn build_and_run(src: &Path, dir: &Path) -> Result<String, String> {
     let exe = dir.join(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
     // A first line `// flags: --release` passes build flags.
     let text = std::fs::read_to_string(src).unwrap();
-    let flags: Vec<&str> = text
+    let mut flags: Vec<&str> = text
         .lines()
         .next()
         .and_then(|l| l.strip_prefix("// flags:"))
         .map(|f| f.split_whitespace().collect())
         .unwrap_or_default();
+    // `KILN_RUN_FLAGS=--release` reruns the whole suite with extra flags.
+    let extra = std::env::var("KILN_RUN_FLAGS").unwrap_or_default();
+    for f in extra.split_whitespace() {
+        if !flags.contains(&f) {
+            flags.push(f);
+        }
+    }
     let b = Command::new(kiln())
         .arg("build")
         .args(&flags)
