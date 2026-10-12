@@ -2,34 +2,34 @@
 // pointer is valid (and, for `read`/`write`, aligned and initialized as needed).
 
 // A null pointer.
-pub fn null<T>() -> *mut T
+pub fun null<T>() *mut T
 
 // Whether `p` is null.
-pub fn is_null<T>(p: *mut T) -> bool
+pub fun is_null<T>(p *mut T) bool
 
 // `p` advanced by `n` elements of `T`.
-pub unsafe fn add<T>(p: *mut T, n: usize) -> *mut T
+pub unsafe fun add<T>(p *mut T, n usize) *mut T
 
 // Moves the value out of `*p` without dropping what is left behind.
-pub unsafe fn read<T>(p: *mut T) -> T
+pub unsafe fun read<T>(p *mut T) T
 
 // Moves `value` into `*p` without dropping the old contents.
-pub unsafe fn write<T>(p: *mut T, value: T)
+pub unsafe fun write<T>(p *mut T, value T)
 
 // Runs the destructor of `*p`.
-pub unsafe fn drop_in_place<T>(p: *mut T)
+pub unsafe fun drop_in_place<T>(p *mut T)
 
 // Copies `n` elements from `src` to `dst` (the ranges may overlap).
-pub unsafe fn copy<T>(src: *mut T, dst: *mut T, n: usize)
+pub unsafe fun copy<T>(src *mut T, dst *mut T, n usize)
 
 // The address of a slice's first element.
-pub fn slice_ptr<T>(s: &[T]) -> *mut T
+pub fun slice_ptr<T>(s &[T]) *mut T
 
 // The address of a string's first byte.
-pub fn str_ptr(s: &str) -> *mut u8
+pub fun str_ptr(s &str) *mut u8
 
 // The slice of `n` elements starting at `p`.
-pub unsafe fn slice_from_raw<'a, T>(p: *mut T, n: usize) -> &'a mut [T]
+pub unsafe fun slice_from_raw<'a, T>(p *mut T, n usize) &'a mut [T]
 
 // The string of `n` bytes starting at `p` (which must be valid UTF-8).
-pub unsafe fn str_from_raw<'a>(p: *mut u8, n: usize) -> &'a str
+pub unsafe fun str_from_raw<'a>(p *mut u8, n usize) &'a str

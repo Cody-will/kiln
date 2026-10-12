@@ -273,7 +273,7 @@ impl FnCx<'_, '_, '_, '_> {
                 let d = self.load(types::I64, v, 0);
                 self.store(d, dest, 0);
             }
-            "Vec::capacity" | "String::capacity" => {
+            "Vec::capacity" | "string::capacity" => {
                 let v = self.op_scalar(&args[0]);
                 let c = self.load(types::I64, v, 8);
                 self.store(c, dest, 0);
@@ -283,11 +283,11 @@ impl FnCx<'_, '_, '_, '_> {
                 let n = self.op_scalar(&args[1]);
                 self.store(n, v, 16);
             }
-            "Vec::reserve" | "String::reserve" => {
+            "Vec::reserve" | "string::reserve" => {
                 let vt = self.op_ty(&args[0]);
                 let v = self.op_scalar(&args[0]);
                 let n = self.op_scalar(&args[1]);
-                let (size, align) = if name == "String::reserve" {
+                let (size, align) = if name == "string::reserve" {
                     (1, 1)
                 } else {
                     let (_, s, a) = self.vec_elem(vt);
@@ -296,18 +296,18 @@ impl FnCx<'_, '_, '_, '_> {
                 let (s, a) = (self.iconst(size as i64), self.iconst(align as i64));
                 self.call_rt("kn_vec_reserve", &[v, n, s, a]);
             }
-            "String::from_utf8_unchecked" | "String::into_bytes" => {
+            "string::from_utf8_unchecked" | "string::into_bytes" => {
                 let src = self.op_addr(&args[0]);
                 self.copy(dest, src, 24);
                 if let Operand::Move(p) = &args[0] {
                     self.moved(p);
                 }
             }
-            "String::as_mut_vec" => {
+            "string::as_mut_vec" => {
                 let v = self.op_scalar(&args[0]);
                 self.store(v, dest, 0);
             }
-            "String::with_capacity" => {
+            "string::with_capacity" => {
                 let one = self.iconst(1);
                 let z = self.iconst(0);
                 self.store(one, dest, 0);
@@ -317,7 +317,7 @@ impl FnCx<'_, '_, '_, '_> {
                 let (s, a) = (self.iconst(1), self.iconst(1));
                 self.call_rt("kn_vec_reserve", &[dest, n, s, a]);
             }
-            "String::as_bytes" | "str::as_bytes" => {
+            "string::as_bytes" | "str::as_bytes" => {
                 let (p, n) = self.str_of(&args[0]);
                 self.store(p, dest, 0);
                 self.store(n, dest, 8);
@@ -424,8 +424,8 @@ impl FnCx<'_, '_, '_, '_> {
                 };
                 let ba = self.op_scalar(&args[0]);
                 let (data, len, size, is_str) =
-                    if self.cg.is_lang(&bt, "Vec") || self.cg.is_lang(&bt, "String") {
-                        let size = if self.cg.is_lang(&bt, "String") {
+                    if self.cg.is_lang(&bt, "Vec") || self.cg.is_lang(&bt, "string") {
+                        let size = if self.cg.is_lang(&bt, "string") {
                             1
                         } else {
                             self.cg.layout(&self.elem_of(&bt)).size
@@ -434,7 +434,7 @@ impl FnCx<'_, '_, '_, '_> {
                             self.load(types::I64, ba, 0),
                             self.load(types::I64, ba, 16),
                             size,
-                            self.cg.is_lang(&bt, "String"),
+                            self.cg.is_lang(&bt, "string"),
                         )
                     } else if let Ty::Array(et, n) = &bt {
                         let size = self.cg.layout(et).size;
@@ -568,39 +568,39 @@ impl FnCx<'_, '_, '_, '_> {
                     self.moved(p);
                 }
             }
-            ("String", "new") => self.init_string(dest),
-            ("String", "from") | ("str" | "String", "to_string") => {
+            ("string", "new") => self.init_string(dest),
+            ("string", "from") | ("str" | "string", "to_string") => {
                 let (p, n) = self.str_of(&args[0]);
                 self.call_rt("kn_string_from", &[dest, p, n]);
             }
-            ("String" | "str", "len") => {
+            ("string" | "str", "len") => {
                 let (_, n) = self.str_of(&args[0]);
                 self.store(n, dest, 0);
             }
-            ("String" | "str", "is_empty") => {
+            ("string" | "str", "is_empty") => {
                 let (_, n) = self.str_of(&args[0]);
                 let z = self.b.ins().icmp_imm(IntCC::Equal, n, 0);
                 self.store(z, dest, 0);
             }
-            ("String", "push") => {
+            ("string", "push") => {
                 let s = self.op_scalar(&args[0]);
                 let (p, n) = self.str_of(&args[1]);
                 self.call_rt("kn_string_push", &[s, p, n]);
             }
-            ("String", "as_str") => {
+            ("string", "as_str") => {
                 let (p, n) = self.str_of(&args[0]);
                 self.store(p, dest, 0);
                 self.store(n, dest, 8);
             }
-            ("String" | "str", "to_upper") => {
+            ("string" | "str", "to_upper") => {
                 let (p, n) = self.str_of(&args[0]);
                 self.call_rt("kn_str_to_upper", &[dest, p, n]);
             }
-            ("String" | "str", "to_lower") => {
+            ("string" | "str", "to_lower") => {
                 let (p, n) = self.str_of(&args[0]);
                 self.call_rt("kn_str_to_lower", &[dest, p, n]);
             }
-            ("String" | "str", "trim") => {
+            ("string" | "str", "trim") => {
                 let (p, n) = self.str_of(&args[0]);
                 self.call_rt("kn_str_trim", &[dest, p, n]);
             }

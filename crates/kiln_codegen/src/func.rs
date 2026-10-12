@@ -172,11 +172,11 @@ impl Codegen<'_, '_> {
     /// `Result`, if it implements `Display`.
     pub(crate) fn main_error_display(&mut self, main_idx: usize) -> Option<FuncId> {
         let (_, ret) = self.typed.signature(main_idx);
-        if !self.is_lang(&ret, "Result") {
+        if !self.is_lang(&ret, "result") {
             return None;
         }
         let (_, et) = self.field(&ret, "Err.0");
-        if self.is_lang(&et, "String") || matches!(&et, Ty::Ref(..)) {
+        if self.is_lang(&et, "string") || matches!(&et, Ty::Ref(..)) {
             return None;
         }
         self.display_fn(&et)
@@ -215,7 +215,7 @@ impl Codegen<'_, '_> {
                 Err(e) => return self.fatal(format!("could not declare main: {e}")),
             };
         let l = self.layout(&ret);
-        let is_result = self.is_lang(&ret, "Result");
+        let is_result = self.is_lang(&ret, "result");
         let err_info = if is_result {
             let (off, et) = self.field(&ret, "Err.0");
             Some((off, et))
@@ -260,7 +260,7 @@ impl Codegen<'_, '_> {
                         .module
                         .declare_func_in_func(self.rt["kn_main_error"], b.func);
                     let p = b.ins().iadd_imm(addr, off as i64);
-                    let (data, len) = if self.is_lang(&et, "String") {
+                    let (data, len) = if self.is_lang(&et, "string") {
                         (
                             b.ins().load(types::I64, flags(), p, 0),
                             b.ins().load(types::I64, flags(), p, 16),
@@ -1325,7 +1325,7 @@ impl FnCx<'_, '_, '_, '_> {
                 self.store(p, dest, 0);
                 self.store(v, dest, 8);
             }
-            (f, Ty::Prim(PrimTy::Str)) if self.cg.is_lang(f, "String") => {
+            (f, Ty::Prim(PrimTy::Str)) if self.cg.is_lang(f, "string") => {
                 let d = self.load(types::I64, p, 0);
                 let n = self.load(types::I64, p, 16);
                 self.store(d, dest, 0);
@@ -1518,7 +1518,7 @@ impl FnCx<'_, '_, '_, '_> {
         match t {
             Ty::Prim(PrimTy::Str) => true,
             Ty::Ref(_, x) => self.is_str_like(x),
-            _ => self.cg.is_lang(t, "String"),
+            _ => self.cg.is_lang(t, "string"),
         }
     }
 
@@ -1786,7 +1786,7 @@ impl FnCx<'_, '_, '_, '_> {
                     }
                     _ => {
                         let n = self.cg.typed.fmt_ty(t);
-                        self.error(format!("cannot format a value of type `{n}`: implement `Display` (with `fn to_string(&self) -> String`)"))
+                        self.error(format!("cannot format a value of type `{n}`: implement `Display` (with `fun to_string(&self) string`)"))
                     }
                 }
             }

@@ -1,14 +1,14 @@
 struct N {
-	id: i32,
+	id i32,
 }
 
 impl Drop for N {
-	fn drop(&mut self) {
+	fun drop(&mut self) {
 		println("drop {self.id}")
 	}
 }
 
-fn sum(xs: &[i32]) -> i32 {
+fun sum(xs &[i32]) i32 {
 	t mut := 0
 	for x in xs {
 		t += *x
@@ -16,7 +16,7 @@ fn sum(xs: &[i32]) -> i32 {
 	return t
 }
 
-fn main() {
+fun main() {
 	a mut := [1, 2, 3, 4, 5]
 	a[0] = 10
 	println("len {a.len()} first {a[0]} sum {sum(&a)}")

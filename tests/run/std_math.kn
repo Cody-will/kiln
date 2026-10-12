@@ -1,9 +1,9 @@
 import std::math
 
-fn main() {
+fun main() {
 	println("{math::PI:.5} {math::sqrt(2.0):.6} {math::hypot(3.0, 4.0)} {(1.0f64).atan2(1.0):.6} {math::atan2(1.0, 0.0):.6}")
 	println("{(2.0f64).powf(10.0)} {math::exp(1.0) == math::E} {(100.0f64).log10()} {(8.0f64).log(2.0)} {math::cbrt(64.0).round()}")
 	println("{math::NAN.is_nan()} {math::INFINITY} {math::NEG_INFINITY} {(-2.7f64).trunc()} {(-2.7f64).fract():.1} {(-0.0f64).signum()}")
-	let x: f32 = 0.5
+	let x f32 = 0.5
 	println("{x.sin():.4} {(180.0f64).to_radians():.5} {(7.5f64).fmod(2.0)} {math::gamma(5.0)} {(1.5f32).clamp(0.0, 1.0)}")
 }

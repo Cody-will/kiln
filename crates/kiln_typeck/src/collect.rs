@@ -128,15 +128,15 @@ impl<'r, 'a> Checker<'r, 'a> {
     }
 
     pub(crate) fn string_ty(&self) -> Ty {
-        Ty::Adt(self.lang("String"), vec![])
+        Ty::Adt(self.lang("string"), vec![])
     }
 
     pub(crate) fn option_ty(&self, t: Ty) -> Ty {
-        Ty::Adt(self.lang("Option"), vec![t])
+        Ty::Adt(self.lang("option"), vec![t])
     }
 
     pub(crate) fn result_ty(&self, t: Ty, e: Ty) -> Ty {
-        Ty::Adt(self.lang("Result"), vec![t, e])
+        Ty::Adt(self.lang("result"), vec![t, e])
     }
 
     pub(crate) fn is_lang(&self, d: DefId, name: &str) -> bool {
@@ -698,8 +698,8 @@ impl<'r, 'a> Checker<'r, 'a> {
         }
         ps.extend(params.iter().map(|t| self.fmt_ty(t)));
         match ret {
-            Ty::Unit => format!("fn({})", ps.join(", ")),
-            r => format!("fn({}) -> {}", ps.join(", "), self.fmt_ty(r)),
+            Ty::Unit => format!("fun({})", ps.join(", ")),
+            r => format!("fun({}) {}", ps.join(", "), self.fmt_ty(r)),
         }
     }
 }

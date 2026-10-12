@@ -4,12 +4,12 @@ import std::net::{TcpListener, TcpStream}
 import std::net::http
 import std::time
 
-fn hello(req: http::Request) -> http::Response {
+fun hello(req http::Request) http::Response {
 	return http::Response::text(200, "hi {req.path()}")
 }
 
 // Reads until the server closes; returns how long that took.
-fn wait_closed(conn: &TcpStream) -> time::Duration {
+fun wait_closed(conn &TcpStream) time::Duration {
 	start := time::Instant::now()
 	buf mut := [0 as u8; 512]
 	loop {
@@ -21,7 +21,7 @@ fn wait_closed(conn: &TcpStream) -> time::Duration {
 	}
 }
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	listener := TcpListener::bind("127.0.0.1:0")?
 	port := listener.port()?
 	router mut := http::Router::new()
@@ -63,5 +63,5 @@ fn main() -> Result<(), io::Error> {
 		Ok(_) => println("unexpected response"),
 		Err(e) => println("client: {e.kind() == io::ErrorKind::TimedOut} {start.elapsed().as_millis() < 3000}"),
 	}
-	return Ok(())
+	return Ok()
 }

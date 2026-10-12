@@ -1,6 +1,6 @@
 import std::encoding::json
 
-fn main() {
+fun main() {
 	v := json::parse(r#"{"a": [1, 2.5, "x\u00e9\ud83d\ude00\n", null, true, -0.5e3], "b": {}, "c": []}"#).unwrap()
 	println("{v}")
 	println("{v.pretty()}")

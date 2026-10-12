@@ -24,7 +24,7 @@ fn errs(src: &str) -> Vec<String> {
 
 /// Parses the body of `fn main() { <body> }` and returns its statements.
 fn stmts(body: &str) -> Vec<Stmt> {
-    let file = ok(&format!("fn main() {{\n{body}\n}}"));
+    let file = ok(&format!("fun main() {{\n{body}\n}}"));
     match file.items.into_iter().next().unwrap().kind {
         ItemKind::Fn(f) => f.body.unwrap().stmts,
         _ => unreachable!(),
@@ -227,7 +227,7 @@ fn interpolation_spans_point_into_file() {
 
 #[test]
 fn interpolation_syntax_error_is_reported() {
-    let e = errs("fn main() {\n\tprintln(\"{a +}\")\n}");
+    let e = errs("fun main() {\n\tprintln(\"{a +}\")\n}");
     assert_eq!(e, vec!["expected expression, found end of file"]);
 }
 
@@ -280,13 +280,27 @@ fn closures() {
     }
     assert!(matches!(expr("|| 1").kind, ExprKind::Closure { ref params, .. } if params.is_empty()));
     assert!(matches!(
-        expr("move |a: i32, b| { return a }").kind,
+        expr("move |a i32, b| { return a }").kind,
         ExprKind::Closure { is_move: true, .. }
     ));
-    assert!(matches!(
-        expr("|x| -> i32 { return x }").kind,
-        ExprKind::Closure { ret: Some(_), .. }
-    ));
+    // Closure return types are inferred; `->` is an error.
+    let (_, errors) = parse_expr("|x| -> i32 { return x }");
+    assert!(errors[0].message.contains("inferred"), "{errors:?}");
+}
+
+#[test]
+fn syntax_revision_errors_suggest_the_new_form() {
+    let e = errs("fn main() {}");
+    assert!(e[0].contains("`fun`"), "{e:?}");
+    let e = errs("fun f(x: i32) {}");
+    assert!(e[0].contains("without `:`"), "{e:?}");
+    let e = errs("fun f() -> i32 {\n\treturn 1\n}");
+    assert!(e[0].contains("without `->`"), "{e:?}");
+    let e = errs("#[test]\nfun t() {}");
+    assert!(e[0].contains("`@`"), "{e:?}");
+    let e = errs("struct P {\n\tx: i32,\n}");
+    assert!(e[0].contains("without `:`"), "{e:?}");
+    assert!(errs("@derive(Debug)\nstruct P {\n\tx i32,\n}\n\nfun f(p &P, g fun(i32) i32) result<void, string> {\n\tlet y i32 = g(p.x)\n\treturn Ok()\n}").is_empty());
 }
 
 #[test]
@@ -403,7 +417,7 @@ fn select_expression() {
 
 #[test]
 fn bad_select_arm() {
-    let e = errs("fn main() {\n\tselect {\n\t\tfoo() => {},\n\t}\n}");
+    let e = errs("fun main() {\n\tselect {\n\t\tfoo() => {},\n\t}\n}");
     assert_eq!(
         e[0],
         "expected `<-` in select arm (`<-rx`, `v := <-rx`, `tx <- v`, or `_`), found `=>`"
@@ -452,7 +466,7 @@ fn let_statements() {
         }
         s => panic!("{s:?}"),
     }
-    match stmt("let mut total: i64 = 0") {
+    match stmt("let mut total i64 = 0") {
         StmtKind::Let {
             pat, ty: Some(_), ..
         } => {
@@ -471,7 +485,7 @@ fn let_statements() {
         }
     ));
     assert!(matches!(
-        stmt("let x: u8"),
+        stmt("let x u8"),
         StmtKind::Let { init: None, .. }
     ));
 }
@@ -512,11 +526,11 @@ fn short_declarations() {
 #[test]
 fn short_decl_rejects_annotations_and_patterns() {
     assert_eq!(
-        errs("fn main() {\n\tx: i32 := 5\n}"),
+        errs("fun main() {\n\tx: i32 := 5\n}"),
         vec!["type annotations require `let`"]
     );
     assert_eq!(
-        errs("fn main() {\n\tSome(x) := opt\n}"),
+        errs("fun main() {\n\tSome(x) := opt\n}"),
         vec!["left side of `:=` must be a name, `name mut`, or a tuple of names"]
     );
 }
@@ -582,7 +596,7 @@ fn go_expressions() {
         GoTarget::Block { is_move: false, .. }
     ));
     assert_eq!(
-        errs("fn main() {\n\tgo x\n}"),
+        errs("fun main() {\n\tgo x\n}"),
         vec!["`go` requires a function call or a block (`go f(x)` or `go move { ... }`)"]
     );
     // `go` is an expression producing a task handle.
@@ -617,7 +631,7 @@ fn statements_after_block_expressions() {
 
 #[test]
 fn nested_item_in_block() {
-    assert!(matches!(stmt("fn helper() {}"), StmtKind::Item(_)));
+    assert!(matches!(stmt("fun helper() {}"), StmtKind::Item(_)));
 }
 
 #[test]
@@ -650,7 +664,7 @@ fn item(src: &str) -> Item {
 
 #[test]
 fn function_items() {
-    let it = item("pub fn add<T: Add + Copy>(a: T, b: T) -> T where T: Debug {\n\treturn a + b\n}");
+    let it = item("pub fun add<T: Add + Copy>(a T, b T) T where T: Debug {\n\treturn a + b\n}");
     assert_eq!(it.vis, Visibility::Public);
     match it.kind {
         ItemKind::Fn(f) => {
@@ -686,7 +700,7 @@ fn self_parameters() {
         ),
     ];
     for (src, expected) in cases {
-        match item(&format!("fn f({src}, x: i32) {{}}")).kind {
+        match item(&format!("fun f({src}, x i32) {{}}")).kind {
             ItemKind::Fn(f) => {
                 assert_eq!(f.self_param, Some(expected), "{src}");
                 assert_eq!(f.params.len(), 1);
@@ -694,7 +708,7 @@ fn self_parameters() {
             k => panic!("{k:?}"),
         }
     }
-    match item("fn f(&'a mut self) {}").kind {
+    match item("fun f(&'a mut self) {}").kind {
         ItemKind::Fn(f) => assert!(matches!(
             f.self_param,
             Some(SelfParam::Ref { lifetime: Some(ref l), mutable: true }) if l.name == "a"
@@ -705,7 +719,7 @@ fn self_parameters() {
 
 #[test]
 fn unit_return_and_unsafe_fn() {
-    match item("unsafe fn poke(p: *mut u8) {}").kind {
+    match item("unsafe fun poke(p *mut u8) {}").kind {
         ItemKind::Fn(f) => {
             assert!(f.is_unsafe);
             assert!(f.ret.is_none());
@@ -716,7 +730,7 @@ fn unit_return_and_unsafe_fn() {
 
 #[test]
 fn struct_items() {
-    match item("pub struct Point {\n\tpub x: f64,\n\ty: f64,\n}").kind {
+    match item("pub struct Point {\n\tpub x f64,\n\ty f64,\n}").kind {
         ItemKind::Struct(s) => match s.fields {
             Fields::Named(f) => {
                 assert_eq!(f.len(), 2);
@@ -728,7 +742,7 @@ fn struct_items() {
         k => panic!("{k:?}"),
     }
     // Newline-separated fields (no commas) are accepted too.
-    match item("struct P {\n\tx: f64\n\ty: f64\n}").kind {
+    match item("struct P {\n\tx f64\n\ty f64\n}").kind {
         ItemKind::Struct(s) => assert!(matches!(s.fields, Fields::Named(ref f) if f.len() == 2)),
         k => panic!("{k:?}"),
     }
@@ -746,7 +760,7 @@ fn struct_items() {
             ..
         })
     ));
-    match item("struct Parser<'src> {\n\tinput: &'src str,\n}").kind {
+    match item("struct Parser<'src> {\n\tinput &'src str,\n}").kind {
         ItemKind::Struct(s) => assert!(matches!(
             s.generics.params[0],
             GenericParam::Lifetime { .. }
@@ -757,7 +771,7 @@ fn struct_items() {
 
 #[test]
 fn enum_items() {
-    match item("enum Shape {\n\tCircle(f64),\n\tRect { w: f64, h: f64 },\n\tEmpty,\n\tCode = 7,\n}")
+    match item("enum Shape {\n\tCircle(f64),\n\tRect { w f64, h f64 },\n\tEmpty,\n\tCode = 7,\n}")
         .kind
     {
         ItemKind::Enum(e) => {
@@ -773,7 +787,7 @@ fn enum_items() {
 
 #[test]
 fn trait_items() {
-    let src = "trait Describe: Debug + Clone {\n\ttype Out\n\tconst MAX: u32\n\tfn describe(&self) -> String\n\n\tfn shout(&self) -> String {\n\t\treturn self.describe()\n\t}\n}";
+    let src = "trait Describe: Debug + Clone {\n\ttype Out\n\tconst MAX u32\n\tfun describe(&self) string\n\n\tfun shout(&self) string {\n\t\treturn self.describe()\n\t}\n}";
     match item(src).kind {
         ItemKind::Trait(t) => {
             assert_eq!(t.supertraits.len(), 2);
@@ -793,7 +807,7 @@ fn trait_items() {
 
 #[test]
 fn impl_items() {
-    match item("impl<T: Clone> From<io::Error> for Wrapper<T> where T: Debug {\n\tfn from(e: io::Error) -> Self {\n\t\treturn Wrapper::new(e)\n\t}\n}").kind {
+    match item("impl<T: Clone> From<io::Error> for Wrapper<T> where T: Debug {\n\tfun from(e io::Error) Self {\n\t\treturn Wrapper::new(e)\n\t}\n}").kind {
         ItemKind::Impl(i) => {
             assert_eq!(i.trait_ref.unwrap().to_simple_string(), "From");
             assert!(matches!(i.self_ty.kind, TypeKind::Path(ref p) if p.segments[0].args.len() == 1));
@@ -842,7 +856,7 @@ fn import_items() {
 
 #[test]
 fn const_static_type_mod() {
-    let f = ok("const MAX: usize = 10\nstatic mut COUNT: u64 = 0\ntype Map<K> = HashMap<K, String>\nmod util {\n\tfn f() {}\n}\nmod net");
+    let f = ok("const MAX usize = 10\nstatic mut COUNT u64 = 0\ntype Map<K> = HashMap<K, string>\nmod util {\n\tfun f() {}\n}\nmod net");
     assert_eq!(f.items.len(), 5);
     assert!(matches!(
         f.items[1].kind,
@@ -854,13 +868,13 @@ fn const_static_type_mod() {
 
 #[test]
 fn visibility_modifiers() {
-    assert_eq!(item("pub(pkg) fn f() {}").vis, Visibility::Package);
-    assert_eq!(item("fn f() {}").vis, Visibility::Private);
+    assert_eq!(item("pub(pkg) fun f() {}").vis, Visibility::Package);
+    assert_eq!(item("fun f() {}").vis, Visibility::Private);
 }
 
 #[test]
 fn attributes_and_docs() {
-    let it = item("/// A point.\n/// Second line.\n#[derive(Debug, Clone)]\n#[test]\nstruct P");
+    let it = item("/// A point.\n/// Second line.\n@derive(Debug, Clone)\n@test\nstruct P");
     assert_eq!(it.doc.as_deref(), Some("A point.\nSecond line."));
     assert_eq!(it.attrs.len(), 2);
     assert_eq!(it.attrs[0].name.name, "derive");
@@ -870,7 +884,7 @@ fn attributes_and_docs() {
 
 #[test]
 fn docs_attach_to_the_right_item() {
-    let f = ok("/// first\nfn a() {\n\t/// stray\n\tx := 1\n}\n\nfn b() {}\n/// third\nfn c() {}");
+    let f = ok("/// first\nfun a() {\n\t/// stray\n\tx := 1\n}\n\nfun b() {}\n/// third\nfun c() {}");
     assert_eq!(f.items[0].doc.as_deref(), Some("first"));
     assert_eq!(f.items[1].doc, None);
     assert_eq!(f.items[2].doc.as_deref(), Some("third"));
@@ -902,9 +916,9 @@ fn types() {
     assert!(matches!(ty("[u8]"), TypeKind::Slice(_)));
     assert!(matches!(ty("[u8; 32]"), TypeKind::Array(..)));
     assert!(matches!(ty("()"), TypeKind::Tuple(ref v) if v.is_empty()));
-    assert!(matches!(ty("(i32, String)"), TypeKind::Tuple(ref v) if v.len() == 2));
+    assert!(matches!(ty("(i32, string)"), TypeKind::Tuple(ref v) if v.len() == 2));
     assert!(matches!(
-        ty("fn(i32) -> bool"),
+        ty("fun(i32) bool"),
         TypeKind::Fn { ret: Some(_), .. }
     ));
     assert!(matches!(ty("dyn Describe + Send"), TypeKind::Dyn(ref b) if b.len() == 2));
@@ -918,11 +932,11 @@ fn types() {
 
 #[test]
 fn nested_generic_closers_are_split() {
-    match ty("Vec<Vec<Option<u8>>>") {
+    match ty("Vec<Vec<option<u8>>>") {
         TypeKind::Path(p) => assert_eq!(p.segments[0].args.len(), 1),
         k => panic!("{k:?}"),
     }
-    match ty("Result<(), io::Error>") {
+    match ty("result<void, io::Error>") {
         TypeKind::Path(p) => assert_eq!(p.segments[0].args.len(), 2),
         k => panic!("{k:?}"),
     }
@@ -1003,7 +1017,7 @@ fn literal_and_range_patterns() {
 
 #[test]
 fn recovers_between_items() {
-    let p = parse("fn a( {}\nfn b() {}\nstruct C");
+    let p = parse("fun a( {}\nfun b() {}\nstruct C");
     assert!(!p.errors.is_empty());
     let names: Vec<_> = p
         .file
@@ -1020,7 +1034,7 @@ fn recovers_between_items() {
 
 #[test]
 fn recovers_between_statements() {
-    let p = parse("fn main() {\n\tx := )\n\ty := 2\n\tz := ]\n\tw := 4\n}");
+    let p = parse("fun main() {\n\tx := )\n\ty := 2\n\tz := ]\n\tw := 4\n}");
     assert_eq!(p.errors.len(), 2);
     match &p.file.items[0].kind {
         ItemKind::Fn(f) => assert_eq!(f.body.as_ref().unwrap().stmts.len(), 2),
@@ -1031,14 +1045,14 @@ fn recovers_between_statements() {
 #[test]
 fn missing_statement_separator() {
     assert_eq!(
-        errs("fn main() {\n\tx := 1 y := 2\n}"),
+        errs("fun main() {\n\tx := 1 y := 2\n}"),
         vec!["expected newline or `;` after statement, found identifier `y`"]
     );
 }
 
 #[test]
 fn error_spans_are_precise() {
-    let src = "fn main() {\n\tx := 1 +\n}";
+    let src = "fun main() {\n\tx := 1 +\n}";
     let p = parse(src);
     assert_eq!(p.errors.len(), 1);
     assert_eq!(&src[p.errors[0].span.start..p.errors[0].span.end], "}");
@@ -1048,14 +1062,14 @@ fn error_spans_are_precise() {
 fn expected_item_message() {
     assert_eq!(
         errs("42"),
-        vec!["expected item (`fn`, `struct`, `enum`, `trait`, `impl`, `import`, ...), found integer literal"]
+        vec!["expected item (`fun`, `struct`, `enum`, `trait`, `impl`, `import`, ...), found integer literal"]
     );
 }
 
 #[test]
 fn lexer_errors_are_included() {
     assert_eq!(
-        errs("fn main() {\n\tx := $\n}")[0],
+        errs("fun main() {\n\tx := $\n}")[0],
         "unexpected character `$`"
     );
 }
@@ -1085,7 +1099,7 @@ fn unsafe_impl_and_trait() {
 #[test]
 fn lifetime_where_predicates() {
     let f = ok(
-        "fn f<'a, 'b>(x: &'a str, y: &'b str) -> &'a str where 'b: 'a, T: Clone {\n\treturn x\n}\n",
+        "fun f<'a, 'b>(x &'a str, y &'b str) &'a str where 'b: 'a, T: Clone {\n\treturn x\n}\n",
     );
     let ItemKind::Fn(d) = &f.items[0].kind else {
         panic!()
@@ -1099,7 +1113,7 @@ fn lifetime_where_predicates() {
 
 #[test]
 fn channel_types_inside_generic_arguments() {
-    ok("struct S {\n w: Vec<chan<- i32>,\n r: Vec<<-chan i32>,\n m: Option<<-chan Vec<u8>>,\n}\nfn main() {\n v := Vec::<<-chan i32>::new()\n}\n");
+    ok("struct S {\n w Vec<chan<- i32>,\n r Vec<<-chan i32>,\n m option<<-chan Vec<u8>>,\n}\nfun main() {\n v := Vec::<<-chan i32>::new()\n}\n");
     // A shift is still a shift.
-    ok("fn main() {\n x := 1 << 2\n y := x<<-1\n}\n");
+    ok("fun main() {\n x := 1 << 2\n y := x<<-1\n}\n");
 }

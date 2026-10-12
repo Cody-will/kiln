@@ -2,20 +2,20 @@ import std::io
 import std::net::TcpListener
 import std::net::http
 
-fn hello(req: http::Request) -> http::Response {
+fun hello(req http::Request) http::Response {
 	name := req.query_param("name").unwrap_or("world".to_string())
 	return http::Response::text(200, "hello, {name}!\n")
 }
 
-fn echo(req: http::Request) -> http::Response {
+fun echo(req http::Request) http::Response {
 	return http::Response::json(201, "{{\"got\": \"{req.body_text()}\", \"ua\": \"{req.header("user-agent").unwrap_or("")}\"}}")
 }
 
-fn files(req: http::Request) -> http::Response {
+fun files(req http::Request) http::Response {
 	return http::Response::text(200, "file {req.path()}")
 }
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	listener := TcpListener::bind("127.0.0.1:0")?
 	port := listener.port()?
 	router mut := http::Router::new()
@@ -41,5 +41,5 @@ fn main() -> Result<(), io::Error> {
 		Ok(_) => println("??"),
 		Err(e) => println("{e}"),
 	}
-	return Ok(())
+	return Ok()
 }

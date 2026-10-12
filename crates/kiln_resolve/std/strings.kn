@@ -10,13 +10,13 @@
 
 // An iterator over the characters of a string, from `s.chars()`.
 pub struct Chars<'a> {
-	b: &'a [u8],
-	front: usize,
-	back: usize,
+	b &'a [u8],
+	front usize,
+	back usize,
 }
 
 impl<'a> Iterator<char> for Chars<'a> {
-	fn next(&mut self) -> Option<char> {
+	fun next(&mut self) option<char> {
 		if self.front >= self.back {
 			return None
 		}
@@ -27,7 +27,7 @@ impl<'a> Iterator<char> for Chars<'a> {
 }
 
 impl<'a> std::iter::DoubleEndedIterator<char> for Chars<'a> {
-	fn next_back(&mut self) -> Option<char> {
+	fun next_back(&mut self) option<char> {
 		if self.front >= self.back {
 			return None
 		}
@@ -39,12 +39,12 @@ impl<'a> std::iter::DoubleEndedIterator<char> for Chars<'a> {
 
 // An iterator over `(byte offset, character)`, from `s.char_indices()`.
 pub struct CharIndices<'a> {
-	b: &'a [u8],
-	i: usize,
+	b &'a [u8],
+	i usize,
 }
 
 impl<'a> Iterator<(usize, char)> for CharIndices<'a> {
-	fn next(&mut self) -> Option<(usize, char)> {
+	fun next(&mut self) option<(usize, char)> {
 		if self.i >= self.b.len() {
 			return None
 		}
@@ -56,12 +56,12 @@ impl<'a> Iterator<(usize, char)> for CharIndices<'a> {
 }
 
 // The strings in `parts` with `sep` between them.
-pub fn join(parts: &[&str], sep: &str) -> String {
+pub fun join(parts &[&str], sep &str) string {
 	n mut := 0
 	for p in parts {
 		n += p.len() + sep.len()
 	}
-	out mut := String::with_capacity(n)
+	out mut := string::with_capacity(n)
 	for (i, p) in parts.iter().enumerate() {
 		if i > 0 {
 			out.push(sep)
@@ -73,61 +73,61 @@ pub fn join(parts: &[&str], sep: &str) -> String {
 
 // Builds a string piece by piece without copying it each time.
 pub struct Builder {
-	s: String,
+	s string,
 }
 
 impl Builder {
-	pub fn new() -> Builder {
-		return Builder { s: String::new() }
+	pub fun new() Builder {
+		return Builder { s: string::new() }
 	}
 
 	// A builder with room for `n` bytes.
-	pub fn with_capacity(n: usize) -> Builder {
-		return Builder { s: String::with_capacity(n) }
+	pub fun with_capacity(n usize) Builder {
+		return Builder { s: string::with_capacity(n) }
 	}
 
-	pub fn push(&mut self, s: &str) {
+	pub fun push(&mut self, s &str) {
 		self.s.push(s)
 	}
 
-	pub fn push_char(&mut self, c: char) {
+	pub fun push_char(&mut self, c char) {
 		self.s.push_char(c)
 	}
 
 	// Appends `s` followed by a newline.
-	pub fn push_line(&mut self, s: &str) {
+	pub fun push_line(&mut self, s &str) {
 		self.s.push(s)
 		self.s.push("\n")
 	}
 
 	// The length so far, in bytes.
-	pub fn len(&self) -> usize {
+	pub fun len(&self) usize {
 		return self.s.len()
 	}
 
-	pub fn is_empty(&self) -> bool {
+	pub fun is_empty(&self) bool {
 		return self.s.is_empty()
 	}
 
 	// The text so far.
-	pub fn as_str(&self) -> &str {
+	pub fun as_str(&self) &str {
 		return self.s.as_str()
 	}
 
 	// Discards the text, keeping the buffer.
-	pub fn clear(&mut self) {
+	pub fun clear(&mut self) {
 		self.s.clear()
 	}
 
 	// The finished string.
-	pub fn finish(self) -> String {
+	pub fun finish(self) string {
 		return self.s
 	}
 }
 
 impl std::io::Write for Builder {
-	fn write(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
-		self.s.push(&String::from_utf8_lossy(buf))
+	fun write(&mut self, buf &[u8]) result<usize, std::io::Error> {
+		self.s.push(&string::from_utf8_lossy(buf))
 		return Ok(buf.len())
 	}
 }

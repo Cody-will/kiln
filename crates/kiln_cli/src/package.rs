@@ -191,12 +191,12 @@ pub fn new(args: &[String]) -> ExitCode {
         if lib {
             (
                 dir.join("src/lib.kn"),
-                "// Adds two numbers.\npub fn add(a: i64, b: i64) -> i64 {\n\treturn a + b\n}\n\n#[test]\nfn adds() {\n\tassert_eq(add(2, 2), 4)\n}\n".into(),
+                "// Adds two numbers.\npub fun add(a i64, b i64) i64 {\n\treturn a + b\n}\n\n@test\nfun adds() {\n\tassert_eq(add(2, 2), 4)\n}\n".into(),
             )
         } else {
             (
                 dir.join("src/main.kn"),
-                "fn main() {\n\tprintln(\"Hello, world!\")\n}\n".into(),
+                "fun main() {\n\tprintln(\"Hello, world!\")\n}\n".into(),
             )
         },
     ];

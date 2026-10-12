@@ -40,7 +40,7 @@ fn empty_input() {
 #[test]
 fn identifiers_and_keywords() {
     assert_eq!(
-        kinds("fn main foo_bar _x Self self"),
+        kinds("fun main foo_bar _x Self self"),
         vec![
             kw(Keyword::Fn),
             ident("main"),
@@ -390,7 +390,7 @@ fn multiline_block_comment_acts_as_newline() {
 
 #[test]
 fn doc_comments_collected() {
-    let l = lex("/// Adds.\n/// Two lines.\n//// not doc\nfn f() {}");
+    let l = lex("/// Adds.\n/// Two lines.\n//// not doc\nfun f() {}");
     let docs: Vec<_> = l.doc_comments.iter().map(|(_, s)| s.as_str()).collect();
     assert_eq!(docs, vec!["Adds.", "Two lines."]);
 }
@@ -461,7 +461,7 @@ fn unexpected_character_recovers() {
 
 #[test]
 fn lexes_full_function() {
-    let src = "fn add(a: i32, b: i32) -> i32 {\n\treturn a + b\n}\n";
+    let src = "fun add(a: i32, b: i32) -> i32 {\n\treturn a + b\n}\n";
     let k = kinds(src);
     assert_eq!(
         k,

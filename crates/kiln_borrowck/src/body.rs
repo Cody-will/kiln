@@ -1097,7 +1097,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                     self.report(
                         Diagnostic::error(msg, loan.span)
                             .with_plain_note("returns a value referencing data owned by the current function, which is dropped when it returns")
-                            .with_help("return an owned value instead (e.g. `String` rather than `&str`)"),
+                            .with_help("return an owned value instead (e.g. `string` rather than `&str`)"),
                     );
                 }
                 (None, Some(idx)) => {
@@ -1137,7 +1137,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                     self.report(
                         Diagnostic::error(format!("lifetime may not live long enough: the returned value borrows from `{pname}`"), self.b.locals[idx + 1].span)
                             .with_plain_note(tied)
-                            .with_help(format!("give `{pname}` and the return type the same lifetime, e.g. `<'a>` with `{pname}: &'a T` and `-> &'a U`")),
+                            .with_help(format!("give `{pname}` and the return type the same lifetime, e.g. `<'a>` with `{pname} &'a T` and the return type `&'a U`")),
                     );
                 }
                 _ => {}

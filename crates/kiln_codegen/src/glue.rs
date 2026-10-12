@@ -217,7 +217,7 @@ impl FnCx<'_, '_, '_, '_> {
         if !self.cg.needs_drop(t) {
             return;
         }
-        if self.cg.is_lang(t, "String") {
+        if self.cg.is_lang(t, "string") {
             let one = self.iconst(1);
             self.call_rt("kn_vec_free", &[p, one, one]);
             return;
@@ -435,7 +435,7 @@ impl FnCx<'_, '_, '_, '_> {
             let r = cx.b.ins().band(r, eq);
             cx.store(r, res, 0);
         };
-        if self.cg.is_lang(t, "String") || matches!(t, Ty::Prim(kiln_resolve::PrimTy::Str)) {
+        if self.cg.is_lang(t, "string") || matches!(t, Ty::Prim(kiln_resolve::PrimTy::Str)) {
             let (p, n) = if matches!(t, Ty::Prim(_)) {
                 return self.error("cannot compare unsized `str` values");
             } else {
@@ -582,7 +582,7 @@ impl FnCx<'_, '_, '_, '_> {
             self.copy(dst, src, l.size);
             return;
         }
-        if self.cg.is_lang(t, "String") {
+        if self.cg.is_lang(t, "string") {
             let p = self.load(types::I64, src, 0);
             let n = self.load(types::I64, src, 16);
             self.call_rt("kn_string_from", &[dst, p, n]);
@@ -761,7 +761,7 @@ impl Codegen<'_, '_> {
     /// `t` has one (rather than using the trait's default method).
     pub(crate) fn user_impl(&mut self, t: &Ty, trait_name: &str, method: &str) -> Option<FuncId> {
         let Ty::Adt(d, _) = t else { return None };
-        if ["String", "Vec", "Box"].iter().any(|n| self.is_lang(t, n)) || self.r.is_core(*d) {
+        if ["string", "Vec", "Box"].iter().any(|n| self.is_lang(t, n)) || self.r.is_core(*d) {
             return None;
         }
         let r = self.r;
@@ -792,7 +792,7 @@ impl FnCx<'_, '_, '_, '_> {
     pub(crate) fn derived_cmp(&mut self, a: Value, b: Value, t: &Ty) -> Value {
         if !matches!(t, Ty::Adt(..))
             || self.cg.is_lang(t, "Vec")
-            || self.cg.is_lang(t, "String")
+            || self.cg.is_lang(t, "string")
             || self.cg.is_lang(t, "Box")
         {
             return self.cmp_at(a, b, t);
@@ -807,7 +807,7 @@ impl FnCx<'_, '_, '_, '_> {
     pub(crate) fn derived_eq(&mut self, a: Value, b: Value, t: &Ty) -> Value {
         if !matches!(t, Ty::Adt(..))
             || self.cg.is_lang(t, "Vec")
-            || self.cg.is_lang(t, "String")
+            || self.cg.is_lang(t, "string")
             || self.cg.is_lang(t, "Box")
         {
             return self.eq_at(a, b, t);
@@ -822,7 +822,7 @@ impl FnCx<'_, '_, '_, '_> {
     pub(crate) fn derived_hash(&mut self, a: Value, t: &Ty, h: Value) {
         if !matches!(t, Ty::Adt(..))
             || self.cg.is_lang(t, "Vec")
-            || self.cg.is_lang(t, "String")
+            || self.cg.is_lang(t, "string")
             || self.cg.is_lang(t, "Box")
         {
             return self.hash_into(a, t, h);
@@ -917,7 +917,7 @@ impl FnCx<'_, '_, '_, '_> {
     /// Compares assuming `*res` is 0 (undecided so far).
     fn cmp_now(&mut self, a: Value, b: Value, t: &Ty, res: Value) {
         use kiln_resolve::PrimTy;
-        if self.cg.is_lang(t, "String") {
+        if self.cg.is_lang(t, "string") {
             let x = (self.load(types::I64, a, 0), self.load(types::I64, a, 16));
             let y = (self.load(types::I64, b, 0), self.load(types::I64, b, 16));
             return self.cmp_strs(x, y, res);
@@ -1028,7 +1028,7 @@ impl FnCx<'_, '_, '_, '_> {
         let lt = self.b.ins().icmp(IntCC::UnsignedLessThan, ta, tb);
         let gt = self.b.ins().icmp(IntCC::UnsignedGreaterThan, ta, tb);
         // `None` orders before `Some` although `Some` is declared first.
-        let is_option = matches!(t, Ty::Adt(d, _) if self.cg.r.is_core(*d) && self.cg.r.def(*d).name == "Option");
+        let is_option = matches!(t, Ty::Adt(d, _) if self.cg.r.is_core(*d) && self.cg.r.def(*d).name == "option");
         let (lt, gt) = if is_option { (gt, lt) } else { (lt, gt) };
         self.set_order(lt, gt, res);
         let same = self.b.ins().icmp(IntCC::Equal, ta, tb);
@@ -1071,7 +1071,7 @@ impl FnCx<'_, '_, '_, '_> {
     /// that are equal hash the same; `-0.0` and `0.0` are not distinguished.
     pub(crate) fn hash_into(&mut self, a: Value, t: &Ty, h: Value) {
         use kiln_resolve::PrimTy;
-        if self.cg.is_lang(t, "String") {
+        if self.cg.is_lang(t, "string") {
             let (p, n) = (self.load(types::I64, a, 0), self.load(types::I64, a, 16));
             self.call_rt("kn_hash_bytes", &[h, p, n]);
             return;
@@ -1305,7 +1305,7 @@ impl FnCx<'_, '_, '_, '_> {
     /// the default `Debug::fmt_debug`.
     pub(crate) fn derived_debug(&mut self, f: Value, a: Value, t: &Ty) {
         if matches!(t, Ty::Adt(..))
-            && !["Vec", "String", "Box"]
+            && !["Vec", "string", "Box"]
                 .iter()
                 .any(|n| self.cg.is_lang(t, n))
         {
@@ -1319,7 +1319,7 @@ impl FnCx<'_, '_, '_, '_> {
     /// Writes the Debug form of the value at `a` (type `t`) to formatter `f`.
     pub(crate) fn debug_into(&mut self, f: Value, a: Value, t: &Ty) {
         use kiln_resolve::PrimTy;
-        if self.cg.is_lang(t, "String") {
+        if self.cg.is_lang(t, "string") {
             let (p, n) = (self.load(types::I64, a, 0), self.load(types::I64, a, 16));
             self.call_rt("kn_fmt_debug_str", &[f, p, n]);
             return;

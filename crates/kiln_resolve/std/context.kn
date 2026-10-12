@@ -22,7 +22,7 @@ import std::time::{Duration, Instant}
 import super::super::Error as ErrorTrait
 
 // Why a context ended.
-#[derive(Debug, Clone, Copy, Eq)]
+@derive(Debug, Clone, Copy, Eq)
 pub enum Error {
 	// `cancel()` was called (on it or a parent).
 	Canceled,
@@ -31,7 +31,7 @@ pub enum Error {
 }
 
 impl Display for Error {
-	fn to_string(&self) -> String {
+	fun to_string(&self) string {
 		match self {
 			Error::Canceled => return "context canceled".to_string(),
 			Error::DeadlineExceeded => return "context deadline exceeded".to_string(),
@@ -42,23 +42,23 @@ impl Display for Error {
 impl ErrorTrait for Error {}
 
 struct State {
-	err: Option<Error>,
-	waiters: Vec<chan<- Error>,
-	children: Vec<Arc<Inner>>,
+	err option<Error>,
+	waiters Vec<chan<- Error>,
+	children Vec<Arc<Inner>>,
 }
 
 struct Inner {
-	state: Mutex<State>,
-	deadline: Option<Instant>,
+	state Mutex<State>,
+	deadline option<Instant>,
 }
 
 // A cancellation scope. Clone it to hand to other tasks.
-#[derive(Clone)]
+@derive(Clone)
 pub struct Context {
-	inner: Arc<Inner>,
+	inner Arc<Inner>,
 }
 
-fn cancel_inner(inner: &Arc<Inner>, why: Error) {
+fun cancel_inner(inner &Arc<Inner>, why Error) {
 	kids mut := Vec::new()
 	{
 		st mut := inner.state.lock()
@@ -79,7 +79,7 @@ fn cancel_inner(inner: &Arc<Inner>, why: Error) {
 	}
 }
 
-fn make(parent: Option<&Context>, deadline: Option<Instant>) -> Context {
+fun make(parent option<&Context>, deadline option<Instant>) Context {
 	// A child never outlives its parent's deadline.
 	d mut := deadline
 	if let Some(p) = parent {
@@ -125,35 +125,35 @@ fn make(parent: Option<&Context>, deadline: Option<Instant>) -> Context {
 }
 
 // The root context: never cancelled, no deadline.
-pub fn background() -> Context {
+pub fun background() Context {
 	return make(None, None)
 }
 
 // A child of `parent` that is cancelled by `cancel()` or with its parent.
-pub fn with_cancel(parent: &Context) -> Context {
+pub fun with_cancel(parent &Context) Context {
 	return make(Some(parent), None)
 }
 
 // A child of `parent` that is cancelled when `d` has passed.
-pub fn with_timeout(parent: &Context, d: Duration) -> Context {
+pub fun with_timeout(parent &Context, d Duration) Context {
 	return make(Some(parent), Some(Instant::now().add(d)))
 }
 
 // A child of `parent` that is cancelled at `at`.
-pub fn with_deadline(parent: &Context, at: Instant) -> Context {
+pub fun with_deadline(parent &Context, at Instant) Context {
 	return make(Some(parent), Some(at))
 }
 
 impl Context {
 	// Cancels this context and everything derived from it. Calling it again
 	// does nothing; parents are not affected.
-	pub fn cancel(&self) {
+	pub fun cancel(&self) {
 		cancel_inner(&self.inner, Error::Canceled)
 	}
 
 	// A channel that receives the reason once the context is cancelled
 	// (right away if it already is). Each call returns a new channel.
-	pub fn done(&self) -> <-chan Error {
+	pub fun done(&self) <-chan Error {
 		(tx, rx) := chan::<Error>(1)
 		st mut := self.inner.state.lock()
 		match st.err {
@@ -166,31 +166,31 @@ impl Context {
 	}
 
 	// Why the context ended, or `None` while it is still live.
-	pub fn err(&self) -> Option<Error> {
+	pub fun err(&self) option<Error> {
 		return self.inner.state.lock().err
 	}
 
 	// `Err(reason)` once cancelled: `ctx.check()?` in loops.
-	pub fn check(&self) -> Result<(), Error> {
+	pub fun check(&self) result<void, Error> {
 		match self.err() {
 			Some(e) => return Err(e),
-			None => return Ok(()),
+			None => return Ok(),
 		}
 	}
 
 	// Whether it has been cancelled.
-	pub fn is_done(&self) -> bool {
+	pub fun is_done(&self) bool {
 		return self.err().is_some()
 	}
 
 	// The deadline, if it (or a parent) has one.
-	pub fn deadline(&self) -> Option<Instant> {
+	pub fun deadline(&self) option<Instant> {
 		return self.inner.deadline
 	}
 
 	// Time left before the deadline (at least 1 ns, so it can be used as a
 	// socket timeout), or `None` without a deadline.
-	pub fn remaining(&self) -> Option<Duration> {
+	pub fun remaining(&self) option<Duration> {
 		match self.inner.deadline {
 			Some(at) => {
 				left := at.since(Instant::now())
@@ -204,7 +204,7 @@ impl Context {
 	}
 
 	// Waits until the context is cancelled; returns why.
-	pub fn wait(&self) -> Error {
+	pub fun wait(&self) Error {
 		return <-self.done()
 	}
 }

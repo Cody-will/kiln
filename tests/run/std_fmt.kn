@@ -1,35 +1,35 @@
 import std::fmt
 
-#[derive(Debug, Clone)]
+@derive(Debug, Clone)
 struct Point {
-	x: i32,
-	y: f64,
+	x i32,
+	y f64,
 }
 
-#[derive(Debug)]
+@derive(Debug)
 enum Shape {
 	Dot,
 	Circle(Point, f64),
-	Named { name: String, tags: Vec<&'static str> },
+	Named { name string, tags Vec<&'static str> },
 }
 
 struct Secret {
-	key: String,
+	key string,
 }
 
 impl fmt::Debug for Secret {
-	fn fmt_debug(&self, f: &mut fmt::Formatter) {
+	fun fmt_debug(&self, f &mut fmt::Formatter) {
 		f.write("Secret(..)")
 	}
 }
 
-#[derive(Debug)]
+@derive(Debug)
 struct Wrap {
-	s: Secret,
-	n: Option<i32>,
+	s Secret,
+	n option<i32>,
 }
 
-fn main() {
+fun main() {
 	n := 42
 	f := 3.14159
 	s := "hi"

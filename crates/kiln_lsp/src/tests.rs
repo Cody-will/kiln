@@ -1,6 +1,6 @@
 use crate::analysis::analyze;
 
-const SRC: &str = "struct Point {\n\tx: i32,\n}\n\nimpl Point {\n\t// Twice x.\n\tfn double(&self) -> i32 {\n\t\treturn self.x * 2\n\t}\n}\n\n// Adds.\nfn add(a: i32, b: i32) -> i32 {\n\treturn a + b\n}\n\nfn main() {\n\tp := Point { x: 1 }\n\ts := add(p.x, p.double())\n\tprintln(\"{s}\")\n}\n";
+const SRC: &str = "struct Point {\n\tx i32,\n}\n\nimpl Point {\n\t// Twice x.\n\tfun double(&self) i32 {\n\t\treturn self.x * 2\n\t}\n}\n\n// Adds.\nfun add(a i32, b i32) i32 {\n\treturn a + b\n}\n\nfun main() {\n\tp := Point { x: 1 }\n\ts := add(p.x, p.double())\n\tprintln(\"{s}\")\n}\n";
 
 fn at(needle: &str, nth: usize) -> usize {
     SRC.match_indices(needle).nth(nth).unwrap().0
@@ -23,13 +23,13 @@ fn definitions_references_hover() {
     // Hover.
     let (_, h) = a.hover(at("add(p", 0)).unwrap();
     assert!(
-        h.contains("fn add(a: i32, b: i32) -> i32") && h.contains("Adds."),
+        h.contains("fun add(a i32, b i32) i32") && h.contains("Adds."),
         "{h}"
     );
     let (_, h) = a.hover(at("p := ", 0)).unwrap();
-    assert!(h.contains("p: Point"), "{h}");
+    assert!(h.contains("p Point"), "{h}");
     let (_, h) = a.hover(at("println", 0)).unwrap();
-    assert!(h.contains("fn println"), "{h}");
+    assert!(h.contains("fun println"), "{h}");
 }
 
 #[test]
@@ -43,12 +43,12 @@ fn symbols_hints_completion() {
     assert!(
         names.contains(&("Point", "struct"))
             && names.contains(&("double", "method"))
-            && names.contains(&("main", "fn")),
+            && names.contains(&("main", "fun")),
         "{names:?}"
     );
     let hints = a.inlay_hints();
-    assert!(hints.iter().any(|(_, h)| h == ": Point"), "{hints:?}");
-    assert!(hints.iter().any(|(_, h)| h == ": i32"), "{hints:?}");
+    assert!(hints.iter().any(|(_, h)| h == " Point"), "{hints:?}");
+    assert!(hints.iter().any(|(_, h)| h == " i32"), "{hints:?}");
     // After `p.` (members of Point).
     let src2 = SRC.replace("println(\"{s}\")", "println(\"{s}\")\n\tp.");
     let a2 = analyze(&src2);
@@ -100,8 +100,8 @@ fn symbols_hints_completion() {
 #[test]
 fn definitions_and_references_across_files() {
     use std::path::{Path, PathBuf};
-    let main = "mod util\n\nfn main() {\n\tprintln(\"{util::twice(2)}\")\n}\n";
-    let util = "pub fn twice(x: i64) -> i64 {\n\treturn x * 2\n}\n";
+    let main = "mod util\n\nfun main() {\n\tprintln(\"{util::twice(2)}\")\n}\n";
+    let util = "pub fun twice(x i64) i64 {\n\treturn x * 2\n}\n";
     let dir = PathBuf::from("/nonexistent-kiln-lsp-test");
     let overlay = |p: &Path| -> Option<String> {
         if p == dir.join("main.kn") {

@@ -1,6 +1,6 @@
 import std::time
 
-fn main() {
+fun main() {
 	d := time::millis(1500)
 	println("{d} {time::secs(90)} {time::micros(42)} {time::nanos(7)} {time::hours(2).add(time::minutes(3))}")
 	println("{d.as_millis()} {d.as_secs()} {d.as_secs_f64()} {time::secs(1).sub(time::millis(1))} {d.mul(2)} {d.div(3)}")

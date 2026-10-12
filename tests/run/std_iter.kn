@@ -1,4 +1,4 @@
-fn main() {
+fun main() {
 	more()
 	v mut := Vec::new()
 	for i in 1..=5 {
@@ -22,9 +22,9 @@ fn main() {
 	}
 	println("{v[0]} {v[4]}")
 	names mut := Vec::new()
-	names.push(String::from("ann"))
-	names.push(String::from("bob"))
-	names.push(String::from("cy"))
+	names.push(string::from("ann"))
+	names.push(string::from("bob"))
+	names.push(string::from("cy"))
 	for n in names.iter().rev() {
 		println(n)
 	}
@@ -64,18 +64,18 @@ fn main() {
 }
 
 struct D {
-	n: i32,
+	n i32,
 }
 
 impl Drop for D {
-	fn drop(&mut self) {
+	fun drop(&mut self) {
 		println("drop {self.n}")
 	}
 }
 
 // Iterating by value moves the elements out; those not taken are dropped
 // with the iterator, each exactly once.
-fn partial() {
+fun partial() {
 	v mut := Vec::new()
 	for i in 0..4 {
 		v.push(D { n: i })
@@ -87,7 +87,7 @@ fn partial() {
 }
 
 // Generic code over any iterator.
-fn total<I: Iterator<i32>>(it: I) -> i32 {
+fun total<I: Iterator<i32>>(it I) i32 {
 	s mut := 0
 	for x in it {
 		s += x
@@ -95,11 +95,11 @@ fn total<I: Iterator<i32>>(it: I) -> i32 {
 	return s
 }
 
-fn evens<I: Iterator<T>, T>(it: I) -> Vec<T> {
+fun evens<I: Iterator<T>, T>(it I) Vec<T> {
 	return it.step_by(2).collect()
 }
 
-fn more() {
+fun more() {
 	partial()
 	println("{total((1..4).map(|x| x * 2))} {total(std::iter::once(7))}")
 	e := evens("abcde".chars())

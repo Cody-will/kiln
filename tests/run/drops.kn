@@ -1,23 +1,23 @@
 struct N {
-	id: i32,
+	id i32,
 }
 
 impl Drop for N {
-	fn drop(&mut self) {
+	fun drop(&mut self) {
 		println("drop {self.id}")
 	}
 }
 
 struct Pair {
-	a: N,
-	b: N,
+	a N,
+	b N,
 }
 
-fn take(n: N) {
+fun take(n N) {
 	println("took {n.id}")
 }
 
-fn find(v: Vec<N>, want: i32) -> Option<N> {
+fun find(v Vec<N>, want i32) option<N> {
 	for n in v {
 		if n.id == want {
 			return Some(n)
@@ -26,7 +26,7 @@ fn find(v: Vec<N>, want: i32) -> Option<N> {
 	return None
 }
 
-fn early(flag: bool) -> i32 {
+fun early(flag bool) i32 {
 	{
 		inner := N { id: 50 }
 		if flag {
@@ -37,7 +37,7 @@ fn early(flag: bool) -> i32 {
 	return 0
 }
 
-fn main() {
+fun main() {
 	println("-- early return from a by-value loop")
 	v mut := Vec::new()
 	v.push(N { id: 1 })

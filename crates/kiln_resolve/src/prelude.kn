@@ -4,17 +4,17 @@
 // type-checked like user code and compiled on demand. This file is parsed
 // with the normal parser; `impl` blocks on primitive types are only allowed here.
 
-pub enum Option<T> {
+pub enum option<T> {
 	Some(T),
 	None,
 }
 
-pub enum Result<T, E> {
+pub enum result<T, E> {
 	Ok(T),
 	Err(E),
 }
 
-pub struct String
+pub struct string
 pub struct Vec<T>
 	pub struct Box<T>
 	pub struct Range<T>
@@ -23,16 +23,16 @@ pub struct Vec<T>
 // An explicit copy. `#[derive(Clone)]` clones field by field; implement it
 // by hand for types that manage resources (like `Arc`).
 pub trait Clone {
-	fn clone(&self) -> Self
+	fun clone(&self) Self
 }
 // Equality, used by `==` and `!=`. `#[derive(Eq)]` (and the built-in types)
 // compare field by field; implement `eq` by hand to compare differently.
 pub trait Eq {
-	fn eq(&self, other: &Self) -> bool {
+	fun eq(&self, other &Self) bool {
 		return std::cmp::derived_eq(self, other)
 	}
 
-	fn ne(&self, other: &Self) -> bool {
+	fun ne(&self, other &Self) bool {
 		return !self.eq(other)
 	}
 }
@@ -41,23 +41,23 @@ pub trait Eq {
 // `#[derive(Ord)]` orders field by field in declaration order (enums by
 // variant, then payload); strings and sequences order lexicographically.
 pub trait Ord {
-	fn cmp(&self, other: &Self) -> Ordering {
+	fun cmp(&self, other &Self) Ordering {
 		return std::cmp::derived_cmp(self, other)
 	}
 
-	fn lt(&self, other: &Self) -> bool {
+	fun lt(&self, other &Self) bool {
 		return self.cmp(other) == Ordering::Less
 	}
 
-	fn le(&self, other: &Self) -> bool {
+	fun le(&self, other &Self) bool {
 		return self.cmp(other) != Ordering::Greater
 	}
 
-	fn gt(&self, other: &Self) -> bool {
+	fun gt(&self, other &Self) bool {
 		return self.cmp(other) == Ordering::Greater
 	}
 
-	fn ge(&self, other: &Self) -> bool {
+	fun ge(&self, other &Self) bool {
 		return self.cmp(other) != Ordering::Less
 	}
 }
@@ -65,7 +65,7 @@ pub trait Ord {
 // Hashing, used by `HashMap` and `HashSet`. Values that are equal must hash
 // the same, so a type that implements `eq` by hand must implement `hash` too.
 pub trait Hash {
-	fn hash(&self, h: &mut std::hash::Hasher) {
+	fun hash(&self, h &mut std::hash::Hasher) {
 		std::hash::derived_hash(self, h)
 	}
 }
@@ -74,29 +74,29 @@ pub trait Hash {
 // is searched with a `&str`, without building a `String`. Values must hash and
 // compare the same as their borrowed form.
 pub trait Borrow<Q> {
-	fn borrow(&self) -> &Q
+	fun borrow(&self) &Q
 }
 
 impl<T> Borrow<T> for T {
-	fn borrow(&self) -> &T {
+	fun borrow(&self) &T {
 		return self
 	}
 }
 
-impl Borrow<str> for String {
-	fn borrow(&self) -> &str {
+impl Borrow<str> for string {
+	fun borrow(&self) &str {
 		return self.as_str()
 	}
 }
 
 impl<T> Borrow<[T]> for Vec<T> {
-	fn borrow(&self) -> &[T] {
+	fun borrow(&self) &[T] {
 		return self.as_slice()
 	}
 }
 
 // The result of comparing two values.
-#[derive(Clone, Copy, Eq, Ord, Hash, Debug)]
+@derive(Clone, Copy, Eq, Ord, Hash, Debug)
 pub enum Ordering {
 	Less,
 	Equal,
@@ -104,32 +104,32 @@ pub enum Ordering {
 }
 
 impl Ordering {
-	pub fn is_eq(self) -> bool {
+	pub fun is_eq(self) bool {
 		return self == Ordering::Equal
 	}
 
-	pub fn is_ne(self) -> bool {
+	pub fun is_ne(self) bool {
 		return self != Ordering::Equal
 	}
 
-	pub fn is_lt(self) -> bool {
+	pub fun is_lt(self) bool {
 		return self == Ordering::Less
 	}
 
-	pub fn is_gt(self) -> bool {
+	pub fun is_gt(self) bool {
 		return self == Ordering::Greater
 	}
 
-	pub fn is_le(self) -> bool {
+	pub fun is_le(self) bool {
 		return self != Ordering::Greater
 	}
 
-	pub fn is_ge(self) -> bool {
+	pub fun is_ge(self) bool {
 		return self != Ordering::Less
 	}
 
 	// Less becomes Greater and vice versa.
-	pub fn reverse(self) -> Ordering {
+	pub fun reverse(self) Ordering {
 		return match self {
 			Ordering::Less => Ordering::Greater,
 			Ordering::Equal => Ordering::Equal,
@@ -139,7 +139,7 @@ impl Ordering {
 
 	// `self`, or `other` when `self` is Equal: chains comparisons, as in
 	// `a.last.cmp(&b.last).then(a.first.cmp(&b.first))`.
-	pub fn then(self, other: Ordering) -> Ordering {
+	pub fun then(self, other Ordering) Ordering {
 		if self == Ordering::Equal {
 			return other
 		}
@@ -150,13 +150,13 @@ impl Ordering {
 // the built-in types) print the structure: `Point { x: 1, y: 2 }`,
 // `Some("a")`, `[1, 2]`. See `std::fmt` to implement it by hand.
 pub trait Debug {
-	fn fmt_debug(&self, f: &mut std::fmt::Formatter) {
+	fun fmt_debug(&self, f &mut std::fmt::Formatter) {
 		std::fmt::derived_debug(self, f)
 	}
 }
 // Text form used by string interpolation (`"{x}"`) and `to_string()`.
 pub trait Display {
-	fn to_string(&self) -> String
+	fun to_string(&self) string
 }
 
 pub trait Default {}
@@ -166,14 +166,14 @@ pub unsafe trait Sync {}
 // gives the lower-level error that caused it, if any, so callers can walk
 // the chain. `std::errors::AnyError` holds any error.
 pub trait Error: Display {
-	fn source(&self) -> Option<&dyn Error> {
+	fun source(&self) option<&dyn Error> {
 		return None
 	}
 }
 
 // Runs cleanup when a value goes out of scope.
 pub trait Drop {
-	fn drop(&mut self)
+	fun drop(&mut self)
 }
 
 // A handle to a task started with `go`. `join` waits for the task and gives
@@ -181,7 +181,7 @@ pub trait Drop {
 pub struct Task<T>
 
 	impl<T> Task<T> {
-		pub fn join(self) -> Result<T, Panic>
+		pub fun join(self) result<T, Panic>
 	}
 
 // A task's panic. Panics currently end the whole program, so `join` never
@@ -205,24 +205,24 @@ pub enum TryRecvError {
 pub struct Scope
 
 impl Scope {
-	pub fn spawn(&self, task: fn mut())
+	pub fun spawn(&self, task fun mut())
 }
 
-pub fn scope(body: fn mut(&Scope))
+pub fun scope(body fun mut(&Scope))
 
 // `*x`, method calls, and field access look through `Deref` (as for `&T`
 // and `Box<T>`): `Arc<T>` derefs to `T`, a `MutexGuard<T>` to the locked `T`.
 pub trait Deref<T> {
-	fn deref(&self) -> &T
+	fun deref(&self) &T
 }
 
 // Mutable access through `Deref` (`*guard = v`, `guard.push(x)`).
 pub trait DerefMut<T> {
-	fn deref_mut(&mut self) -> &mut T
+	fun deref_mut(&mut self) &mut T
 }
 
 pub trait From<T> {
-	fn from(value: T) -> Self
+	fun from(value T) Self
 }
 
 // A sequence of `T` values, produced one at a time by `next`. `for x in it`
@@ -231,62 +231,62 @@ pub trait From<T> {
 // The adapter types live in `std::iter`.
 pub trait Iterator<T> {
 	// The next value, or None when the sequence is done.
-	fn next(&mut self) -> Option<T>
+	fun next(&mut self) option<T>
 
 	// ----- adapters ---------------------------------------------------------------
 
 	// Each value passed through `f`.
-		fn map<U>(self, f: fn mut(T) -> U) -> std::iter::Map<Self, T, U> {
+		fun map<U>(self, f fun mut(T) U) std::iter::Map<Self, T, U> {
 			return std::iter::Map { inner: self, f: f }
 		}
 
 	// Only the values for which `keep` returns true.
-	fn filter(self, keep: fn mut(&T) -> bool) -> std::iter::Filter<Self, T> {
+	fun filter(self, keep fun mut(&T) bool) std::iter::Filter<Self, T> {
 		return std::iter::Filter { inner: self, keep: keep }
 	}
 
 	// The `Some` results of `f`, skipping the `None`s.
-	fn filter_map<U>(self, f: fn mut(T) -> Option<U>) -> std::iter::FilterMap<Self, T, U> {
+	fun filter_map<U>(self, f fun mut(T) option<U>) std::iter::FilterMap<Self, T, U> {
 		return std::iter::FilterMap { inner: self, f: f }
 	}
 
 	// Each value with its position: `(0, a), (1, b), ...`.
-	fn enumerate(self) -> std::iter::Enumerate<Self, T> {
+	fun enumerate(self) std::iter::Enumerate<Self, T> {
 		return std::iter::Enumerate { inner: self, n: 0 }
 	}
 
 	// Pairs of values from both iterators; stops when either does.
-	fn zip<J: Iterator<U>, U>(self, other: J) -> std::iter::Zip<Self, J, T, U> {
+	fun zip<J: Iterator<U>, U>(self, other J) std::iter::Zip<Self, J, T, U> {
 		return std::iter::Zip { a: self, b: other }
 	}
 
 	// This iterator's values, then `other`'s.
-	fn chain<J: Iterator<T>>(self, other: J) -> std::iter::Chain<Self, J, T> {
+	fun chain<J: Iterator<T>>(self, other J) std::iter::Chain<Self, J, T> {
 		return std::iter::Chain { a: self, b: other, first: true }
 	}
 
 	// At most the first `n` values.
-	fn take(self, n: usize) -> std::iter::Take<Self, T> {
+	fun take(self, n usize) std::iter::Take<Self, T> {
 		return std::iter::Take { inner: self, left: n }
 	}
 
 	// All but the first `n` values.
-	fn skip(self, n: usize) -> std::iter::Skip<Self, T> {
+	fun skip(self, n usize) std::iter::Skip<Self, T> {
 		return std::iter::Skip { inner: self, n: n }
 	}
 
 	// Values while `f` holds; stops at the first that fails.
-	fn take_while(self, f: fn mut(&T) -> bool) -> std::iter::TakeWhile<Self, T> {
+	fun take_while(self, f fun mut(&T) bool) std::iter::TakeWhile<Self, T> {
 		return std::iter::TakeWhile { inner: self, f: f, done: false }
 	}
 
 	// Skips values while `f` holds, then yields the rest.
-	fn skip_while(self, f: fn mut(&T) -> bool) -> std::iter::SkipWhile<Self, T> {
+	fun skip_while(self, f fun mut(&T) bool) std::iter::SkipWhile<Self, T> {
 		return std::iter::SkipWhile { inner: self, f: f, started: false }
 	}
 
 	// Every `n`th value, starting with the first.
-	fn step_by(self, n: usize) -> std::iter::StepBy<Self, T> {
+	fun step_by(self, n usize) std::iter::StepBy<Self, T> {
 		if n == 0 {
 			panic("step_by: the step must be positive")
 		}
@@ -294,24 +294,24 @@ pub trait Iterator<T> {
 	}
 
 	// The values of the iterators `f` returns, one after another.
-	fn flat_map<J: Iterator<U>, U>(self, f: fn mut(T) -> J) -> std::iter::FlatMap<Self, T, J, U> {
+	fun flat_map<J: Iterator<U>, U>(self, f fun mut(T) J) std::iter::FlatMap<Self, T, J, U> {
 		return std::iter::FlatMap { inner: self, f: f, cur: None }
 	}
 
 	// An iterator that can look at the next value without taking it.
-	fn peekable(self) -> std::iter::Peekable<Self, T> {
+	fun peekable(self) std::iter::Peekable<Self, T> {
 		return std::iter::Peekable { inner: self, peeked: None }
 	}
 
 	// Calls `f` on each value as it passes through.
-	fn inspect(self, f: fn mut(&T)) -> std::iter::Inspect<Self, T> {
+	fun inspect(self, f fun mut(&T)) std::iter::Inspect<Self, T> {
 		return std::iter::Inspect { inner: self, f: f }
 	}
 
 	// ----- consumers ---------------------------------------------------------------
 
 	// All the values, in a vector.
-	fn collect(self) -> Vec<T> {
+	fun collect(self) Vec<T> {
 		it mut := self
 		out mut := Vec::new()
 		while let Some(x) = it.next() {
@@ -321,7 +321,7 @@ pub trait Iterator<T> {
 	}
 
 	// How many values there are.
-	fn count(self) -> usize {
+	fun count(self) usize {
 		it mut := self
 		n mut := 0
 		while let Some(_) = it.next() {
@@ -331,7 +331,7 @@ pub trait Iterator<T> {
 	}
 
 	// The last value.
-	fn last(self) -> Option<T> {
+	fun last(self) option<T> {
 		it mut := self
 		last mut := None
 		while let Some(x) = it.next() {
@@ -341,7 +341,7 @@ pub trait Iterator<T> {
 	}
 
 	// The value at position `n` (counting from 0), consuming those before it.
-	fn nth(&mut self, n: usize) -> Option<T> {
+	fun nth(&mut self, n usize) option<T> {
 		i mut := 0
 		while let Some(x) = self.next() {
 			if i == n {
@@ -353,7 +353,7 @@ pub trait Iterator<T> {
 	}
 
 	// Combines the values from left to right: `f(f(f(init, a), b), c)`.
-	fn fold<A>(self, init: A, f: fn mut(A, T) -> A) -> A {
+	fun fold<A>(self, init A, f fun mut(A, T) A) A {
 		it mut := self
 		acc mut := init
 		while let Some(x) = it.next() {
@@ -363,7 +363,7 @@ pub trait Iterator<T> {
 	}
 
 	// Calls `f` on each value.
-	fn for_each(self, f: fn mut(T)) {
+	fun for_each(self, f fun mut(T)) {
 		it mut := self
 		while let Some(x) = it.next() {
 			f(x)
@@ -371,7 +371,7 @@ pub trait Iterator<T> {
 	}
 
 	// Whether `f` holds for some value (stops at the first).
-	fn any(&mut self, f: fn mut(T) -> bool) -> bool {
+	fun any(&mut self, f fun mut(T) bool) bool {
 		while let Some(x) = self.next() {
 			if f(x) {
 				return true
@@ -381,7 +381,7 @@ pub trait Iterator<T> {
 	}
 
 	// Whether `f` holds for every value (stops at the first that fails).
-	fn all(&mut self, f: fn mut(T) -> bool) -> bool {
+	fun all(&mut self, f fun mut(T) bool) bool {
 		while let Some(x) = self.next() {
 			if !f(x) {
 				return false
@@ -391,7 +391,7 @@ pub trait Iterator<T> {
 	}
 
 	// The first value for which `f` holds.
-	fn find(&mut self, f: fn mut(&T) -> bool) -> Option<T> {
+	fun find(&mut self, f fun mut(&T) bool) option<T> {
 		while let Some(x) = self.next() {
 			if f(&x) {
 				return Some(x)
@@ -401,7 +401,7 @@ pub trait Iterator<T> {
 	}
 
 	// The position of the first value for which `f` holds.
-	fn position(&mut self, f: fn mut(T) -> bool) -> Option<usize> {
+	fun position(&mut self, f fun mut(T) bool) option<usize> {
 		i mut := 0
 		while let Some(x) = self.next() {
 			if f(x) {
@@ -413,7 +413,7 @@ pub trait Iterator<T> {
 	}
 
 	// The smallest value (the first of equals).
-	fn min(self) -> Option<T> where T: Ord {
+	fun min(self) option<T> where T: Ord {
 		it mut := self
 		best mut := it.next()?
 		while let Some(x) = it.next() {
@@ -425,7 +425,7 @@ pub trait Iterator<T> {
 	}
 
 	// The largest value (the last of equals).
-	fn max(self) -> Option<T> where T: Ord {
+	fun max(self) option<T> where T: Ord {
 		it mut := self
 		best mut := it.next()?
 		while let Some(x) = it.next() {
@@ -437,7 +437,7 @@ pub trait Iterator<T> {
 	}
 
 	// The value for which `key` is smallest (the first of equals).
-	fn min_by_key<K: Ord>(self, key: fn mut(&T) -> K) -> Option<T> {
+	fun min_by_key<K: Ord>(self, key fun mut(&T) K) option<T> {
 		it mut := self
 		best mut := it.next()?
 		bk mut := key(&best)
@@ -452,7 +452,7 @@ pub trait Iterator<T> {
 	}
 
 	// The value for which `key` is largest (the last of equals).
-	fn max_by_key<K: Ord>(self, key: fn mut(&T) -> K) -> Option<T> {
+	fun max_by_key<K: Ord>(self, key fun mut(&T) K) option<T> {
 		it mut := self
 		best mut := it.next()?
 		bk mut := key(&best)
@@ -467,7 +467,7 @@ pub trait Iterator<T> {
 	}
 
 	// The total of the values (0 when there are none).
-	fn sum(self) -> T where T: Num {
+	fun sum(self) T where T: Num {
 		it mut := self
 		acc mut := T::zero()
 		while let Some(x) = it.next() {
@@ -477,7 +477,7 @@ pub trait Iterator<T> {
 	}
 
 	// The product of the values (1 when there are none).
-	fn product(self) -> T where T: Num {
+	fun product(self) T where T: Num {
 		it mut := self
 		acc mut := T::one()
 		while let Some(x) = it.next() {
@@ -489,47 +489,47 @@ pub trait Iterator<T> {
 
 // Ranges are iterators: `(0..10).map(|i| i * i)`.
 impl<T> Iterator<T> for Range<T> {
-	fn next(&mut self) -> Option<T>
+	fun next(&mut self) option<T>
 }
 
 // Numbers, for `sum` and `product` (and generic numeric code).
 pub trait Num {
-	fn zero() -> Self
-	fn one() -> Self
-	fn add(self, other: Self) -> Self
-	fn mul(self, other: Self) -> Self
+	fun zero() Self
+	fun one() Self
+	fun add(self, other Self) Self
+	fun mul(self, other Self) Self
 }
 
-impl<T> Option<T> {
-	pub fn is_some(&self) -> bool {
+impl<T> option<T> {
+	pub fun is_some(&self) bool {
 		match self {
 			Some(_) => return true,
 			None => return false,
 		}
 	}
 
-	pub fn is_none(&self) -> bool {
+	pub fun is_none(&self) bool {
 		match self {
 			Some(_) => return false,
 			None => return true,
 		}
 	}
 
-	pub fn unwrap(self) -> T {
+	pub fun unwrap(self) T {
 		match self {
 			Some(v) => return v,
 			None => panic("called `Option::unwrap()` on a `None` value"),
 		}
 	}
 
-	pub fn expect(self, msg: &str) -> T {
+	pub fun expect(self, msg &str) T {
 		match self {
 			Some(v) => return v,
 			None => panic(msg),
 		}
 	}
 
-	pub fn unwrap_or(self, default: T) -> T {
+	pub fun unwrap_or(self, default T) T {
 		match self {
 			Some(v) => return v,
 			None => return default,
@@ -537,17 +537,17 @@ impl<T> Option<T> {
 	}
 
 	// Takes the value out, leaving None.
-	pub fn take(&mut self) -> Option<T> {
+	pub fun take(&mut self) option<T> {
 		return std::mem::replace(self, None)
 	}
 
 	// Puts `value` in, returning the old value.
-	pub fn replace(&mut self, value: T) -> Option<T> {
+	pub fun replace(&mut self, value T) option<T> {
 		return std::mem::replace(self, Some(value))
 	}
 
 	// A reference to the value, if any.
-	pub fn as_ref(&self) -> Option<&T> {
+	pub fun as_ref(&self) option<&T> {
 		match self {
 			Some(x) => return Some(x),
 			None => return None,
@@ -555,7 +555,7 @@ impl<T> Option<T> {
 	}
 
 	// A mutable reference to the value, if any.
-	pub fn as_mut(&mut self) -> Option<&mut T> {
+	pub fun as_mut(&mut self) option<&mut T> {
 		match self {
 			Some(x) => return Some(x),
 			None => return None,
@@ -563,7 +563,7 @@ impl<T> Option<T> {
 	}
 
 	// The value, or the result of `f`.
-	pub fn unwrap_or_else(self, f: fn mut() -> T) -> T {
+	pub fun unwrap_or_else(self, f fun mut() T) T {
 		match self {
 			Some(x) => return x,
 			None => return f(),
@@ -571,7 +571,7 @@ impl<T> Option<T> {
 	}
 
 	// The value passed through `f`.
-	pub fn map<U>(self, f: fn mut(T) -> U) -> Option<U> {
+	pub fun map<U>(self, f fun mut(T) U) option<U> {
 		match self {
 			Some(x) => return Some(f(x)),
 			None => return None,
@@ -579,7 +579,7 @@ impl<T> Option<T> {
 	}
 
 	// `f` of the value, or `default`.
-	pub fn map_or<U>(self, default: U, f: fn mut(T) -> U) -> U {
+	pub fun map_or<U>(self, default U, f fun mut(T) U) U {
 		match self {
 			Some(x) => return f(x),
 			None => return default,
@@ -587,7 +587,7 @@ impl<T> Option<T> {
 	}
 
 	// `f` of the value (which may itself be None).
-	pub fn and_then<U>(self, f: fn mut(T) -> Option<U>) -> Option<U> {
+	pub fun and_then<U>(self, f fun mut(T) option<U>) option<U> {
 		match self {
 			Some(x) => return f(x),
 			None => return None,
@@ -595,7 +595,7 @@ impl<T> Option<T> {
 	}
 
 	// This option if it has a value, otherwise `other`.
-	pub fn or(self, other: Option<T>) -> Option<T> {
+	pub fun or(self, other option<T>) option<T> {
 		match self {
 			Some(x) => return Some(x),
 			None => return other,
@@ -603,7 +603,7 @@ impl<T> Option<T> {
 	}
 
 	// This option if it has a value, otherwise the result of `f`.
-	pub fn or_else(self, f: fn mut() -> Option<T>) -> Option<T> {
+	pub fun or_else(self, f fun mut() option<T>) option<T> {
 		match self {
 			Some(x) => return Some(x),
 			None => return f(),
@@ -611,7 +611,7 @@ impl<T> Option<T> {
 	}
 
 	// The value if `keep` holds for it.
-	pub fn filter(self, keep: fn mut(&T) -> bool) -> Option<T> {
+	pub fun filter(self, keep fun mut(&T) bool) option<T> {
 		match self {
 			Some(x) => {
 				if keep(&x) {
@@ -624,7 +624,7 @@ impl<T> Option<T> {
 	}
 
 	// `Ok(value)`, or `Err(err)` when there is none.
-	pub fn ok_or<E>(self, err: E) -> Result<T, E> {
+	pub fun ok_or<E>(self, err E) result<T, E> {
 		match self {
 			Some(x) => return Ok(x),
 			None => return Err(err),
@@ -632,7 +632,7 @@ impl<T> Option<T> {
 	}
 
 	// `Ok(value)`, or `Err(f())` when there is none.
-	pub fn ok_or_else<E>(self, f: fn mut() -> E) -> Result<T, E> {
+	pub fun ok_or_else<E>(self, f fun mut() E) result<T, E> {
 		match self {
 			Some(x) => return Ok(x),
 			None => return Err(f()),
@@ -640,10 +640,10 @@ impl<T> Option<T> {
 	}
 }
 
-impl<T, E: std::errors::IntoAnyError> Result<T, E> {
+impl<T, E: std::errors::IntoAnyError> result<T, E> {
 	// Wraps the error with a message saying what was being done:
 	// `fs::read(p).context("loading {p}")?`.
-	pub fn context(self, msg: &str) -> Result<T, std::errors::AnyError> {
+	pub fun context(self, msg &str) result<T, std::errors::AnyError> {
 		match self {
 			Ok(v) => return Ok(v),
 			Err(e) => return Err(e.into_any().context(msg)),
@@ -651,50 +651,50 @@ impl<T, E: std::errors::IntoAnyError> Result<T, E> {
 	}
 }
 
-impl<T, E> Result<T, E> {
-	pub fn is_ok(&self) -> bool {
+impl<T, E> result<T, E> {
+	pub fun is_ok(&self) bool {
 		match self {
 			Ok(_) => return true,
 			Err(_) => return false,
 		}
 	}
 
-	pub fn is_err(&self) -> bool {
+	pub fun is_err(&self) bool {
 		match self {
 			Ok(_) => return false,
 			Err(_) => return true,
 		}
 	}
 
-	pub fn unwrap(self) -> T {
+	pub fun unwrap(self) T {
 		match self {
 			Ok(v) => return v,
 			Err(_) => panic("called `Result::unwrap()` on an `Err` value"),
 		}
 	}
 
-	pub fn expect(self, msg: &str) -> T {
+	pub fun expect(self, msg &str) T {
 		match self {
 			Ok(v) => return v,
 			Err(_) => panic(msg),
 		}
 	}
 
-	pub fn unwrap_or(self, default: T) -> T {
+	pub fun unwrap_or(self, default T) T {
 		match self {
 			Ok(v) => return v,
 			Err(_) => return default,
 		}
 	}
 
-	pub fn ok(self) -> Option<T> {
+	pub fun ok(self) option<T> {
 		match self {
 			Ok(v) => return Some(v),
 			Err(_) => return None,
 		}
 	}
 
-	pub fn err(self) -> Option<E> {
+	pub fun err(self) option<E> {
 		match self {
 			Ok(_) => return None,
 			Err(e) => return Some(e),
@@ -702,7 +702,7 @@ impl<T, E> Result<T, E> {
 	}
 
 	// The success value passed through `f`.
-	pub fn map<U>(self, f: fn mut(T) -> U) -> Result<U, E> {
+	pub fun map<U>(self, f fun mut(T) U) result<U, E> {
 		match self {
 			Ok(x) => return Ok(f(x)),
 			Err(e) => return Err(e),
@@ -710,7 +710,7 @@ impl<T, E> Result<T, E> {
 	}
 
 	// The error passed through `f`.
-	pub fn map_err<F>(self, f: fn mut(E) -> F) -> Result<T, F> {
+	pub fun map_err<F>(self, f fun mut(E) F) result<T, F> {
 		match self {
 			Ok(x) => return Ok(x),
 			Err(e) => return Err(f(e)),
@@ -718,7 +718,7 @@ impl<T, E> Result<T, E> {
 	}
 
 	// `f` of the success value (which may itself fail).
-	pub fn and_then<U>(self, f: fn mut(T) -> Result<U, E>) -> Result<U, E> {
+	pub fun and_then<U>(self, f fun mut(T) result<U, E>) result<U, E> {
 		match self {
 			Ok(x) => return f(x),
 			Err(e) => return Err(e),
@@ -726,7 +726,7 @@ impl<T, E> Result<T, E> {
 	}
 
 	// This result if it succeeded, otherwise `f` of the error.
-	pub fn or_else<F>(self, f: fn mut(E) -> Result<T, F>) -> Result<T, F> {
+	pub fun or_else<F>(self, f fun mut(E) result<T, F>) result<T, F> {
 		match self {
 			Ok(x) => return Ok(x),
 			Err(e) => return f(e),
@@ -734,7 +734,7 @@ impl<T, E> Result<T, E> {
 	}
 
 	// The success value, or `f` of the error.
-	pub fn unwrap_or_else(self, f: fn mut(E) -> T) -> T {
+	pub fun unwrap_or_else(self, f fun mut(E) T) T {
 		match self {
 			Ok(x) => return x,
 			Err(e) => return f(e),
@@ -742,7 +742,7 @@ impl<T, E> Result<T, E> {
 	}
 
 	// References to the values.
-	pub fn as_ref(&self) -> Result<&T, &E> {
+	pub fun as_ref(&self) result<&T, &E> {
 		match self {
 			Ok(x) => return Ok(x),
 			Err(e) => return Err(e),
@@ -750,7 +750,7 @@ impl<T, E> Result<T, E> {
 	}
 
 	// The error value; panics if the result is Ok.
-	pub fn unwrap_err(self) -> E {
+	pub fun unwrap_err(self) E {
 		match self {
 			Ok(_) => panic("called `unwrap_err` on an `Ok` value"),
 			Err(e) => return e,
@@ -758,42 +758,42 @@ impl<T, E> Result<T, E> {
 	}
 }
 
-impl String {
-	pub fn new() -> String
-	pub fn with_capacity(n: usize) -> String
-	pub fn from(s: &str) -> String
-	pub fn len(&self) -> usize
-	pub fn capacity(&self) -> usize
-	pub fn reserve(&mut self, additional: usize)
-	pub fn is_empty(&self) -> bool
-	pub fn push(&mut self, s: &str)
-	pub fn as_str(&self) -> &str
-	pub fn as_bytes(&self) -> &[u8]
-	pub fn to_upper(&self) -> String
-	pub fn to_lower(&self) -> String
-	pub fn trim(&self) -> &str
+impl string {
+	pub fun new() string
+	pub fun with_capacity(n usize) string
+	pub fun from(s &str) string
+	pub fun len(&self) usize
+	pub fun capacity(&self) usize
+	pub fun reserve(&mut self, additional usize)
+	pub fun is_empty(&self) bool
+	pub fun push(&mut self, s &str)
+	pub fun as_str(&self) &str
+	pub fun as_bytes(&self) &[u8]
+	pub fun to_upper(&self) string
+	pub fun to_lower(&self) string
+	pub fun trim(&self) &str
 
 	// The bytes, without copying.
-	pub fn into_bytes(self) -> Vec<u8>
+	pub fun into_bytes(self) Vec<u8>
 
 	// A string from bytes the caller knows are valid UTF-8.
-		pub unsafe fn from_utf8_unchecked(bytes: Vec<u8>) -> String
+		pub unsafe fun from_utf8_unchecked(bytes Vec<u8>) string
 
 	// The underlying bytes; the caller must keep them valid UTF-8.
-	pub unsafe fn as_mut_vec(&mut self) -> &mut Vec<u8>
+	pub unsafe fun as_mut_vec(&mut self) &mut Vec<u8>
 
 	// A string from UTF-8 bytes, or an error saying where they stop being valid.
-		pub fn from_utf8(bytes: Vec<u8>) -> Result<String, Utf8Error> {
+		pub fun from_utf8(bytes Vec<u8>) result<string, Utf8Error> {
 			n := kn_utf8_valid_up_to(bytes.as_slice()) as usize
 			if n != bytes.len() {
 				return Err(Utf8Error { valid_up_to: n })
 			}
-			return Ok(unsafe { String::from_utf8_unchecked(bytes) })
+			return Ok(unsafe { string::from_utf8_unchecked(bytes) })
 		}
 
 	// A string from bytes, replacing invalid UTF-8 with U+FFFD.
-	pub fn from_utf8_lossy(bytes: &[u8]) -> String {
-		out mut := String::with_capacity(bytes.len())
+	pub fun from_utf8_lossy(bytes &[u8]) string {
+		out mut := string::with_capacity(bytes.len())
 		rest mut := bytes
 		while rest.len() > 0 {
 			n := kn_utf8_valid_up_to(rest) as usize
@@ -810,7 +810,7 @@ impl String {
 	}
 
 	// Appends one character.
-	pub fn push_char(&mut self, c: char) {
+	pub fun push_char(&mut self, c char) {
 		v := c as u32
 		buf mut := [0 as u8; 4]
 		n mut := 0
@@ -839,14 +839,14 @@ impl String {
 	}
 
 	// Removes all contents, keeping the allocation.
-	pub fn clear(&mut self) {
+	pub fun clear(&mut self) {
 		unsafe {
 			self.as_mut_vec().set_len(0)
 		}
 	}
 
 	// Shortens the string to `n` bytes. Panics if `n` is not on a character boundary.
-	pub fn truncate(&mut self, n: usize) {
+	pub fun truncate(&mut self, n usize) {
 		if n < self.len() {
 			x := &self[0..n]
 			unsafe {
@@ -858,31 +858,31 @@ impl String {
 
 // `String::from_utf8` failed: the bytes are valid only up to `valid_up_to`.
 pub struct Utf8Error {
-	pub valid_up_to: usize,
+	pub valid_up_to usize,
 }
 
 impl Display for Utf8Error {
-	fn to_string(&self) -> String {
+	fun to_string(&self) string {
 		return "invalid UTF-8 after byte {self.valid_up_to}"
 	}
 }
 
-fn kn_utf8_valid_up_to(b: &[u8]) -> i64
+fun kn_utf8_valid_up_to(b &[u8]) i64
 
 impl str {
-	pub fn len(&self) -> usize
-	pub fn is_empty(&self) -> bool
-	pub fn to_string(&self) -> String
-	pub fn to_upper(&self) -> String
-	pub fn to_lower(&self) -> String
-	pub fn trim(&self) -> &str
-	pub fn starts_with(&self, prefix: &str) -> bool
-	pub fn ends_with(&self, suffix: &str) -> bool
-	pub fn contains(&self, needle: &str) -> bool
-	pub fn as_bytes(&self) -> &[u8]
+	pub fun len(&self) usize
+	pub fun is_empty(&self) bool
+	pub fun to_string(&self) string
+	pub fun to_upper(&self) string
+	pub fun to_lower(&self) string
+	pub fun trim(&self) &str
+	pub fun starts_with(&self, prefix &str) bool
+	pub fun ends_with(&self, suffix &str) bool
+	pub fun contains(&self, needle &str) bool
+	pub fun as_bytes(&self) &[u8]
 
 	// Byte index of the first occurrence of `needle`.
-	pub fn find(&self, needle: &str) -> Option<usize> {
+	pub fun find(&self, needle &str) option<usize> {
 		h := self.as_bytes()
 		n := needle.as_bytes()
 		if n.len() > h.len() {
@@ -901,7 +901,7 @@ impl str {
 	}
 
 	// The parts before and after the first `sep`.
-	pub fn split_once(&self, sep: &str) -> Option<(&str, &str)> {
+	pub fun split_once(&self, sep &str) option<(&str, &str)> {
 		match self.find(sep) {
 			Some(i) => return Some((&self[0..i], &self[i + sep.len()..])),
 			None => return None,
@@ -909,7 +909,7 @@ impl str {
 	}
 
 	// The pieces between occurrences of `sep` (like Go's strings.Split).
-	pub fn split(&self, sep: &str) -> Vec<&str> {
+	pub fun split(&self, sep &str) Vec<&str> {
 		out mut := Vec::new()
 		rest mut := self
 		if sep.is_empty() {
@@ -931,7 +931,7 @@ impl str {
 	}
 
 	// The lines, without their `\n` or `\r\n` endings.
-	pub fn lines(&self) -> Vec<&str> {
+	pub fun lines(&self) Vec<&str> {
 		out mut := Vec::new()
 		if self.is_empty() {
 			return out
@@ -946,7 +946,7 @@ impl str {
 	}
 
 	// The string without `prefix`, if it starts with it.
-	pub fn strip_prefix(&self, prefix: &str) -> Option<&str> {
+	pub fun strip_prefix(&self, prefix &str) option<&str> {
 		if self.starts_with(prefix) {
 			return Some(&self[prefix.len()..])
 		}
@@ -954,7 +954,7 @@ impl str {
 	}
 
 	// The string without `suffix`, if it ends with it.
-	pub fn strip_suffix(&self, suffix: &str) -> Option<&str> {
+	pub fun strip_suffix(&self, suffix &str) option<&str> {
 		if self.ends_with(suffix) {
 			return Some(&self[0..self.len() - suffix.len()])
 		}
@@ -962,7 +962,7 @@ impl str {
 	}
 
 	// The string without leading whitespace.
-	pub fn trim_start(&self) -> &str {
+	pub fun trim_start(&self) &str {
 		b := self.as_bytes()
 		i mut := 0
 		while i < b.len() && is_space(b[i]) {
@@ -972,7 +972,7 @@ impl str {
 	}
 
 	// The string without trailing whitespace.
-	pub fn trim_end(&self) -> &str {
+	pub fun trim_end(&self) &str {
 		b := self.as_bytes()
 		n mut := b.len()
 		while n > 0 && is_space(b[n - 1]) {
@@ -982,8 +982,8 @@ impl str {
 	}
 
 	// A copy with every `from` replaced by `to`.
-	pub fn replace(&self, from: &str, to: &str) -> String {
-		out mut := String::with_capacity(self.len())
+	pub fun replace(&self, from &str, to &str) string {
+		out mut := string::with_capacity(self.len())
 		parts := self.split(from)
 		for i in 0..parts.len() {
 			if i > 0 {
@@ -995,8 +995,8 @@ impl str {
 	}
 
 	// The string repeated `n` times.
-	pub fn repeat(&self, n: usize) -> String {
-		out mut := String::with_capacity(self.len() * n)
+	pub fun repeat(&self, n usize) string {
+		out mut := string::with_capacity(self.len() * n)
 		for _ in 0..n {
 			out.push(self)
 		}
@@ -1004,7 +1004,7 @@ impl str {
 	}
 
 	// Whether two strings are equal ignoring ASCII case.
-	pub fn eq_ignore_ascii_case(&self, other: &str) -> bool {
+	pub fun eq_ignore_ascii_case(&self, other &str) bool {
 		a := self.as_bytes()
 		b := other.as_bytes()
 		if a.len() != b.len() {
@@ -1019,22 +1019,22 @@ impl str {
 	}
 
 	// The characters.
-	pub fn chars<'a>(&'a self) -> std::strings::Chars<'a> {
+	pub fun chars<'a>(&'a self) std::strings::Chars<'a> {
 		return std::strings::Chars { b: self.as_bytes(), front: 0, back: self.len() }
 	}
 
 	// The characters with their byte offsets.
-	pub fn char_indices<'a>(&'a self) -> std::strings::CharIndices<'a> {
+	pub fun char_indices<'a>(&'a self) std::strings::CharIndices<'a> {
 		return std::strings::CharIndices { b: self.as_bytes(), i: 0 }
 	}
 
 	// The bytes.
-	pub fn bytes<'a>(&'a self) -> std::iter::Iter<'a, u8> {
+	pub fun bytes<'a>(&'a self) std::iter::Iter<'a, u8> {
 		return self.as_bytes().iter()
 	}
 
 	// The number of characters (not bytes).
-	pub fn char_count(&self) -> usize {
+	pub fun char_count(&self) usize {
 		n mut := 0
 		for b in self.as_bytes() {
 			if *b & 192 != 128 {
@@ -1045,7 +1045,7 @@ impl str {
 	}
 
 	// Whether byte offset `i` is at the start of a character (or the end).
-	pub fn is_char_boundary(&self, i: usize) -> bool {
+	pub fun is_char_boundary(&self, i usize) bool {
 		if i == 0 || i == self.len() {
 			return true
 		}
@@ -1056,11 +1056,11 @@ impl str {
 	}
 }
 
-fn is_space(b: u8) -> bool {
+fun is_space(b u8) bool {
 	return b == 32 || b == 9 || b == 10 || b == 13 || b == 11 || b == 12
 }
 
-fn ascii_lower(b: u8) -> u8 {
+fun ascii_lower(b u8) u8 {
 	if b >= 65 && b <= 90 {
 		return b + 32
 	}
@@ -1068,44 +1068,44 @@ fn ascii_lower(b: u8) -> u8 {
 }
 
 impl<T> Vec<T> {
-	pub fn new() -> Vec<T>
-		pub fn with_capacity(n: usize) -> Vec<T>
-		pub fn len(&self) -> usize
-	pub fn is_empty(&self) -> bool
-	pub fn push(&mut self, value: T)
-	pub fn pop(&mut self) -> Option<T>
-		pub fn get(&self, index: usize) -> Option<&T>
-		pub fn first(&self) -> Option<&T>
-		pub fn last(&self) -> Option<&T>
-		pub fn clear(&mut self)
-	pub fn capacity(&self) -> usize
-	pub fn reserve(&mut self, additional: usize)
+	pub fun new() Vec<T>
+		pub fun with_capacity(n usize) Vec<T>
+		pub fun len(&self) usize
+	pub fun is_empty(&self) bool
+	pub fun push(&mut self, value T)
+	pub fun pop(&mut self) option<T>
+		pub fun get(&self, index usize) option<&T>
+		pub fun first(&self) option<&T>
+		pub fun last(&self) option<&T>
+		pub fun clear(&mut self)
+	pub fun capacity(&self) usize
+	pub fun reserve(&mut self, additional usize)
 
 	// The address of the first element.
-	pub fn as_ptr(&self) -> *mut T
+	pub fun as_ptr(&self) *mut T
 
 	// Sets the length without touching the elements.
-	pub unsafe fn set_len(&mut self, n: usize)
+	pub unsafe fun set_len(&mut self, n usize)
 
 	// The elements as a slice.
-	pub fn as_slice(&self) -> &[T] {
+	pub fun as_slice(&self) &[T] {
 		return unsafe { std::ptr::slice_from_raw(self.as_ptr(), self.len()) }
 	}
 
 	// The elements as a mutable slice.
-	pub fn as_mut_slice(&mut self) -> &mut [T] {
+	pub fun as_mut_slice(&mut self) &mut [T] {
 		return unsafe { std::ptr::slice_from_raw(self.as_ptr(), self.len()) }
 	}
 
 	// Drops the elements after the first `n`.
-	pub fn truncate(&mut self, n: usize) {
+	pub fun truncate(&mut self, n usize) {
 		while self.len() > n {
 			self.pop()
 		}
 	}
 
 	// Inserts `value` at `index`, shifting later elements right.
-	pub fn insert(&mut self, index: usize, value: T) {
+	pub fun insert(&mut self, index usize, value T) {
 		n := self.len()
 		if index > n {
 			panic("insertion index is out of bounds")
@@ -1120,7 +1120,7 @@ impl<T> Vec<T> {
 	}
 
 	// Removes and returns the element at `index`, shifting later elements left.
-	pub fn remove(&mut self, index: usize) -> T {
+	pub fun remove(&mut self, index usize) T {
 		n := self.len()
 		if index >= n {
 			panic("removal index is out of bounds")
@@ -1135,7 +1135,7 @@ impl<T> Vec<T> {
 	}
 
 	// Swaps the elements at `a` and `b`.
-	pub fn swap(&mut self, a: usize, b: usize) {
+	pub fun swap(&mut self, a usize, b usize) {
 		if a >= self.len() || b >= self.len() {
 			panic("swap index is out of bounds")
 		}
@@ -1149,7 +1149,7 @@ impl<T> Vec<T> {
 
 impl<T: Clone> Vec<T> {
 	// Appends clones of the elements of `s`.
-	pub fn extend_from_slice(&mut self, s: &[T]) {
+	pub fun extend_from_slice(&mut self, s &[T]) {
 		n := self.len()
 		self.reserve(s.len())
 		unsafe {
@@ -1163,21 +1163,21 @@ impl<T: Clone> Vec<T> {
 }
 
 impl<T> Box<T> {
-	pub fn new(value: T) -> Box<T>
+	pub fun new(value T) Box<T>
 
 	// Gives up ownership: the caller must later rebuild the box with `from_raw`.
-		pub fn into_raw(b: Box<T>) -> *mut T
+		pub fun into_raw(b Box<T>) *mut T
 
 	// Takes ownership of a pointer made by `into_raw`.
-	pub unsafe fn from_raw(p: *mut T) -> Box<T>
+	pub unsafe fun from_raw(p *mut T) Box<T>
 }
 
 impl char {
 	// The character with scalar value `n`; `n` must be valid (see `from_u32`).
-	pub unsafe fn from_u32_unchecked(n: u32) -> char
+	pub unsafe fun from_u32_unchecked(n u32) char
 
 	// The character with scalar value `n`, if it is one.
-	pub fn from_u32(n: u32) -> Option<char> {
+	pub fun from_u32(n u32) option<char> {
 		if n > 1114111 || (n >= 55296 && n <= 57343) {
 			return None
 		}
@@ -1185,7 +1185,7 @@ impl char {
 	}
 
 	// The digit `d` in base `radix` (2 to 36): `from_digit(11, 16)` is 'b'.
-	pub fn from_digit(d: u32, radix: u32) -> Option<char> {
+	pub fun from_digit(d u32, radix u32) option<char> {
 		if radix < 2 || radix > 36 || d >= radix {
 			return None
 		}
@@ -1196,7 +1196,7 @@ impl char {
 	}
 
 	// The value of this digit in base `radix` (2 to 36): '7' is 7, 'f' is 15.
-	pub fn to_digit(self, radix: u32) -> Option<u32> {
+	pub fun to_digit(self, radix u32) option<u32> {
 		n := self as u32
 		d := if n >= 48 && n <= 57 {
 			n - 48
@@ -1214,66 +1214,66 @@ impl char {
 	}
 
 	// Whether this is a digit in base `radix`.
-	pub fn is_digit(self, radix: u32) -> bool {
+	pub fun is_digit(self, radix u32) bool {
 		return self.to_digit(radix).is_some()
 	}
 
 	// How many bytes this character takes in UTF-8.
-	pub fn len_utf8(self) -> usize {
+	pub fun len_utf8(self) usize {
 		return std::utf8::len(self)
 	}
 
-	pub fn is_ascii(self) -> bool {
+	pub fun is_ascii(self) bool {
 		return (self as u32) < 128
 	}
 
-	pub fn is_ascii_digit(self) -> bool {
+	pub fun is_ascii_digit(self) bool {
 		n := self as u32
 		return n >= 48 && n <= 57
 	}
 
-	pub fn is_ascii_hexdigit(self) -> bool {
+	pub fun is_ascii_hexdigit(self) bool {
 		return self.to_digit(16).is_some()
 	}
 
-	pub fn is_ascii_uppercase(self) -> bool {
+	pub fun is_ascii_uppercase(self) bool {
 		n := self as u32
 		return n >= 65 && n <= 90
 	}
 
-	pub fn is_ascii_lowercase(self) -> bool {
+	pub fun is_ascii_lowercase(self) bool {
 		n := self as u32
 		return n >= 97 && n <= 122
 	}
 
-	pub fn is_ascii_alphabetic(self) -> bool {
+	pub fun is_ascii_alphabetic(self) bool {
 		return self.is_ascii_uppercase() || self.is_ascii_lowercase()
 	}
 
-	pub fn is_ascii_alphanumeric(self) -> bool {
+	pub fun is_ascii_alphanumeric(self) bool {
 		return self.is_ascii_alphabetic() || self.is_ascii_digit()
 	}
 
 	// Space, tab, newline, form feed, or carriage return.
-	pub fn is_ascii_whitespace(self) -> bool {
+	pub fun is_ascii_whitespace(self) bool {
 		n := self as u32
 		return n == 32 || n == 9 || n == 10 || n == 12 || n == 13
 	}
 
 	// One of !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~
-	pub fn is_ascii_punctuation(self) -> bool {
+	pub fun is_ascii_punctuation(self) bool {
 		n := self as u32
 		return (n >= 33 && n <= 47) || (n >= 58 && n <= 64) || (n >= 91 && n <= 96) || (n >= 123 && n <= 126)
 	}
 
-	pub fn to_ascii_uppercase(self) -> char {
+	pub fun to_ascii_uppercase(self) char {
 		if self.is_ascii_lowercase() {
 			return unsafe { char::from_u32_unchecked(self as u32 - 32) }
 		}
 		return self
 	}
 
-	pub fn to_ascii_lowercase(self) -> char {
+	pub fun to_ascii_lowercase(self) char {
 		if self.is_ascii_uppercase() {
 			return unsafe { char::from_u32_unchecked(self as u32 + 32) }
 		}
@@ -1281,192 +1281,192 @@ impl char {
 	}
 
 	// A letter, in any script.
-	pub fn is_alphabetic(self) -> bool {
+	pub fun is_alphabetic(self) bool {
 		return std::unicode::is_letter(self)
 	}
 
 	// A number, in any script (see `std::unicode::is_number`).
-	pub fn is_numeric(self) -> bool {
+	pub fun is_numeric(self) bool {
 		return std::unicode::is_number(self)
 	}
 
-	pub fn is_alphanumeric(self) -> bool {
+	pub fun is_alphanumeric(self) bool {
 		return self.is_alphabetic() || self.is_numeric()
 	}
 
 	// Unicode white space.
-	pub fn is_whitespace(self) -> bool {
+	pub fun is_whitespace(self) bool {
 		return std::unicode::is_space(self)
 	}
 
-	pub fn is_uppercase(self) -> bool {
+	pub fun is_uppercase(self) bool {
 		return std::unicode::is_upper(self)
 	}
 
-	pub fn is_lowercase(self) -> bool {
+	pub fun is_lowercase(self) bool {
 		return std::unicode::is_lower(self)
 	}
 
-	pub fn is_control(self) -> bool {
+	pub fun is_control(self) bool {
 		return std::unicode::is_control(self)
 	}
 
 	// The uppercase form when it is one character ('ß' stays 'ß').
-	pub fn to_uppercase(self) -> char {
+	pub fun to_uppercase(self) char {
 		return std::unicode::to_upper(self)
 	}
 
 	// The lowercase form when it is one character.
-	pub fn to_lowercase(self) -> char {
+	pub fun to_lowercase(self) char {
 		return std::unicode::to_lower(self)
 	}
 
 	// The character as a one-character string.
-	pub fn to_string(self) -> String {
-		s mut := String::new()
+	pub fun to_string(self) string {
+		s mut := string::new()
 		s.push_char(self)
 		return s
 	}
 }
 
 impl f64 {
-	pub fn sqrt(self) -> f64
-	pub fn abs(self) -> f64
-	pub fn floor(self) -> f64
-	pub fn ceil(self) -> f64
-	pub fn round(self) -> f64
-	pub fn powi(self, n: i32) -> f64
-	pub fn min(self, other: f64) -> f64
-	pub fn max(self, other: f64) -> f64
+	pub fun sqrt(self) f64
+	pub fun abs(self) f64
+	pub fun floor(self) f64
+	pub fun ceil(self) f64
+	pub fun round(self) f64
+	pub fun powi(self, n i32) f64
+	pub fun min(self, other f64) f64
+	pub fun max(self, other f64) f64
 
-	pub fn sin(self) -> f64 {
+	pub fun sin(self) f64 {
 		return std::math::sin(self)
 	}
-	pub fn cos(self) -> f64 {
+	pub fun cos(self) f64 {
 		return std::math::cos(self)
 	}
-	pub fn tan(self) -> f64 {
+	pub fun tan(self) f64 {
 		return std::math::tan(self)
 	}
-	pub fn asin(self) -> f64 {
+	pub fun asin(self) f64 {
 		return std::math::asin(self)
 	}
-	pub fn acos(self) -> f64 {
+	pub fun acos(self) f64 {
 		return std::math::acos(self)
 	}
-	pub fn atan(self) -> f64 {
+	pub fun atan(self) f64 {
 		return std::math::atan(self)
 	}
-	pub fn sinh(self) -> f64 {
+	pub fun sinh(self) f64 {
 		return std::math::sinh(self)
 	}
-	pub fn cosh(self) -> f64 {
+	pub fun cosh(self) f64 {
 		return std::math::cosh(self)
 	}
-	pub fn tanh(self) -> f64 {
+	pub fun tanh(self) f64 {
 		return std::math::tanh(self)
 	}
-	pub fn asinh(self) -> f64 {
+	pub fun asinh(self) f64 {
 		return std::math::asinh(self)
 	}
-	pub fn acosh(self) -> f64 {
+	pub fun acosh(self) f64 {
 		return std::math::acosh(self)
 	}
-	pub fn atanh(self) -> f64 {
+	pub fun atanh(self) f64 {
 		return std::math::atanh(self)
 	}
-	pub fn exp(self) -> f64 {
+	pub fun exp(self) f64 {
 		return std::math::exp(self)
 	}
-	pub fn exp2(self) -> f64 {
+	pub fun exp2(self) f64 {
 		return std::math::exp2(self)
 	}
-	pub fn exp_m1(self) -> f64 {
+	pub fun exp_m1(self) f64 {
 		return std::math::exp_m1(self)
 	}
-	pub fn ln(self) -> f64 {
+	pub fun ln(self) f64 {
 		return std::math::ln(self)
 	}
-	pub fn log2(self) -> f64 {
+	pub fun log2(self) f64 {
 		return std::math::log2(self)
 	}
-	pub fn log10(self) -> f64 {
+	pub fun log10(self) f64 {
 		return std::math::log10(self)
 	}
-	pub fn ln_1p(self) -> f64 {
+	pub fun ln_1p(self) f64 {
 		return std::math::ln_1p(self)
 	}
-	pub fn cbrt(self) -> f64 {
+	pub fun cbrt(self) f64 {
 		return std::math::cbrt(self)
 	}
-	pub fn trunc(self) -> f64 {
+	pub fun trunc(self) f64 {
 		return std::math::trunc(self)
 	}
-	pub fn erf(self) -> f64 {
+	pub fun erf(self) f64 {
 		return std::math::erf(self)
 	}
-	pub fn erfc(self) -> f64 {
+	pub fun erfc(self) f64 {
 		return std::math::erfc(self)
 	}
-	pub fn gamma(self) -> f64 {
+	pub fun gamma(self) f64 {
 		return std::math::gamma(self)
 	}
-	pub fn ln_gamma(self) -> f64 {
+	pub fun ln_gamma(self) f64 {
 		return std::math::ln_gamma(self)
 	}
-	pub fn powf(self, y: f64) -> f64 {
+	pub fun powf(self, y f64) f64 {
 		return std::math::powf(self, y)
 	}
 	// `self.atan2(x)` is the angle of the point (x, self).
-	pub fn atan2(self, x: f64) -> f64 {
+	pub fun atan2(self, x f64) f64 {
 		return std::math::atan2(self, x)
 	}
-	pub fn hypot(self, y: f64) -> f64 {
+	pub fun hypot(self, y f64) f64 {
 		return std::math::hypot(self, y)
 	}
-	pub fn fmod(self, y: f64) -> f64 {
+	pub fun fmod(self, y f64) f64 {
 		return std::math::fmod(self, y)
 	}
-	pub fn copysign(self, y: f64) -> f64 {
+	pub fun copysign(self, y f64) f64 {
 		return std::math::copysign(self, y)
 	}
-	pub fn ieee_remainder(self, y: f64) -> f64 {
+	pub fun ieee_remainder(self, y f64) f64 {
 		return std::math::ieee_remainder(self, y)
 	}
-	pub fn next_after(self, y: f64) -> f64 {
+	pub fun next_after(self, y f64) f64 {
 		return std::math::next_after(self, y)
 	}
-	pub fn mul_add(self, y: f64, z: f64) -> f64 {
+	pub fun mul_add(self, y f64, z f64) f64 {
 		return std::math::mul_add(self, y, z)
 	}
 
-	pub fn log(self, base: f64) -> f64 {
+	pub fun log(self, base f64) f64 {
 		return std::math::log(self, base)
 	}
 
-	pub fn is_nan(self) -> bool {
+	pub fun is_nan(self) bool {
 		return self != self
 	}
 
-	pub fn is_infinite(self) -> bool {
+	pub fun is_infinite(self) bool {
 		return std::math::is_infinite(self)
 	}
 
-	pub fn is_finite(self) -> bool {
+	pub fun is_finite(self) bool {
 		return !self.is_nan() && !self.is_infinite()
 	}
 
-	pub fn is_sign_negative(self) -> bool {
+	pub fun is_sign_negative(self) bool {
 		return self < 0.0 || (self == 0.0 && 1.0 / self < 0.0)
 	}
 
 	// The fractional part: `self - self.trunc()`.
-	pub fn fract(self) -> f64 {
+	pub fun fract(self) f64 {
 		return self - self.trunc()
 	}
 
 	// 1.0 for positive (and +0.0), -1.0 for negative (and -0.0), NaN for NaN.
-	pub fn signum(self) -> f64 {
+	pub fun signum(self) f64 {
 		if self.is_nan() {
 			return self
 		}
@@ -1476,20 +1476,20 @@ impl f64 {
 		return 1.0
 	}
 
-	pub fn to_degrees(self) -> f64 {
+	pub fun to_degrees(self) f64 {
 		return self * 180.0 / std::math::PI
 	}
 
-	pub fn to_radians(self) -> f64 {
+	pub fun to_radians(self) f64 {
 		return self * std::math::PI / 180.0
 	}
 
-	pub fn recip(self) -> f64 {
+	pub fun recip(self) f64 {
 		return 1.0 / self
 	}
 
 	// `self` limited to `lo..=hi`.
-	pub fn clamp(self, lo: f64, hi: f64) -> f64 {
+	pub fun clamp(self, lo f64, hi f64) f64 {
 		if self < lo {
 			return lo
 		}
@@ -1501,167 +1501,167 @@ impl f64 {
 }
 
 impl f32 {
-	pub fn sqrt(self) -> f32
-	pub fn abs(self) -> f32
+	pub fun sqrt(self) f32
+	pub fun abs(self) f32
 
-	pub fn floor(self) -> f32 {
+	pub fun floor(self) f32 {
 		return (self as f64).floor() as f32
 	}
 
-	pub fn ceil(self) -> f32 {
+	pub fun ceil(self) f32 {
 		return (self as f64).ceil() as f32
 	}
 
-	pub fn round(self) -> f32 {
+	pub fun round(self) f32 {
 		return (self as f64).round() as f32
 	}
 
-	pub fn powi(self, n: i32) -> f32 {
+	pub fun powi(self, n i32) f32 {
 		return (self as f64).powi(n) as f32
 	}
 
-	pub fn min(self, other: f32) -> f32 {
+	pub fun min(self, other f32) f32 {
 		if other < self {
 			return other
 		}
 		return self
 	}
 
-	pub fn max(self, other: f32) -> f32 {
+	pub fun max(self, other f32) f32 {
 		if other > self {
 			return other
 		}
 		return self
 	}
 
-	pub fn sin(self) -> f32 {
+	pub fun sin(self) f32 {
 		return (std::math::sin(self as f64)) as f32
 	}
-	pub fn cos(self) -> f32 {
+	pub fun cos(self) f32 {
 		return (std::math::cos(self as f64)) as f32
 	}
-	pub fn tan(self) -> f32 {
+	pub fun tan(self) f32 {
 		return (std::math::tan(self as f64)) as f32
 	}
-	pub fn asin(self) -> f32 {
+	pub fun asin(self) f32 {
 		return (std::math::asin(self as f64)) as f32
 	}
-	pub fn acos(self) -> f32 {
+	pub fun acos(self) f32 {
 		return (std::math::acos(self as f64)) as f32
 	}
-	pub fn atan(self) -> f32 {
+	pub fun atan(self) f32 {
 		return (std::math::atan(self as f64)) as f32
 	}
-	pub fn sinh(self) -> f32 {
+	pub fun sinh(self) f32 {
 		return (std::math::sinh(self as f64)) as f32
 	}
-	pub fn cosh(self) -> f32 {
+	pub fun cosh(self) f32 {
 		return (std::math::cosh(self as f64)) as f32
 	}
-	pub fn tanh(self) -> f32 {
+	pub fun tanh(self) f32 {
 		return (std::math::tanh(self as f64)) as f32
 	}
-	pub fn asinh(self) -> f32 {
+	pub fun asinh(self) f32 {
 		return (std::math::asinh(self as f64)) as f32
 	}
-	pub fn acosh(self) -> f32 {
+	pub fun acosh(self) f32 {
 		return (std::math::acosh(self as f64)) as f32
 	}
-	pub fn atanh(self) -> f32 {
+	pub fun atanh(self) f32 {
 		return (std::math::atanh(self as f64)) as f32
 	}
-	pub fn exp(self) -> f32 {
+	pub fun exp(self) f32 {
 		return (std::math::exp(self as f64)) as f32
 	}
-	pub fn exp2(self) -> f32 {
+	pub fun exp2(self) f32 {
 		return (std::math::exp2(self as f64)) as f32
 	}
-	pub fn exp_m1(self) -> f32 {
+	pub fun exp_m1(self) f32 {
 		return (std::math::exp_m1(self as f64)) as f32
 	}
-	pub fn ln(self) -> f32 {
+	pub fun ln(self) f32 {
 		return (std::math::ln(self as f64)) as f32
 	}
-	pub fn log2(self) -> f32 {
+	pub fun log2(self) f32 {
 		return (std::math::log2(self as f64)) as f32
 	}
-	pub fn log10(self) -> f32 {
+	pub fun log10(self) f32 {
 		return (std::math::log10(self as f64)) as f32
 	}
-	pub fn ln_1p(self) -> f32 {
+	pub fun ln_1p(self) f32 {
 		return (std::math::ln_1p(self as f64)) as f32
 	}
-	pub fn cbrt(self) -> f32 {
+	pub fun cbrt(self) f32 {
 		return (std::math::cbrt(self as f64)) as f32
 	}
-	pub fn trunc(self) -> f32 {
+	pub fun trunc(self) f32 {
 		return (std::math::trunc(self as f64)) as f32
 	}
-	pub fn erf(self) -> f32 {
+	pub fun erf(self) f32 {
 		return (std::math::erf(self as f64)) as f32
 	}
-	pub fn erfc(self) -> f32 {
+	pub fun erfc(self) f32 {
 		return (std::math::erfc(self as f64)) as f32
 	}
-	pub fn gamma(self) -> f32 {
+	pub fun gamma(self) f32 {
 		return (std::math::gamma(self as f64)) as f32
 	}
-	pub fn ln_gamma(self) -> f32 {
+	pub fun ln_gamma(self) f32 {
 		return (std::math::ln_gamma(self as f64)) as f32
 	}
-	pub fn powf(self, y: f32) -> f32 {
+	pub fun powf(self, y f32) f32 {
 		return (std::math::powf(self as f64, y as f64)) as f32
 	}
 	// `self.atan2(x)` is the angle of the point (x, self).
-	pub fn atan2(self, x: f32) -> f32 {
+	pub fun atan2(self, x f32) f32 {
 		return (std::math::atan2(self as f64, x as f64)) as f32
 	}
-	pub fn hypot(self, y: f32) -> f32 {
+	pub fun hypot(self, y f32) f32 {
 		return (std::math::hypot(self as f64, y as f64)) as f32
 	}
-	pub fn fmod(self, y: f32) -> f32 {
+	pub fun fmod(self, y f32) f32 {
 		return (std::math::fmod(self as f64, y as f64)) as f32
 	}
-	pub fn copysign(self, y: f32) -> f32 {
+	pub fun copysign(self, y f32) f32 {
 		return (std::math::copysign(self as f64, y as f64)) as f32
 	}
-	pub fn ieee_remainder(self, y: f32) -> f32 {
+	pub fun ieee_remainder(self, y f32) f32 {
 		return (std::math::ieee_remainder(self as f64, y as f64)) as f32
 	}
-	pub fn next_after(self, y: f32) -> f32 {
+	pub fun next_after(self, y f32) f32 {
 		return (std::math::next_after(self as f64, y as f64)) as f32
 	}
-	pub fn mul_add(self, y: f32, z: f32) -> f32 {
+	pub fun mul_add(self, y f32, z f32) f32 {
 		return (std::math::mul_add(self as f64, y as f64, z as f64)) as f32
 	}
 
-	pub fn log(self, base: f32) -> f32 {
+	pub fun log(self, base f32) f32 {
 		return (std::math::log(self as f64, base as f64)) as f32
 	}
 
-	pub fn is_nan(self) -> bool {
+	pub fun is_nan(self) bool {
 		return self != self
 	}
 
-	pub fn is_infinite(self) -> bool {
+	pub fun is_infinite(self) bool {
 		return std::math::is_infinite(self as f64)
 	}
 
-	pub fn is_finite(self) -> bool {
+	pub fun is_finite(self) bool {
 		return !self.is_nan() && !self.is_infinite()
 	}
 
-	pub fn is_sign_negative(self) -> bool {
+	pub fun is_sign_negative(self) bool {
 		return self < 0.0 || (self == 0.0 && 1.0 / self < 0.0)
 	}
 
 	// The fractional part: `self - self.trunc()`.
-	pub fn fract(self) -> f32 {
+	pub fun fract(self) f32 {
 		return self - self.trunc()
 	}
 
 	// 1.0 for positive (and +0.0), -1.0 for negative (and -0.0), NaN for NaN.
-	pub fn signum(self) -> f32 {
+	pub fun signum(self) f32 {
 		if self.is_nan() {
 			return self
 		}
@@ -1671,20 +1671,20 @@ impl f32 {
 		return 1.0
 	}
 
-	pub fn to_degrees(self) -> f32 {
+	pub fun to_degrees(self) f32 {
 		return self * (180.0 / std::math::PI) as f32
 	}
 
-	pub fn to_radians(self) -> f32 {
+	pub fun to_radians(self) f32 {
 		return self * (std::math::PI / 180.0) as f32
 	}
 
-	pub fn recip(self) -> f32 {
+	pub fun recip(self) f32 {
 		return 1.0 / self
 	}
 
 	// `self` limited to `lo..=hi`.
-	pub fn clamp(self, lo: f32, hi: f32) -> f32 {
+	pub fun clamp(self, lo f32, hi f32) f32 {
 		if self < lo {
 			return lo
 		}
@@ -1695,239 +1695,239 @@ impl f32 {
 	}
 }
 
-pub fn print(s: &str)
-pub fn println(s: &str)
-pub fn eprint(s: &str)
-pub fn eprintln(s: &str)
-pub fn panic(msg: &str) -> !
-pub fn assert(cond: bool)
+pub fun print(s &str)
+pub fun println(s &str)
+pub fun eprint(s &str)
+pub fun eprintln(s &str)
+pub fun panic(msg &str) !
+pub fun assert(cond bool)
 
 // Panics, showing both values, unless `left == right`.
-pub fn assert_eq<T: Eq + Debug>(left: T, right: T) {
+pub fun assert_eq<T: Eq + Debug>(left T, right T) {
 	if left != right {
 		panic("assertion `left == right` failed\n  left: {left:?}\n right: {right:?}")
 	}
 }
 
 // Panics, showing the value, if `left == right`.
-pub fn assert_ne<T: Eq + Debug>(left: T, right: T) {
+pub fun assert_ne<T: Eq + Debug>(left T, right T) {
 	if left == right {
 		panic("assertion `left != right` failed\n  both: {left:?}")
 	}
 }
 
 impl Num for i8 {
-	fn zero() -> i8 {
+	fun zero() i8 {
 		return 0
 	}
 
-	fn one() -> i8 {
+	fun one() i8 {
 		return 1
 	}
 
-	fn add(self, other: i8) -> i8 {
+	fun add(self, other i8) i8 {
 		return self + other
 	}
 
-	fn mul(self, other: i8) -> i8 {
+	fun mul(self, other i8) i8 {
 		return self * other
 	}
 }
 
 impl Num for i16 {
-	fn zero() -> i16 {
+	fun zero() i16 {
 		return 0
 	}
 
-	fn one() -> i16 {
+	fun one() i16 {
 		return 1
 	}
 
-	fn add(self, other: i16) -> i16 {
+	fun add(self, other i16) i16 {
 		return self + other
 	}
 
-	fn mul(self, other: i16) -> i16 {
+	fun mul(self, other i16) i16 {
 		return self * other
 	}
 }
 
 impl Num for i32 {
-	fn zero() -> i32 {
+	fun zero() i32 {
 		return 0
 	}
 
-	fn one() -> i32 {
+	fun one() i32 {
 		return 1
 	}
 
-	fn add(self, other: i32) -> i32 {
+	fun add(self, other i32) i32 {
 		return self + other
 	}
 
-	fn mul(self, other: i32) -> i32 {
+	fun mul(self, other i32) i32 {
 		return self * other
 	}
 }
 
 impl Num for i64 {
-	fn zero() -> i64 {
+	fun zero() i64 {
 		return 0
 	}
 
-	fn one() -> i64 {
+	fun one() i64 {
 		return 1
 	}
 
-	fn add(self, other: i64) -> i64 {
+	fun add(self, other i64) i64 {
 		return self + other
 	}
 
-	fn mul(self, other: i64) -> i64 {
+	fun mul(self, other i64) i64 {
 		return self * other
 	}
 }
 
 impl Num for isize {
-	fn zero() -> isize {
+	fun zero() isize {
 		return 0
 	}
 
-	fn one() -> isize {
+	fun one() isize {
 		return 1
 	}
 
-	fn add(self, other: isize) -> isize {
+	fun add(self, other isize) isize {
 		return self + other
 	}
 
-	fn mul(self, other: isize) -> isize {
+	fun mul(self, other isize) isize {
 		return self * other
 	}
 }
 
 impl Num for u8 {
-	fn zero() -> u8 {
+	fun zero() u8 {
 		return 0
 	}
 
-	fn one() -> u8 {
+	fun one() u8 {
 		return 1
 	}
 
-	fn add(self, other: u8) -> u8 {
+	fun add(self, other u8) u8 {
 		return self + other
 	}
 
-	fn mul(self, other: u8) -> u8 {
+	fun mul(self, other u8) u8 {
 		return self * other
 	}
 }
 
 impl Num for u16 {
-	fn zero() -> u16 {
+	fun zero() u16 {
 		return 0
 	}
 
-	fn one() -> u16 {
+	fun one() u16 {
 		return 1
 	}
 
-	fn add(self, other: u16) -> u16 {
+	fun add(self, other u16) u16 {
 		return self + other
 	}
 
-	fn mul(self, other: u16) -> u16 {
+	fun mul(self, other u16) u16 {
 		return self * other
 	}
 }
 
 impl Num for u32 {
-	fn zero() -> u32 {
+	fun zero() u32 {
 		return 0
 	}
 
-	fn one() -> u32 {
+	fun one() u32 {
 		return 1
 	}
 
-	fn add(self, other: u32) -> u32 {
+	fun add(self, other u32) u32 {
 		return self + other
 	}
 
-	fn mul(self, other: u32) -> u32 {
+	fun mul(self, other u32) u32 {
 		return self * other
 	}
 }
 
 impl Num for u64 {
-	fn zero() -> u64 {
+	fun zero() u64 {
 		return 0
 	}
 
-	fn one() -> u64 {
+	fun one() u64 {
 		return 1
 	}
 
-	fn add(self, other: u64) -> u64 {
+	fun add(self, other u64) u64 {
 		return self + other
 	}
 
-	fn mul(self, other: u64) -> u64 {
+	fun mul(self, other u64) u64 {
 		return self * other
 	}
 }
 
 impl Num for usize {
-	fn zero() -> usize {
+	fun zero() usize {
 		return 0
 	}
 
-	fn one() -> usize {
+	fun one() usize {
 		return 1
 	}
 
-	fn add(self, other: usize) -> usize {
+	fun add(self, other usize) usize {
 		return self + other
 	}
 
-	fn mul(self, other: usize) -> usize {
+	fun mul(self, other usize) usize {
 		return self * other
 	}
 }
 
 impl Num for f32 {
-	fn zero() -> f32 {
+	fun zero() f32 {
 		return 0.0
 	}
 
-	fn one() -> f32 {
+	fun one() f32 {
 		return 1.0
 	}
 
-	fn add(self, other: f32) -> f32 {
+	fun add(self, other f32) f32 {
 		return self + other
 	}
 
-	fn mul(self, other: f32) -> f32 {
+	fun mul(self, other f32) f32 {
 		return self * other
 	}
 }
 
 impl Num for f64 {
-	fn zero() -> f64 {
+	fun zero() f64 {
 		return 0.0
 	}
 
-	fn one() -> f64 {
+	fun one() f64 {
 		return 1.0
 	}
 
-	fn add(self, other: f64) -> f64 {
+	fun add(self, other f64) f64 {
 		return self + other
 	}
 
-	fn mul(self, other: f64) -> f64 {
+	fun mul(self, other f64) f64 {
 		return self * other
 	}
 }

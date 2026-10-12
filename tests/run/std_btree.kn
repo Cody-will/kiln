@@ -1,6 +1,6 @@
 import std::collections::{BTreeMap, BTreeSet}
 
-fn check(m: &BTreeMap<i32, i32>, present: &Vec<bool>) {
+fun check(m &BTreeMap<i32, i32>, present &Vec<bool>) {
 	expect mut := Vec::new()
 	i mut := 0
 	while i < present.len() {
@@ -9,7 +9,7 @@ fn check(m: &BTreeMap<i32, i32>, present: &Vec<bool>) {
 		}
 		i += 1
 	}
-	let got: Vec<i32> = m.keys().map(|k| *k).collect()
+	let got Vec<i32> = m.keys().map(|k| *k).collect()
 	if got != expect || m.len() != expect.len() {
 		panic("order mismatch: {got.len()} vs {expect.len()}")
 	}
@@ -20,7 +20,7 @@ fn check(m: &BTreeMap<i32, i32>, present: &Vec<bool>) {
 	}
 }
 
-fn main() {
+fun main() {
 	m mut := BTreeMap::new()
 	present mut := Vec::new()
 	i mut := 0
@@ -28,7 +28,7 @@ fn main() {
 		present.push(false)
 		i += 1
 	}
-	let mut s: u64 = 99
+	let mut s u64 = 99
 	round mut := 0
 	while round < 6 {
 		n mut := 0
@@ -95,7 +95,7 @@ fn main() {
 	}
 	println("{t:?}")
 	println("{t.get("fig"):?} {t.first_key_value():?} {t.last_key_value():?}")
-	let r: Vec<&String> = t.range("b", "d").map(|(k, _)| k).collect()
+	let r Vec<&string> = t.range("b", "d").map(|(k, _)| k).collect()
 	println("{r:?}")
 	for v in t.values_mut() {
 		*v *= 10
@@ -108,6 +108,6 @@ fn main() {
 	dup := st.insert(3)
 	println("{st:?} {st.first():?} {st.last():?} {st.contains(&9)} {dup}")
 	println("{st.union(&other):?} {st.intersection(&other):?} {st.difference(&other):?}")
-	let rr: Vec<&i32> = st.range(&2, &8).collect()
+	let rr Vec<&i32> = st.range(&2, &8).collect()
 	println("{rr:?} {st == st.clone()}")
 }

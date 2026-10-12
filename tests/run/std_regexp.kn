@@ -1,7 +1,7 @@
 import std::regexp
 import std::regexp::Regex
 
-fn main() {
+fun main() {
 	api()
 	show("a+", "baaab aa")
 	show("a*", "baaab")
@@ -42,9 +42,9 @@ fn main() {
 	show("\\$\\d+\\.\\d\\d", "cost $12.50 now")
 }
 
-fn show(p: &str, t: &str) {
+fun show(p &str, t &str) {
 	re := Regex::must(p)
-	out mut := String::new()
+	out mut := string::new()
 	for c in re.captures_all(t).iter() {
 		out.push("[")
 		for i in 0..c.len() {
@@ -58,7 +58,7 @@ fn show(p: &str, t: &str) {
 	println(out)
 }
 
-fn api() {
+fun api() {
 	re := Regex::must(r"(?P<user>\w+)@(?P<host>[\w.]+)")
 	text := "contact: bob@example.com, al@test.org"
 	println("{re.find_all_str(text):?} {re.num_groups()} {re.group_names():?}")
@@ -80,7 +80,7 @@ fn api() {
 		}
 	}
 	// Linear time: this would take ages with a backtracking engine.
-	long mut := String::new()
+	long mut := string::new()
 	for _ in 0..5000 {
 		long.push("a")
 	}
@@ -92,7 +92,7 @@ fn api() {
 	println("{kv}")
 }
 
-fn key_of(s: &str) -> &str {
+fun key_of(s &str) &str {
 	re := Regex::must("(\\w+)=")
 	return re.captures(s).unwrap().get(1).unwrap()
 }

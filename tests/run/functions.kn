@@ -1,19 +1,19 @@
-fn add(a: i32, b: i32) -> i32 {
+fun add(a i32, b i32) i32 {
 	return a + b
 }
 
-fn fib(n: u64) -> u64 {
+fun fib(n u64) u64 {
 	if n < 2 {
 		return n
 	}
 	return fib(n - 1) + fib(n - 2)
 }
 
-fn divmod(a: i64, b: i64) -> (i64, i64) {
+fun divmod(a i64, b i64) (i64, i64) {
 	return (a / b, a % b)
 }
 
-fn main() {
+fun main() {
 	println("{add(2, 3)}")
 	println("fib(20) = {fib(20)}")
 	(q, r) := divmod(17, 5)

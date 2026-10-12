@@ -1,32 +1,32 @@
 import std::bytes
 import std::io::{Read, Write}
 
-fn show(parts: &Vec<&[u8]>) -> String {
-	out mut := String::new()
+fun show(parts &Vec<&[u8]>) string {
+	out mut := string::new()
 	for p in parts.iter() {
 		out.push("[")
-		out.push(&String::from_utf8_lossy(*p))
+		out.push(&string::from_utf8_lossy(*p))
 		out.push("]")
 	}
 	return out
 }
 
-fn main() -> Result<(), std::io::Error> {
+fun main() result<void, std::io::Error> {
 	b := b"  Hello, World, hello  "
 	println("{bytes::index(b, b"llo"):?} {bytes::last_index(b, b"llo"):?} {bytes::index(b, b"zz"):?}")
 	println("{bytes::count(b, b"l")} {bytes::contains(b, b"World")} {bytes::equal_fold(b"GoPher", b"gopher")}")
 	t := bytes::trim_space(b)
-	println(String::from_utf8_lossy(t))
+	println(string::from_utf8_lossy(t))
 	println(show(&bytes::split(t, b", ")))
 	println(show(&bytes::fields(" a  bb\tccc\n".as_bytes())))
-	println(String::from_utf8_lossy(&bytes::to_upper(t)))
-	println(String::from_utf8_lossy(&bytes::replace_all(t, b"llo", b"LP")))
-	println(String::from_utf8_lossy(&bytes::join(&[b"x", b"y", b"z"], b"-")))
+	println(string::from_utf8_lossy(&bytes::to_upper(t)))
+	println(string::from_utf8_lossy(&bytes::replace_all(t, b"llo", b"LP")))
+	println(string::from_utf8_lossy(&bytes::join(&[b"x", b"y", b"z"], b"-")))
 	match bytes::cut("key=value".as_bytes(), "=".as_bytes()) {
-		Some((k, v)) => println("{String::from_utf8_lossy(k)} -> {String::from_utf8_lossy(v)}"),
+		Some((k, v)) => println("{string::from_utf8_lossy(k)} -> {string::from_utf8_lossy(v)}"),
 		None => println("no"),
 	}
-	println(String::from_utf8_lossy(bytes::trim(b"xxhixx", b"x")))
+	println(string::from_utf8_lossy(bytes::trim(b"xxhixx", b"x")))
 
 	buf mut := bytes::Buffer::new()
 	buf.write_str("line one\nline two\n")?
@@ -34,13 +34,13 @@ fn main() -> Result<(), std::io::Error> {
 	buf.write_char('é')
 	println("{buf.len()}")
 	first := buf.read_until(10)
-	println("{String::from_utf8_lossy(&first):?}")
+	println("{string::from_utf8_lossy(&first):?}")
 	small mut := [0 as u8; 4]
 	n := buf.read(&mut small)?
-	println("{n} {String::from_utf8_lossy(&small[0..n])}")
+	println("{n} {string::from_utf8_lossy(&small[0..n])}")
 	println("{buf.to_string_lossy():?}")
-	rest mut := String::new()
+	rest mut := string::new()
 	buf.read_to_string(&mut rest)?
 	println("{rest:?} {buf.is_empty()}")
-	return Ok(())
+	return Ok()
 }

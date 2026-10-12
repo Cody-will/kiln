@@ -309,7 +309,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         for c in &caps {
             if c.mode == CaptureMode::MutRef {
                 return Some(format!(
-                    "mutates the captured variable `{}` (a `fn` must not; declare the parameter `fn mut(..)` instead)",
+                    "mutates the captured variable `{}` (a `fun` must not; declare the parameter `fun mut(..)` instead)",
                     c.name
                 ));
             }
@@ -320,7 +320,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             {
                 let t = self.typed.fmt_ty(&c.ty);
                 return Some(format!(
-                    "captures `{}` of type `{t}`, which is not `Send` and `Sync` (a `fn` value may be shared between tasks)",
+                    "captures `{}` of type `{t}`, which is not `Send` and `Sync` (a `fun` value may be shared between tasks)",
                     c.name
                 ));
             }
@@ -339,7 +339,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             if let Some(why) = self.local_fns.get(&p.local).cloned() {
                 let span = self.body.locals[p.local.0 as usize].span;
                 self.body.errors.push((
-                    format!("this closure {why}, so it can only be called directly, not passed or stored as a `fn` value"),
+                    format!("this closure {why}, so it can only be called directly, not passed or stored as a `fun` value"),
                     span,
                 ));
             }
@@ -1194,7 +1194,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 let bp = self.place_or_temp(base);
                 let (p, _) = self.autoderef_until(bp, bt, e.span, |s, t| match t {
                     Ty::Array(..) | Ty::Slice(_) => true,
-                    Ty::Adt(d, _) => s.lang(*d, "Vec") || s.lang(*d, "String"),
+                    Ty::Adt(d, _) => s.lang(*d, "Vec") || s.lang(*d, "string"),
                     _ => false,
                 });
                 Some(p.project(Proj::Index(i)))
@@ -1247,7 +1247,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             // An interpolated `String` used as `&str`: keep it in a temporary
             // and borrow that.
             let src = self.ty(e);
-            if matches!(&src, Ty::Adt(d, _) if self.lang(*d, "String"))
+            if matches!(&src, Ty::Adt(d, _) if self.lang(*d, "string"))
                 && matches!(target, Ty::Ref(..))
             {
                 let t = self.temp(src.clone(), e.span);
@@ -1584,7 +1584,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         let Ty::Adt(d, args) = xt.clone() else {
             return Operand::unit();
         };
-        let is_result = self.lang(d, "Result");
+        let is_result = self.lang(d, "result");
         let vs = self.r.variants(d);
         let (ok_name, err_index) = if is_result { ("Ok", 1) } else { ("Some", 1) };
         let ok = self.new_block();
@@ -2238,7 +2238,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             Ty::Prim(kiln_resolve::PrimTy::Str) | Ty::Slice(_)
         );
         let container = matches!(&pt, Ty::Array(..))
-            || matches!(&pt, Ty::Adt(d, _) if self.lang(*d, "String") || self.lang(*d, "Vec"));
+            || matches!(&pt, Ty::Adt(d, _) if self.lang(*d, "string") || self.lang(*d, "Vec"));
         let self_op = match &info.self_param {
             Some(ast::SelfParam::Ref { mutable, .. }) if unsized_target && container => {
                 let r1 = self.temp_of(
@@ -2637,7 +2637,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             Ty::ChanRecv(t) => {
                 // `for v in rx`: receive until the channel is closed.
                 let t = (**t).clone();
-                let opt_ty = match self.r.prelude_type("Option") {
+                let opt_ty = match self.r.prelude_type("option") {
                     Some(o) => Ty::Adt(o, vec![t.clone()]),
                     None => Ty::Unknown,
                 };
@@ -2674,7 +2674,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     .get(&e.span)
                     .map(sorted)
                     .unwrap_or_default();
-                let opt_ty = match self.r.prelude_type("Option") {
+                let opt_ty = match self.r.prelude_type("option") {
                     Some(o) => Ty::Adt(o, vec![et.clone()]),
                     None => Ty::Unknown,
                 };

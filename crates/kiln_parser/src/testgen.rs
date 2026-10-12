@@ -16,7 +16,7 @@ pub struct TestCase {
     pub name: String,
     /// Marked `#[ignore]`: skipped unless asked for.
     pub ignore: bool,
-    /// Marked `#[should_panic]`; the inner value is the `expected = "..."`
+    /// Marked `@should_panic`; the inner value is the `expected = "..."`
     /// text the panic message must contain, if given.
     pub should_panic: Option<Option<String>>,
 }
@@ -30,7 +30,7 @@ pub fn test_harness(file: &mut File) -> (Vec<TestCase>, Vec<Diagnostic>) {
     collect(&mut file.items, "", &mut tests, &mut calls, &mut errors);
     file.items
         .retain(|it| !matches!(&it.kind, ItemKind::Fn(f) if f.name.name == "main"));
-    let mut src = String::from("fn main() {\n\targs := std::os::args()\n\tif args.len() < 2 {\n\t\tstd::os::exit(2)\n\t}\n\twhich := &args[1]\n");
+    let mut src = String::from("fun main() {\n\targs := std::os::args()\n\tif args.len() < 2 {\n\t\tstd::os::exit(2)\n\t}\n\twhich := &args[1]\n");
     for (t, returns) in tests.iter().zip(&calls) {
         if *returns {
             src.push_str(&format!(
@@ -78,7 +78,7 @@ fn collect(
             ItemKind::Fn(f) if attrs.iter().any(|a| a.name.name == "test") => {
                 if !f.params.is_empty() || f.self_param.is_some() || !f.generics.params.is_empty() {
                     errors.push(Diagnostic::error(
-                        "a `#[test]` function must not take parameters or generic arguments",
+                        "a `@test` function must not take parameters or generic arguments",
                         f.name.span,
                     ));
                     continue;

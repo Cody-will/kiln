@@ -1,8 +1,8 @@
-fn boom(v: Vec<i32>) -> i32 {
+fun boom(v Vec<i32>) i32 {
 	return v[5]
 }
 
-fn main() {
+fun main() {
 	t := go boom(Vec::new())
 	t.join()
 	println("unreachable")

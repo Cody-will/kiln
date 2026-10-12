@@ -1,6 +1,6 @@
 import std::collections::HashSet
 
-fn main() {
+fun main() {
 	a mut := HashSet::from_iter([1, 2, 3, 4].to_vec().into_iter())
 	b := HashSet::from_iter((3..7))
 	println("{a.insert(2)} {a.insert(9)} {a.contains(&9)} {a.len()}")

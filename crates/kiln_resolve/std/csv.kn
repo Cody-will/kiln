@@ -15,18 +15,18 @@ import std::io::{BufReader, Read, Write}
 import super::super::super::Error as ErrorTrait
 
 // Why reading CSV failed.
-#[derive(Debug)]
+@derive(Debug)
 pub enum Error {
 	// The underlying reader failed.
 	Io(io::Error),
 	// Malformed input at a 1-based line and column (in bytes).
-	Parse(usize, usize, String),
+	Parse(usize, usize, string),
 	// Record on this line has a different number of fields than the first.
 	FieldCount(usize, usize, usize),
 }
 
 impl Display for Error {
-	fn to_string(&self) -> String {
+	fun to_string(&self) string {
 		match self {
 			Error::Io(e) => return "csv: {e}",
 			Error::Parse(l, c, m) => {
@@ -43,29 +43,29 @@ impl Display for Error {
 impl ErrorTrait for Error {}
 
 impl From<io::Error> for Error {
-	fn from(e: io::Error) -> Error {
+	fun from(e io::Error) Error {
 		return Error::Io(e)
 	}
 }
 
 // Reads records from any `io::Read`.
 pub struct Reader<R: Read> {
-	r: BufReader<R>,
-	line: usize,
-	want: Option<usize>,
+	r BufReader<R>,
+	line usize,
+	want option<usize>,
 	// Field separator (default `,`).
-	pub delimiter: u8,
+	pub delimiter u8,
 	// Lines starting with this byte are skipped (default none, Go's `Comment`).
-	pub comment: Option<u8>,
+	pub comment option<u8>,
 	// Skip the field-count check (Go's `FieldsPerRecord = -1`).
-	pub flexible: bool,
+	pub flexible bool,
 	// Remove leading spaces from unquoted fields.
-	pub trim_leading_space: bool,
+	pub trim_leading_space bool,
 }
 
 impl<R: Read> Reader<R> {
 	// A reader with the default settings.
-	pub fn new(r: R) -> Reader<R> {
+	pub fun new(r R) Reader<R> {
 		return Reader {
 			r: BufReader::new(r),
 			line: 0,
@@ -78,12 +78,12 @@ impl<R: Read> Reader<R> {
 	}
 
 	// The 1-based line where the last record started (0 before reading).
-	pub fn line(&self) -> usize {
+	pub fun line(&self) usize {
 		return self.line
 	}
 
 	// The next record, or `None` at the end of the input. Empty lines are skipped.
-	pub fn next_record(&mut self) -> Result<Option<Vec<String>>, Error> {
+	pub fun next_record(&mut self) result<option<Vec<string>>, Error> {
 		line mut := Vec::new()
 		loop {
 			line.clear()
@@ -165,7 +165,7 @@ impl<R: Read> Reader<R> {
 			i += 1
 			if i == line.len() {
 				// Trailing delimiter: one more empty field.
-				fields.push(String::new())
+				fields.push(string::new())
 				break
 			}
 		}
@@ -185,7 +185,7 @@ impl<R: Read> Reader<R> {
 	}
 
 	// All remaining records.
-	pub fn read_all(&mut self) -> Result<Vec<Vec<String>>, Error> {
+	pub fun read_all(&mut self) result<Vec<Vec<string>>, Error> {
 		out mut := Vec::new()
 		while let Some(rec) = self.next_record()? {
 			out.push(rec)
@@ -194,7 +194,7 @@ impl<R: Read> Reader<R> {
 	}
 }
 
-fn strip_eol(line: &mut Vec<u8>) {
+fun strip_eol(line &mut Vec<u8>) {
 	if line.len() > 0 && line[line.len() - 1] == 10 {
 		line.pop()
 		if line.len() > 0 && line[line.len() - 1] == 13 {
@@ -203,36 +203,36 @@ fn strip_eol(line: &mut Vec<u8>) {
 	}
 }
 
-fn to_text(b: Vec<u8>, line: usize) -> Result<String, Error> {
-	match String::from_utf8(b) {
+fun to_text(b Vec<u8>, line usize) result<string, Error> {
+	match string::from_utf8(b) {
 		Ok(s) => return Ok(s),
 		Err(_) => return Err(Error::Parse(line, 0, "invalid UTF-8".to_string())),
 	}
 }
 
 // Parses a whole CSV document held in memory.
-pub fn parse(text: &str) -> Result<Vec<Vec<String>>, Error> {
+pub fun parse(text &str) result<Vec<Vec<string>>, Error> {
 	r mut := Reader::new(io::Cursor::from_str(text))
 	return r.read_all()
 }
 
 // Writes records to any `io::Write`. Fields are quoted only when needed.
 pub struct Writer<W: Write> {
-	w: W,
+	w W,
 	// Field separator (default `,`).
-	pub delimiter: u8,
+	pub delimiter u8,
 	// End lines with `\r\n` instead of `\n`.
-	pub use_crlf: bool,
+	pub use_crlf bool,
 }
 
 impl<W: Write> Writer<W> {
 	// A writer with the default settings.
-	pub fn new(w: W) -> Writer<W> {
+	pub fun new(w W) Writer<W> {
 		return Writer { w: w, delimiter: 44, use_crlf: false }
 	}
 
 	// Writes one record.
-	pub fn write_record(&mut self, fields: &[&str]) -> Result<(), io::Error> {
+	pub fun write_record(&mut self, fields &[&str]) result<void, io::Error> {
 		out mut := Vec::new()
 		for i in 0..fields.len() {
 			if i > 0 {
@@ -248,7 +248,7 @@ impl<W: Write> Writer<W> {
 	}
 
 	// Writes one record of owned strings.
-	pub fn write_strings(&mut self, fields: &[String]) -> Result<(), io::Error> {
+	pub fun write_strings(&mut self, fields &[string]) result<void, io::Error> {
 		refs mut := Vec::with_capacity(fields.len())
 		for f in fields.iter() {
 			refs.push(f.as_str())
@@ -257,17 +257,17 @@ impl<W: Write> Writer<W> {
 	}
 
 	// Flushes the underlying writer.
-	pub fn flush(&mut self) -> Result<(), io::Error> {
+	pub fun flush(&mut self) result<void, io::Error> {
 		return self.w.flush()
 	}
 
 	// The underlying writer.
-	pub fn into_inner(self) -> W {
+	pub fun into_inner(self) W {
 		return self.w
 	}
 }
 
-fn quote_field(out: &mut Vec<u8>, f: &str, delim: u8) {
+fun quote_field(out &mut Vec<u8>, f &str, delim u8) {
 	b := f.as_bytes()
 	needs mut := b.len() > 0 && (b[0] == 32 || b[0] == 9)
 	for c in b.iter() {
@@ -290,10 +290,10 @@ fn quote_field(out: &mut Vec<u8>, f: &str, delim: u8) {
 }
 
 // Formats records as a CSV document.
-pub fn format(rows: &[Vec<String>]) -> String {
+pub fun format(rows &[Vec<string>]) string {
 	w mut := Writer::new(Vec::new())
 	for r in rows.iter() {
 		w.write_strings(r).unwrap()
 	}
-	return String::from_utf8(w.into_inner()).unwrap()
+	return string::from_utf8(w.into_inner()).unwrap()
 }

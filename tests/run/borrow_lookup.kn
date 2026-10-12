@@ -1,11 +1,11 @@
 import std::collections::BTreeMap
 
-fn f(m: &BTreeMap<String, i32>, key: String) -> Option<&i32> {
+fun f(m &BTreeMap<string, i32>, key string) option<&i32> {
 	x := m.get(key.as_str())
 	return x
 }
 
-fn g(m: &BTreeMap<String, i32>, key: String) -> Option<&i32> {
+fun g(m &BTreeMap<string, i32>, key string) option<&i32> {
 	v := match 1 {
 		1 => m.get(key.as_str()),
 		_ => None,
@@ -13,7 +13,7 @@ fn g(m: &BTreeMap<String, i32>, key: String) -> Option<&i32> {
 	return v
 }
 
-fn main() {
+fun main() {
 	m mut := BTreeMap::new()
 	m.insert("k".to_string(), 7)
 	println("{f(&m, "k".to_string()):?} {g(&m, "z".to_string()):?}")

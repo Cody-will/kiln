@@ -10,7 +10,7 @@ impl Checker<'_, '_> {
         let t = self.infer.zonk(t);
         match &t {
             Ty::Prim(p) => prim_name(*p).to_string(),
-            Ty::Unit => "()".into(),
+            Ty::Unit => "void".into(),
             Ty::Never => "!".into(),
             Ty::Tuple(ts) => {
                 let inner: Vec<_> = ts.iter().map(|x| self.fmt_ty(x)).collect();
@@ -35,10 +35,10 @@ impl Checker<'_, '_> {
             }
             Ty::Fn(ps, r, is_mut) => {
                 let a: Vec<_> = ps.iter().map(|x| self.fmt_ty(x)).collect();
-                let kw = if *is_mut { "fn mut" } else { "fn" };
+                let kw = if *is_mut { "fun mut" } else { "fun" };
                 match self.infer.zonk(r) {
                     Ty::Unit => format!("{kw}({})", a.join(", ")),
-                    r => format!("{kw}({}) -> {}", a.join(", "), self.fmt_ty(&r)),
+                    r => format!("{kw}({}) {}", a.join(", "), self.fmt_ty(&r)),
                 }
             }
             Ty::Param(n) => n.clone(),

@@ -20,26 +20,26 @@
 // backslash before any punctuation. Offsets are byte offsets into the text.
 
 // A syntax error in a pattern, with the byte offset where it was found.
-#[derive(Debug, Clone, Eq)]
+@derive(Debug, Clone, Eq)
 pub struct Error {
-	msg: String,
-	pos: usize,
+	msg string,
+	pos usize,
 }
 
 impl Error {
 	// What is wrong.
-	pub fn message(&self) -> &str {
+	pub fun message(&self) &str {
 		return &self.msg
 	}
 
 	// Byte offset in the pattern.
-	pub fn offset(&self) -> usize {
+	pub fun offset(&self) usize {
 		return self.pos
 	}
 }
 
 impl Display for Error {
-	fn to_string(&self) -> String {
+	fun to_string(&self) string {
 		return "regexp: {self.msg} at offset {self.pos}"
 	}
 }
@@ -48,9 +48,9 @@ impl ErrorTrait for Error {}
 
 import super::super::Error as ErrorTrait
 
-const NONE: usize = 18446744073709551615
+const NONE usize = 18446744073709551615
 
-#[derive(Clone, Debug)]
+@derive(Clone, Debug)
 enum Node {
 	Empty,
 	Lit(char),
@@ -68,19 +68,19 @@ enum Node {
 }
 
 struct Flags {
-	fold: bool,
-	multi: bool,
-	dotall: bool,
+	fold bool,
+	multi bool,
+	dotall bool,
 }
 
 struct Parser<'a> {
-	p: &'a [u8],
-	i: usize,
-	ncap: usize,
-	names: Vec<(String, usize)>,
+	p &'a [u8],
+	i usize,
+	ncap usize,
+	names Vec<(string, usize)>,
 }
 
-fn perl_class(c: u8) -> Option<(Vec<(char, char)>, bool)> {
+fun perl_class(c u8) option<(Vec<(char, char)>, bool)> {
 	if c == 100 || c == 68 {
 		return Some(([('0', '9')].to_vec(), c == 68))
 	}
@@ -93,7 +93,7 @@ fn perl_class(c: u8) -> Option<(Vec<(char, char)>, bool)> {
 	return None
 }
 
-fn hexval(c: u8) -> Option<u32> {
+fun hexval(c u8) option<u32> {
 	if c >= 48 && c <= 57 {
 		return Some((c - 48) as u32)
 	}
@@ -107,7 +107,7 @@ fn hexval(c: u8) -> Option<u32> {
 }
 
 // Adds the other ASCII case of each letter range.
-fn fold_ranges(r: &Vec<(char, char)>) -> Vec<(char, char)> {
+fun fold_ranges(r &Vec<(char, char)>) Vec<(char, char)> {
 	out mut := r.clone()
 	for x in r.iter() {
 		(lo, hi) := *x
@@ -127,18 +127,18 @@ fn fold_ranges(r: &Vec<(char, char)>) -> Vec<(char, char)> {
 }
 
 impl<'a> Parser<'a> {
-	fn err(&self, msg: &str) -> Error {
+	fun err(&self, msg &str) Error {
 		return Error { msg: msg.to_string(), pos: self.i }
 	}
 
-	fn peek(&self) -> Option<u8> {
+	fun peek(&self) option<u8> {
 		if self.i < self.p.len() {
 			return Some(self.p[self.i])
 		}
 		return None
 	}
 
-	fn eat(&mut self, c: u8) -> bool {
+	fun eat(&mut self, c u8) bool {
 		if self.peek() == Some(c) {
 			self.i += 1
 			return true
@@ -147,13 +147,13 @@ impl<'a> Parser<'a> {
 	}
 
 	// One UTF-8 character of the pattern.
-	fn next_char(&mut self) -> char {
+	fun next_char(&mut self) char {
 		(c, n) := std::utf8::decode(&self.p[self.i..])
 		self.i += n
 		return c
 	}
 
-	fn alt(&mut self, f: &mut Flags) -> Result<Node, Error> {
+	fun alt(&mut self, f &mut Flags) result<Node, Error> {
 		branches mut := Vec::new()
 		branches.push(self.concat(f)?)
 		while self.eat(124) {
@@ -165,7 +165,7 @@ impl<'a> Parser<'a> {
 		return Ok(Node::Alt(branches))
 	}
 
-	fn concat(&mut self, f: &mut Flags) -> Result<Node, Error> {
+	fun concat(&mut self, f &mut Flags) result<Node, Error> {
 		items mut := Vec::new()
 		loop {
 			match self.peek() {
@@ -191,7 +191,7 @@ impl<'a> Parser<'a> {
 		return Ok(Node::Concat(items))
 	}
 
-	fn number(&mut self) -> Option<usize> {
+	fun number(&mut self) option<usize> {
 		start := self.i
 		n mut := 0 as usize
 		while self.i < self.p.len() && self.p[self.i] >= 48 && self.p[self.i] <= 57 {
@@ -207,7 +207,7 @@ impl<'a> Parser<'a> {
 		return Some(n)
 	}
 
-	fn repeat(&mut self, atom: Node) -> Result<Node, Error> {
+	fun repeat(&mut self, atom Node) result<Node, Error> {
 		node mut := atom
 		loop {
 			at := self.i
@@ -266,7 +266,7 @@ impl<'a> Parser<'a> {
 		}
 	}
 
-	fn lit(&self, c: char, f: &Flags) -> Node {
+	fun lit(&self, c char, f &Flags) Node {
 		if f.fold && c.is_ascii_alphabetic() {
 			return Node::Class([(c.to_ascii_lowercase(), c.to_ascii_lowercase()), (c.to_ascii_uppercase(), c.to_ascii_uppercase())].to_vec(), false)
 		}
@@ -274,7 +274,7 @@ impl<'a> Parser<'a> {
 	}
 
 	// An escape after `\`, as a single character (classes handled by callers).
-	fn escape_char(&mut self) -> Result<char, Error> {
+	fun escape_char(&mut self) result<char, Error> {
 		c := match self.peek() {
 			Some(c) => c,
 			None => return Err(self.err("trailing backslash at end of expression")),
@@ -346,7 +346,7 @@ impl<'a> Parser<'a> {
 		return Err(self.err("invalid escape sequence"))
 	}
 
-	fn atom(&mut self, f: &mut Flags) -> Result<Option<Node>, Error> {
+	fun atom(&mut self, f &mut Flags) result<option<Node>, Error> {
 		c := self.peek().unwrap()
 		if c == 40 {
 			return self.group(f)
@@ -400,7 +400,7 @@ impl<'a> Parser<'a> {
 		return Ok(Some(self.lit(ch, f)))
 	}
 
-	fn group(&mut self, f: &mut Flags) -> Result<Option<Node>, Error> {
+	fun group(&mut self, f &mut Flags) result<option<Node>, Error> {
 		open := self.i
 		self.i += 1
 		if self.eat(63) {
@@ -425,7 +425,7 @@ impl<'a> Parser<'a> {
 				if self.i >= self.p.len() || self.i == s {
 					return Err(self.err("invalid named capture"))
 				}
-				name := String::from_utf8_lossy(&self.p[s..self.i])
+				name := string::from_utf8_lossy(&self.p[s..self.i])
 				for n in self.names.iter() {
 					if n.0 == name {
 						return Err(self.err("duplicate capture group name"))
@@ -480,7 +480,7 @@ impl<'a> Parser<'a> {
 		return Ok(Some(self.group_body(f, idx, open)?))
 	}
 
-	fn group_body(&mut self, f: &mut Flags, idx: usize, open: usize) -> Result<Node, Error> {
+	fun group_body(&mut self, f &mut Flags, idx usize, open usize) result<Node, Error> {
 		inner mut := Flags { fold: f.fold, multi: f.multi, dotall: f.dotall }
 		n := self.alt(&mut inner)?
 		if !self.eat(41) {
@@ -489,7 +489,7 @@ impl<'a> Parser<'a> {
 		return Ok(Node::Group(Box::new(n), idx))
 	}
 
-	fn class(&mut self, f: &Flags) -> Result<Node, Error> {
+	fun class(&mut self, f &Flags) result<Node, Error> {
 		open := self.i - 1
 		neg := self.eat(94)
 		ranges mut := Vec::new()
@@ -556,7 +556,7 @@ impl<'a> Parser<'a> {
 	}
 }
 
-#[derive(Clone, Debug)]
+@derive(Clone, Debug)
 enum Inst {
 	Char(char),
 	Class(usize),
@@ -569,17 +569,17 @@ enum Inst {
 }
 
 struct Compiler {
-	prog: Vec<Inst>,
-	classes: Vec<(Vec<(char, char)>, bool)>,
+	prog Vec<Inst>,
+	classes Vec<(Vec<(char, char)>, bool)>,
 }
 
 impl Compiler {
-	fn emit(&mut self, i: Inst) -> usize {
+	fun emit(&mut self, i Inst) usize {
 		self.prog.push(i)
 		return self.prog.len() - 1
 	}
 
-	fn node(&mut self, n: &Node) -> Result<(), Error> {
+	fun node(&mut self, n &Node) result<void, Error> {
 		if self.prog.len() > 100000 {
 			return Err(Error { msg: "expression too large".to_string(), pos: 0 })
 		}
@@ -652,45 +652,45 @@ impl Compiler {
 				}
 			},
 		}
-		return Ok(())
+		return Ok()
 	}
 }
 
 // A compiled regular expression. Safe to share between tasks.
-#[derive(Clone)]
+@derive(Clone)
 pub struct Regex {
-	src: String,
-	prog: Vec<Inst>,
-	classes: Vec<(Vec<(char, char)>, bool)>,
-	ncap: usize,
-	names: Vec<(String, usize)>,
-	anchored: bool,
+	src string,
+	prog Vec<Inst>,
+	classes Vec<(Vec<(char, char)>, bool)>,
+	ncap usize,
+	names Vec<(string, usize)>,
+	anchored bool,
 }
 
 // A match: byte offsets `start..end` into the searched text.
-#[derive(Clone, Copy, Debug, Eq)]
+@derive(Clone, Copy, Debug, Eq)
 pub struct Match {
-	pub start: usize,
-	pub end: usize,
+	pub start usize,
+	pub end usize,
 }
 
 impl Match {
 	// The matched text.
-	pub fn as_str<'a>(&self, text: &'a str) -> &'a str {
+	pub fun as_str<'a>(&self, text &'a str) &'a str {
 		return &text[self.start..self.end]
 	}
 }
 
 // Capture groups of one match. Group 0 is the whole match.
 pub struct Captures<'t> {
-	text: &'t str,
-	locs: Vec<usize>,
-	names: Vec<(String, usize)>,
+	text &'t str,
+	locs Vec<usize>,
+	names Vec<(string, usize)>,
 }
 
 impl<'t> Captures<'t> {
 	// The text of group `i`, if it took part in the match.
-	pub fn get(&self, i: usize) -> Option<&'t str> {
+	pub fun get(&self, i usize) option<&'t str> {
 		match self.pos(i) {
 			Some(m) => return Some(&self.text[m.start..m.end]),
 			None => return None,
@@ -698,7 +698,7 @@ impl<'t> Captures<'t> {
 	}
 
 	// The offsets of group `i`.
-	pub fn pos(&self, i: usize) -> Option<Match> {
+	pub fun pos(&self, i usize) option<Match> {
 		if 2 * i + 1 >= self.locs.len() || self.locs[2 * i] == NONE || self.locs[2 * i + 1] == NONE {
 			return None
 		}
@@ -706,7 +706,7 @@ impl<'t> Captures<'t> {
 	}
 
 	// The text of the group named `name`.
-	pub fn name(&self, name: &str) -> Option<&'t str> {
+	pub fun name(&self, name &str) option<&'t str> {
 		for n in self.names.iter() {
 			if n.0 == name {
 				return self.get(n.1)
@@ -716,19 +716,19 @@ impl<'t> Captures<'t> {
 	}
 
 	// Number of groups, including group 0.
-	pub fn len(&self) -> usize {
+	pub fun len(&self) usize {
 		return self.locs.len() / 2
 	}
 }
 
-fn is_word(c: Option<char>) -> bool {
+fun is_word(c option<char>) bool {
 	match c {
 		Some(ch) => return ch.is_ascii_alphanumeric() || ch == '_',
 		None => return false,
 	}
 }
 
-fn class_has(cls: &(Vec<(char, char)>, bool), c: char) -> bool {
+fun class_has(cls &(Vec<(char, char)>, bool), c char) bool {
 	inside mut := false
 	for r in cls.0.iter() {
 		if c >= r.0 && c <= r.1 {
@@ -740,13 +740,13 @@ fn class_has(cls: &(Vec<(char, char)>, bool), c: char) -> bool {
 }
 
 struct Thread {
-	pc: usize,
-	caps: Vec<usize>,
+	pc usize,
+	caps Vec<usize>,
 }
 
 impl Regex {
 	// Compiles `pattern`.
-	pub fn new(pattern: &str) -> Result<Regex, Error> {
+	pub fun new(pattern &str) result<Regex, Error> {
 		ps mut := Parser { p: pattern.as_bytes(), i: 0, ncap: 0, names: Vec::new() }
 		flags mut := Flags { fold: false, multi: false, dotall: false }
 		ast := ps.alt(&mut flags)?
@@ -770,7 +770,7 @@ impl Regex {
 	}
 
 	// Compiles `pattern`, panicking if it is invalid (for constant patterns).
-	pub fn must(pattern: &str) -> Regex {
+	pub fun must(pattern &str) Regex {
 		match Regex::new(pattern) {
 			Ok(r) => return r,
 			Err(e) => panic("{e}"),
@@ -778,20 +778,20 @@ impl Regex {
 	}
 
 	// The source pattern.
-	pub fn as_str(&self) -> &str {
+	pub fun as_str(&self) &str {
 		return &self.src
 	}
 
 	// Number of capture groups, not counting group 0.
-	pub fn num_groups(&self) -> usize {
+	pub fun num_groups(&self) usize {
 		return self.ncap
 	}
 
 	// Names of the groups: index i holds group i's name, or "" (group 0 is "").
-	pub fn group_names(&self) -> Vec<String> {
+	pub fun group_names(&self) Vec<string> {
 		out mut := Vec::new()
 		for _ in 0..(self.ncap + 1) {
-			out.push(String::new())
+			out.push(string::new())
 		}
 		for n in self.names.iter() {
 			out[n.1] = n.0.clone()
@@ -799,7 +799,7 @@ impl Regex {
 		return out
 	}
 
-	fn add(&self, list: &mut Vec<Thread>, seen: &mut Vec<usize>, gen: usize, pc: usize, caps: Vec<usize>, b: &[u8], at: usize) {
+	fun add(&self, list &mut Vec<Thread>, seen &mut Vec<usize>, gen usize, pc usize, caps Vec<usize>, b &[u8], at usize) {
 		if seen[pc] == gen {
 			return
 		}
@@ -837,7 +837,7 @@ impl Regex {
 	}
 
 	// Pike VM: the leftmost-first match starting at or after `from`.
-	fn exec(&self, text: &str, from: usize) -> Option<Vec<usize>> {
+	fun exec(&self, text &str, from usize) option<Vec<usize>> {
 		b := text.as_bytes()
 		ncaps := 2 * (self.ncap + 1)
 		clist mut := Vec::new()
@@ -898,17 +898,17 @@ impl Regex {
 	}
 
 	// Whether `text` contains a match.
-	pub fn is_match(&self, text: &str) -> bool {
+	pub fun is_match(&self, text &str) bool {
 		return self.exec(text, 0).is_some()
 	}
 
 	// The leftmost-first match in `text`.
-	pub fn find(&self, text: &str) -> Option<Match> {
+	pub fun find(&self, text &str) option<Match> {
 		return self.find_at(text, 0)
 	}
 
 	// The first match starting at or after byte offset `start`.
-	pub fn find_at(&self, text: &str, start: usize) -> Option<Match> {
+	pub fun find_at(&self, text &str, start usize) option<Match> {
 		match self.exec(text, start) {
 			Some(c) => return Some(Match { start: c[0], end: c[1] }),
 			None => return None,
@@ -916,7 +916,7 @@ impl Regex {
 	}
 
 	// The matched text of the first match.
-	pub fn find_str<'a>(&self, text: &'a str) -> Option<&'a str> {
+	pub fun find_str<'a>(&self, text &'a str) option<&'a str> {
 		match self.find(text) {
 			Some(m) => return Some(&text[m.start..m.end]),
 			None => return None,
@@ -924,14 +924,14 @@ impl Regex {
 	}
 
 	// Capture groups of the first match.
-	pub fn captures<'t>(&self, text: &'t str) -> Option<Captures<'t>> {
+	pub fun captures<'t>(&self, text &'t str) option<Captures<'t>> {
 		match self.exec(text, 0) {
 			Some(c) => return Some(Captures { text: text, locs: c, names: self.names.clone() }),
 			None => return None,
 		}
 	}
 
-	fn all_locs(&self, text: &str) -> Vec<Vec<usize>> {
+	fun all_locs(&self, text &str) Vec<Vec<usize>> {
 		out mut := Vec::new()
 		at mut := 0
 		last_end mut := NONE
@@ -964,7 +964,7 @@ impl Regex {
 	}
 
 	// All successive non-overlapping matches.
-	pub fn find_all(&self, text: &str) -> Vec<Match> {
+	pub fun find_all(&self, text &str) Vec<Match> {
 		out mut := Vec::new()
 		for c in self.all_locs(text).iter() {
 			out.push(Match { start: c[0], end: c[1] })
@@ -973,7 +973,7 @@ impl Regex {
 	}
 
 	// The text of all successive non-overlapping matches.
-	pub fn find_all_str<'a>(&self, text: &'a str) -> Vec<&'a str> {
+	pub fun find_all_str<'a>(&self, text &'a str) Vec<&'a str> {
 		out mut := Vec::new()
 		for m in self.find_all(text).iter() {
 			out.push(&text[m.start..m.end])
@@ -982,7 +982,7 @@ impl Regex {
 	}
 
 	// Capture groups of all successive non-overlapping matches.
-	pub fn captures_all<'t>(&self, text: &'t str) -> Vec<Captures<'t>> {
+	pub fun captures_all<'t>(&self, text &'t str) Vec<Captures<'t>> {
 		out mut := Vec::new()
 		for c in self.all_locs(text).into_iter() {
 			out.push(Captures { text: text, locs: c, names: self.names.clone() })
@@ -991,7 +991,7 @@ impl Regex {
 	}
 
 	// `text` split around matches, as Go's `Split(s, -1)`.
-	pub fn split<'a>(&self, text: &'a str) -> Vec<&'a str> {
+	pub fun split<'a>(&self, text &'a str) Vec<&'a str> {
 		out mut := Vec::new()
 		beg mut := 0
 		end mut := 0
@@ -1010,7 +1010,7 @@ impl Regex {
 
 	// Appends `template` to `out` with `$1`, `${1}`, `${name}`, `$name`
 	// replaced by groups of `caps`; `$$` is a literal `$`.
-	pub fn expand(&self, caps: &Captures, template: &str, out: &mut String) {
+	pub fun expand(&self, caps &Captures, template &str, out &mut string) {
 		t := template.as_bytes()
 		i mut := 0
 		while i < t.len() {
@@ -1054,8 +1054,8 @@ impl Regex {
 	}
 
 	// `text` with every match replaced by `template` (see `expand`).
-	pub fn replace_all(&self, text: &str, template: &str) -> String {
-		out mut := String::new()
+	pub fun replace_all(&self, text &str, template &str) string {
+		out mut := string::new()
 		last mut := 0
 		for c in self.captures_all(text).iter() {
 			m := c.pos(0).unwrap()
@@ -1068,8 +1068,8 @@ impl Regex {
 	}
 
 	// `text` with every match replaced by `f(match)`.
-	pub fn replace_all_fn(&self, text: &str, f: fn mut(&Captures) -> String) -> String {
-		out mut := String::new()
+	pub fun replace_all_fn(&self, text &str, f fun mut(&Captures) string) string {
+		out mut := string::new()
 		last mut := 0
 		for c in self.captures_all(text).iter() {
 			m := c.pos(0).unwrap()
@@ -1082,8 +1082,8 @@ impl Regex {
 	}
 
 	// `text` with every match replaced by `lit`, taken literally.
-	pub fn replace_all_literal(&self, text: &str, lit: &str) -> String {
-		out mut := String::new()
+	pub fun replace_all_literal(&self, text &str, lit &str) string {
+		out mut := string::new()
 		last mut := 0
 		for m in self.find_all(text).iter() {
 			out.push(&text[last..m.start])
@@ -1095,15 +1095,15 @@ impl Regex {
 	}
 }
 
-fn mem_swap(a: &mut Vec<Thread>, b: &mut Vec<Thread>) {
+fun mem_swap(a &mut Vec<Thread>, b &mut Vec<Thread>) {
 	std::mem::swap(a, b)
 }
 
 // `s` with every regexp metacharacter escaped, so it matches literally.
-pub fn quote_meta(s: &str) -> String {
-	out mut := String::new()
+pub fun quote_meta(s &str) string {
+	out mut := string::new()
 	for c in s.chars() {
-		one mut := String::new()
+		one mut := string::new()
 		one.push_char(c)
 		if r"\.+*?()|[]{}^$".contains(&one) {
 			out.push_char('\\')
@@ -1114,7 +1114,7 @@ pub fn quote_meta(s: &str) -> String {
 }
 
 // Whether `pattern` matches anywhere in `text` (compiles each call).
-pub fn is_match(pattern: &str, text: &str) -> Result<bool, Error> {
+pub fun is_match(pattern &str, text &str) result<bool, Error> {
 	re := Regex::new(pattern)?
 	return Ok(re.is_match(text))
 }

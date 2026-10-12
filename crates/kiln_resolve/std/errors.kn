@@ -22,32 +22,32 @@
 // An error of any type, plus context messages.
 pub struct AnyError {
 	// The context message; empty for a wrapped error.
-	msg: String,
-	inner: Option<Box<dyn Error + Send + Sync>>,
-	cause: Option<Box<AnyError>>,
+	msg string,
+	inner option<Box<dyn Error + Send + Sync>>,
+	cause option<Box<AnyError>>,
 }
 
 // An error with just a message.
-pub fn new(msg: &str) -> AnyError {
+pub fun new(msg &str) AnyError {
 	return AnyError { msg: msg.to_string(), inner: None, cause: None }
 }
 
 impl<E: Error + Send + Sync> From<E> for AnyError {
-	fn from(e: E) -> AnyError {
-		let b: Box<dyn Error + Send + Sync> = Box::new(e)
-		return AnyError { msg: String::new(), inner: Some(b), cause: None }
+	fun from(e E) AnyError {
+		let b Box<dyn Error + Send + Sync> = Box::new(e)
+		return AnyError { msg: string::new(), inner: Some(b), cause: None }
 	}
 }
 
 impl AnyError {
 	// Wraps the error with a message saying what was being done.
-	pub fn context(self, msg: &str) -> AnyError {
+	pub fun context(self, msg &str) AnyError {
 		return AnyError { msg: msg.to_string(), inner: None, cause: Some(Box::new(self)) }
 	}
 
 	// The messages of the chain, outermost first, including the `source`
 	// chain of wrapped errors.
-	pub fn chain(&self) -> Vec<String> {
+	pub fun chain(&self) Vec<string> {
 		out mut := Vec::new()
 		cur mut := Some(self)
 		while let Some(e) = cur {
@@ -70,15 +70,15 @@ impl AnyError {
 	}
 
 	// The innermost message.
-	pub fn root_cause(&self) -> String {
+	pub fun root_cause(&self) string {
 		c mut := self.chain()
-		return c.pop().unwrap_or(String::new())
+		return c.pop().unwrap_or(string::new())
 	}
 }
 
 impl Display for AnyError {
-	fn to_string(&self) -> String {
-		out mut := String::new()
+	fun to_string(&self) string {
+		out mut := string::new()
 		for m in self.chain().iter() {
 			if out.len() > 0 {
 				out.push(": ")
@@ -90,7 +90,7 @@ impl Display for AnyError {
 }
 
 impl Debug for AnyError {
-	fn fmt_debug(&self, f: &mut std::fmt::Formatter) {
+	fun fmt_debug(&self, f &mut std::fmt::Formatter) {
 		f.write(&self.to_string())
 	}
 }
@@ -98,17 +98,17 @@ impl Debug for AnyError {
 // Results whose error can become an AnyError (any `Error + Send + Sync`
 // type, or AnyError itself).
 pub trait IntoAnyError {
-	fn into_any(self) -> AnyError
+	fun into_any(self) AnyError
 }
 
 impl IntoAnyError for AnyError {
-	fn into_any(self) -> AnyError {
+	fun into_any(self) AnyError {
 		return self
 	}
 }
 
 impl<E: Error + Send + Sync> IntoAnyError for E {
-	fn into_any(self) -> AnyError {
+	fun into_any(self) AnyError {
 		return AnyError::from(self)
 	}
 }
@@ -116,17 +116,17 @@ impl<E: Error + Send + Sync> IntoAnyError for E {
 // A simple error type holding a message, for implementing `Error` without
 // defining a new type.
 pub struct Message {
-	text: String,
+	text string,
 }
 
 impl Message {
-	pub fn new(text: &str) -> Message {
+	pub fun new(text &str) Message {
 		return Message { text: text.to_string() }
 	}
 }
 
 impl Display for Message {
-	fn to_string(&self) -> String {
+	fun to_string(&self) string {
 		return self.text.clone()
 	}
 }

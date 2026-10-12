@@ -22,7 +22,7 @@ pub enum Target {
 pub struct Symbol {
     /// Its name.
     pub name: String,
-    /// What it is: "fn", "struct", "enum", "trait", "const", "static", "type", "mod", "method", "variant".
+    /// What it is: "fun", "struct", "enum", "trait", "const", "static", "type", "mod", "method", "variant".
     pub kind: &'static str,
     /// The name's span.
     pub span: Span,
@@ -37,7 +37,7 @@ pub struct Symbol {
 pub struct Completion {
     /// The text to insert.
     pub label: String,
-    /// "fn", "method", "field", "local", "struct", "enum", "trait", "const", "keyword", "module", ...
+    /// "fun", "method", "field", "local", "struct", "enum", "trait", "const", "keyword", "module", ...
     pub kind: &'static str,
     /// A type or signature.
     pub detail: String,
@@ -113,7 +113,7 @@ fn doc_above(src: &str, start: usize) -> String {
         if let Some(c) = line.strip_prefix("//") {
             docs.push(c.trim_start_matches('/').trim().to_string());
             end = prev_start;
-        } else if line.starts_with("#[") {
+        } else if line.starts_with('@') {
             end = prev_start;
         } else {
             break;
@@ -130,7 +130,7 @@ fn kind_name(k: DefKind) -> &'static str {
         DefKind::Enum => "enum",
         DefKind::Variant { .. } => "variant",
         DefKind::Trait => "trait",
-        DefKind::Fn => "fn",
+        DefKind::Fn => "fun",
         DefKind::Const => "const",
         DefKind::Static => "static",
         DefKind::TypeAlias => "type",
@@ -543,7 +543,7 @@ impl Analysis {
             match t {
                 Target::Local(l) => {
                     if let Some((name, ty)) = self.locals.get(l) {
-                        return Some((*s, format!("```kiln\n{name}: {ty}\n```")));
+                        return Some((*s, format!("```kiln\n{name} {ty}\n```")));
                     }
                 }
                 Target::Def(d) => {
@@ -566,7 +566,7 @@ impl Analysis {
             .map(|(s, ty)| (*s, format!("```kiln\n{ty}\n```")))
     }
 
-    /// Inlay hints: (offset after the binding name, ": Type").
+    /// Inlay hints: (offset after the binding name, " Type").
     pub fn inlay_hints(&self) -> Vec<(usize, String)> {
         let mut v: Vec<(usize, String)> = self
             .inferred
@@ -576,7 +576,7 @@ impl Analysis {
                 if name == "_" || name == "self" || ty.contains('?') || ty == "{unknown}" {
                     return None;
                 }
-                Some((s.end, format!(": {ty}")))
+                Some((s.end, format!(" {ty}")))
             })
             .collect();
         v.sort();
@@ -641,7 +641,7 @@ impl Analysis {
 }
 
 const KEYWORDS: &[&str] = &[
-    "break", "chan", "const", "continue", "defer", "else", "enum", "false", "fn", "for", "go",
+    "break", "chan", "const", "continue", "defer", "else", "enum", "false", "for", "fun", "go",
     "if", "impl", "import", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "return",
     "select", "self", "Self", "static", "struct", "trait", "true", "type", "unsafe", "where",
     "while",

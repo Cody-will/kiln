@@ -1,17 +1,17 @@
 import std::sync::{Arc, AtomicBool, AtomicI64, Mutex, Once, RwLock, WaitGroup}
 
-fn init() {
+fun init() {
 	println("init runs once")
 }
 
-fn work(c: Arc<Mutex<i32>>) {
+fun work(c Arc<Mutex<i32>>) {
 	for _ in 0..1000 {
 		g mut := c.lock()
 		*g += 1
 	}
 }
 
-fn main() {
+fun main() {
 	// A shared counter behind a mutex.
 	counter := Arc::new(Mutex::new(0))
 	wg := Arc::new(WaitGroup::new())
@@ -68,7 +68,7 @@ fn main() {
 	println("once done {once.is_done()}")
 
 	// try_lock fails while the lock is held.
-	m := Mutex::new(String::from("x"))
+	m := Mutex::new(string::from("x"))
 	{
 		g := m.lock()
 		println("try_lock while held: {m.try_lock().is_some()} ({*g})")

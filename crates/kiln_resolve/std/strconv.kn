@@ -9,10 +9,10 @@
 // Parsing accepts an optional `+` (or `-` for signed types) and `_` between
 // digits; it rejects surrounding spaces (trim first).
 
-fn kn_parse_f64(p: *const u8, n: usize, out: *mut f64) -> i32
+fun kn_parse_f64(p *const u8, n usize, out *mut f64) i32
 
 // Why parsing failed.
-#[derive(Clone, Copy, Eq, Debug)]
+@derive(Clone, Copy, Eq, Debug)
 pub enum ParseErrorKind {
 	// The input was empty (or only a sign).
 	Empty,
@@ -25,20 +25,20 @@ pub enum ParseErrorKind {
 }
 
 // A failed number or boolean parse.
-#[derive(Clone, Debug)]
+@derive(Clone, Debug)
 pub struct ParseError {
-	kind: ParseErrorKind,
-	what: &'static str,
+	kind ParseErrorKind,
+	what &'static str,
 }
 
 impl ParseError {
-	pub fn kind(&self) -> ParseErrorKind {
+	pub fun kind(&self) ParseErrorKind {
 		return self.kind
 	}
 }
 
 impl Display for ParseError {
-	fn to_string(&self) -> String {
+	fun to_string(&self) string {
 		return match self.kind {
 			ParseErrorKind::Empty => "cannot parse {self.what} from empty string",
 			ParseErrorKind::InvalidDigit => "invalid {self.what} literal",
@@ -50,11 +50,11 @@ impl Display for ParseError {
 
 impl Error for ParseError {}
 
-fn err<T>(kind: ParseErrorKind, what: &'static str) -> Result<T, ParseError> {
+fun err<T>(kind ParseErrorKind, what &'static str) result<T, ParseError> {
 	return Err(ParseError { kind: kind, what: what })
 }
 
-fn digit_value(b: u8) -> u32 {
+fun digit_value(b u8) u32 {
 	if b >= 48 && b <= 57 {
 		return (b - 48) as u32
 	}
@@ -70,7 +70,7 @@ fn digit_value(b: u8) -> u32 {
 // Parses an integer of `bits` bits (signed or not) in base `radix`; returns
 // its two's-complement bits, which the caller casts to the target type.
 // (Used by `T::from_str_radix`.)
-pub fn parse_digits(s: &str, radix: u32, signed: bool, bits: u32) -> Result<u64, ParseError> {
+pub fun parse_digits(s &str, radix u32, signed bool, bits u32) result<u64, ParseError> {
 	if radix < 2 || radix > 36 {
 		panic("from_str_radix: radix must be in 2..=36, got {radix}")
 	}
@@ -104,7 +104,7 @@ pub fn parse_digits(s: &str, radix: u32, signed: bool, bits: u32) -> Result<u64,
 		return err(ParseErrorKind::InvalidDigit, "integer")
 	}
 	// The largest magnitude allowed.
-	let limit: u64 = if signed {
+	let limit u64 = if signed {
 		if neg {
 			(1 as u64) << (bits - 1)
 		} else {
@@ -115,7 +115,7 @@ pub fn parse_digits(s: &str, radix: u32, signed: bool, bits: u32) -> Result<u64,
 	} else {
 		((1 as u64) << bits) - 1
 	}
-	let mut v: u64 = 0
+	let mut v u64 = 0
 	prev_digit mut := false
 	while i < b.len() {
 		c := b[i]
@@ -164,22 +164,22 @@ pub fn parse_digits(s: &str, radix: u32, signed: bool, bits: u32) -> Result<u64,
 }
 
 // Parses a decimal `i64`.
-pub fn parse_int(s: &str) -> Result<i64, ParseError> {
+pub fun parse_int(s &str) result<i64, ParseError> {
 	return i64::parse(s)
 }
 
 // Parses a decimal `u64`.
-pub fn parse_uint(s: &str) -> Result<u64, ParseError> {
+pub fun parse_uint(s &str) result<u64, ParseError> {
 	return u64::parse(s)
 }
 
 // Parses a floating-point number: `3`, `-2.5`, `.5`, `1e-9`, `inf`, `NaN`.
 // The result is the closest `f64` to the decimal value.
-pub fn parse_float(s: &str) -> Result<f64, ParseError> {
+pub fun parse_float(s &str) result<f64, ParseError> {
 	if s.len() == 0 {
 		return err(ParseErrorKind::Empty, "float")
 	}
-	let mut out: f64 = 0.0
+	let mut out f64 = 0.0
 	ok := kn_parse_f64(std::ptr::str_ptr(s) as *const u8, s.len(), &mut out as *mut f64)
 	if ok == 0 {
 		return err(ParseErrorKind::InvalidDigit, "float")
@@ -188,7 +188,7 @@ pub fn parse_float(s: &str) -> Result<f64, ParseError> {
 }
 
 // Parses `true` or `false`.
-pub fn parse_bool(s: &str) -> Result<bool, ParseError> {
+pub fun parse_bool(s &str) result<bool, ParseError> {
 	if s == "true" {
 		return Ok(true)
 	}
@@ -202,7 +202,7 @@ pub fn parse_bool(s: &str) -> Result<bool, ParseError> {
 }
 
 // The text of `v` in base `radix` (2 to 36), with lowercase letters.
-pub fn format_int(v: i64, radix: u32) -> String {
+pub fun format_int(v i64, radix u32) string {
 	if v < 0 {
 		s mut := "-".to_string()
 		s.push(&format_uint(v.unsigned_abs(), radix))
@@ -212,14 +212,14 @@ pub fn format_int(v: i64, radix: u32) -> String {
 }
 
 // The text of `v` in base `radix` (2 to 36), with lowercase letters.
-pub fn format_uint(v: u64, radix: u32) -> String {
+pub fun format_uint(v u64, radix u32) string {
 	if radix < 2 || radix > 36 {
 		panic("format_uint: radix must be in 2..=36, got {radix}")
 	}
 	if v == 0 {
 		return "0".to_string()
 	}
-	let mut buf: Vec<u8> = Vec::with_capacity(64)
+	let mut buf Vec<u8> = Vec::with_capacity(64)
 	n mut := v
 	while n > 0 {
 		d := (n % radix as u64) as u8
@@ -231,18 +231,18 @@ pub fn format_uint(v: u64, radix: u32) -> String {
 		n /= radix as u64
 	}
 	buf.reverse()
-	return unsafe { String::from_utf8_unchecked(buf) }
+	return unsafe { string::from_utf8_unchecked(buf) }
 }
 
 // The shortest text that parses back to exactly `v`.
-pub fn format_float(v: f64) -> String {
+pub fun format_float(v f64) string {
 	return "{v}"
 }
 
 // `s` as a double-quoted string literal, with `"`, `\`, and control
 // characters escaped: `quote("a\"b\n")` is `"a\"b\n"` (with the escapes).
-pub fn quote(s: &str) -> String {
-	out mut := String::with_capacity(s.len() + 2)
+pub fun quote(s &str) string {
+	out mut := string::with_capacity(s.len() + 2)
 	out.push_char('"')
 	for c in s.chars() {
 		match c {

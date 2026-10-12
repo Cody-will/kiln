@@ -162,7 +162,7 @@ pub fn check_fn(
         return;
     }
     let help = if with.is_empty() {
-        "the return type contains a borrowed value, but there is no parameter for it to be borrowed from; return an owned value (e.g. `String`) or use `'static`".to_string()
+        "the return type contains a borrowed value, but there is no parameter for it to be borrowed from; return an owned value (e.g. `string`) or use `'static`".to_string()
     } else {
         let names = with
             .iter()
@@ -170,7 +170,7 @@ pub fn check_fn(
             .collect::<Vec<_>>()
             .join(" or ");
         format!(
-            "the return type contains a borrowed value, but the signature does not say whether it is borrowed from {names}; add a lifetime parameter, e.g. `fn {}<'a>(..) -> &'a T`",
+            "the return type contains a borrowed value, but the signature does not say whether it is borrowed from {names}; add a lifetime parameter, e.g. `fun {}<'a>(..) &'a T`",
             decl.name.name
         )
     };

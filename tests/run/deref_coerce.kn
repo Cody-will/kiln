@@ -1,14 +1,14 @@
 import std::sync::Mutex
 
-fn push(v: &mut Vec<i32>, x: i32) {
+fun push(v &mut Vec<i32>, x i32) {
 	v.push(x)
 }
 
-fn first(v: &[i32]) -> &i32 {
+fun first(v &[i32]) &i32 {
 	return &v[0]
 }
 
-fn main() {
+fun main() {
 	more()
 	m := Mutex::new(Vec::new())
 	{
@@ -19,11 +19,11 @@ fn main() {
 	}
 }
 
-fn len(s: &str) -> usize {
+fun len(s &str) usize {
 	return s.len()
 }
 
-fn sum(v: &[i32]) -> i32 {
+fun sum(v &[i32]) i32 {
 	let mut s = 0
 	for x in v.iter() {
 		s += *x
@@ -31,7 +31,7 @@ fn sum(v: &[i32]) -> i32 {
 	return s
 }
 
-fn more() {
+fun more() {
 	a := std::sync::Arc::new("hello".to_string())
 	println("{len(&a)}")
 	m := Mutex::new([1, 2, 3].to_vec())

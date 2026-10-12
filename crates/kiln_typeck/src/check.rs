@@ -230,7 +230,7 @@ impl Checker<'_, '_> {
         }
         let ok = match &sig.ret {
             Ty::Unit => true,
-            Ty::Adt(d, args) if self.is_lang(*d, "Result") => args[0] == Ty::Unit,
+            Ty::Adt(d, args) if self.is_lang(*d, "result") => args[0] == Ty::Unit,
             _ => false,
         };
         if !ok {
@@ -238,7 +238,7 @@ impl Checker<'_, '_> {
             self.error_help(
                 format!("`main` has invalid return type `{found}`"),
                 span,
-                "`main` must return `()` or `Result<(), E>`",
+                "`main` must return `void` or `result<void, E>`",
             );
         }
     }
@@ -466,7 +466,7 @@ impl Body<'_, '_, '_> {
                             self.error_help(
                                 format!("`{shown}` cannot be formatted with `:?` because it does not implement `Debug`"),
                                 span,
-                                "add `#[derive(Debug)]` to the type, or implement `fmt::Debug`",
+                                "add `@derive(Debug)` to the type, or implement `fmt::Debug`",
                             );
                         }
                     }
@@ -502,7 +502,7 @@ impl Body<'_, '_, '_> {
                 let help = if trn == "Send" || trn == "Sync" {
                     format!("`{trn}` is automatic when every field is `{trn}` (raw pointers are not); if `{tn}` is safe anyway, add `unsafe impl {trn} for {tn} {{}}`")
                 } else {
-                    format!("add `impl {trn} for {tn}` or `#[derive({trn})]`")
+                    format!("add `impl {trn} for {tn}` or `@derive({trn})`")
                 };
                 self.error_help(
                     format!("the trait `{trn}` is not implemented for `{tn}`"),
@@ -621,7 +621,7 @@ impl Body<'_, '_, '_> {
             if let (Ty::Adt(sd, _), Ty::Ref(false, inner)) =
                 (self.shallow(found), self.shallow(expected))
             {
-                if self.c.is_lang(sd, "String")
+                if self.c.is_lang(sd, "string")
                     && matches!(self.shallow(&inner), Ty::Prim(PrimTy::Str))
                 {
                     self.coercions.push((span, found.clone(), expected.clone()));
@@ -635,7 +635,7 @@ impl Body<'_, '_, '_> {
             span,
         );
         if let (Ty::Adt(sd, _), Ty::Ref(_, inner)) = (self.shallow(found), self.shallow(expected)) {
-            if self.c.is_lang(sd, "String") && matches!(self.shallow(&inner), Ty::Prim(PrimTy::Str))
+            if self.c.is_lang(sd, "string") && matches!(self.shallow(&inner), Ty::Prim(PrimTy::Str))
             {
                 d = d.with_help("borrow it: `&value` (a `&String` coerces to `&str`)");
             }
@@ -664,7 +664,7 @@ impl Body<'_, '_, '_> {
                 return true;
             }
             match (&fi, &ei) {
-                (Ty::Adt(d, _), Ty::Prim(PrimTy::Str)) if self.c.is_lang(*d, "String") => {
+                (Ty::Adt(d, _), Ty::Prim(PrimTy::Str)) if self.c.is_lang(*d, "string") => {
                     return true
                 }
                 (Ty::Adt(d, args), Ty::Slice(t)) if self.c.is_lang(*d, "Vec") => {
@@ -833,7 +833,7 @@ impl Body<'_, '_, '_> {
                 let d = *d;
                 if self.c.r.is_core(d)
                     && !self.c.adts[&d].is_enum
-                    && self.c.r.def(d).name == "String"
+                    && self.c.r.def(d).name == "string"
                 {
                     return marker(&[
                         "Clone", "Eq", "Ord", "Hash", "Debug", "Display", "Default", "Send", "Sync",
@@ -843,7 +843,7 @@ impl Body<'_, '_, '_> {
                     let args = args.clone();
                     let structural = marker(&[
                         "Clone", "Eq", "Ord", "Hash", "Debug", "Default", "Send", "Sync",
-                    ]) || (tn == "Copy" && self.c.r.def(d).name == "Option");
+                    ]) || (tn == "Copy" && self.c.r.def(d).name == "option");
                     return (structural && args.iter().all(|a| self.implements(a, tr)))
                         || self.has_impl(&t, tr);
                 }
@@ -1074,7 +1074,7 @@ impl Body<'_, '_, '_> {
     pub(crate) fn overloaded_deref(&mut self, t: &Ty, trait_name: &str) -> Option<Ty> {
         let t = self.shallow(t);
         let Ty::Adt(d, _) = &t else { return None };
-        if ["Box", "String", "Vec"]
+        if ["Box", "string", "Vec"]
             .iter()
             .any(|n| self.c.is_lang(*d, n))
         {
@@ -1105,7 +1105,7 @@ impl Body<'_, '_, '_> {
         match self.shallow(t) {
             Ty::Ref(_, x) | Ty::Ptr(_, x) => Some(*x),
             Ty::Adt(d, args) if self.c.is_lang(d, "Box") => Some(args[0].clone()),
-            Ty::Adt(d, _) if self.c.is_lang(d, "String") => Some(Ty::Prim(PrimTy::Str)),
+            Ty::Adt(d, _) if self.c.is_lang(d, "string") => Some(Ty::Prim(PrimTy::Str)),
             Ty::Adt(d, args) if self.c.is_lang(d, "Vec") => {
                 Some(Ty::Slice(Box::new(args[0].clone())))
             }
@@ -1213,7 +1213,7 @@ impl Body<'_, '_, '_> {
                 } else {
                     if matches!(self.shallow(&t), Ty::Unit) {
                         self.error(
-                            "cannot declare a variable from an expression of type `()`",
+                            "cannot declare a variable from an expression of type `void`",
                             init.span,
                         );
                     }
@@ -1707,9 +1707,9 @@ impl Body<'_, '_, '_> {
                         {
                             let f = self.fmt(&t);
                             self.error_help(
-                                format!("mismatched types: this function returns `()` but a value of type `{f}` was returned"),
+                                format!("mismatched types: this function returns `void` but a value of type `{f}` was returned"),
                                 x.span,
-                                format!("add `-> {f}` to the function signature"),
+                                format!("add the return type `{f}` after the parameters"),
                             );
                         } else {
                             self.coerce(&t, &ret, x.span);
@@ -1940,7 +1940,7 @@ impl Body<'_, '_, '_> {
         self.callees.insert(for_span, i);
         self.callee_substs.insert(for_span, m.subst.clone());
         let elem = match self.shallow(&m.ret) {
-            Ty::Adt(o, args) if Some(o) == self.c.r.prelude_type("Option") => args.first().cloned(),
+            Ty::Adt(o, args) if Some(o) == self.c.r.prelude_type("option") => args.first().cloned(),
             _ => None,
         }?;
         self.iter_items.insert(for_span, elem.clone());
@@ -2116,7 +2116,7 @@ impl Body<'_, '_, '_> {
     fn check_unsafe_call(&mut self, i: usize, span: Span) {
         if self.c.r.fns[i].decl.is_unsafe {
             let name = self.c.r.fns[i].decl.name.name.clone();
-            self.require_unsafe(&format!("calling `unsafe fn {name}`"), span);
+            self.require_unsafe(&format!("calling `unsafe fun {name}`"), span);
         }
     }
 
@@ -2283,7 +2283,7 @@ impl Body<'_, '_, '_> {
         if derefs > 0 {
             if shared && matches!(self.shallow(&ft), Ty::Fn(_, _, true)) {
                 self.error_help(
-                    "cannot call a `fn mut` through a shared reference",
+                    "cannot call a `fun mut` through a shared reference",
                     f.span,
                     "pass it as `&mut fn mut(...)`",
                 );
@@ -2541,7 +2541,7 @@ impl Body<'_, '_, '_> {
                 Ty::Unknown => return Ty::Unknown,
                 _ => {}
             }
-            let is_vec_or_string = matches!(self.shallow(&t), Ty::Adt(d, _) if self.c.is_lang(d, "String") || self.c.is_lang(d, "Vec"));
+            let is_vec_or_string = matches!(self.shallow(&t), Ty::Adt(d, _) if self.c.is_lang(d, "string") || self.c.is_lang(d, "Vec"));
             match self.deref_step(&t) {
                 Some(n) if !is_vec_or_string => t = n,
                 _ => break,
@@ -2592,7 +2592,7 @@ impl Body<'_, '_, '_> {
         let elem = match &t {
             Ty::Adt(d, args) if self.c.is_lang(*d, "Vec") => args[0].clone(),
             Ty::Array(x, _) | Ty::Slice(x) => (**x).clone(),
-            Ty::Adt(d, _) if self.c.is_lang(*d, "String") => {
+            Ty::Adt(d, _) if self.c.is_lang(*d, "string") => {
                 return Ty::Prim(PrimTy::Str);
             }
             Ty::Prim(PrimTy::Str) => return Ty::Prim(PrimTy::Str),
@@ -2619,9 +2619,9 @@ impl Body<'_, '_, '_> {
         let ret = self.shallow(&ret);
         match self.shallow(t) {
             Ty::Unknown => Ty::Unknown,
-            Ty::Adt(d, args) if self.c.is_lang(d, "Result") => {
+            Ty::Adt(d, args) if self.c.is_lang(d, "result") => {
                 match &ret {
-                    Ty::Adt(rd, rargs) if self.c.is_lang(*rd, "Result") => {
+                    Ty::Adt(rd, rargs) if self.c.is_lang(*rd, "result") => {
                         let (from, to) = (args[1].clone(), rargs[1].clone());
                         if !self.c.infer.try_unify(&from, &to) && !self.has_from(&to, &from) {
                             let (f, t) = (self.fmt(&from), self.fmt(&to));
@@ -2633,21 +2633,21 @@ impl Body<'_, '_, '_> {
                         }
                     }
                     Ty::Unknown | Ty::Var(_) => {}
-                    other => self.try_outside(other, "Result", span),
+                    other => self.try_outside(other, "result", span),
                 }
                 args[0].clone()
             }
-            Ty::Adt(d, args) if self.c.is_lang(d, "Option") => {
+            Ty::Adt(d, args) if self.c.is_lang(d, "option") => {
                 match &ret {
-                    Ty::Adt(rd, _) if self.c.is_lang(*rd, "Option") => {}
+                    Ty::Adt(rd, _) if self.c.is_lang(*rd, "option") => {}
                     Ty::Unknown | Ty::Var(_) => {}
-                    other => self.try_outside(other, "Option", span),
+                    other => self.try_outside(other, "option", span),
                 }
                 args[0].clone()
             }
             other => {
                 let tn = self.fmt(&other);
-                self.error(format!("the `?` operator can only be applied to `Result` or `Option`, found `{tn}`"), span);
+                self.error(format!("the `?` operator can only be applied to `result` or `option`, found `{tn}`"), span);
                 Ty::Unknown
             }
         }
@@ -2712,12 +2712,12 @@ impl Body<'_, '_, '_> {
         // String concatenation: String + &str
         if op == BinOp::Add {
             if let Ty::Adt(d, _) = &l {
-                if self.c.is_lang(*d, "String") {
+                if self.c.is_lang(*d, "string") {
                     if !matches!(r, Ty::Prim(PrimTy::Str))
-                        && !matches!(&r, Ty::Adt(d2, _) if self.c.is_lang(*d2, "String"))
+                        && !matches!(&r, Ty::Adt(d2, _) if self.c.is_lang(*d2, "string"))
                     {
                         let f = self.fmt(rt);
-                        self.error(format!("cannot add `{f}` to `String`"), span);
+                        self.error(format!("cannot add `{f}` to `string`"), span);
                     }
                     return l;
                 }
@@ -2782,7 +2782,7 @@ impl Body<'_, '_, '_> {
                 let (l, r) = (self.strip_refs(lt), self.strip_refs(rt));
                 let str_like = |s: &Self, t: &Ty| {
                     matches!(t, Ty::Prim(PrimTy::Str))
-                        || matches!(t, Ty::Adt(d, _) if s.c.is_lang(*d, "String"))
+                        || matches!(t, Ty::Adt(d, _) if s.c.is_lang(*d, "string"))
                 };
                 let direct = self.c.infer.try_unify(lt, rt);
                 if !(direct
@@ -3076,7 +3076,7 @@ impl Body<'_, '_, '_> {
                 let lt = self.lit_ty(l);
                 let lt = match (&lt, &t) {
                     (Ty::Ref(_, x), Ty::Prim(PrimTy::Str)) => (**x).clone(),
-                    (Ty::Ref(_, _), Ty::Adt(d, _)) if self.c.is_lang(*d, "String") => t.clone(),
+                    (Ty::Ref(_, _), Ty::Adt(d, _)) if self.c.is_lang(*d, "string") => t.clone(),
                     _ => lt,
                 };
                 self.pat_unify(&lt, &t, p.span);

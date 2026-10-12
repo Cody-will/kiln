@@ -3,14 +3,14 @@ enum List {
 	Nil,
 }
 
-fn sum(l: &List) -> i32 {
+fun sum(l &List) i32 {
 	return match l {
 		List::Cons(v, rest) => v + sum(rest),
 		List::Nil => 0,
 	}
 }
 
-fn classify(s: &str) -> &'static str {
+fun classify(s &str) &'static str {
 	return match s {
 		"apple" | "pear" => "fruit",
 		"carrot" => "vegetable",
@@ -18,8 +18,8 @@ fn classify(s: &str) -> &'static str {
 	}
 }
 
-fn main() {
-	s mut := String::from("Hello")
+fun main() {
+	s mut := string::from("Hello")
 	s.push(", world")
 	println("{s} has {s.len()} bytes")
 	println("{s.to_upper()} / {s.to_lower()}")
@@ -44,12 +44,12 @@ fn main() {
 	list := List::Cons(1, Box::new(List::Cons(2, Box::new(List::Cons(3, Box::new(List::Nil))))))
 	println("list sum {sum(&list)}")
 	words mut := Vec::new()
-	words.push(String::from("a"))
-	words.push(String::from("b"))
+	words.push(string::from("a"))
+	words.push(string::from("b"))
 	copy := words.clone()
 	words.clear()
 	println("{words.len()} {copy.len()} {copy[1]}")
-	let big: u64 = 18446744073709551615
+	let big u64 = 18446744073709551615
 	small := -42i64
 	println("{big} {small} {255u8} {3.0f32 / 2.0f32} {true || false}")
 }

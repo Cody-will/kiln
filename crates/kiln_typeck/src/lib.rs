@@ -144,7 +144,7 @@ impl<'r, 'a> Typed<'r, 'a> {
     pub fn deref_target(&mut self, t: &Ty, mutable: bool) -> Option<(Ty, usize)> {
         let r = self.c.r;
         let Ty::Adt(d, _) = t else { return None };
-        if ["Box", "String", "Vec"]
+        if ["Box", "string", "Vec"]
             .iter()
             .any(|n| r.prelude_type(n) == Some(*d))
         {

@@ -1,7 +1,7 @@
 import std::errors::{self, AnyError}
 import std::fs
 
-fn parse(s: &str) -> Result<i32, AnyError> {
+fun parse(s &str) result<i32, AnyError> {
 	n := i32::parse(s.trim()).context("parsing \"{s}\"")?
 	if n < 0 {
 		return Err(errors::new("negative: {n}"))
@@ -9,38 +9,38 @@ fn parse(s: &str) -> Result<i32, AnyError> {
 	return Ok(n)
 }
 
-fn load(path: &str) -> Result<i32, AnyError> {
+fun load(path &str) result<i32, AnyError> {
 	text := fs::read_to_string(path).context("reading {path}")?
 	return parse(&text).context("loading {path}")
 }
 
 struct ConfigError {
-	line: i32,
-	cause: errors::Message,
+	line i32,
+	cause errors::Message,
 }
 
 impl Display for ConfigError {
-	fn to_string(&self) -> String {
+	fun to_string(&self) string {
 		return "bad config at line {self.line}"
 	}
 }
 
 impl Error for ConfigError {
-	fn source(&self) -> Option<&dyn Error> {
+	fun source(&self) option<&dyn Error> {
 		return Some(&self.cause)
 	}
 }
 
-fn check() -> Result<(), ConfigError> {
+fun check() result<void, ConfigError> {
 	return Err(ConfigError { line: 3, cause: errors::Message::new("expected '='") })
 }
 
-fn bare() -> Result<String, AnyError> {
+fun bare() result<string, AnyError> {
 	check()?
 	return Ok(fs::read_to_string("/nope")?)
 }
 
-fn main() {
+fun main() {
 	match bare() {
 		Ok(_) => {}
 		Err(e) => println("{e}"),

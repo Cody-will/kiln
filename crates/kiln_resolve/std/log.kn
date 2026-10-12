@@ -9,11 +9,11 @@
 import std::os
 import std::time
 
-fn kn_log_level_get() -> i64
-fn kn_log_level_set(l: i64)
+fun kn_log_level_get() i64
+fun kn_log_level_set(l i64)
 
 // How important a message is.
-#[derive(Copy, Clone, Eq, Debug)]
+@derive(Copy, Clone, Eq, Debug)
 pub enum Level {
 	Debug,
 	Info,
@@ -21,7 +21,7 @@ pub enum Level {
 	Error,
 }
 
-fn rank(l: Level) -> i64 {
+fun rank(l Level) i64 {
 	match l {
 		Level::Debug => return 0,
 		Level::Info => return 1,
@@ -30,7 +30,7 @@ fn rank(l: Level) -> i64 {
 	}
 }
 
-fn label(l: Level) -> &'static str {
+fun label(l Level) &'static str {
 	match l {
 		Level::Debug => return "DEBUG",
 		Level::Info => return "INFO",
@@ -39,7 +39,7 @@ fn label(l: Level) -> &'static str {
 	}
 }
 
-fn current() -> i64 {
+fun current() i64 {
 	cur := kn_log_level_get()
 	if cur >= 0 {
 		return cur
@@ -64,44 +64,44 @@ fn current() -> i64 {
 }
 
 // Sets the lowest level that is printed.
-pub fn set_level(l: Level) {
+pub fun set_level(l Level) {
 	kn_log_level_set(rank(l))
 }
 
 // Whether messages at `l` are printed.
-pub fn enabled(l: Level) -> bool {
+pub fun enabled(l Level) bool {
 	return rank(l) >= current()
 }
 
 // Prints `msg` at level `l`.
-pub fn log(l: Level, msg: &str) {
+pub fun log(l Level, msg &str) {
 	if enabled(l) {
 		eprintln("{time::SystemTime::now()} {label(l)} {msg}")
 	}
 }
 
 // Logs at Debug level.
-pub fn debug(msg: &str) {
+pub fun debug(msg &str) {
 	log(Level::Debug, msg)
 }
 
 // Logs at Info level.
-pub fn info(msg: &str) {
+pub fun info(msg &str) {
 	log(Level::Info, msg)
 }
 
 // Logs at Warn level.
-pub fn warn(msg: &str) {
+pub fun warn(msg &str) {
 	log(Level::Warn, msg)
 }
 
 // Logs at Error level.
-pub fn error(msg: &str) {
+pub fun error(msg &str) {
 	log(Level::Error, msg)
 }
 
 // Logs at Error level and ends the program with status 1.
-pub fn fatal(msg: &str) -> ! {
+pub fun fatal(msg &str) ! {
 	log(Level::Error, msg)
 	os::exit(1)
 }

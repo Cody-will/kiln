@@ -2,7 +2,7 @@ import std::strings
 import std::unicode
 import std::utf8
 
-fn main() {
+fun main() {
 	s := "héllo, wörld ß Σ 日本"
 	println("{s.len()} {s.char_count()}")
 	up := s.chars().map(|c| c.to_uppercase()).collect()
@@ -11,7 +11,7 @@ fn main() {
 		b.push_char(c)
 	}
 	println(b.finish())
-	rev mut := String::new()
+	rev mut := string::new()
 	for c in "abc→d".chars().rev() {
 		rev.push_char(c)
 	}
@@ -31,7 +31,7 @@ fn main() {
 	println("{c} {n} {'€'.len_utf8()}")
 	enc mut := Vec::new()
 	utf8::encode('😀', &mut enc)
-	println("{enc.len()} {String::from_utf8(enc).unwrap()}")
+	println("{enc.len()} {string::from_utf8(enc).unwrap()}")
 	parts mut := Vec::new()
 	parts.push("a")
 	parts.push("b")

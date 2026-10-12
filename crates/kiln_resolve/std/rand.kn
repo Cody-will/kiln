@@ -16,17 +16,17 @@
 
 import std::sync::{AtomicBool, AtomicI64}
 
-fn kn_random_bytes(buf: *mut u8, n: usize) -> i32
+fun kn_random_bytes(buf *mut u8, n usize) i32
 
-const GAMMA: u64 = 0x9E3779B97F4A7C15
-const SIGN: u64 = 0x8000000000000000
+const GAMMA u64 = 0x9E3779B97F4A7C15
+const SIGN u64 = 0x8000000000000000
 
-static STATE: AtomicI64 = AtomicI64::new(0)
-static SEEDED: AtomicBool = AtomicBool::new(false)
+static STATE AtomicI64 = AtomicI64::new(0)
+static SEEDED AtomicBool = AtomicBool::new(false)
 
 // Fills `buf` from the operating system's cryptographically secure random
 // source. Use this for keys, tokens, and nonces.
-pub fn secure_fill(buf: &mut [u8]) {
+pub fun secure_fill(buf &mut [u8]) {
 	if buf.len() == 0 {
 		return
 	}
@@ -40,10 +40,10 @@ pub fn secure_fill(buf: &mut [u8]) {
 }
 
 // A cryptographically secure random u64.
-pub fn secure_u64() -> u64 {
+pub fun secure_u64() u64 {
 	b mut := [0u8; 8]
 	secure_fill(&mut b)
-	let mut x: u64 = 0
+	let mut x u64 = 0
 	for v in b.iter() {
 		x = (x << 8) | (*v as u64)
 	}
@@ -51,7 +51,7 @@ pub fn secure_u64() -> u64 {
 }
 
 // The splitmix64 output function.
-fn mix(z0: u64) -> u64 {
+fun mix(z0 u64) u64 {
 	z mut := z0
 	z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9)
 	z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB)
@@ -59,7 +59,7 @@ fn mix(z0: u64) -> u64 {
 }
 
 // A random u64 from the shared generator.
-pub fn next_u64() -> u64 {
+pub fun next_u64() u64 {
 	if !SEEDED.load() {
 		STATE.compare_and_swap(0, secure_u64() as i64)
 		SEEDED.store(true)
@@ -68,27 +68,27 @@ pub fn next_u64() -> u64 {
 }
 
 // A random u32 from the shared generator.
-pub fn next_u32() -> u32 {
+pub fun next_u32() u32 {
 	return (next_u64() >> 32) as u32
 }
 
 // A random number in [0, 1).
-pub fn next_f64() -> f64 {
+pub fun next_f64() f64 {
 	return (next_u64() >> 11) as f64 * (1.0 / 9007199254740992.0)
 }
 
 // A random bool.
-pub fn next_bool() -> bool {
+pub fun next_bool() bool {
 	return next_u64() >> 63 == 1
 }
 
 // True with probability `p`.
-pub fn chance(p: f64) -> bool {
+pub fun chance(p f64) bool {
 	return next_f64() < p
 }
 
 // A uniform value below `n` (n > 0), without modulo bias.
-fn below(n: u64, src: fn mut() -> u64) -> u64 {
+fun below(n u64, src fun mut() u64) u64 {
 	if n & (n - 1) == 0 {
 		return src() & (n - 1)
 	}
@@ -102,11 +102,11 @@ fn below(n: u64, src: fn mut() -> u64) -> u64 {
 }
 
 // A random integer in `lo..hi` (`hi` excluded). Panics if the range is empty.
-pub fn range<T: SampleInt>(lo: T, hi: T) -> T {
+pub fun range<T: SampleInt>(lo T, hi T) T {
 	return sample(lo, hi, || next_u64())
 }
 
-fn sample<T: SampleInt>(lo: T, hi: T, src: fn mut() -> u64) -> T {
+fun sample<T: SampleInt>(lo T, hi T, src fun mut() u64) T {
 	(a, b) := (lo.to_ord(), hi.to_ord())
 	if b <= a {
 		panic("rand::range: empty range")
@@ -115,7 +115,7 @@ fn sample<T: SampleInt>(lo: T, hi: T, src: fn mut() -> u64) -> T {
 }
 
 // Shuffles `s` uniformly (Fisher-Yates).
-pub fn shuffle<T>(s: &mut [T]) {
+pub fun shuffle<T>(s &mut [T]) {
 	i mut := s.len()
 	while i > 1 {
 		j := below(i as u64, || next_u64()) as usize
@@ -125,7 +125,7 @@ pub fn shuffle<T>(s: &mut [T]) {
 }
 
 // A random element of `s`, or None if it is empty.
-pub fn choose<'a, T>(s: &'a [T]) -> Option<&'a T> {
+pub fun choose<'a, T>(s &'a [T]) option<&'a T> {
 	if s.len() == 0 {
 		return None
 	}
@@ -135,106 +135,106 @@ pub fn choose<'a, T>(s: &'a [T]) -> Option<&'a T> {
 // Integers that `range` can produce.
 pub trait SampleInt {
 	// Maps the value to u64, preserving order.
-	fn to_ord(self) -> u64
-	fn from_ord(x: u64) -> Self
+	fun to_ord(self) u64
+	fun from_ord(x u64) Self
 }
 
 impl SampleInt for i8 {
-	fn to_ord(self) -> u64 {
+	fun to_ord(self) u64 {
 		return (self as i64 as u64) ^ SIGN
 	}
 
-	fn from_ord(x: u64) -> i8 {
+	fun from_ord(x u64) i8 {
 		return (x ^ SIGN) as i64 as i8
 	}
 }
 
 impl SampleInt for i16 {
-	fn to_ord(self) -> u64 {
+	fun to_ord(self) u64 {
 		return (self as i64 as u64) ^ SIGN
 	}
 
-	fn from_ord(x: u64) -> i16 {
+	fun from_ord(x u64) i16 {
 		return (x ^ SIGN) as i64 as i16
 	}
 }
 
 impl SampleInt for i32 {
-	fn to_ord(self) -> u64 {
+	fun to_ord(self) u64 {
 		return (self as i64 as u64) ^ SIGN
 	}
 
-	fn from_ord(x: u64) -> i32 {
+	fun from_ord(x u64) i32 {
 		return (x ^ SIGN) as i64 as i32
 	}
 }
 
 impl SampleInt for i64 {
-	fn to_ord(self) -> u64 {
+	fun to_ord(self) u64 {
 		return (self as i64 as u64) ^ SIGN
 	}
 
-	fn from_ord(x: u64) -> i64 {
+	fun from_ord(x u64) i64 {
 		return (x ^ SIGN) as i64 as i64
 	}
 }
 
 impl SampleInt for isize {
-	fn to_ord(self) -> u64 {
+	fun to_ord(self) u64 {
 		return (self as i64 as u64) ^ SIGN
 	}
 
-	fn from_ord(x: u64) -> isize {
+	fun from_ord(x u64) isize {
 		return (x ^ SIGN) as i64 as isize
 	}
 }
 
 impl SampleInt for u8 {
-	fn to_ord(self) -> u64 {
+	fun to_ord(self) u64 {
 		return self as u64
 	}
 
-	fn from_ord(x: u64) -> u8 {
+	fun from_ord(x u64) u8 {
 		return x as u8
 	}
 }
 
 impl SampleInt for u16 {
-	fn to_ord(self) -> u64 {
+	fun to_ord(self) u64 {
 		return self as u64
 	}
 
-	fn from_ord(x: u64) -> u16 {
+	fun from_ord(x u64) u16 {
 		return x as u16
 	}
 }
 
 impl SampleInt for u32 {
-	fn to_ord(self) -> u64 {
+	fun to_ord(self) u64 {
 		return self as u64
 	}
 
-	fn from_ord(x: u64) -> u32 {
+	fun from_ord(x u64) u32 {
 		return x as u32
 	}
 }
 
 impl SampleInt for u64 {
-	fn to_ord(self) -> u64 {
+	fun to_ord(self) u64 {
 		return self as u64
 	}
 
-	fn from_ord(x: u64) -> u64 {
+	fun from_ord(x u64) u64 {
 		return x as u64
 	}
 }
 
 impl SampleInt for usize {
-	fn to_ord(self) -> u64 {
+	fun to_ord(self) u64 {
 		return self as u64
 	}
 
-	fn from_ord(x: u64) -> usize {
+	fun from_ord(x u64) usize {
 		return x as usize
 	}
 }
@@ -242,20 +242,20 @@ impl SampleInt for usize {
 // A seedable random number generator (xoshiro256**). Fast, with good
 // statistical quality, but not cryptographically secure.
 pub struct Rng {
-	s0: u64,
-	s1: u64,
-	s2: u64,
-	s3: u64,
+	s0 u64,
+	s1 u64,
+	s2 u64,
+	s3 u64,
 }
 
 impl Rng {
 	// A generator seeded from the operating system.
-	pub fn new() -> Rng {
+	pub fun new() Rng {
 		return Rng::with_seed(secure_u64())
 	}
 
 	// A generator that always produces the same sequence for `seed`.
-	pub fn with_seed(seed: u64) -> Rng {
+	pub fun with_seed(seed u64) Rng {
 		x mut := seed
 		x = x.wrapping_add(GAMMA)
 		a := mix(x)
@@ -269,7 +269,7 @@ impl Rng {
 	}
 
 	// The next random u64.
-	pub fn next_u64(&mut self) -> u64 {
+	pub fun next_u64(&mut self) u64 {
 		result := self.s1.wrapping_mul(5).rotate_left(7).wrapping_mul(9)
 		t := self.s1 << 17
 		self.s2 ^= self.s0
@@ -281,31 +281,31 @@ impl Rng {
 		return result
 	}
 
-	pub fn next_u32(&mut self) -> u32 {
+	pub fun next_u32(&mut self) u32 {
 		return (self.next_u64() >> 32) as u32
 	}
 
 	// A random number in [0, 1).
-	pub fn next_f64(&mut self) -> f64 {
+	pub fun next_f64(&mut self) f64 {
 		return (self.next_u64() >> 11) as f64 * (1.0 / 9007199254740992.0)
 	}
 
-	pub fn next_bool(&mut self) -> bool {
+	pub fun next_bool(&mut self) bool {
 		return self.next_u64() >> 63 == 1
 	}
 
 	// True with probability `p`.
-	pub fn chance(&mut self, p: f64) -> bool {
+	pub fun chance(&mut self, p f64) bool {
 		return self.next_f64() < p
 	}
 
 	// A random integer in `lo..hi` (`hi` excluded).
-	pub fn range<T: SampleInt>(&mut self, lo: T, hi: T) -> T {
+	pub fun range<T: SampleInt>(&mut self, lo T, hi T) T {
 		return sample(lo, hi, || self.next_u64())
 	}
 
 	// A normally distributed number with mean 0 and standard deviation 1.
-	pub fn normal(&mut self) -> f64 {
+	pub fun normal(&mut self) f64 {
 		// Box-Muller; 1 - u keeps the logarithm finite.
 		u := 1.0 - self.next_f64()
 		v := self.next_f64()
@@ -313,12 +313,12 @@ impl Rng {
 	}
 
 	// An exponentially distributed number with rate 1.
-	pub fn exponential(&mut self) -> f64 {
+	pub fun exponential(&mut self) f64 {
 		return -(1.0 - self.next_f64()).ln()
 	}
 
 	// Shuffles `s` uniformly.
-	pub fn shuffle<T>(&mut self, s: &mut [T]) {
+	pub fun shuffle<T>(&mut self, s &mut [T]) {
 		i mut := s.len()
 		while i > 1 {
 			j := below(i as u64, || self.next_u64()) as usize
@@ -328,7 +328,7 @@ impl Rng {
 	}
 
 	// A random element of `s`.
-	pub fn choose<'a, T>(&mut self, s: &'a [T]) -> Option<&'a T> {
+	pub fun choose<'a, T>(&mut self, s &'a [T]) option<&'a T> {
 		if s.len() == 0 {
 			return None
 		}
@@ -336,7 +336,7 @@ impl Rng {
 	}
 
 	// Fills `buf` with random bytes (not secure; see `secure_fill`).
-	pub fn fill(&mut self, buf: &mut [u8]) {
+	pub fun fill(&mut self, buf &mut [u8]) {
 		i mut := 0
 		while i < buf.len() {
 			x := self.next_u64()

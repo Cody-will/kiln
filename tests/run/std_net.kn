@@ -4,15 +4,15 @@ import std::log
 import std::net
 import std::net::{TcpListener, TcpStream, UdpSocket}
 
-fn echo(conn: TcpStream) -> Result<(), io::Error> {
+fun echo(conn TcpStream) result<void, io::Error> {
 	r mut := BufReader::new(&conn)
 	while let Some(line) = r.next_line()? {
 		conn.write_str("echo: {line}\n")?
 	}
-	return Ok(())
+	return Ok()
 }
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	listener := TcpListener::bind("127.0.0.1:0")?
 	port := listener.port()?
 	log::debug("not shown")
@@ -24,7 +24,7 @@ fn main() -> Result<(), io::Error> {
 			}
 		}
 	}
-	results := chan::<String>(10)
+	results := chan::<string>(10)
 	(tx, rx) := results
 	for i in 0..3 {
 		t := tx.clone()
@@ -66,5 +66,5 @@ fn main() -> Result<(), io::Error> {
 		Ok(_) => println("??"),
 		Err(e) => println("refused: {e.kind() == io::ErrorKind::ConnectionRefused}"),
 	}
-	return Ok(())
+	return Ok()
 }

@@ -1,6 +1,6 @@
 import std::collections::BTreeMap
 
-fn a(v: &BTreeMap<String, i32>) -> Vec<String> {
+fun a(v &BTreeMap<string, i32>) Vec<string> {
 	out mut := Vec::new()
 	for (k, _) in v.iter() {
 		out.push(k.clone())
@@ -8,7 +8,7 @@ fn a(v: &BTreeMap<String, i32>) -> Vec<String> {
 	return out
 }
 
-fn b(v: &BTreeMap<String, i32>) -> Vec<String> {
+fun b(v &BTreeMap<string, i32>) Vec<string> {
 	out mut := Vec::new()
 	for k in v.keys() {
 		out.push(k.clone())
@@ -16,7 +16,7 @@ fn b(v: &BTreeMap<String, i32>) -> Vec<String> {
 	return out
 }
 
-fn c(v: &Vec<String>) -> Vec<String> {
+fun c(v &Vec<string>) Vec<string> {
 	out mut := Vec::new()
 	for k in v.iter() {
 		out.push(k.clone())
@@ -24,9 +24,9 @@ fn c(v: &Vec<String>) -> Vec<String> {
 	return out
 }
 
-fn d(v: &BTreeMap<String, i32>) -> String {
+fun d(v &BTreeMap<string, i32>) string {
 	(k, _) := v.first_key_value().unwrap()
 	return k.clone()
 }
 
-fn main() {}
+fun main() {}

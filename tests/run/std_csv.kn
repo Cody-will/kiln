@@ -1,7 +1,7 @@
 import std::encoding::csv
 import std::io
 
-fn main() -> Result<(), csv::Error> {
+fun main() result<void, csv::Error> {
 	text := "name,age,note\n\"Smith, J\",42,\"said \"\"hi\"\"\"\r\nLee,7,\"two\nlines\"\n\nlast,1,\n"
 	rows := csv::parse(text)?
 	for r in rows.iter() {
@@ -24,5 +24,5 @@ fn main() -> Result<(), csv::Error> {
 	w mut := csv::Writer::new(io::stdout())
 	w.use_crlf = false
 	w.write_record(&["plain", " lead", "q\"uote", ""])?
-	return Ok(())
+	return Ok()
 }

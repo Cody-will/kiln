@@ -2,7 +2,7 @@ import std::io
 import std::net::{TcpListener, TcpStream, UdpSocket}
 import std::time
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	ln := TcpListener::bind("127.0.0.1:0")?
 	addr := ln.local_addr()?
 	ln.set_accept_timeout(Some(time::millis(50)))?
@@ -22,7 +22,7 @@ fn main() -> Result<(), io::Error> {
 	// Still usable after a timeout.
 	s.write_str("hi")?
 	n := c.read(&mut buf)?
-	println("then read {n} bytes: {String::from_utf8_lossy(&buf[0..n])}")
+	println("then read {n} bytes: {string::from_utf8_lossy(&buf[0..n])}")
 	c.set_read_timeout(None)?
 	match c.set_read_timeout(Some(time::secs(0))) {
 		Ok(_) => println("unexpected"),
@@ -58,5 +58,5 @@ fn main() -> Result<(), io::Error> {
 		}
 	}
 	println("{ok} timed reads ok")
-	return Ok(())
+	return Ok()
 }

@@ -1,6 +1,6 @@
 import std::collections::VecDeque
 
-fn main() {
+fun main() {
 	q mut := VecDeque::new()
 	i mut := 0
 	while i < 10 {
@@ -20,7 +20,7 @@ fn main() {
 	println("{q:?} {q.contains(&8)}")
 	q.insert(1, 55)
 	println("{q.remove(0):?} {q:?}")
-	let r: Vec<i32> = q.iter().rev().map(|x| *x).collect()
+	let r Vec<i32> = q.iter().rev().map(|x| *x).collect()
 	println("{r:?}")
 	names := VecDeque::from_vec(["a".to_string(), "b".to_string()].to_vec())
 	c := names.clone()

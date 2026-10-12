@@ -1,15 +1,15 @@
-#[derive(Clone, Debug)]
+@derive(Clone, Debug)
 struct P {
-	name: String,
-	age: i32,
+	name string,
+	age i32,
 }
 
-fn lcg(s: &mut u64) -> u64 {
+fun lcg(s &mut u64) u64 {
 	*s = (*s).wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)
 	return *s >> 33
 }
 
-fn show<T: Display>(v: &[T]) -> String {
+fun show<T: Display>(v &[T]) string {
 	out mut := "[".to_string()
 	for (i, x) in v.iter().enumerate() {
 		if i > 0 {
@@ -21,7 +21,7 @@ fn show<T: Display>(v: &[T]) -> String {
 	return out
 }
 
-fn main() {
+fun main() {
 	v mut := Vec::new()
 	for x in [5, 3, 9, 1, 5, 7, 2] {
 		v.push(x)
@@ -47,7 +47,7 @@ fn main() {
 	}
 	println("")
 	// Big random sorts, checked against each other.
-	let mut seed: u64 = 42
+	let mut seed u64 = 42
 	big mut := Vec::new()
 	for i in 0..100000 {
 		big.push(((lcg(&mut seed) % 1000) as i64, i))

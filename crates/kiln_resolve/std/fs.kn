@@ -14,21 +14,21 @@ import std::io::{Read, Write}
 import std::path
 import std::time
 
-fn kn_fs_open(path: &str, flags: i64) -> i64
-fn kn_fs_read(fd: i64, buf: &mut [u8]) -> i64
-fn kn_fs_write(fd: i64, buf: &[u8]) -> i64
-fn kn_fs_seek(fd: i64, off: i64, whence: i64) -> i64
-fn kn_fs_sync(fd: i64) -> i64
-fn kn_fs_close(fd: i64)
-fn kn_fs_stat(path: &str, follow: i64, kind: *mut i64, size: *mut i64, mtime: *mut i64) -> i64
-fn kn_fs_mkdir(path: &str) -> i64
-fn kn_fs_remove_file(path: &str) -> i64
-fn kn_fs_remove_dir(path: &str) -> i64
-fn kn_fs_rename(from: &str, to: &str) -> i64
-fn kn_fs_read_dir(path: &str, out: &mut Vec<u8>) -> i64
+fun kn_fs_open(path &str, flags i64) i64
+fun kn_fs_read(fd i64, buf &mut [u8]) i64
+fun kn_fs_write(fd i64, buf &[u8]) i64
+fun kn_fs_seek(fd i64, off i64, whence i64) i64
+fun kn_fs_sync(fd i64) i64
+fun kn_fs_close(fd i64)
+fun kn_fs_stat(path &str, follow i64, kind *mut i64, size *mut i64, mtime *mut i64) i64
+fun kn_fs_mkdir(path &str) i64
+fun kn_fs_remove_file(path &str) i64
+fun kn_fs_remove_dir(path &str) i64
+fun kn_fs_rename(from &str, to &str) i64
+fun kn_fs_read_dir(path &str, out &mut Vec<u8>) i64
 
 // Adds "op path: " to an error.
-fn ctx<T>(r: Result<T, io::Error>, op: &str, path: &str) -> Result<T, io::Error> {
+fun ctx<T>(r result<T, io::Error>, op &str, path &str) result<T, io::Error> {
 	match r {
 		Ok(v) => return Ok(v),
 		Err(e) => return Err(e.context("{op} {path}")),
@@ -37,7 +37,7 @@ fn ctx<T>(r: Result<T, io::Error>, op: &str, path: &str) -> Result<T, io::Error>
 
 // An open file. It is closed when dropped.
 pub struct File {
-	fd: i64,
+	fd i64,
 }
 
 // Where `File::seek` measures from.
@@ -52,17 +52,17 @@ pub enum SeekFrom {
 
 impl File {
 	// Opens an existing file for reading.
-	pub fn open(path: &str) -> Result<File, io::Error> {
+	pub fun open(path &str) result<File, io::Error> {
 		return OpenOptions::new().read(true).open(path)
 	}
 
 	// Creates a file for writing, emptying it if it exists.
-	pub fn create(path: &str) -> Result<File, io::Error> {
+	pub fun create(path &str) result<File, io::Error> {
 		return OpenOptions::new().write(true).create(true).truncate(true).open(path)
 	}
 
 	// Moves the read/write position; returns the new position from the start.
-	pub fn seek(&mut self, pos: SeekFrom) -> Result<u64, io::Error> {
+	pub fun seek(&mut self, pos SeekFrom) result<u64, io::Error> {
 		r := match pos {
 			SeekFrom::Start(n) => kn_fs_seek(self.fd, n as i64, 0),
 			SeekFrom::Current(n) => kn_fs_seek(self.fd, n, 1),
@@ -72,86 +72,86 @@ impl File {
 	}
 
 	// Waits until the file's contents reach the storage device.
-	pub fn sync(&self) -> Result<(), io::Error> {
+	pub fun sync(&self) result<void, io::Error> {
 		io::check(kn_fs_sync(self.fd))?
-		return Ok(())
+		return Ok()
 	}
 }
 
 impl Read for File {
-	fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+	fun read(&mut self, buf &mut [u8]) result<usize, io::Error> {
 		return Ok(io::check(kn_fs_read(self.fd, buf))? as usize)
 	}
 }
 
 impl Write for File {
-	fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
+	fun write(&mut self, buf &[u8]) result<usize, io::Error> {
 		return Ok(io::check(kn_fs_write(self.fd, buf))? as usize)
 	}
 }
 
 impl Drop for File {
-	fn drop(&mut self) {
+	fun drop(&mut self) {
 		kn_fs_close(self.fd)
 	}
 }
 
 // How to open a file, built up step by step:
 // `OpenOptions::new().append(true).create(true).open("log.txt")`.
-#[derive(Copy, Clone)]
+@derive(Copy, Clone)
 pub struct OpenOptions {
-	flags: i64,
+	flags i64,
 }
 
 impl OpenOptions {
 	// No access requested yet.
-	pub fn new() -> OpenOptions {
+	pub fun new() OpenOptions {
 		return OpenOptions { flags: 0 }
 	}
 
-	fn set(self, bit: i64, on: bool) -> OpenOptions {
+	fun set(self, bit i64, on bool) OpenOptions {
 		return OpenOptions { flags: if on { self.flags | bit } else { self.flags & (63 - bit) } }
 	}
 
 	// Open for reading.
-	pub fn read(self, on: bool) -> OpenOptions {
+	pub fun read(self, on bool) OpenOptions {
 		return self.set(1, on)
 	}
 
 	// Open for writing.
-	pub fn write(self, on: bool) -> OpenOptions {
+	pub fun write(self, on bool) OpenOptions {
 		return self.set(2, on)
 	}
 
 	// Open for writing at the end of the file.
-	pub fn append(self, on: bool) -> OpenOptions {
+	pub fun append(self, on bool) OpenOptions {
 		return self.set(4, on)
 	}
 
 	// Create the file if it does not exist.
-	pub fn create(self, on: bool) -> OpenOptions {
+	pub fun create(self, on bool) OpenOptions {
 		return self.set(8, on)
 	}
 
 	// Empty the file when opening it.
-	pub fn truncate(self, on: bool) -> OpenOptions {
+	pub fun truncate(self, on bool) OpenOptions {
 		return self.set(16, on)
 	}
 
 	// Create the file, failing if it already exists.
-	pub fn create_new(self, on: bool) -> OpenOptions {
+	pub fun create_new(self, on bool) OpenOptions {
 		return self.set(32, on)
 	}
 
 	// Opens `path` with these options.
-	pub fn open(&self, path: &str) -> Result<File, io::Error> {
+	pub fun open(&self, path &str) result<File, io::Error> {
 		fd := ctx(io::check(kn_fs_open(path, self.flags)), "open", path)?
 		return Ok(File { fd: fd })
 	}
 }
 
 // Reads a whole file.
-pub fn read(path: &str) -> Result<Vec<u8>, io::Error> {
+pub fun read(path &str) result<Vec<u8>, io::Error> {
 	f mut := File::open(path)?
 	out mut := Vec::new()
 	ctx(f.read_to_end(&mut out), "read", path)?
@@ -159,59 +159,59 @@ pub fn read(path: &str) -> Result<Vec<u8>, io::Error> {
 }
 
 // Reads a whole file as UTF-8 text.
-pub fn read_to_string(path: &str) -> Result<String, io::Error> {
+pub fun read_to_string(path &str) result<string, io::Error> {
 	f mut := File::open(path)?
-	out mut := String::new()
+	out mut := string::new()
 	ctx(f.read_to_string(&mut out), "read", path)?
 	return Ok(out)
 }
 
 // Writes `data` to a file, creating or replacing it.
-pub fn write(path: &str, data: &[u8]) -> Result<(), io::Error> {
+pub fun write(path &str, data &[u8]) result<void, io::Error> {
 	f mut := File::create(path)?
 	ctx(f.write_all(data), "write", path)?
-	return Ok(())
+	return Ok()
 }
 
 // Writes `text` to a file, creating or replacing it.
-pub fn write_string(path: &str, text: &str) -> Result<(), io::Error> {
+pub fun write_string(path &str, text &str) result<void, io::Error> {
 	return write(path, text.as_bytes())
 }
 
 // Appends `text` to a file, creating it if needed.
-pub fn append_string(path: &str, text: &str) -> Result<(), io::Error> {
+pub fun append_string(path &str, text &str) result<void, io::Error> {
 	f mut := OpenOptions::new().append(true).create(true).open(path)?
 	ctx(f.write_all(text.as_bytes()), "write", path)?
-	return Ok(())
+	return Ok()
 }
 
 // Copies a file's contents; returns the number of bytes copied.
-pub fn copy(from: &str, to: &str) -> Result<u64, io::Error> {
+pub fun copy(from &str, to &str) result<u64, io::Error> {
 	src mut := File::open(from)?
 	dst mut := File::create(to)?
 	return ctx(io::copy(&mut src, &mut dst), "copy", from)
 }
 
 // Renames (moves) a file or directory, replacing `to` if it is a file.
-pub fn rename(from: &str, to: &str) -> Result<(), io::Error> {
+pub fun rename(from &str, to &str) result<void, io::Error> {
 	ctx(io::check(kn_fs_rename(from, to)), "rename", from)?
-	return Ok(())
+	return Ok()
 }
 
 // Deletes a file.
-pub fn remove_file(path: &str) -> Result<(), io::Error> {
+pub fun remove_file(path &str) result<void, io::Error> {
 	ctx(io::check(kn_fs_remove_file(path)), "remove", path)?
-	return Ok(())
+	return Ok()
 }
 
 // Deletes an empty directory.
-pub fn remove_dir(path: &str) -> Result<(), io::Error> {
+pub fun remove_dir(path &str) result<void, io::Error> {
 	ctx(io::check(kn_fs_remove_dir(path)), "remove", path)?
-	return Ok(())
+	return Ok()
 }
 
 // Deletes a directory and everything in it.
-pub fn remove_dir_all(path: &str) -> Result<(), io::Error> {
+pub fun remove_dir_all(path &str) result<void, io::Error> {
 	for e in read_dir(path)? {
 		m := symlink_metadata(&e.path)?
 		if m.is_dir() {
@@ -224,25 +224,25 @@ pub fn remove_dir_all(path: &str) -> Result<(), io::Error> {
 }
 
 // Creates a directory.
-pub fn create_dir(path: &str) -> Result<(), io::Error> {
+pub fun create_dir(path &str) result<void, io::Error> {
 	ctx(io::check(kn_fs_mkdir(path)), "mkdir", path)?
-	return Ok(())
+	return Ok()
 }
 
 // Creates a directory and any missing parents. Succeeds if it already exists.
-pub fn create_dir_all(p: &str) -> Result<(), io::Error> {
+pub fun create_dir_all(p &str) result<void, io::Error> {
 	if p.is_empty() || is_dir(p) {
-		return Ok(())
+		return Ok()
 	}
 	parent := path::dir(p)
 	if parent != p && parent != "." {
 		create_dir_all(parent)?
 	}
 	match create_dir(p) {
-		Ok(_) => return Ok(()),
+		Ok(_) => return Ok(),
 		Err(e) => {
 			if is_dir(p) {
-				return Ok(())
+				return Ok()
 			}
 			return Err(e)
 		},
@@ -250,41 +250,41 @@ pub fn create_dir_all(p: &str) -> Result<(), io::Error> {
 }
 
 // What kind of file something is, its size, and when it last changed.
-#[derive(Copy, Clone)]
+@derive(Copy, Clone)
 pub struct Metadata {
-	kind: i64,
-	size: i64,
-	mtime: i64,
+	kind i64,
+	size i64,
+	mtime i64,
 }
 
 impl Metadata {
 	// Whether this is a regular file.
-	pub fn is_file(&self) -> bool {
+	pub fun is_file(&self) bool {
 		return self.kind == 1
 	}
 
 	// Whether this is a directory.
-	pub fn is_dir(&self) -> bool {
+	pub fun is_dir(&self) bool {
 		return self.kind == 2
 	}
 
 	// Whether this is a symbolic link (only from `symlink_metadata`).
-	pub fn is_symlink(&self) -> bool {
+	pub fun is_symlink(&self) bool {
 		return self.kind == 3
 	}
 
 	// The size in bytes.
-	pub fn len(&self) -> u64 {
+	pub fun len(&self) u64 {
 		return self.size as u64
 	}
 
 	// When the contents last changed.
-	pub fn modified(&self) -> time::SystemTime {
+	pub fun modified(&self) time::SystemTime {
 		return time::SystemTime::from_unix_nanos(self.mtime)
 	}
 }
 
-fn stat(path: &str, follow: i64) -> Result<Metadata, io::Error> {
+fun stat(path &str, follow i64) result<Metadata, io::Error> {
 	kind mut := 0
 	size mut := 0
 	mtime mut := 0
@@ -294,22 +294,22 @@ fn stat(path: &str, follow: i64) -> Result<Metadata, io::Error> {
 }
 
 // Information about a file, following symbolic links.
-pub fn metadata(path: &str) -> Result<Metadata, io::Error> {
+pub fun metadata(path &str) result<Metadata, io::Error> {
 	return stat(path, 1)
 }
 
 // Information about a file, not following a final symbolic link.
-pub fn symlink_metadata(path: &str) -> Result<Metadata, io::Error> {
+pub fun symlink_metadata(path &str) result<Metadata, io::Error> {
 	return stat(path, 0)
 }
 
 // Whether something exists at `path`.
-pub fn exists(path: &str) -> bool {
+pub fun exists(path &str) bool {
 	return metadata(path).is_ok()
 }
 
 // Whether `path` is a directory.
-pub fn is_dir(path: &str) -> bool {
+pub fun is_dir(path &str) bool {
 	match metadata(path) {
 		Ok(m) => return m.is_dir(),
 		Err(_) => return false,
@@ -317,7 +317,7 @@ pub fn is_dir(path: &str) -> bool {
 }
 
 // Whether `path` is a regular file.
-pub fn is_file(path: &str) -> bool {
+pub fun is_file(path &str) bool {
 	match metadata(path) {
 		Ok(m) => return m.is_file(),
 		Err(_) => return false,
@@ -325,31 +325,31 @@ pub fn is_file(path: &str) -> bool {
 }
 
 // One entry of a directory listing.
-#[derive(Clone)]
+@derive(Clone)
 pub struct DirEntry {
 	// The file name.
-	pub name: String,
+	pub name string,
 	// The directory joined with the name.
-	pub path: String,
+	pub path string,
 }
 
 impl DirEntry {
 	// Information about the entry (following symbolic links).
-	pub fn metadata(&self) -> Result<Metadata, io::Error> {
+	pub fun metadata(&self) result<Metadata, io::Error> {
 		return metadata(&self.path)
 	}
 
 	// Whether the entry is a directory.
-	pub fn is_dir(&self) -> bool {
+	pub fun is_dir(&self) bool {
 		return is_dir(&self.path)
 	}
 }
 
 // The entries of a directory, sorted by name (without `.` and `..`).
-pub fn read_dir(dir: &str) -> Result<Vec<DirEntry>, io::Error> {
+pub fun read_dir(dir &str) result<Vec<DirEntry>, io::Error> {
 	b mut := Vec::new()
 	ctx(io::check(kn_fs_read_dir(dir, &mut b)), "open", dir)?
-	text := String::from_utf8_lossy(b.as_slice())
+	text := string::from_utf8_lossy(b.as_slice())
 	names mut := Vec::new()
 	for n in text.lines() {
 		names.push(n.to_string())

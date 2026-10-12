@@ -15,7 +15,7 @@ import std::ptr
 
 impl<T> [T] {
 	// Swaps the elements at `i` and `j`.
-	pub fn swap(&mut self, i: usize, j: usize) {
+	pub fun swap(&mut self, i usize, j usize) {
 		if i >= self.len() || j >= self.len() {
 			panic("swap index out of bounds: {i}, {j} (len {self.len()})")
 		}
@@ -26,7 +26,7 @@ impl<T> [T] {
 	}
 
 	// Reverses the order of the elements.
-	pub fn reverse(&mut self) {
+	pub fun reverse(&mut self) {
 		n := self.len()
 		p := ptr::slice_ptr(self)
 		i mut := 0
@@ -39,7 +39,7 @@ impl<T> [T] {
 	}
 
 	// Rotates left by `k`: `[1, 2, 3, 4]` by 1 becomes `[2, 3, 4, 1]`.
-	pub fn rotate_left(&mut self, k: usize) {
+	pub fun rotate_left(&mut self, k usize) {
 		n := self.len()
 		if n == 0 {
 			return
@@ -51,7 +51,7 @@ impl<T> [T] {
 	}
 
 	// Rotates right by `k`.
-	pub fn rotate_right(&mut self, k: usize) {
+	pub fun rotate_right(&mut self, k usize) {
 		n := self.len()
 		if n == 0 {
 			return
@@ -60,7 +60,7 @@ impl<T> [T] {
 	}
 
 	// The first element.
-	pub fn first(&self) -> Option<&T> {
+	pub fun first(&self) option<&T> {
 		if self.len() == 0 {
 			return None
 		}
@@ -68,7 +68,7 @@ impl<T> [T] {
 	}
 
 	// The last element.
-	pub fn last(&self) -> Option<&T> {
+	pub fun last(&self) option<&T> {
 		if self.len() == 0 {
 			return None
 		}
@@ -76,7 +76,7 @@ impl<T> [T] {
 	}
 
 	// The element at `i`, or `None` if out of bounds.
-	pub fn get(&self, i: usize) -> Option<&T> {
+	pub fun get(&self, i usize) option<&T> {
 		if i >= self.len() {
 			return None
 		}
@@ -84,12 +84,12 @@ impl<T> [T] {
 	}
 
 	// The two halves `[..mid]` and `[mid..]`.
-	pub fn split_at(&self, mid: usize) -> (&[T], &[T]) {
+	pub fun split_at(&self, mid usize) (&[T], &[T]) {
 		return (&self[..mid], &self[mid..])
 	}
 
 	// Consecutive pieces of `n` elements (the last may be shorter).
-	pub fn chunks(&self, n: usize) -> Vec<&[T]> {
+	pub fun chunks(&self, n usize) Vec<&[T]> {
 		if n == 0 {
 			panic("chunk size must be positive")
 		}
@@ -109,7 +109,7 @@ impl<T> [T] {
 
 	// Every run of `n` consecutive elements: `[1, 2, 3]` by 2 gives
 	// `[1, 2]`, `[2, 3]`.
-	pub fn windows(&self, n: usize) -> Vec<&[T]> {
+	pub fun windows(&self, n usize) Vec<&[T]> {
 		if n == 0 {
 			panic("window size must be positive")
 		}
@@ -123,7 +123,7 @@ impl<T> [T] {
 	}
 
 	// The index of the first element for which `f` is true, if any.
-	pub fn position_of(&self, f: fn mut(&T) -> bool) -> Option<usize> {
+	pub fun position_of(&self, f fun mut(&T) bool) option<usize> {
 		for i in 0..self.len() {
 			if f(&self[i]) {
 				return Some(i)
@@ -134,7 +134,7 @@ impl<T> [T] {
 
 	// Sorts with `cmp`, keeping equal elements in their original order.
 	// O(n log n); allocates a buffer of `len()` elements.
-	pub fn sort_by(&mut self, cmp: fn mut(&T, &T) -> Ordering) {
+	pub fun sort_by(&mut self, cmp fun mut(&T, &T) Ordering) {
 		n := self.len()
 		if n < 2 {
 			return
@@ -149,20 +149,20 @@ impl<T> [T] {
 		}
 		// The buffer never owns elements (its length stays 0), so dropping
 		// it only frees the memory.
-		let mut buf: Vec<T> = Vec::with_capacity(n / 2 + 1)
+		let mut buf Vec<T> = Vec::with_capacity(n / 2 + 1)
 		unsafe {
 			merge_sort(p, buf.as_ptr(), n, &mut c)
 		}
 	}
 
 	// Sorts by a key, keeping equal elements in order.
-	pub fn sort_by_key<K: Ord>(&mut self, key: fn mut(&T) -> K) {
+	pub fun sort_by_key<K: Ord>(&mut self, key fun mut(&T) K) {
 		self.sort_by(|a, b| key(a).cmp(&key(b)))
 	}
 
 	// Sorts with `cmp` without allocating; equal elements may be reordered.
 	// O(n log n) in the worst case (introsort).
-	pub fn sort_unstable_by(&mut self, cmp: fn mut(&T, &T) -> Ordering) {
+	pub fun sort_unstable_by(&mut self, cmp fun mut(&T, &T) Ordering) {
 		n := self.len()
 		p := ptr::slice_ptr(self)
 		depth mut := 0
@@ -180,7 +180,7 @@ impl<T> [T] {
 	// Binary search with `f`, which says how an element compares to the
 	// target. The slice must be sorted consistently with `f`. Returns
 	// `Ok(index)` of a match, or `Err(index)` where the target would go.
-	pub fn binary_search_by(&self, f: fn mut(&T) -> Ordering) -> Result<usize, usize> {
+	pub fun binary_search_by(&self, f fun mut(&T) Ordering) result<usize, usize> {
 		lo mut := 0
 		hi mut := self.len()
 		while lo < hi {
@@ -199,7 +199,7 @@ impl<T> [T] {
 
 	// The index of the first element for which `pred` is false, assuming
 	// the slice is partitioned (all true, then all false).
-	pub fn partition_point(&self, pred: fn mut(&T) -> bool) -> usize {
+	pub fun partition_point(&self, pred fun mut(&T) bool) usize {
 		lo mut := 0
 		hi mut := self.len()
 		while lo < hi {
@@ -214,7 +214,7 @@ impl<T> [T] {
 	}
 
 	// Whether `cmp` puts every element no later than the next.
-	pub fn is_sorted_by(&self, cmp: fn mut(&T, &T) -> Ordering) -> bool {
+	pub fun is_sorted_by(&self, cmp fun mut(&T, &T) Ordering) bool {
 		i mut := 1
 		while i < self.len() {
 			if cmp(&self[i - 1], &self[i]) == Ordering::Greater {
@@ -228,27 +228,27 @@ impl<T> [T] {
 
 impl<T: Ord> [T] {
 	// Sorts in ascending order, keeping equal elements in order.
-	pub fn sort(&mut self) {
+	pub fun sort(&mut self) {
 		self.sort_by(|a, b| a.cmp(b))
 	}
 
 	// Sorts in ascending order without allocating.
-	pub fn sort_unstable(&mut self) {
+	pub fun sort_unstable(&mut self) {
 		self.sort_unstable_by(|a, b| a.cmp(b))
 	}
 
 	// Searches a sorted slice: `Ok(index)` of `x`, or `Err(index)` where it
 	// would be inserted to keep the order.
-	pub fn binary_search(&self, x: &T) -> Result<usize, usize> {
+	pub fun binary_search(&self, x &T) result<usize, usize> {
 		return self.binary_search_by(|e| e.cmp(x))
 	}
 
-	pub fn is_sorted(&self) -> bool {
+	pub fun is_sorted(&self) bool {
 		return self.is_sorted_by(|a, b| a.cmp(b))
 	}
 
 	// The largest element.
-	pub fn max_elem(&self) -> Option<&T> {
+	pub fun max_elem(&self) option<&T> {
 		if self.len() == 0 {
 			return None
 		}
@@ -262,7 +262,7 @@ impl<T: Ord> [T] {
 	}
 
 	// The smallest element.
-	pub fn min_elem(&self) -> Option<&T> {
+	pub fun min_elem(&self) option<&T> {
 		if self.len() == 0 {
 			return None
 		}
@@ -278,7 +278,7 @@ impl<T: Ord> [T] {
 
 impl<T: Eq> [T] {
 	// Whether some element equals `x`.
-	pub fn contains(&self, x: &T) -> bool {
+	pub fun contains(&self, x &T) bool {
 		for e in self {
 			if e.eq(x) {
 				return true
@@ -288,7 +288,7 @@ impl<T: Eq> [T] {
 	}
 
 	// The index of the first element equal to `x`.
-	pub fn index_of(&self, x: &T) -> Option<usize> {
+	pub fun index_of(&self, x &T) option<usize> {
 		for i in 0..self.len() {
 			if self[i].eq(x) {
 				return Some(i)
@@ -297,7 +297,7 @@ impl<T: Eq> [T] {
 		return None
 	}
 
-	pub fn starts_with(&self, prefix: &[T]) -> bool {
+	pub fun starts_with(&self, prefix &[T]) bool {
 		if prefix.len() > self.len() {
 			return false
 		}
@@ -309,7 +309,7 @@ impl<T: Eq> [T] {
 		return true
 	}
 
-	pub fn ends_with(&self, suffix: &[T]) -> bool {
+	pub fun ends_with(&self, suffix &[T]) bool {
 		if suffix.len() > self.len() {
 			return false
 		}
@@ -325,7 +325,7 @@ impl<T: Eq> [T] {
 
 impl<T: Clone> [T] {
 	// A new vector with clones of the elements.
-	pub fn to_vec(&self) -> Vec<T> {
+	pub fun to_vec(&self) Vec<T> {
 		v mut := Vec::with_capacity(self.len())
 		for x in self {
 			v.push(x.clone())
@@ -334,7 +334,7 @@ impl<T: Clone> [T] {
 	}
 
 	// Sets every element to a clone of `value`.
-	pub fn fill(&mut self, value: T) {
+	pub fun fill(&mut self, value T) {
 		for x in self.iter_mut() {
 			*x = value.clone()
 		}
@@ -343,7 +343,7 @@ impl<T: Clone> [T] {
 
 impl<T> Vec<T> {
 	// Keeps only the elements for which `f` is true, in order.
-	pub fn retain(&mut self, f: fn mut(&T) -> bool) {
+	pub fun retain(&mut self, f fun mut(&T) bool) {
 		n := self.len()
 		p := self.as_ptr()
 		kept mut := 0
@@ -366,7 +366,7 @@ impl<T> Vec<T> {
 
 	// Removes the element at `i` by moving the last element into its place:
 	// O(1), but changes the order.
-	pub fn swap_remove(&mut self, i: usize) -> T {
+	pub fun swap_remove(&mut self, i usize) T {
 		n := self.len()
 		if i >= n {
 			panic("swap_remove index {i} out of bounds (len {n})")
@@ -383,7 +383,7 @@ impl<T> Vec<T> {
 	}
 
 	// Appends every item of `it`.
-	pub fn extend<I: Iterator<T>>(&mut self, it: I) {
+	pub fun extend<I: Iterator<T>>(&mut self, it I) {
 		src mut := it
 		while true {
 			match src.next() {
@@ -394,7 +394,7 @@ impl<T> Vec<T> {
 	}
 
 	// Moves all of `other`'s elements to the end of this vector.
-	pub fn append(&mut self, other: &mut Vec<T>) {
+	pub fun append(&mut self, other &mut Vec<T>) {
 		n := other.len()
 		self.reserve(n)
 		unsafe {
@@ -405,12 +405,12 @@ impl<T> Vec<T> {
 	}
 
 	// Splits off the elements from `at` on into a new vector.
-	pub fn split_off(&mut self, at: usize) -> Vec<T> {
+	pub fun split_off(&mut self, at usize) Vec<T> {
 		n := self.len()
 		if at > n {
 			panic("split_off index {at} out of bounds (len {n})")
 		}
-		let mut out: Vec<T> = Vec::with_capacity(n - at)
+		let mut out Vec<T> = Vec::with_capacity(n - at)
 		unsafe {
 			ptr::copy(ptr::add(self.as_ptr(), at), out.as_ptr(), n - at)
 			out.set_len(n - at)
@@ -420,12 +420,12 @@ impl<T> Vec<T> {
 	}
 
 	// Removes and returns the elements in `start..end`, keeping the rest.
-	pub fn drain(&mut self, start: usize, end: usize) -> Vec<T> {
+	pub fun drain(&mut self, start usize, end usize) Vec<T> {
 		n := self.len()
 		if start > end || end > n {
 			panic("drain range {start}..{end} out of bounds (len {n})")
 		}
-		let mut out: Vec<T> = Vec::with_capacity(end - start)
+		let mut out Vec<T> = Vec::with_capacity(end - start)
 		p := self.as_ptr()
 		unsafe {
 			ptr::copy(ptr::add(p, start), out.as_ptr(), end - start)
@@ -439,7 +439,7 @@ impl<T> Vec<T> {
 
 impl<T: Eq> Vec<T> {
 	// Removes consecutive repeated elements (all repeats, if sorted).
-	pub fn dedup(&mut self) {
+	pub fun dedup(&mut self) {
 		n := self.len()
 		if n < 2 {
 			return
@@ -466,7 +466,7 @@ impl<T: Eq> Vec<T> {
 
 impl<T: Clone> Vec<T> {
 	// Grows or shrinks to `n` elements, filling with clones of `value`.
-	pub fn resize(&mut self, n: usize, value: T) {
+	pub fun resize(&mut self, n usize, value T) {
 		if n <= self.len() {
 			self.truncate(n)
 			return
@@ -478,7 +478,7 @@ impl<T: Clone> Vec<T> {
 	}
 }
 
-unsafe fn swap_at<T>(p: *mut T, i: usize, j: usize) {
+unsafe fun swap_at<T>(p *mut T, i usize, j usize) {
 	if i == j {
 		return
 	}
@@ -487,7 +487,7 @@ unsafe fn swap_at<T>(p: *mut T, i: usize, j: usize) {
 	ptr::write(ptr::add(p, j), t)
 }
 
-unsafe fn insertion<T>(p: *mut T, n: usize, cmp: &mut fn mut(&T, &T) -> Ordering) {
+unsafe fun insertion<T>(p *mut T, n usize, cmp &mut fun mut(&T, &T) Ordering) {
 	for i in 1..n {
 		if cmp(&*ptr::add(p, i), &*ptr::add(p, i - 1)) == Ordering::Less {
 			t := ptr::read(ptr::add(p, i))
@@ -503,7 +503,7 @@ unsafe fn insertion<T>(p: *mut T, n: usize, cmp: &mut fn mut(&T, &T) -> Ordering
 
 // Stable top-down merge sort of `n` elements at `p`, using `buf` (room for
 // n/2 + 1 elements) for the left half of each merge.
-unsafe fn merge_sort<T>(p: *mut T, buf: *mut T, n: usize, cmp: &mut fn mut(&T, &T) -> Ordering) {
+unsafe fun merge_sort<T>(p *mut T, buf *mut T, n usize, cmp &mut fun mut(&T, &T) Ordering) {
 	if n <= 20 {
 		insertion(p, n, cmp)
 		return
@@ -536,7 +536,7 @@ unsafe fn merge_sort<T>(p: *mut T, buf: *mut T, n: usize, cmp: &mut fn mut(&T, &
 
 // Introsort: quicksort with three-way partitioning (so many equal keys stay
 // fast), insertion sort for small ranges, heapsort past the depth limit.
-unsafe fn quick<T>(p: *mut T, n: usize, cmp: &mut fn mut(&T, &T) -> Ordering, depth: usize) {
+unsafe fun quick<T>(p *mut T, n usize, cmp &mut fun mut(&T, &T) Ordering, depth usize) {
 	if n <= 20 {
 		insertion(p, n, cmp)
 		return
@@ -579,7 +579,7 @@ unsafe fn quick<T>(p: *mut T, n: usize, cmp: &mut fn mut(&T, &T) -> Ordering, de
 	quick(ptr::add(p, gt), n - gt, cmp, depth - 1)
 }
 
-unsafe fn heapsort<T>(p: *mut T, n: usize, cmp: &mut fn mut(&T, &T) -> Ordering) {
+unsafe fun heapsort<T>(p *mut T, n usize, cmp &mut fun mut(&T, &T) Ordering) {
 	i mut := n / 2
 	while i > 0 {
 		i -= 1
@@ -593,7 +593,7 @@ unsafe fn heapsort<T>(p: *mut T, n: usize, cmp: &mut fn mut(&T, &T) -> Ordering)
 	}
 }
 
-unsafe fn sift_down<T>(p: *mut T, start: usize, n: usize, cmp: &mut fn mut(&T, &T) -> Ordering) {
+unsafe fun sift_down<T>(p *mut T, start usize, n usize, cmp &mut fun mut(&T, &T) Ordering) {
 	root mut := start
 	while true {
 		child mut := 2 * root + 1

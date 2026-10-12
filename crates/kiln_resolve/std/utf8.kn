@@ -4,16 +4,16 @@
 //	(c, n) := utf8::decode(bytes)    // ('é', 2), or (REPLACEMENT, 1) if invalid
 
 // The character that stands in for invalid input: U+FFFD.
-pub const REPLACEMENT: char = '\u{FFFD}'
+pub const REPLACEMENT char = '\u{FFFD}'
 
 // The largest Unicode scalar value.
-pub const MAX: char = '\u{10FFFF}'
+pub const MAX char = '\u{10FFFF}'
 
 // The most bytes one character takes.
-pub const MAX_LEN: usize = 4
+pub const MAX_LEN usize = 4
 
 // How many bytes `c` takes in UTF-8.
-pub fn len(c: char) -> usize {
+pub fun len(c char) usize {
 	n := c as u32
 	if n < 128 {
 		return 1
@@ -28,18 +28,18 @@ pub fn len(c: char) -> usize {
 }
 
 // Whether `b` is a continuation byte (`10xxxxxx`).
-pub fn is_continuation(b: u8) -> bool {
+pub fun is_continuation(b u8) bool {
 	return b & 192 == 128
 }
 
 // Whether `n` is a Unicode scalar value (a valid `char`).
-pub fn valid_char(n: u32) -> bool {
+pub fun valid_char(n u32) bool {
 	return n <= 1114111 && !(n >= 55296 && n <= 57343)
 }
 
 // Decodes the first character of `b`: the character and its length. Invalid
 // or truncated input gives `(REPLACEMENT, 1)`; empty input `(REPLACEMENT, 0)`.
-pub fn decode(b: &[u8]) -> (char, usize) {
+pub fun decode(b &[u8]) (char, usize) {
 	if b.len() == 0 {
 		return (REPLACEMENT, 0)
 	}
@@ -73,7 +73,7 @@ pub fn decode(b: &[u8]) -> (char, usize) {
 }
 
 // Decodes the last character of `b` (see `decode`).
-pub fn decode_last(b: &[u8]) -> (char, usize) {
+pub fun decode_last(b &[u8]) (char, usize) {
 	if b.len() == 0 {
 		return (REPLACEMENT, 0)
 	}
@@ -89,7 +89,7 @@ pub fn decode_last(b: &[u8]) -> (char, usize) {
 }
 
 // Appends the UTF-8 encoding of `c` to `out`; returns the number of bytes.
-pub fn encode(c: char, out: &mut Vec<u8>) -> usize {
+pub fun encode(c char, out &mut Vec<u8>) usize {
 	n := c as u32
 	if n < 128 {
 		out.push(n as u8)
@@ -114,7 +114,7 @@ pub fn encode(c: char, out: &mut Vec<u8>) -> usize {
 }
 
 // Whether `b` is entirely valid UTF-8.
-pub fn valid(b: &[u8]) -> bool {
+pub fun valid(b &[u8]) bool {
 	i mut := 0
 	while i < b.len() {
 		if b[i] < 128 {
@@ -131,7 +131,7 @@ pub fn valid(b: &[u8]) -> bool {
 }
 
 // The number of characters in `b` (each invalid byte counts as one).
-pub fn count(b: &[u8]) -> usize {
+pub fun count(b &[u8]) usize {
 	i mut := 0
 	n mut := 0
 	while i < b.len() {

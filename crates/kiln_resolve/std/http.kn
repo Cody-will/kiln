@@ -27,27 +27,27 @@ import std::time
 import std::time::{Duration, Instant}
 
 // A request handler.
-pub type Handler = fn(Request) -> Response
+pub type Handler = fun(Request) Response
 
 // Request and response bodies larger than this are refused (64 MiB).
-const MAX_BODY: usize = 67108864
+const MAX_BODY usize = 67108864
 
 // ----- headers -------------------------------------------------------------------
 
 // HTTP header fields: names compare case-insensitively; order is kept.
-#[derive(Clone, Debug)]
+@derive(Clone, Debug)
 pub struct Headers {
-	list: Vec<(String, String)>,
+	list Vec<(string, string)>,
 }
 
 impl Headers {
 	// No headers.
-	pub fn new() -> Headers {
+	pub fun new() Headers {
 		return Headers { list: Vec::new() }
 	}
 
 	// The first value of header `name`.
-	pub fn get(&self, name: &str) -> Option<&str> {
+	pub fun get(&self, name &str) option<&str> {
 		for i in 0..self.list.len() {
 			if self.list[i].0.eq_ignore_ascii_case(name) {
 				return Some(self.list[i].1.as_str())
@@ -57,18 +57,18 @@ impl Headers {
 	}
 
 	// Sets header `name`, replacing any values it had.
-	pub fn set(&mut self, name: &str, value: &str) {
+	pub fun set(&mut self, name &str, value &str) {
 		self.remove(name)
 		self.add(name, value)
 	}
 
 	// Adds a value for header `name`, keeping existing ones.
-	pub fn add(&mut self, name: &str, value: &str) {
+	pub fun add(&mut self, name &str, value &str) {
 		self.list.push((name.to_string(), value.to_string()))
 	}
 
 	// Removes every value of header `name`.
-	pub fn remove(&mut self, name: &str) {
+	pub fun remove(&mut self, name &str) {
 		i mut := 0
 		while i < self.list.len() {
 			if self.list[i].0.eq_ignore_ascii_case(name) {
@@ -80,17 +80,17 @@ impl Headers {
 	}
 
 	// Whether header `name` is present.
-	pub fn has(&self, name: &str) -> bool {
+	pub fun has(&self, name &str) bool {
 		return self.get(name).is_some()
 	}
 
 	// The number of header fields.
-	pub fn len(&self) -> usize {
+	pub fun len(&self) usize {
 		return self.list.len()
 	}
 
 	// All fields as (name, value) pairs, in order.
-	pub fn entries(&self) -> &[(String, String)] {
+	pub fun entries(&self) &[(string, string)] {
 		return self.list.as_slice()
 	}
 }
@@ -99,37 +99,37 @@ impl Headers {
 
 // An HTTP request. On a server, `target` is the path and query
 // ("/search?q=kiln"); for the client, it is the full URL.
-#[derive(Clone, Debug)]
+@derive(Clone, Debug)
 pub struct Request {
-	pub method: String,
-	pub target: String,
-	pub headers: Headers,
-	pub body: Vec<u8>,
+	pub method string,
+	pub target string,
+	pub headers Headers,
+	pub body Vec<u8>,
 	// The client's address (servers only).
-	pub remote_addr: String,
+	pub remote_addr string,
 }
 
 impl Request {
 	// A request with no headers and no body.
-	pub fn new(method: &str, target: &str) -> Request {
+	pub fun new(method &str, target &str) Request {
 		return Request {
 			method: method.to_string(),
 			target: target.to_string(),
 			headers: Headers::new(),
 			body: Vec::new(),
-			remote_addr: String::new(),
+			remote_addr: string::new(),
 		}
 	}
 
 	// The request with header `name` set.
-	pub fn with_header(self, name: &str, value: &str) -> Request {
+	pub fun with_header(self, name &str, value &str) Request {
 		r mut := self
 		r.headers.set(name, value)
 		return r
 	}
 
 	// The request with `body`.
-	pub fn with_body(self, body: &[u8]) -> Request {
+	pub fun with_body(self, body &[u8]) Request {
 		r mut := self
 		r.body.clear()
 		r.body.extend_from_slice(body)
@@ -137,7 +137,7 @@ impl Request {
 	}
 
 	// The path, without the query: "/search".
-	pub fn path(&self) -> &str {
+	pub fun path(&self) &str {
 		match self.target.find("?") {
 			Some(i) => return &self.target[0..i],
 			None => return self.target.as_str(),
@@ -145,7 +145,7 @@ impl Request {
 	}
 
 	// The raw query string after `?`, or "".
-	pub fn query(&self) -> &str {
+	pub fun query(&self) &str {
 		match self.target.find("?") {
 			Some(i) => return &self.target[i + 1..],
 			None => return "",
@@ -153,7 +153,7 @@ impl Request {
 	}
 
 	// The decoded value of query parameter `name`.
-	pub fn query_param(&self, name: &str) -> Option<String> {
+	pub fun query_param(&self, name &str) option<string> {
 		for pair in self.query().split("&") {
 			(k, v) := match pair.split_once("=") {
 				Some(kv) => kv,
@@ -167,32 +167,32 @@ impl Request {
 	}
 
 	// The first value of header `name`.
-	pub fn header(&self, name: &str) -> Option<&str> {
+	pub fun header(&self, name &str) option<&str> {
 		return self.headers.get(name)
 	}
 
 	// The body as text (invalid UTF-8 is replaced).
-	pub fn body_text(&self) -> String {
-		return String::from_utf8_lossy(self.body.as_slice())
+	pub fun body_text(&self) string {
+		return string::from_utf8_lossy(self.body.as_slice())
 	}
 }
 
 // An HTTP response.
-#[derive(Clone, Debug)]
+@derive(Clone, Debug)
 pub struct Response {
-	pub status: u16,
-	pub headers: Headers,
-	pub body: Vec<u8>,
+	pub status u16,
+	pub headers Headers,
+	pub body Vec<u8>,
 }
 
 impl Response {
 	// An empty response with `status`.
-	pub fn new(status: u16) -> Response {
+	pub fun new(status u16) Response {
 		return Response { status: status, headers: Headers::new(), body: Vec::new() }
 	}
 
 	// A response with `body` and Content-Type `content_type`.
-	pub fn bytes(status: u16, content_type: &str, body: &[u8]) -> Response {
+	pub fun bytes(status u16, content_type &str, body &[u8]) Response {
 		r mut := Response::new(status)
 		r.headers.set("Content-Type", content_type)
 		r.body.extend_from_slice(body)
@@ -200,52 +200,52 @@ impl Response {
 	}
 
 	// A plain-text response.
-	pub fn text(status: u16, body: &str) -> Response {
+	pub fun text(status u16, body &str) Response {
 		return Response::bytes(status, "text/plain; charset=utf-8", body.as_bytes())
 	}
 
 	// An HTML response.
-	pub fn html(status: u16, body: &str) -> Response {
+	pub fun html(status u16, body &str) Response {
 		return Response::bytes(status, "text/html; charset=utf-8", body.as_bytes())
 	}
 
 	// A JSON response (`body` is already JSON).
-	pub fn json(status: u16, body: &str) -> Response {
+	pub fun json(status u16, body &str) Response {
 		return Response::bytes(status, "application/json", body.as_bytes())
 	}
 
 	// 404 Not Found.
-	pub fn not_found() -> Response {
+	pub fun not_found() Response {
 		return Response::text(404, "404 page not found\n")
 	}
 
 	// A redirect (302 Found) to `location`.
-	pub fn redirect(location: &str) -> Response {
+	pub fun redirect(location &str) Response {
 		r mut := Response::new(302)
 		r.headers.set("Location", location)
 		return r
 	}
 
 	// The response with header `name` set.
-	pub fn with_header(self, name: &str, value: &str) -> Response {
+	pub fun with_header(self, name &str, value &str) Response {
 		r mut := self
 		r.headers.set(name, value)
 		return r
 	}
 
 	// The first value of header `name`.
-	pub fn header(&self, name: &str) -> Option<&str> {
+	pub fun header(&self, name &str) option<&str> {
 		return self.headers.get(name)
 	}
 
 	// The body as text (invalid UTF-8 is replaced).
-	pub fn body_text(&self) -> String {
-		return String::from_utf8_lossy(self.body.as_slice())
+	pub fun body_text(&self) string {
+		return string::from_utf8_lossy(self.body.as_slice())
 	}
 }
 
 // The standard reason phrase for a status code ("Not Found").
-pub fn status_text(code: u16) -> &'static str {
+pub fun status_text(code u16) &'static str {
 	match code {
 		100 => return "Continue",
 		101 => return "Switching Protocols",
@@ -284,9 +284,9 @@ pub fn status_text(code: u16) -> &'static str {
 // ----- routing ----------------------------------------------------------------------
 
 struct Route {
-	method: String,
-	pattern: String,
-	handler: Handler,
+	method string,
+	pattern string,
+	handler Handler,
 }
 
 // Sends each request to the handler registered for its path, like Go's
@@ -294,47 +294,47 @@ struct Route {
 // ("/static/"); other patterns match exactly. The longest match wins.
 // Unmatched paths get 404; a path registered only for other methods gets 405.
 pub struct Router {
-	routes: Vec<Route>,
+	routes Vec<Route>,
 }
 
 impl Router {
 	// A router with no routes.
-	pub fn new() -> Router {
+	pub fun new() Router {
 		return Router { routes: Vec::new() }
 	}
 
 	// Routes requests with any method for `pattern` to `h`.
-	pub fn handle(&mut self, pattern: &str, h: Handler) {
-		self.routes.push(Route { method: String::new(), pattern: pattern.to_string(), handler: h })
+	pub fun handle(&mut self, pattern &str, h Handler) {
+		self.routes.push(Route { method: string::new(), pattern: pattern.to_string(), handler: h })
 	}
 
 	// Routes `method` requests for `pattern` to `h`.
-	pub fn handle_method(&mut self, method: &str, pattern: &str, h: Handler) {
+	pub fun handle_method(&mut self, method &str, pattern &str, h Handler) {
 		self.routes.push(Route { method: method.to_string(), pattern: pattern.to_string(), handler: h })
 	}
 
 	// Routes GET (and HEAD) requests for `pattern` to `h`.
-	pub fn get(&mut self, pattern: &str, h: Handler) {
+	pub fun get(&mut self, pattern &str, h Handler) {
 		self.handle_method("GET", pattern, h)
 	}
 
 	// Routes POST requests for `pattern` to `h`.
-	pub fn post(&mut self, pattern: &str, h: Handler) {
+	pub fun post(&mut self, pattern &str, h Handler) {
 		self.handle_method("POST", pattern, h)
 	}
 
 	// Routes PUT requests for `pattern` to `h`.
-	pub fn put(&mut self, pattern: &str, h: Handler) {
+	pub fun put(&mut self, pattern &str, h Handler) {
 		self.handle_method("PUT", pattern, h)
 	}
 
 	// Routes DELETE requests for `pattern` to `h`.
-	pub fn delete(&mut self, pattern: &str, h: Handler) {
+	pub fun delete(&mut self, pattern &str, h Handler) {
 		self.handle_method("DELETE", pattern, h)
 	}
 
 	// Handles one request.
-	pub fn route(&self, req: Request) -> Response {
+	pub fun route(&self, req Request) Response {
 		best mut := self.routes.len()
 		best_len mut := 0
 		path_matched mut := false
@@ -364,24 +364,24 @@ impl Router {
 
 	// Serves HTTP on `addr` ("host:port" or ":port") until an error, with
 	// the default `Server` timeouts.
-	pub fn listen(self, addr: &str) -> Result<(), io::Error> {
+	pub fun listen(self, addr &str) result<void, io::Error> {
 		return Server::new(self).listen(addr)
 	}
 
 	// Serves HTTP on connections from `listener` until an error, with the
 	// default `Server` timeouts.
-	pub fn serve(self, listener: TcpListener) -> Result<(), io::Error> {
+	pub fun serve(self, listener TcpListener) result<void, io::Error> {
 		return Server::new(self).serve(listener)
 	}
 
 	// Serves HTTPS on `addr` with the default `Server` timeouts.
-	pub fn listen_tls(self, addr: &str, cfg: tls::ServerConfig) -> Result<(), io::Error> {
+	pub fun listen_tls(self, addr &str, cfg tls::ServerConfig) result<void, io::Error> {
 		return Server::new(self).listen_tls(addr, cfg)
 	}
 }
 
 // Serves HTTP on `addr`, sending every request to `handler`.
-pub fn serve(addr: &str, handler: Handler) -> Result<(), io::Error> {
+pub fun serve(addr &str, handler Handler) result<void, io::Error> {
 	r mut := Router::new()
 	r.handle("/", handler)
 	return r.listen(addr)
@@ -397,11 +397,11 @@ pub fn serve(addr: &str, handler: Handler) -> Result<(), io::Error> {
 // Each timeout is `Some(d)` or `None` for no limit. A client that runs out
 // of time has its connection closed.
 pub struct Server {
-	router: Router,
-	read_header_timeout: Option<Duration>,
-	read_timeout: Option<Duration>,
-	write_timeout: Option<Duration>,
-	idle_timeout: Option<Duration>,
+	router Router,
+	read_header_timeout option<Duration>,
+	read_timeout option<Duration>,
+	write_timeout option<Duration>,
+	idle_timeout option<Duration>,
 }
 
 impl Server {
@@ -409,7 +409,7 @@ impl Server {
 	// request line and headers, 60s to send the whole request, 60s to
 	// receive the response, and 120s between requests on a kept-alive
 	// connection.
-	pub fn new(router: Router) -> Server {
+	pub fun new(router Router) Server {
 		return Server {
 			router: router,
 			read_header_timeout: Some(time::secs(10)),
@@ -420,21 +420,21 @@ impl Server {
 	}
 
 	// Time allowed from the first byte of a request to the end of its headers.
-	pub fn with_read_header_timeout(self, d: Option<Duration>) -> Server {
+	pub fun with_read_header_timeout(self, d option<Duration>) Server {
 		s mut := self
 		s.read_header_timeout = d
 		return s
 	}
 
 	// Time allowed from the first byte of a request to the end of its body.
-	pub fn with_read_timeout(self, d: Option<Duration>) -> Server {
+	pub fun with_read_timeout(self, d option<Duration>) Server {
 		s mut := self
 		s.read_timeout = d
 		return s
 	}
 
 	// Time allowed to write a response, once the handler has returned it.
-	pub fn with_write_timeout(self, d: Option<Duration>) -> Server {
+	pub fun with_write_timeout(self, d option<Duration>) Server {
 		s mut := self
 		s.write_timeout = d
 		return s
@@ -442,19 +442,19 @@ impl Server {
 
 	// How long a kept-alive connection may sit idle waiting for the next
 	// request (also the wait for a new connection's first request).
-	pub fn with_idle_timeout(self, d: Option<Duration>) -> Server {
+	pub fun with_idle_timeout(self, d option<Duration>) Server {
 		s mut := self
 		s.idle_timeout = d
 		return s
 	}
 
 	// Serves HTTP on `addr` ("host:port" or ":port") until an error.
-	pub fn listen(self, addr: &str) -> Result<(), io::Error> {
+	pub fun listen(self, addr &str) result<void, io::Error> {
 		return self.serve(TcpListener::bind(addr)?)
 	}
 
 	// Serves HTTP on connections from `listener` until an error.
-	pub fn serve(self, listener: TcpListener) -> Result<(), io::Error> {
+	pub fun serve(self, listener TcpListener) result<void, io::Error> {
 		srv := Arc::new(self)
 		loop {
 			conn := listener.accept()?
@@ -466,13 +466,13 @@ impl Server {
 	}
 
 	// Serves HTTPS on `addr` with the certificate and key in `cfg`.
-	pub fn listen_tls(self, addr: &str, cfg: tls::ServerConfig) -> Result<(), io::Error> {
+	pub fun listen_tls(self, addr &str, cfg tls::ServerConfig) result<void, io::Error> {
 		return self.serve_tls(TcpListener::bind(addr)?, cfg)
 	}
 
 	// Serves HTTPS on connections from `listener`. The TLS handshake must
 	// finish within the read-header timeout.
-	pub fn serve_tls(self, listener: TcpListener, cfg: tls::ServerConfig) -> Result<(), io::Error> {
+	pub fun serve_tls(self, listener TcpListener, cfg tls::ServerConfig) result<void, io::Error> {
 		srv := Arc::new(self)
 		tc := Arc::new(cfg)
 		loop {
@@ -500,7 +500,7 @@ enum Conn {
 }
 
 impl Conn {
-	fn tcp(&self) -> &TcpStream {
+	fun tcp(&self) &TcpStream {
 		match self {
 			Conn::Plain(t) => return t,
 			Conn::Tls(t) => return t.tcp(),
@@ -509,7 +509,7 @@ impl Conn {
 }
 
 impl Read for Conn {
-	fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+	fun read(&mut self, buf &mut [u8]) result<usize, io::Error> {
 		match self {
 			Conn::Plain(t) => return t.read(buf),
 			Conn::Tls(t) => return t.read(buf),
@@ -518,7 +518,7 @@ impl Read for Conn {
 }
 
 impl Write for Conn {
-	fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
+	fun write(&mut self, buf &[u8]) result<usize, io::Error> {
 		match self {
 			Conn::Plain(t) => return t.write(buf),
 			Conn::Tls(t) => return t.write(buf),
@@ -529,20 +529,20 @@ impl Write for Conn {
 // A point in time an exchange must finish by. It is enforced by setting
 // the socket's per-operation timeout to the time left before each read or
 // write, so a peer that trickles bytes still runs out of time.
-#[derive(Copy, Clone)]
+@derive(Copy, Clone)
 struct Deadline {
-	at: Option<Instant>,
+	at option<Instant>,
 }
 
 impl Deadline {
-	fn after(d: Option<Duration>) -> Deadline {
+	fun after(d option<Duration>) Deadline {
 		match d {
 			Some(d) => return Deadline { at: Some(Instant::now().add(d)) },
 			None => return Deadline { at: None },
 		}
 	}
 
-	fn earlier(self, other: Deadline) -> Deadline {
+	fun earlier(self, other Deadline) Deadline {
 		match (self.at, other.at) {
 			(Some(a), Some(b)) => {
 				if b < a {
@@ -556,7 +556,7 @@ impl Deadline {
 	}
 
 	// Time left, or a TimedOut error once it has passed.
-	fn left(&self) -> Result<Option<Duration>, io::Error> {
+	fun left(&self) result<option<Duration>, io::Error> {
 		match self.at {
 			None => return Ok(None),
 			Some(at) => {
@@ -570,7 +570,7 @@ impl Deadline {
 	}
 
 	// Applies the time left to `conn`'s reads (or writes).
-	fn arm(&self, conn: &TcpStream, write: bool) -> Result<(), io::Error> {
+	fun arm(&self, conn &TcpStream, write bool) result<void, io::Error> {
 		left := self.left()?
 		if write {
 			return conn.set_write_timeout(left)
@@ -581,13 +581,13 @@ impl Deadline {
 
 // Request-reading limits for one connection.
 struct Limits {
-	header: Option<Duration>,
-	read: Option<Duration>,
+	header option<Duration>,
+	read option<Duration>,
 }
 
 // Serves one connection: requests in a loop while it is kept alive.
-fn serve_conn(conn: Conn, srv: Arc<Server>) {
-	remote := conn.tcp().peer_addr().unwrap_or(String::new())
+fun serve_conn(conn Conn, srv Arc<Server>) {
+	remote := conn.tcp().peer_addr().unwrap_or(string::new())
 	reader mut := BufReader::new(conn)
 	lim := Limits { header: srv.read_header_timeout, read: srv.read_timeout }
 	loop {
@@ -608,7 +608,7 @@ fn serve_conn(conn: Conn, srv: Arc<Server>) {
 		req.remote_addr = remote.clone()
 		conn_hdr := match req.header("Connection") {
 			Some(v) => v.to_lower(),
-			None => String::new(),
+			None => string::new(),
 		}
 		keep := !req.target.is_empty() && conn_hdr != "close"
 		head := req.method == "HEAD"
@@ -623,7 +623,7 @@ fn serve_conn(conn: Conn, srv: Arc<Server>) {
 // Reads one request; None if the connection closed cleanly first.
 // `wait` bounds the wait for the request to start; `lim` then bounds
 // reading it.
-fn read_request(r: &mut BufReader<Conn>, wait: Deadline, lim: &Limits) -> Result<Option<Request>, io::Error> {
+fun read_request(r &mut BufReader<Conn>, wait Deadline, lim &Limits) result<option<Request>, io::Error> {
 	wait.arm(r.get_ref().tcp(), false)?
 	// The request starts with its first byte.
 	match r.peek(1) {
@@ -668,12 +668,12 @@ fn read_request(r: &mut BufReader<Conn>, wait: Deadline, lim: &Limits) -> Result
 	return Ok(Some(req))
 }
 
-fn invalid(msg: &str) -> io::Error {
+fun invalid(msg &str) io::Error {
 	return io::Error::new(io::ErrorKind::InvalidData, msg)
 }
 
 // Reads header lines up to the blank line.
-fn read_headers(r: &mut BufReader<Conn>, dl: Deadline) -> Result<Headers, io::Error> {
+fun read_headers(r &mut BufReader<Conn>, dl Deadline) result<Headers, io::Error> {
 	h mut := Headers::new()
 	loop {
 		dl.arm(r.get_ref().tcp(), false)?
@@ -696,11 +696,11 @@ fn read_headers(r: &mut BufReader<Conn>, dl: Deadline) -> Result<Headers, io::Er
 
 // Reads a body as described by the headers. Requests without a length have
 // no body; responses without one run to the end of the connection.
-fn read_body(r: &mut BufReader<Conn>, h: &Headers, request: bool, dl: Deadline) -> Result<Vec<u8>, io::Error> {
+fun read_body(r &mut BufReader<Conn>, h &Headers, request bool, dl Deadline) result<Vec<u8>, io::Error> {
 	body mut := Vec::new()
 	te := match h.get("Transfer-Encoding") {
 		Some(v) => v.to_lower(),
-		None => String::new(),
+		None => string::new(),
 	}
 	if te.contains("chunked") {
 		loop {
@@ -770,7 +770,7 @@ fn read_body(r: &mut BufReader<Conn>, h: &Headers, request: bool, dl: Deadline) 
 }
 
 // Fills `buf`, re-arming the deadline every 64 KiB.
-fn fill(r: &mut BufReader<Conn>, buf: &mut [u8], dl: Deadline) -> Result<(), io::Error> {
+fun fill(r &mut BufReader<Conn>, buf &mut [u8], dl Deadline) result<void, io::Error> {
 	at mut := 0
 	while at < buf.len() {
 		end := if buf.len() - at > 65536 { at + 65536 } else { buf.len() }
@@ -778,12 +778,12 @@ fn fill(r: &mut BufReader<Conn>, buf: &mut [u8], dl: Deadline) -> Result<(), io:
 		r.read_exact(&mut buf[at..end])?
 		at = end
 	}
-	return Ok(())
+	return Ok()
 }
 
 // Writes a response with Content-Length and Connection headers.
-fn write_response(conn: &mut Conn, resp: &Response, keep: bool, head: bool) -> Result<(), io::Error> {
-	out mut := String::new()
+fun write_response(conn &mut Conn, resp &Response, keep bool, head bool) result<void, io::Error> {
+	out mut := string::new()
 	out.push("HTTP/1.1 {resp.status} {status_text(resp.status)}\r\n")
 	for (k, v) in resp.headers.entries() {
 		if k.eq_ignore_ascii_case("Content-Length") || k.eq_ignore_ascii_case("Connection") {
@@ -798,24 +798,24 @@ fn write_response(conn: &mut Conn, resp: &Response, keep: bool, head: bool) -> R
 	if !head {
 		conn.write_all(resp.body.as_slice())?
 	}
-	return Ok(())
+	return Ok()
 }
 
 // ----- client --------------------------------------------------------------------------
 
 // Fetches `url` with GET, using a default `Client`.
-pub fn get(url: &str) -> Result<Response, io::Error> {
+pub fun get(url &str) result<Response, io::Error> {
 	return Client::new().get(url)
 }
 
 // Sends `body` to `url` with POST, using a default `Client`.
-pub fn post(url: &str, content_type: &str, body: &[u8]) -> Result<Response, io::Error> {
+pub fun post(url &str, content_type &str, body &[u8]) result<Response, io::Error> {
 	return Client::new().post(url, content_type, body)
 }
 
 // Sends a request whose target is a full "http://host[:port]/path" URL,
 // using a default `Client`.
-pub fn send(req: Request) -> Result<Response, io::Error> {
+pub fun send(req Request) result<Response, io::Error> {
 	return Client::new().send(req)
 }
 
@@ -823,23 +823,23 @@ pub fn send(req: Request) -> Result<Response, io::Error> {
 //
 //	c := http::Client::new().with_timeout(Some(time::secs(5)))
 //	resp := c.get("http://example.com/")?
-#[derive(Clone)]
+@derive(Clone)
 pub struct Client {
-	timeout: Option<Duration>,
-	connect_timeout: Option<Duration>,
-	tls: Option<Arc<tls::ClientConfig>>,
+	timeout option<Duration>,
+	connect_timeout option<Duration>,
+	tls option<Arc<tls::ClientConfig>>,
 }
 
 impl Client {
 	// A client with no overall time limit that gives up connecting after
 	// 30 seconds (like Go's default transport).
-	pub fn new() -> Client {
+	pub fun new() Client {
 		return Client { timeout: None, connect_timeout: Some(time::secs(30)), tls: None }
 	}
 
 	// Uses `cfg` for https:// URLs instead of the default (the Mozilla
 	// roots), e.g. to trust a private certificate authority.
-	pub fn with_tls_config(self, cfg: tls::ClientConfig) -> Client {
+	pub fun with_tls_config(self, cfg tls::ClientConfig) Client {
 		c mut := self
 		c.tls = Some(Arc::new(cfg))
 		return c
@@ -847,32 +847,32 @@ impl Client {
 
 	// Limits a whole exchange (connecting, sending, and reading the full
 	// response) to `d`. Running out fails with `ErrorKind::TimedOut`.
-	pub fn with_timeout(self, d: Option<Duration>) -> Client {
+	pub fun with_timeout(self, d option<Duration>) Client {
 		c mut := self
 		c.timeout = d
 		return c
 	}
 
 	// Limits connecting to `d`.
-	pub fn with_connect_timeout(self, d: Option<Duration>) -> Client {
+	pub fun with_connect_timeout(self, d option<Duration>) Client {
 		c mut := self
 		c.connect_timeout = d
 		return c
 	}
 
 	// Fetches `url` with GET.
-	pub fn get(&self, url: &str) -> Result<Response, io::Error> {
+	pub fun get(&self, url &str) result<Response, io::Error> {
 		return self.send(Request::new("GET", url))
 	}
 
 	// Sends `body` to `url` with POST.
-	pub fn post(&self, url: &str, content_type: &str, body: &[u8]) -> Result<Response, io::Error> {
+	pub fun post(&self, url &str, content_type &str, body &[u8]) result<Response, io::Error> {
 		return self.send(Request::new("POST", url).with_header("Content-Type", content_type).with_body(body))
 	}
 
 	// Sends a request whose target is a full "http://host[:port]/path" URL
 	// and reads the response. Redirects are not followed.
-	pub fn send(&self, req: Request) -> Result<Response, io::Error> {
+	pub fun send(&self, req Request) result<Response, io::Error> {
 		match &self.tls {
 			Some(c) => return exchange(req, self.timeout, self.connect_timeout, Some(&**c)),
 			None => return exchange(req, self.timeout, self.connect_timeout, None),
@@ -880,7 +880,7 @@ impl Client {
 	}
 }
 
-fn exchange(req: Request, timeout: Option<Duration>, connect_timeout: Option<Duration>, tls_cfg: Option<&tls::ClientConfig>) -> Result<Response, io::Error> {
+fun exchange(req Request, timeout option<Duration>, connect_timeout option<Duration>, tls_cfg option<&tls::ClientConfig>) result<Response, io::Error> {
 	url := req.target.as_str()
 	(rest, secure) := match url.strip_prefix("http://") {
 		Some(r) => (r, false),
@@ -926,7 +926,7 @@ fn exchange(req: Request, timeout: Option<Duration>, connect_timeout: Option<Dur
 	} else {
 		Conn::Plain(tcp)
 	}
-	out mut := String::new()
+	out mut := string::new()
 	out.push("{req.method} {path} HTTP/1.1\r\nHost: {hostport}\r\n")
 	for (k, v) in req.headers.entries() {
 		if k.eq_ignore_ascii_case("Host") || k.eq_ignore_ascii_case("Content-Length") || k.eq_ignore_ascii_case("Connection") {
@@ -968,7 +968,7 @@ fn exchange(req: Request, timeout: Option<Duration>, connect_timeout: Option<Dur
 
 // ----- helpers ------------------------------------------------------------------------
 
-fn parse_dec(s: &str) -> Option<usize> {
+fun parse_dec(s &str) option<usize> {
 	if s.is_empty() || s.len() > 18 {
 		return None
 	}
@@ -982,7 +982,7 @@ fn parse_dec(s: &str) -> Option<usize> {
 	return Some(n)
 }
 
-fn parse_hex(s: &str) -> Option<usize> {
+fun parse_hex(s &str) option<usize> {
 	if s.is_empty() || s.len() > 15 {
 		return None
 	}
@@ -1002,7 +1002,7 @@ fn parse_hex(s: &str) -> Option<usize> {
 	return Some(n)
 }
 
-fn hex_val(c: u8) -> i64 {
+fun hex_val(c u8) i64 {
 	if c >= 48 && c <= 57 {
 		return (c - 48) as i64
 	}
@@ -1016,7 +1016,7 @@ fn hex_val(c: u8) -> i64 {
 }
 
 // Decodes `%XX` escapes and `+` (as a space) in a query component.
-pub fn unescape(s: &str) -> String {
+pub fun unescape(s &str) string {
 	b := s.as_bytes()
 	out mut := Vec::new()
 	i mut := 0
@@ -1032,14 +1032,14 @@ pub fn unescape(s: &str) -> String {
 		}
 		i += 1
 	}
-	return String::from_utf8_lossy(out.as_slice())
+	return string::from_utf8_lossy(out.as_slice())
 }
 
 // Encodes a query component: letters, digits, and `-_.~` stay; spaces
 // become `+`; everything else becomes `%XX`.
-pub fn escape(s: &str) -> String {
+pub fun escape(s &str) string {
 	hex := "0123456789ABCDEF".as_bytes()
-	out mut := String::new()
+	out mut := string::new()
 	for c in s.as_bytes() {
 		ch := *c
 		keep := (ch >= 48 && ch <= 57) || (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || ch == 45 || ch == 95 || ch == 46 || ch == 126

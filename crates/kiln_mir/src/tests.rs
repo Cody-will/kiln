@@ -19,21 +19,21 @@ fn dump(src: &str) -> String {
 
 #[test]
 fn moves_and_copies() {
-    let d = dump("fn take(s: String) {}\nfn main() {\n s := String::from(\"a\")\n n := 1\n m := n\n take(s)\n}");
+    let d = dump("fun take(s string) {}\nfun main() {\n s := string::from(\"a\")\n n := 1\n m := n\n take(s)\n}");
     assert!(d.contains("(move _"), "{d}");
     assert!(d.contains("= copy _"), "{d}");
 }
 
 #[test]
 fn borrows_and_storage_dead() {
-    let d = dump("fn main() {\n x := 1\n r := &x\n}");
+    let d = dump("fun main() {\n x := 1\n r := &x\n}");
     assert!(d.contains("= &_1"), "{d}");
     assert!(d.contains("dead _1"), "{d}");
 }
 
 #[test]
 fn method_autoref_and_two_phase_order() {
-    let d = dump("fn main() {\n v mut := Vec::new()\n v.push(v.len())\n}");
+    let d = dump("fun main() {\n v mut := Vec::new()\n v.push(v.len())\n}");
     let push_ref = d.find("&mut _1").expect(&d);
     let len_ref = d.find("= &_1").expect(&d);
     assert!(len_ref < push_ref, "len's borrow must come first:\n{d}");
@@ -41,19 +41,19 @@ fn method_autoref_and_two_phase_order() {
 
 #[test]
 fn field_through_reference() {
-    let d = dump("struct P {\n x: i32,\n}\nfn f(p: &P) -> i32 {\n return p.x\n}\nfn main() {}");
+    let d = dump("struct P {\n x i32,\n}\nfun f(p &P) i32 {\n return p.x\n}\nfun main() {}");
     assert!(d.contains("copy (*_1).x"), "{d}");
 }
 
 #[test]
 fn match_ergonomics_bind_by_ref() {
-    let d = dump("enum E {\n A(String),\n B,\n}\nfn f(e: &E) {\n match e {\n E::A(s) => println(s),\n E::B => {},\n }\n}\nfn main() {}");
+    let d = dump("enum E {\n A(string),\n B,\n}\nfun f(e &E) {\n match e {\n E::A(s) => println(s),\n E::B => {},\n }\n}\nfun main() {}");
     assert!(d.contains("&(*_1).A.0"), "{d}");
 }
 
 #[test]
 fn closures_get_their_own_body_and_captures() {
-    let b = lower("fn main() {\n x mut := 0\n f := || {\n x += 1\n }\n f()\n}");
+    let b = lower("fun main() {\n x mut := 0\n f := || {\n x += 1\n }\n f()\n}");
     assert_eq!(b.len(), 2);
     assert_eq!(b[1].kind, BodyKind::Closure);
     assert!(b[0].to_string().contains("&mut _1"), "{}", b[0]);
@@ -61,7 +61,7 @@ fn closures_get_their_own_body_and_captures() {
 
 #[test]
 fn go_block_spawn() {
-    let d = dump("fn main() {\n s := String::from(\"x\")\n go move {\n println(s)\n }\n}");
+    let d = dump("fun main() {\n s := string::from(\"x\")\n go move {\n println(s)\n }\n}");
     assert!(
         d.contains("spawn GoBlock { is_move: true } (move _1) captures [s:Move]"),
         "{d}"
@@ -70,7 +70,7 @@ fn go_block_spawn() {
 
 #[test]
 fn defer_runs_in_exit_block() {
-    let b = lower("fn main() {\n defer println(\"bye\")\n x := 1\n}");
+    let b = lower("fun main() {\n defer println(\"bye\")\n x := 1\n}");
     let exit = &b[0].blocks[1];
     let Terminator::DeferDispatch { targets, done } = &exit.term else {
         panic!("{}", b[0])
@@ -91,7 +91,7 @@ fn defer_runs_in_exit_block() {
 
 #[test]
 fn signature_flows() {
-    let src = "fn first<'a>(a: &'a str, b: &str) -> &'a str {\n return a\n}\nfn one(a: &str) -> &str {\n return a\n}\nfn none(a: &str) -> i32 {\n return 1\n}\nfn main() {}";
+    let src = "fun first<'a>(a &'a str, b &str) &'a str {\n return a\n}\nfun one(a &str) &str {\n return a\n}\nfun none(a &str) i32 {\n return 1\n}\nfun main() {}";
     let b = lower(src);
     assert_eq!(b[0].return_flows, Some(vec![0]));
     assert_eq!(b[1].return_flows, Some(vec![0]));

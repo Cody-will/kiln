@@ -11,7 +11,7 @@
 
 import std::io
 
-const K: [u32; 64] = [
+const K [u32; 64] = [
 	0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
 	0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
 	0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
@@ -23,22 +23,22 @@ const K: [u32; 64] = [
 ]
 
 // Digest size in bytes.
-pub const SIZE: usize = 32
+pub const SIZE usize = 32
 
 // Block size in bytes.
-pub const BLOCK_SIZE: usize = 64
+pub const BLOCK_SIZE usize = 64
 
 // A streaming SHA-256 hasher.
 pub struct Sha256 {
-	h: [u32; 8],
-	buf: [u8; 64],
-	nbuf: usize,
-	len: u64,
+	h [u32; 8],
+	buf [u8; 64],
+	nbuf usize,
+	len u64,
 }
 
 impl Sha256 {
 	// A fresh hasher.
-	pub fn new() -> Sha256 {
+	pub fun new() Sha256 {
 		return Sha256 {
 			h: [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19],
 			buf: [0 as u8; 64],
@@ -48,7 +48,7 @@ impl Sha256 {
 	}
 
 	// Feeds more data.
-	pub fn update(&mut self, data: &[u8]) {
+	pub fun update(&mut self, data &[u8]) {
 		self.len += data.len() as u64
 		i mut := 0
 		while i < data.len() {
@@ -69,7 +69,7 @@ impl Sha256 {
 	}
 
 	// The digest of everything fed so far. The hasher can keep going.
-	pub fn finish(&self) -> [u8; 32] {
+	pub fun finish(&self) [u8; 32] {
 		d mut := Sha256 { h: self.h, buf: self.buf, nbuf: self.nbuf, len: self.len }
 		bits := d.len * 8
 		pad mut := [0 as u8; 72]
@@ -89,11 +89,11 @@ impl Sha256 {
 	}
 
 	// Starts over.
-	pub fn reset(&mut self) {
+	pub fun reset(&mut self) {
 		*self = Sha256::new()
 	}
 
-	fn block(&mut self, p: &[u8]) {
+	fun block(&mut self, p &[u8]) {
 		w mut := [0 as u32; 64]
 		for i in 0..16 {
 			w[i] = ((p[4 * i] as u32) << 24) | ((p[4 * i + 1] as u32) << 16) | ((p[4 * i + 2] as u32) << 8) | (p[4 * i + 3] as u32)
@@ -139,21 +139,21 @@ impl Sha256 {
 }
 
 impl io::Write for Sha256 {
-	fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
+	fun write(&mut self, buf &[u8]) result<usize, io::Error> {
 		self.update(buf)
 		return Ok(buf.len())
 	}
 }
 
 // The SHA-256 digest of `data`.
-pub fn sum(data: &[u8]) -> [u8; 32] {
+pub fun sum(data &[u8]) [u8; 32] {
 	h mut := Sha256::new()
 	h.update(data)
 	return h.finish()
 }
 
 // The SHA-256 digest of `data` as lowercase hex.
-pub fn hex(data: &[u8]) -> String {
+pub fun hex(data &[u8]) string {
 	d := sum(data)
 	return std::encoding::hex::encode(&d)
 }

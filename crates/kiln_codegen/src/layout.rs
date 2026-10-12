@@ -126,7 +126,7 @@ impl Codegen<'_, '_> {
             // Channel ends and task handles point to runtime objects.
             Ty::ChanSend(_) | Ty::ChanRecv(_) => word,
             Ty::Adt(..) if self.is_lang(t, "Task") => word,
-            Ty::Adt(..) if self.is_lang(t, "String") || self.is_lang(t, "Vec") => {
+            Ty::Adt(..) if self.is_lang(t, "string") || self.is_lang(t, "Vec") => {
                 Layout { size: 24, align: 8 }
             }
             Ty::Adt(_, a) if self.is_lang(t, "Range") => {
@@ -258,7 +258,7 @@ impl Codegen<'_, '_> {
         self.needs_drop_cache.insert(key.clone(), false); // cycle guard
         let b = match t {
             Ty::Adt(..)
-                if self.is_lang(t, "String")
+                if self.is_lang(t, "string")
                     || self.is_lang(t, "Vec")
                     || self.is_lang(t, "Box") =>
             {

@@ -1,14 +1,14 @@
-fn check(n: i32) -> Result<i32, String> {
+fun check(n i32) result<i32, string> {
 	if n > 10 {
 		return Err("{n} is too big")
 	}
 	return Ok(n)
 }
 
-fn main() -> Result<(), String> {
+fun main() result<void, string> {
 	a := check(5)?
 	println("a = {a}")
 	b := check(50)?
 	println("b = {b}")
-	return Ok(())
+	return Ok()
 }

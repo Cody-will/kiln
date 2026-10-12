@@ -1,11 +1,11 @@
-fn main() {
+fun main() {
 	(tx, rx) := chan::<i32>(0)
-	(qtx, qrx) := chan::<String>(1)
+	(qtx, qrx) := chan::<string>(1)
 	go move {
 		for i in 0..3 {
 			tx <- i
 		}
-		qtx <- String::from("quit")
+		qtx <- string::from("quit")
 	}
 	loop {
 		select {
@@ -20,7 +20,7 @@ fn main() {
 	r1 := btx.try_send(1)
 	r2 := btx.try_send(2)
 	match btx.try_send(3) {
-		Ok(()) => println("sent 3?"),
+		Ok() => println("sent 3?"),
 		Err(TrySendError::Full(v)) => println("full, got back {v}"),
 		Err(TrySendError::Closed(v)) => println("closed, got back {v}"),
 	}

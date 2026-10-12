@@ -19,7 +19,7 @@ fn kiln(args: &[&str]) -> (i32, String, String) {
 fn lex_prints_tokens_with_positions() {
     let (code, out, _) = kiln(&["lex", "examples/hello.kn"]);
     assert_eq!(code, 0);
-    assert!(out.starts_with("1:1\tKeyword(Fn)\n1:4\tIdent(\"main\")"));
+    assert!(out.starts_with("1:1\tKeyword(Fn)\n1:5\tIdent(\"main\")"));
     assert!(out.contains("Semi (newline)"));
 }
 
@@ -36,7 +36,7 @@ fn errors_are_rendered_and_exit_nonzero() {
     let dir = std::env::temp_dir().join("kiln_cli_test");
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("bad.kn");
-    std::fs::write(&file, "fn main() {\n\tx := 1 +\n}\n").unwrap();
+    std::fs::write(&file, "fun main() {\n\tx := 1 +\n}\n").unwrap();
     let (code, _, err) = kiln(&["parse", file.to_str().unwrap()]);
     assert_eq!(code, 1);
     assert!(
@@ -68,7 +68,7 @@ fn check_reports_type_errors_with_caret() {
     let dir = std::env::temp_dir().join("kiln_cli_check_test");
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("bad.kn");
-    std::fs::write(&file, "fn f() -> i32 {\n\treturn true\n}\n\nfn main() {}\n").unwrap();
+    std::fs::write(&file, "fun f() i32 {\n\treturn true\n}\n\nfun main() {}\n").unwrap();
     let (code, _, err) = kiln(&["check", file.to_str().unwrap()]);
     assert_eq!(code, 1);
     assert!(
@@ -86,7 +86,7 @@ fn check_reports_borrow_errors_with_notes() {
     let file = dir.join("moved.kn");
     std::fs::write(
         &file,
-        "fn take(s: String) {}\n\nfn main() {\n\ts := String::from(\"hi\")\n\ttake(s)\n\ttake(s)\n}\n",
+        "fun take(s string) {}\n\nfun main() {\n\ts := string::from(\"hi\")\n\ttake(s)\n\ttake(s)\n}\n",
     )
     .unwrap();
     let (code, _, err) = kiln(&["check", file.to_str().unwrap()]);

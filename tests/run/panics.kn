@@ -1,4 +1,4 @@
-fn main() {
+fun main() {
 	v mut := Vec::new()
 	v.push(1)
 	println("before")

@@ -19,66 +19,66 @@ import std::io
 import std::io::{Read, Write}
 import std::net::{split_host_port, TcpStream}
 
-fn kn_tls_client_config(extra: &[u8], insecure: i32, err: &mut [u8]) -> i64
-fn kn_tls_client_config_free(c: i64)
-fn kn_tls_server_config(cert: &[u8], key: &[u8], err: &mut [u8]) -> i64
-fn kn_tls_server_config_free(s: i64)
-fn kn_tls_client(cfg: i64, host: &[u8], err: &mut [u8]) -> i64
-fn kn_tls_server(cfg: i64) -> i64
-fn kn_tls_free(c: i64)
-fn kn_tls_read_tls(c: i64, buf: &[u8]) -> i64
-fn kn_tls_write_tls(c: i64, buf: &mut [u8]) -> i64
-fn kn_tls_wants_write(c: i64) -> i32
-fn kn_tls_handshaking(c: i64) -> i32
-fn kn_tls_read(c: i64, buf: &mut [u8]) -> i64
-fn kn_tls_write(c: i64, buf: &[u8]) -> i64
-fn kn_tls_close(c: i64)
-fn kn_tls_error(c: i64, out: &mut [u8]) -> usize
-fn kn_tls_version(c: i64) -> i32
+fun kn_tls_client_config(extra &[u8], insecure i32, err &mut [u8]) i64
+fun kn_tls_client_config_free(c i64)
+fun kn_tls_server_config(cert &[u8], key &[u8], err &mut [u8]) i64
+fun kn_tls_server_config_free(s i64)
+fun kn_tls_client(cfg i64, host &[u8], err &mut [u8]) i64
+fun kn_tls_server(cfg i64) i64
+fun kn_tls_free(c i64)
+fun kn_tls_read_tls(c i64, buf &[u8]) i64
+fun kn_tls_write_tls(c i64, buf &mut [u8]) i64
+fun kn_tls_wants_write(c i64) i32
+fun kn_tls_handshaking(c i64) i32
+fun kn_tls_read(c i64, buf &mut [u8]) i64
+fun kn_tls_write(c i64, buf &[u8]) i64
+fun kn_tls_close(c i64)
+fun kn_tls_error(c i64, out &mut [u8]) usize
+fun kn_tls_version(c i64) i32
 
-fn tls_error(msg: &str) -> io::Error {
+fun tls_error(msg &str) io::Error {
 	return io::Error::new(io::ErrorKind::InvalidData, "tls: {msg}")
 }
 
 // A buffer for an error message from the TLS library.
-fn errbuf() -> Vec<u8> {
+fun errbuf() Vec<u8> {
 	b mut := Vec::new()
 	b.resize(512, 0 as u8)
 	return b
 }
 
-fn message(buf: &[u8]) -> String {
+fun message(buf &[u8]) string {
 	end mut := 0
 	while end < buf.len() && buf[end] != 0 {
 		end += 1
 	}
-	return String::from_utf8_lossy(&buf[0..end])
+	return string::from_utf8_lossy(&buf[0..end])
 }
 
 // What a client trusts.
 pub struct ClientConfig {
-	h: i64,
+	h i64,
 }
 
 impl ClientConfig {
 	// Trusts the Mozilla root certificates.
-	pub fn new() -> Result<ClientConfig, io::Error> {
+	pub fun new() result<ClientConfig, io::Error> {
 		return ClientConfig::make(b"", 0)
 	}
 
 	// Trusts the Mozilla roots plus the PEM certificates in `pem` (for
 	// private certificate authorities and self-signed servers).
-	pub fn with_roots_pem(pem: &[u8]) -> Result<ClientConfig, io::Error> {
+	pub fun with_roots_pem(pem &[u8]) result<ClientConfig, io::Error> {
 		return ClientConfig::make(pem, 0)
 	}
 
 	// Accepts any certificate without checking it. Only for tests: it makes
 	// the connection open to interception.
-	pub fn insecure_skip_verify() -> Result<ClientConfig, io::Error> {
+	pub fun insecure_skip_verify() result<ClientConfig, io::Error> {
 		return ClientConfig::make(b"", 1)
 	}
 
-	fn make(pem: &[u8], insecure: i32) -> Result<ClientConfig, io::Error> {
+	fun make(pem &[u8], insecure i32) result<ClientConfig, io::Error> {
 		e mut := errbuf()
 		h := kn_tls_client_config(pem, insecure, e.as_mut_slice())
 		if h == 0 {
@@ -89,20 +89,20 @@ impl ClientConfig {
 }
 
 impl Drop for ClientConfig {
-	fn drop(&mut self) {
+	fun drop(&mut self) {
 		kn_tls_client_config_free(self.h)
 	}
 }
 
 // A server's certificate chain and private key.
 pub struct ServerConfig {
-	h: i64,
+	h i64,
 }
 
 impl ServerConfig {
 	// From a PEM certificate chain (leaf first) and a PEM private key
 	// (PKCS#8, PKCS#1, or SEC1).
-	pub fn from_pem(cert: &[u8], key: &[u8]) -> Result<ServerConfig, io::Error> {
+	pub fun from_pem(cert &[u8], key &[u8]) result<ServerConfig, io::Error> {
 		e mut := errbuf()
 		h := kn_tls_server_config(cert, key, e.as_mut_slice())
 		if h == 0 {
@@ -112,7 +112,7 @@ impl ServerConfig {
 	}
 
 	// Reads the certificate chain and key from PEM files.
-	pub fn from_files(cert_path: &str, key_path: &str) -> Result<ServerConfig, io::Error> {
+	pub fun from_files(cert_path &str, key_path &str) result<ServerConfig, io::Error> {
 		cert := fs::read(cert_path)?
 		key := fs::read(key_path)?
 		return ServerConfig::from_pem(&cert, &key)
@@ -120,7 +120,7 @@ impl ServerConfig {
 }
 
 impl Drop for ServerConfig {
-	fn drop(&mut self) {
+	fun drop(&mut self) {
 		kn_tls_server_config_free(self.h)
 	}
 }
@@ -128,15 +128,15 @@ impl Drop for ServerConfig {
 // An encrypted stream over a TCP connection. Reads and writes need
 // `&mut self`, since both drive one protocol state machine.
 pub struct TlsStream {
-	tcp: TcpStream,
-	c: i64,
-	scratch: Vec<u8>,
+	tcp TcpStream,
+	c i64,
+	scratch Vec<u8>,
 }
 
 impl TlsStream {
 	// Connects to `addr` ("host:port") and completes the handshake,
 	// checking the certificate against `host`.
-	pub fn connect(addr: &str, cfg: &ClientConfig) -> Result<TlsStream, io::Error> {
+	pub fun connect(addr &str, cfg &ClientConfig) result<TlsStream, io::Error> {
 		(host, _) := split_host_port(addr)?
 		h := match host.strip_prefix("[") {
 			Some(x) => x.strip_suffix("]").unwrap_or(x),
@@ -148,7 +148,7 @@ impl TlsStream {
 
 	// Runs the client side of the handshake over `tcp`; `host` is the name
 	// the certificate must match (and is sent as SNI).
-	pub fn client(tcp: TcpStream, host: &str, cfg: &ClientConfig) -> Result<TlsStream, io::Error> {
+	pub fun client(tcp TcpStream, host &str, cfg &ClientConfig) result<TlsStream, io::Error> {
 		e mut := errbuf()
 		c := kn_tls_client(cfg.h, host.as_bytes(), e.as_mut_slice())
 		if c == 0 {
@@ -160,7 +160,7 @@ impl TlsStream {
 	}
 
 	// Runs the server side of the handshake over an accepted `tcp`.
-	pub fn server(tcp: TcpStream, cfg: &ServerConfig) -> Result<TlsStream, io::Error> {
+	pub fun server(tcp TcpStream, cfg &ServerConfig) result<TlsStream, io::Error> {
 		c := kn_tls_server(cfg.h)
 		if c == 0 {
 			return Err(tls_error("could not start a server connection"))
@@ -170,33 +170,33 @@ impl TlsStream {
 		return Ok(s)
 	}
 
-	fn wrap(tcp: TcpStream, c: i64) -> TlsStream {
+	fun wrap(tcp TcpStream, c i64) TlsStream {
 		scratch mut := Vec::new()
 		scratch.resize(18432, 0 as u8)
 		return TlsStream { tcp: tcp, c: c, scratch: scratch }
 	}
 
 	// The underlying TCP stream (for timeouts and addresses).
-	pub fn tcp(&self) -> &TcpStream {
+	pub fun tcp(&self) &TcpStream {
 		return &self.tcp
 	}
 
 	// The negotiated version: 12 for TLS 1.2, 13 for TLS 1.3.
-	pub fn version(&self) -> i32 {
+	pub fun version(&self) i32 {
 		return kn_tls_version(self.c)
 	}
 
-	fn last_error(&self) -> io::Error {
+	fun last_error(&self) io::Error {
 		e mut := errbuf()
 		n := kn_tls_error(self.c, e.as_mut_slice())
 		if n < e.len() {
 			e.truncate(n)
 		}
-		return tls_error(&String::from_utf8_lossy(&e))
+		return tls_error(&string::from_utf8_lossy(&e))
 	}
 
 	// Sends any ciphertext the protocol has queued.
-	fn flush_tls(&mut self) -> Result<(), io::Error> {
+	fun flush_tls(&mut self) result<void, io::Error> {
 		while kn_tls_wants_write(self.c) != 0 {
 			n := kn_tls_write_tls(self.c, self.scratch.as_mut_slice())
 			if n < 0 {
@@ -204,11 +204,11 @@ impl TlsStream {
 			}
 			self.tcp.write_all(&self.scratch[0..n as usize])?
 		}
-		return Ok(())
+		return Ok()
 	}
 
 	// Reads ciphertext from the socket into the protocol. False at EOF.
-	fn fill_tls(&mut self) -> Result<bool, io::Error> {
+	fun fill_tls(&mut self) result<bool, io::Error> {
 		m := self.tcp.read(self.scratch.as_mut_slice())?
 		if m == 0 {
 			return Ok(false)
@@ -227,7 +227,7 @@ impl TlsStream {
 		return Ok(true)
 	}
 
-	fn handshake(&mut self) -> Result<(), io::Error> {
+	fun handshake(&mut self) result<void, io::Error> {
 		while kn_tls_handshaking(self.c) != 0 {
 			if kn_tls_wants_write(self.c) != 0 {
 				self.flush_tls()?
@@ -241,7 +241,7 @@ impl TlsStream {
 	}
 
 	// Sends close_notify, telling the peer no more data follows.
-	pub fn close(&mut self) -> Result<(), io::Error> {
+	pub fun close(&mut self) result<void, io::Error> {
 		kn_tls_close(self.c)
 		return self.flush_tls()
 	}
@@ -251,7 +251,7 @@ impl Read for TlsStream {
 	// Reads decrypted data; 0 once the peer has closed with close_notify.
 	// A peer that drops the connection without close_notify gives an
 	// `UnexpectedEof` error (the data may have been cut short).
-	fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+	fun read(&mut self, buf &mut [u8]) result<usize, io::Error> {
 		if buf.len() == 0 {
 			return Ok(0)
 		}
@@ -272,7 +272,7 @@ impl Read for TlsStream {
 }
 
 impl Write for TlsStream {
-	fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
+	fun write(&mut self, buf &[u8]) result<usize, io::Error> {
 		n := kn_tls_write(self.c, buf)
 		if n < 0 {
 			return Err(self.last_error())
@@ -283,7 +283,7 @@ impl Write for TlsStream {
 }
 
 impl Drop for TlsStream {
-	fn drop(&mut self) {
+	fun drop(&mut self) {
 		kn_tls_free(self.c)
 	}
 }

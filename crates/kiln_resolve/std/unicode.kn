@@ -5,18 +5,18 @@
 //	unicode::is_letter('é')   // true
 //	unicode::to_upper('ß')    // 'ß' (no single-character uppercase)
 
-fn kn_unicode_is(c: i64, class: i64) -> i64
-fn kn_unicode_to(c: i64, upper: i64) -> i64
+fun kn_unicode_is(c i64, class i64) i64
+fun kn_unicode_to(c i64, upper i64) i64
 
 // The version of Unicode the tables come from.
-pub const VERSION: &str = "15.1.0"
+pub const VERSION &str = "15.1.0"
 
-fn class(c: char, k: i64) -> bool {
+fun class(c char, k i64) bool {
 	return kn_unicode_is(c as i64, k) != 0
 }
 
 // A letter (categories L and Nl).
-pub fn is_letter(c: char) -> bool {
+pub fun is_letter(c char) bool {
 	if c.is_ascii() {
 		return c.is_ascii_alphabetic()
 	}
@@ -24,7 +24,7 @@ pub fn is_letter(c: char) -> bool {
 }
 
 // A decimal digit (category Nd), in any script.
-pub fn is_digit(c: char) -> bool {
+pub fun is_digit(c char) bool {
 	if c.is_ascii() {
 		return c.is_ascii_digit()
 	}
@@ -32,7 +32,7 @@ pub fn is_digit(c: char) -> bool {
 }
 
 // Any number (category N): digits, Roman numerals, fractions, ...
-pub fn is_number(c: char) -> bool {
+pub fun is_number(c char) bool {
 	if c.is_ascii() {
 		return c.is_ascii_digit()
 	}
@@ -40,7 +40,7 @@ pub fn is_number(c: char) -> bool {
 }
 
 // An uppercase or titlecase letter (Lu, Lt).
-pub fn is_upper(c: char) -> bool {
+pub fun is_upper(c char) bool {
 	if c.is_ascii() {
 		return c.is_ascii_uppercase()
 	}
@@ -48,7 +48,7 @@ pub fn is_upper(c: char) -> bool {
 }
 
 // A lowercase letter (Ll).
-pub fn is_lower(c: char) -> bool {
+pub fun is_lower(c char) bool {
 	if c.is_ascii() {
 		return c.is_ascii_lowercase()
 	}
@@ -56,7 +56,7 @@ pub fn is_lower(c: char) -> bool {
 }
 
 // Punctuation (category P).
-pub fn is_punct(c: char) -> bool {
+pub fun is_punct(c char) bool {
 	if c.is_ascii() {
 		return c.is_ascii_punctuation() && !is_symbol(c)
 	}
@@ -64,23 +64,23 @@ pub fn is_punct(c: char) -> bool {
 }
 
 // A symbol (category S): math, currency, modifiers, other.
-pub fn is_symbol(c: char) -> bool {
+pub fun is_symbol(c char) bool {
 	return class(c, 6)
 }
 
 // A combining mark (category M).
-pub fn is_mark(c: char) -> bool {
+pub fun is_mark(c char) bool {
 	return !c.is_ascii() && class(c, 7)
 }
 
 // A control character (Cc).
-pub fn is_control(c: char) -> bool {
+pub fun is_control(c char) bool {
 	n := c as u32
 	return n < 32 || (n >= 127 && n < 160)
 }
 
 // White space (the Unicode White_Space property).
-pub fn is_space(c: char) -> bool {
+pub fun is_space(c char) bool {
 	if c.is_ascii() {
 		return c.is_ascii_whitespace() || c as u32 == 11
 	}
@@ -88,7 +88,7 @@ pub fn is_space(c: char) -> bool {
 }
 
 // The uppercase form of `c` when it is a single character, else `c`.
-pub fn to_upper(c: char) -> char {
+pub fun to_upper(c char) char {
 	if c.is_ascii() {
 		return c.to_ascii_uppercase()
 	}
@@ -96,7 +96,7 @@ pub fn to_upper(c: char) -> char {
 }
 
 // The lowercase form of `c` when it is a single character, else `c`.
-pub fn to_lower(c: char) -> char {
+pub fun to_lower(c char) char {
 	if c.is_ascii() {
 		return c.to_ascii_lowercase()
 	}

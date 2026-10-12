@@ -1,7 +1,7 @@
 import std::flag
 import std::time
 
-fn strs(a: &[&str]) -> Vec<String> {
+fun strs(a &[&str]) Vec<string> {
 	out mut := Vec::new()
 	for s in a.iter() {
 		out.push(s.to_string())
@@ -9,7 +9,7 @@ fn strs(a: &[&str]) -> Vec<String> {
 	return out
 }
 
-fn setup() -> flag::FlagSet {
+fun setup() flag::FlagSet {
 	fs mut := flag::FlagSet::new("server")
 	fs.string("addr", ":8080", "address to listen on")
 	fs.int("workers", 4, "number of worker tasks")
@@ -20,10 +20,10 @@ fn setup() -> flag::FlagSet {
 	return fs
 }
 
-fn main() {
+fun main() {
 	fs mut := setup()
 	match fs.parse(&strs(&["-v", "--addr=:9000", "-workers", "0x10", "--ratio", "2.5", "file.txt", "-x"])) {
-		Ok(()) => {},
+		Ok() => {},
 		Err(e) => println("error {e}"),
 	}
 	println("{fs.get_string("addr")} {fs.get_int("workers")} {fs.get_float("ratio")} {fs.get_bool("v")} {fs.args():?}")
@@ -36,7 +36,7 @@ fn main() {
 	for bad in [["-nope"].to_vec(), ["-workers", "ten"].to_vec(), ["-addr"].to_vec(), ["-v=maybe"].to_vec(), ["-h"].to_vec()].iter() {
 		fs3 mut := setup()
 		match fs3.parse(&strs(bad)) {
-			Ok(()) => println("unexpected ok"),
+			Ok() => println("unexpected ok"),
 			Err(e) => println("{e}"),
 		}
 	}
@@ -45,7 +45,7 @@ fn main() {
 	println("{fs4.get_duration("timeout")} {fs.get_duration("timeout")}")
 	fs5 mut := setup()
 	match fs5.parse(&strs(&["-timeout=soon"])) {
-		Ok(()) => println("unexpected ok"),
+		Ok() => println("unexpected ok"),
 		Err(e) => println("{e}"),
 	}
 	print(fs.usage())

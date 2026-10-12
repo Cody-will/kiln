@@ -1,7 +1,7 @@
 import std::io
 import std::os
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	args := os::args()
 	if args.len() > 1 && args[1] == "child" {
 		// Run by the parent below.

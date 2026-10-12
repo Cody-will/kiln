@@ -262,8 +262,18 @@ impl Fmt<'_> {
         // Unary operators.
         for i in 0..n {
             if is_maybe_unary(self.k(i)) {
-                self.unary[i] =
-                    i == 0 || !is_operand_end(self.k(i - 1)) || self.prev_is_line_end(i);
+                // `x &T`, `s *const u8`: a name followed by a type (a space
+                // before the operator and none after) is a prefix use too.
+                let glued_type = i > 0
+                    && i + 1 < n
+                    && matches!(self.k(i - 1), T::Ident(_) | T::RParen | T::Gt | T::Shr)
+                    && matches!(self.k(i), T::Amp | T::AndAnd | T::Star | T::LArrow)
+                    && self.space_in_source(i - 1)
+                    && !self.space_in_source(i);
+                self.unary[i] = i == 0
+                    || !is_operand_end(self.k(i - 1))
+                    || self.prev_is_line_end(i)
+                    || glued_type;
             }
             // `!` is always prefix (`!=` is its own token); `x!` is a macro.
         }
@@ -526,11 +536,20 @@ impl Fmt<'_> {
         if matches!(nx, RBrace) && self.tight_close(j) {
             return Some(false);
         }
-        // `-> !` (never returns).
-        if matches!(p, Bang) && i > 0 && matches!(self.k(i - 1), Arrow) {
+        // `-> !` / `) !` (never returns).
+        if matches!(p, Bang) && i > 0 && matches!(self.k(i - 1), Arrow | RParen) && self.space_in_source(i - 1) {
+            return Some(true);
+        }
+        // A tuple or array type after a name or a parameter list:
+        // `x (i32, i32)`, `fun f() [u8; 4]`.
+        if matches!(p, RParen | Ident(_)) && matches!(nx, LParen | LBracket) && self.space_in_source(i) {
             return Some(true);
         }
         if matches!(p, LParen | LBracket | Dot | ColonColon | Hash | Bang) {
+            return Some(false);
+        }
+        // `@test`, `@derive(...)`: an attribute (at the start of its line).
+        if matches!(p, At) && (i == 0 || self.newline_after(i - 1) || !matches!(self.k(i - 1), Ident(_))) {
             return Some(false);
         }
         if is_maybe_unary(p) && self.unary[i] {
@@ -615,6 +634,7 @@ impl Fmt<'_> {
         let mut stack: Vec<(usize, usize)> = Vec::new();
         let mut out_lines: Vec<(usize, String, bool, bool)> = Vec::new(); // (depth, text, blank_before, top-level item start)
         let mut prev_last: Option<usize> = None; // last token of the previous code line
+        let mut prev_first: Option<usize> = None; // first token of the previous code line
         let mut prev_was_close_item = false;
         for line in &lines {
             let first_tok = line.elems.iter().find_map(|e| match e {
@@ -643,10 +663,11 @@ impl Fmt<'_> {
                     let open_ends = is_open(pk)
                         || matches!(pk, T::Comma | T::Semi { .. })
                         || pk.ends_statement()
-                        || (matches!(pk, T::Bang) && pl > 0 && matches!(self.k(pl - 1), T::Arrow))
+                        || (matches!(pk, T::Bang) && pl > 0 && matches!(self.k(pl - 1), T::Arrow | T::RParen))
                         || self.add_comma[pl];
                     let in_list_of_opener = stack.last().is_some_and(|(o, _)| *o == pl);
-                    if starts_chain || (!open_ends && !in_list_of_opener && !matches!(pk, T::Hash))
+                    let after_attr = prev_first.is_some_and(|f| matches!(self.k(f), T::At));
+                    if starts_chain || (!open_ends && !in_list_of_opener && !matches!(pk, T::Hash) && !after_attr)
                     {
                         indent += 1;
                     }
@@ -707,6 +728,7 @@ impl Fmt<'_> {
             prev_was_close_item = indent == 0 && leading_close && depth0;
             if last.is_some() {
                 prev_last = last;
+                prev_first = first_tok;
             }
             out_lines.push((indent, text, blank, item_start));
         }

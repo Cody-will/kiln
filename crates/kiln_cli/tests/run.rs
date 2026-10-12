@@ -133,7 +133,7 @@ fn unsupported_features_are_reported_not_miscompiled() {
     let src = dir.join("slice.kn");
     std::fs::write(
         &src,
-        "fn main() {\n\tv := [1, 2, 3]\n\tmatch &v[..] {\n\t\t[a, ..] => println(\"{a}\"),\n\t\t_ => {},\n\t}\n}\n",
+        "fun main() {\n\tv := [1, 2, 3]\n\tmatch &v[..] {\n\t\t[a, ..] => println(\"{a}\"),\n\t\t_ => {},\n\t}\n}\n",
     )
     .unwrap();
     let out = Command::new(kiln())
@@ -159,7 +159,7 @@ fn borrow_errors_stop_the_build() {
     let src = dir.join("moved.kn");
     std::fs::write(
         &src,
-        "fn main() {\n\ts := String::from(\"x\")\n\tt := s\n\tprintln(s)\n\tprintln(t)\n}\n",
+        "fun main() {\n\ts := string::from(\"x\")\n\tt := s\n\tprintln(s)\n\tprintln(t)\n}\n",
     )
     .unwrap();
     let out = Command::new(kiln())
@@ -214,7 +214,7 @@ fn stack_overflow_is_reported_clearly() {
     let src = dir.join("rec.kn");
     std::fs::write(
         &src,
-        "fn rec(n: i64) -> i64 {\n\tif n == 0 {\n\t\treturn 0\n\t}\n\treturn rec(n - 1) + 1\n}\n\nfn main() {\n\ta := [1 as u8; 1000000]\n\tprintln(\"{a[999999]}\")\n\t(ch, done) := chan::<i64>(0)\n\tgo move {\n\t\tch <- rec(1 << 40)\n\t}\n\tprintln(\"{<-done}\")\n}\n",
+        "fun rec(n i64) i64 {\n\tif n == 0 {\n\t\treturn 0\n\t}\n\treturn rec(n - 1) + 1\n}\n\nfun main() {\n\ta := [1 as u8; 1000000]\n\tprintln(\"{a[999999]}\")\n\t(ch, done) := chan::<i64>(0)\n\tgo move {\n\t\tch <- rec(1 << 40)\n\t}\n\tprintln(\"{<-done}\")\n}\n",
     )
     .unwrap();
     let out = Command::new(kiln()).arg("run").arg(&src).output().unwrap();
@@ -225,7 +225,7 @@ fn stack_overflow_is_reported_clearly() {
     // A frame too big for any goroutine stack is a compile-time error.
     std::fs::write(
         &src,
-        "fn main() {\n\ta := [1 as u8; 50000000]\n\tprintln(\"{a[1]}\")\n}\n",
+        "fun main() {\n\ta := [1 as u8; 50000000]\n\tprintln(\"{a[1]}\")\n}\n",
     )
     .unwrap();
     let out = Command::new(kiln())
@@ -245,7 +245,7 @@ fn stack_overflow_is_reported_clearly() {
 fn fmt_check_and_write() {
     let dir = scratch("fmt");
     let src = dir.join("a.kn");
-    std::fs::write(&src, "fn main(){\nx:=1+2\n    println(\"{x}\");\n}\n").unwrap();
+    std::fs::write(&src, "fun main(){\nx:=1+2\n    println(\"{x}\");\n}\n").unwrap();
     let out = Command::new(kiln())
         .arg("fmt")
         .arg("--check")
@@ -258,7 +258,7 @@ fn fmt_check_and_write() {
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(
         std::fs::read_to_string(&src).unwrap(),
-        "fn main() {\n\tx := 1 + 2\n\tprintln(\"{x}\")\n}\n"
+        "fun main() {\n\tx := 1 + 2\n\tprintln(\"{x}\")\n}\n"
     );
     let out = Command::new(kiln())
         .arg("fmt")
@@ -268,7 +268,7 @@ fn fmt_check_and_write() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0));
     // Syntax errors: reported, file untouched.
-    std::fs::write(&src, "fn main( {\n").unwrap();
+    std::fs::write(&src, "fun main( {\n").unwrap();
     let out = Command::new(kiln()).arg("fmt").arg(&src).output().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(out.status.code(), Some(1));
@@ -312,7 +312,7 @@ fn lsp_session() {
     send(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#.into());
     assert!(recv().contains("hoverProvider"));
     send(r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#.into());
-    let text = "fn add(a: i32, b: i32) -> i32 {\n\treturn a + b\n}\n\nfn main() {\n\tx := add(1, 2)\n\tprintln(\"{x}\")\n  y := undefined\n}\n";
+    let text = "fun add(a i32, b i32) i32 {\n\treturn a + b\n}\n\nfun main() {\n\tx := add(1, 2)\n\tprintln(\"{x}\")\n  y := undefined\n}\n";
     let open = format!(
         r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"file:///t.kn","languageId":"kiln","version":1,"text":{}}}}}}}"#,
         json_str(text)
@@ -372,17 +372,17 @@ fn packages_modules_and_dependencies() {
     std::fs::create_dir_all(app.join("src/geo")).unwrap();
     std::fs::write(
         app.join("src/main.kn"),
-        "mod geo\n\nimport geo::Point\nimport util::add\n\nfn main() {\n\tp := Point { x: 2, y: 3 }\n\tprintln(\"{add(p.x, p.y)} {geo::shapes::area(4)}\")\n}\n",
+        "mod geo\n\nimport geo::Point\nimport util::add\n\nfun main() {\n\tp := Point { x: 2, y: 3 }\n\tprintln(\"{add(p.x, p.y)} {geo::shapes::area(4)}\")\n}\n",
     )
     .unwrap();
     std::fs::write(
         app.join("src/geo/mod.kn"),
-        "pub mod shapes\n\npub struct Point {\n\tpub x: i64,\n\tpub y: i64,\n}\n",
+        "pub mod shapes\n\npub struct Point {\n\tpub x i64,\n\tpub y i64,\n}\n",
     )
     .unwrap();
     std::fs::write(
         app.join("src/geo/shapes.kn"),
-        "pub fn area(s: i64) -> i64 {\n\treturn s * s\n}\n\n#[test]\nfn squares() {\n\tassert_eq(area(3), 9)\n}\n",
+        "pub fun area(s i64) i64 {\n\treturn s * s\n}\n\n@test\nfun squares() {\n\tassert_eq(area(3), 9)\n}\n",
     )
     .unwrap();
     let mut toml = std::fs::read_to_string(app.join("kiln.toml")).unwrap();
@@ -413,7 +413,7 @@ fn packages_modules_and_dependencies() {
 
     std::fs::write(
         app.join("src/geo/shapes.kn"),
-        "pub fn area(s: i64) -> i64 {\n\treturn s * true\n}\n",
+        "pub fun area(s i64) i64 {\n\treturn s * true\n}\n",
     )
     .unwrap();
     let out = k(&["check"], &app);

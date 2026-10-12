@@ -9,29 +9,29 @@
 
 import std::io
 
-fn kn_os_argc() -> i64
-fn kn_os_arg(i: i64, out: &mut Vec<u8>)
-fn kn_os_getenv(name: &str, out: &mut Vec<u8>) -> bool
-fn kn_os_setenv(name: &str, value: &str) -> i64
-fn kn_os_unsetenv(name: &str) -> i64
-fn kn_os_environ(out: &mut Vec<u8>)
-fn kn_os_exit(code: i64) -> !
-fn kn_os_getpid() -> i64
-fn kn_os_hostname(out: &mut Vec<u8>) -> i64
-fn kn_os_executable(out: &mut Vec<u8>) -> i64
-fn kn_os_run(argv: &str, capture: i64, out: &mut Vec<u8>, err: &mut Vec<u8>) -> i64
-fn kn_os_kind() -> i64
-fn kn_fs_getcwd(out: &mut Vec<u8>) -> i64
-fn kn_fs_chdir(path: &str) -> i64
-fn kn_fs_temp_dir(out: &mut Vec<u8>)
+fun kn_os_argc() i64
+fun kn_os_arg(i i64, out &mut Vec<u8>)
+fun kn_os_getenv(name &str, out &mut Vec<u8>) bool
+fun kn_os_setenv(name &str, value &str) i64
+fun kn_os_unsetenv(name &str) i64
+fun kn_os_environ(out &mut Vec<u8>)
+fun kn_os_exit(code i64) !
+fun kn_os_getpid() i64
+fun kn_os_hostname(out &mut Vec<u8>) i64
+fun kn_os_executable(out &mut Vec<u8>) i64
+fun kn_os_run(argv &str, capture i64, out &mut Vec<u8>, err &mut Vec<u8>) i64
+fun kn_os_kind() i64
+fun kn_fs_getcwd(out &mut Vec<u8>) i64
+fun kn_fs_chdir(path &str) i64
+fun kn_fs_temp_dir(out &mut Vec<u8>)
 
 // Text from the OS, which may not be valid UTF-8 on every platform.
-fn text(bytes: Vec<u8>) -> String {
-	return String::from_utf8_lossy(bytes.as_slice())
+fun text(bytes Vec<u8>) string {
+	return string::from_utf8_lossy(bytes.as_slice())
 }
 
 // The program's command-line arguments; the first is the program itself.
-pub fn args() -> Vec<String> {
+pub fun args() Vec<string> {
 	out mut := Vec::new()
 	for i in 0..kn_os_argc() {
 		b mut := Vec::new()
@@ -42,7 +42,7 @@ pub fn args() -> Vec<String> {
 }
 
 // The value of environment variable `name`, if it is set.
-pub fn getenv(name: &str) -> Option<String> {
+pub fun getenv(name &str) option<string> {
 	b mut := Vec::new()
 	if kn_os_getenv(name, &mut b) {
 		return Some(text(b))
@@ -51,19 +51,19 @@ pub fn getenv(name: &str) -> Option<String> {
 }
 
 // Sets environment variable `name` for this process and the programs it starts.
-pub fn setenv(name: &str, value: &str) -> Result<(), io::Error> {
+pub fun setenv(name &str, value &str) result<void, io::Error> {
 	io::check(kn_os_setenv(name, value))?
-	return Ok(())
+	return Ok()
 }
 
 // Removes environment variable `name`.
-pub fn unsetenv(name: &str) -> Result<(), io::Error> {
+pub fun unsetenv(name &str) result<void, io::Error> {
 	io::check(kn_os_unsetenv(name))?
-	return Ok(())
+	return Ok()
 }
 
 // All environment variables as (name, value) pairs.
-pub fn environ() -> Vec<(String, String)> {
+pub fun environ() Vec<(string, string)> {
 	b mut := Vec::new()
 	kn_os_environ(&mut b)
 	all := text(b)
@@ -71,7 +71,7 @@ pub fn environ() -> Vec<(String, String)> {
 	for line in all.lines() {
 		match line.split_once("=") {
 			Some((k, v)) => out.push((k.to_string(), v.to_string())),
-			None => out.push((line.to_string(), String::new())),
+			None => out.push((line.to_string(), string::new())),
 		}
 	}
 	return out
@@ -79,53 +79,53 @@ pub fn environ() -> Vec<(String, String)> {
 
 // Ends the program immediately with status `code`. Deferred calls and
 // destructors do not run; buffered output is flushed.
-pub fn exit(code: i32) -> ! {
+pub fun exit(code i32) ! {
 	kn_os_exit(code as i64)
 }
 
 // The process id.
-pub fn pid() -> i64 {
+pub fun pid() i64 {
 	return kn_os_getpid()
 }
 
 // The machine's host name.
-pub fn hostname() -> Result<String, io::Error> {
+pub fun hostname() result<string, io::Error> {
 	b mut := Vec::new()
 	io::check(kn_os_hostname(&mut b))?
 	return Ok(text(b))
 }
 
 // The path of the running executable.
-pub fn executable() -> Result<String, io::Error> {
+pub fun executable() result<string, io::Error> {
 	b mut := Vec::new()
 	io::check(kn_os_executable(&mut b))?
 	return Ok(text(b))
 }
 
 // The current working directory.
-pub fn current_dir() -> Result<String, io::Error> {
+pub fun current_dir() result<string, io::Error> {
 	b mut := Vec::new()
 	io::check(kn_fs_getcwd(&mut b))?
 	return Ok(text(b))
 }
 
 // Changes the current working directory.
-pub fn set_current_dir(path: &str) -> Result<(), io::Error> {
+pub fun set_current_dir(path &str) result<void, io::Error> {
 	match io::check(kn_fs_chdir(path)) {
-		Ok(_) => return Ok(()),
+		Ok(_) => return Ok(),
 		Err(e) => return Err(e.context("chdir {path}")),
 	}
 }
 
 // The directory for temporary files.
-pub fn temp_dir() -> String {
+pub fun temp_dir() string {
 	b mut := Vec::new()
 	kn_fs_temp_dir(&mut b)
 	return text(b)
 }
 
 // The operating system: "linux", "macos", or "windows".
-pub fn name() -> &'static str {
+pub fun name() &'static str {
 	k := kn_os_kind()
 	if k == 2 {
 		return "windows"
@@ -137,62 +137,62 @@ pub fn name() -> &'static str {
 }
 
 // Whether this is Windows.
-pub fn is_windows() -> bool {
+pub fun is_windows() bool {
 	return kn_os_kind() == 2
 }
 
 // ----- running programs ----------------------------------------------------------
 
 // A program to run, with its arguments.
-#[derive(Clone)]
+@derive(Clone)
 pub struct Command {
-	argv: Vec<String>,
+	argv Vec<string>,
 }
 
 // What a finished program printed, and how it exited.
 pub struct Output {
 	// The exit status (128 + signal number if a Unix signal killed it).
-	pub status: i32,
+	pub status i32,
 	// Everything written to standard output.
-	pub stdout: Vec<u8>,
+	pub stdout Vec<u8>,
 	// Everything written to standard error.
-	pub stderr: Vec<u8>,
+	pub stderr Vec<u8>,
 }
 
 impl Output {
 	// Whether the program exited with status 0.
-	pub fn success(&self) -> bool {
+	pub fun success(&self) bool {
 		return self.status == 0
 	}
 
 	// Standard output as text.
-	pub fn stdout_text(&self) -> String {
-		return String::from_utf8_lossy(self.stdout.as_slice())
+	pub fun stdout_text(&self) string {
+		return string::from_utf8_lossy(self.stdout.as_slice())
 	}
 
 	// Standard error as text.
-	pub fn stderr_text(&self) -> String {
-		return String::from_utf8_lossy(self.stderr.as_slice())
+	pub fun stderr_text(&self) string {
+		return string::from_utf8_lossy(self.stderr.as_slice())
 	}
 }
 
 impl Command {
 	// A command running `program` (found on the PATH if it has no directory).
-	pub fn new(program: &str) -> Command {
+	pub fun new(program &str) Command {
 		v mut := Vec::new()
 		v.push(program.to_string())
 		return Command { argv: v }
 	}
 
 	// Adds an argument.
-	pub fn arg(self, a: &str) -> Command {
+	pub fun arg(self, a &str) Command {
 		c mut := self
 		c.argv.push(a.to_string())
 		return c
 	}
 
 	// Adds several arguments.
-	pub fn args(self, list: &[&str]) -> Command {
+	pub fun args(self, list &[&str]) Command {
 		c mut := self
 		for a in list {
 			c.argv.push(a.to_string())
@@ -200,8 +200,8 @@ impl Command {
 		return c
 	}
 
-	fn encoded(&self) -> Result<String, io::Error> {
-		s mut := String::new()
+	fun encoded(&self) result<string, io::Error> {
+		s mut := string::new()
 		for a in &self.argv {
 			if a.contains("\n") {
 				return Err(io::Error::new(io::ErrorKind::InvalidInput, "command arguments cannot contain newlines"))
@@ -214,7 +214,7 @@ impl Command {
 
 	// Runs the program with this process's standard streams and waits for
 	// it; returns its exit status.
-	pub fn status(&self) -> Result<i32, io::Error> {
+	pub fun status(&self) result<i32, io::Error> {
 		argv := self.encoded()?
 		o mut := Vec::new()
 		e mut := Vec::new()
@@ -225,7 +225,7 @@ impl Command {
 	}
 
 	// Runs the program, capturing its standard output and error.
-	pub fn output(&self) -> Result<Output, io::Error> {
+	pub fun output(&self) result<Output, io::Error> {
 		argv := self.encoded()?
 		o mut := Vec::new()
 		e mut := Vec::new()

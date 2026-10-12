@@ -15,39 +15,39 @@
 // ===== HashMap ====================================================================
 
 struct Bucket<K, V> {
-	hash: u64,
-	key: K,
-	value: V,
+	hash u64,
+	key K,
+	value V,
 }
 
 // Index slot markers: 0 is empty; TOMB is a removed entry; anything else is
 // an index into `entries` plus one.
-const TOMB: usize = usize::MAX
+const TOMB usize = usize::MAX
 
 // A hash table mapping keys to values.
 pub struct HashMap<K, V> {
-	entries: Vec<Bucket<K, V>>,
-	slots: Vec<usize>,
-	used: usize,
+	entries Vec<Bucket<K, V>>,
+	slots Vec<usize>,
+	used usize,
 }
 
 impl<K, V> HashMap<K, V> {
 	// An empty map. It allocates nothing until the first insert.
-	pub fn new() -> HashMap<K, V> {
+	pub fun new() HashMap<K, V> {
 		return HashMap { entries: Vec::new(), slots: Vec::new(), used: 0 }
 	}
 
 	// The number of entries.
-	pub fn len(&self) -> usize {
+	pub fun len(&self) usize {
 		return self.entries.len()
 	}
 
-	pub fn is_empty(&self) -> bool {
+	pub fun is_empty(&self) bool {
 		return self.entries.len() == 0
 	}
 
 	// Removes every entry, keeping the allocated space.
-	pub fn clear(&mut self) {
+	pub fun clear(&mut self) {
 		self.entries.clear()
 		i mut := 0
 		while i < self.slots.len() {
@@ -58,47 +58,47 @@ impl<K, V> HashMap<K, V> {
 	}
 
 	// The entries as `(&key, &value)` pairs.
-	pub fn iter<'a>(&'a self) -> Iter<'a, K, V> {
+	pub fun iter<'a>(&'a self) Iter<'a, K, V> {
 		return Iter { inner: self.entries.iter() }
 	}
 
 	// The entries as `(&key, &mut value)` pairs.
-	pub fn iter_mut<'a>(&'a mut self) -> IterMut<'a, K, V> {
+	pub fun iter_mut<'a>(&'a mut self) IterMut<'a, K, V> {
 		return IterMut { inner: self.entries.iter_mut() }
 	}
 
 	// The keys.
-	pub fn keys<'a>(&'a self) -> Keys<'a, K, V> {
+	pub fun keys<'a>(&'a self) Keys<'a, K, V> {
 		return Keys { inner: self.entries.iter() }
 	}
 
 	// The values.
-	pub fn values<'a>(&'a self) -> Values<'a, K, V> {
+	pub fun values<'a>(&'a self) Values<'a, K, V> {
 		return Values { inner: self.entries.iter() }
 	}
 
 	// The values, mutably.
-	pub fn values_mut<'a>(&'a mut self) -> ValuesMut<'a, K, V> {
+	pub fun values_mut<'a>(&'a mut self) ValuesMut<'a, K, V> {
 		return ValuesMut { inner: self.entries.iter_mut() }
 	}
 
 	// The entries as `(key, value)` pairs, consuming the map.
-	pub fn into_iter(self) -> IntoIter<K, V> {
+	pub fun into_iter(self) IntoIter<K, V> {
 		return IntoIter { inner: self.entries.into_iter() }
 	}
 
 	// The keys, consuming the map.
-	pub fn into_keys(self) -> IntoKeys<K, V> {
+	pub fun into_keys(self) IntoKeys<K, V> {
 		return IntoKeys { inner: self.entries.into_iter() }
 	}
 
 	// The values, consuming the map.
-	pub fn into_values(self) -> IntoValues<K, V> {
+	pub fun into_values(self) IntoValues<K, V> {
 		return IntoValues { inner: self.entries.into_iter() }
 	}
 
 	// Removes and returns every entry, leaving the map empty.
-	pub fn drain(&mut self) -> IntoIter<K, V> {
+	pub fun drain(&mut self) IntoIter<K, V> {
 		i mut := 0
 		while i < self.slots.len() {
 			self.slots[i] = 0
@@ -113,26 +113,26 @@ impl<K, V> HashMap<K, V> {
 
 impl<K: Hash + Eq, V> HashMap<K, V> {
 	// An empty map with room for `n` entries before it grows.
-	pub fn with_capacity(n: usize) -> HashMap<K, V> {
+	pub fun with_capacity(n usize) HashMap<K, V> {
 		m mut := HashMap::new()
 		m.reserve(n)
 		return m
 	}
 
 	// A map of the pairs from `items`; later duplicates win.
-	pub fn from_iter<I: Iterator<(K, V)>>(items: I) -> HashMap<K, V> {
+	pub fun from_iter<I: Iterator<(K, V)>>(items I) HashMap<K, V> {
 		m mut := HashMap::new()
 		m.extend(items)
 		return m
 	}
 
 	// How many entries fit before the table grows.
-	pub fn capacity(&self) -> usize {
+	pub fun capacity(&self) usize {
 		return self.slots.len() / 8 * 7
 	}
 
 	// Makes room for `n` more entries.
-	pub fn reserve(&mut self, n: usize) {
+	pub fun reserve(&mut self, n usize) {
 		if (self.used + n) * 8 <= self.slots.len() * 7 {
 			return
 		}
@@ -145,7 +145,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 	}
 
 	// Rebuilds the index with `size` slots (a power of two), dropping tombstones.
-	fn rehash(&mut self, size: usize) {
+	fun rehash(&mut self, size usize) {
 		slots mut := Vec::with_capacity(size)
 		i mut := 0
 		while i < size {
@@ -167,7 +167,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 	}
 
 	// The slot holding `key`, if present.
-	fn find<Q: Eq>(&self, h: u64, key: &Q) -> Option<usize> where K: Borrow<Q> {
+	fun find<Q: Eq>(&self, h u64, key &Q) option<usize> where K: Borrow<Q> {
 		if self.slots.len() == 0 {
 			return None
 		}
@@ -189,7 +189,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 	}
 
 	// Adds an entry known to be absent; returns its index.
-	fn push_new(&mut self, h: u64, key: K, value: V) -> usize {
+	fun push_new(&mut self, h u64, key K, value V) usize {
 		self.reserve(1)
 		mask := self.slots.len() - 1
 		i mut := (h as usize) & mask
@@ -205,7 +205,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 	}
 
 	// Sets `key` to `value`, returning the old value if there was one.
-	pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+	pub fun insert(&mut self, key K, value V) option<V> {
 		h := std::hash::hash(&key)
 		if let Some(i) = self.find(h, &key) {
 			idx := self.slots[i] - 1
@@ -216,7 +216,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 	}
 
 	// The value for `key`.
-	pub fn get<Q: Hash + Eq>(&self, key: &Q) -> Option<&V> where K: Borrow<Q> {
+	pub fun get<Q: Hash + Eq>(&self, key &Q) option<&V> where K: Borrow<Q> {
 		match self.find(std::hash::hash(key), key) {
 			Some(i) => return Some(&self.entries[self.slots[i] - 1].value),
 			None => return None,
@@ -224,7 +224,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 	}
 
 	// The value for `key`, mutably.
-	pub fn get_mut<Q: Hash + Eq>(&mut self, key: &Q) -> Option<&mut V> where K: Borrow<Q> {
+	pub fun get_mut<Q: Hash + Eq>(&mut self, key &Q) option<&mut V> where K: Borrow<Q> {
 		match self.find(std::hash::hash(key), key) {
 			Some(i) => {
 				idx := self.slots[i] - 1
@@ -235,7 +235,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 	}
 
 	// The stored key and value for `key`.
-	pub fn get_key_value<Q: Hash + Eq>(&self, key: &Q) -> Option<(&K, &V)> where K: Borrow<Q> {
+	pub fun get_key_value<Q: Hash + Eq>(&self, key &Q) option<(&K, &V)> where K: Borrow<Q> {
 		match self.find(std::hash::hash(key), key) {
 			Some(i) => {
 				e := &self.entries[self.slots[i] - 1]
@@ -246,12 +246,12 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 	}
 
 	// Whether the map has an entry for `key`.
-	pub fn contains_key<Q: Hash + Eq>(&self, key: &Q) -> bool where K: Borrow<Q> {
+	pub fun contains_key<Q: Hash + Eq>(&self, key &Q) bool where K: Borrow<Q> {
 		return self.find(std::hash::hash(key), key).is_some()
 	}
 
 	// Removes `key`, returning its value.
-	pub fn remove<Q: Hash + Eq>(&mut self, key: &Q) -> Option<V> where K: Borrow<Q> {
+	pub fun remove<Q: Hash + Eq>(&mut self, key &Q) option<V> where K: Borrow<Q> {
 		match self.remove_entry(key) {
 			Some((_, v)) => return Some(v),
 			None => return None,
@@ -259,7 +259,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 	}
 
 	// Removes `key`, returning the stored key and value.
-	pub fn remove_entry<Q: Hash + Eq>(&mut self, key: &Q) -> Option<(K, V)> where K: Borrow<Q> {
+	pub fun remove_entry<Q: Hash + Eq>(&mut self, key &Q) option<(K, V)> where K: Borrow<Q> {
 		match self.find(std::hash::hash(key), key) {
 			Some(i) => return Some(self.take_slot(i)),
 			None => return None,
@@ -268,7 +268,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 
 	// Removes the entry in slot `i`. The last entry moves into its place in
 	// `entries`, so its slot is updated.
-	fn take_slot(&mut self, i: usize) -> (K, V) {
+	fun take_slot(&mut self, i usize) (K, V) {
 		idx := self.slots[i] - 1
 		self.slots[i] = TOMB
 		last := self.entries.len() - 1
@@ -286,7 +286,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 
 	// The entry for `key`, for inserting or updating in place:
 	// `*m.entry(k).or_insert(0) += 1`.
-	pub fn entry<'a>(&'a mut self, key: K) -> Entry<'a, K, V> {
+	pub fun entry<'a>(&'a mut self, key K) Entry<'a, K, V> {
 		h := std::hash::hash(&key)
 		idx := match self.find(h, &key) {
 			Some(i) => Some(self.slots[i] - 1),
@@ -296,7 +296,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 	}
 
 	// Keeps only the entries for which `keep` returns true.
-	pub fn retain(&mut self, keep: fn mut(&K, &mut V) -> bool) {
+	pub fun retain(&mut self, keep fun mut(&K, &mut V) bool) {
 		old mut := Vec::new()
 		std::mem::swap(&mut self.entries, &mut old)
 		for b in old.into_iter() {
@@ -312,7 +312,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 	}
 
 	// Inserts every pair from `items`.
-	pub fn extend<I: Iterator<(K, V)>>(&mut self, items: I) {
+	pub fun extend<I: Iterator<(K, V)>>(&mut self, items I) {
 		it mut := items
 		while let Some((k, v)) = it.next() {
 			self.insert(k, v)
@@ -322,7 +322,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 
 impl<K: Hash + Eq, V: Eq> Eq for HashMap<K, V> {
 	// Maps are equal when they have the same keys with equal values, in any order.
-	fn eq(&self, other: &HashMap<K, V>) -> bool {
+	fun eq(&self, other &HashMap<K, V>) bool {
 		if self.len() != other.len() {
 			return false
 		}
@@ -341,7 +341,7 @@ impl<K: Hash + Eq, V: Eq> Eq for HashMap<K, V> {
 }
 
 impl<K: Clone, V: Clone> Clone for HashMap<K, V> {
-	fn clone(&self) -> HashMap<K, V> {
+	fun clone(&self) HashMap<K, V> {
 		entries mut := Vec::with_capacity(self.entries.len())
 		for e in self.entries.iter() {
 			entries.push(Bucket { hash: e.hash, key: e.key.clone(), value: e.value.clone() })
@@ -351,7 +351,7 @@ impl<K: Clone, V: Clone> Clone for HashMap<K, V> {
 }
 
 impl<K: Debug, V: Debug> Debug for HashMap<K, V> {
-	fn fmt_debug(&self, f: &mut std::fmt::Formatter) {
+	fun fmt_debug(&self, f &mut std::fmt::Formatter) {
 		f.begin("{{")
 		first mut := true
 		for e in self.entries.iter() {
@@ -367,25 +367,25 @@ impl<K: Debug, V: Debug> Debug for HashMap<K, V> {
 
 // A place in a map for one key, which may or may not hold a value.
 pub struct Entry<'a, K, V> {
-	map: &'a mut HashMap<K, V>,
-	key: K,
-	hash: u64,
-	idx: Option<usize>,
+	map &'a mut HashMap<K, V>,
+	key K,
+	hash u64,
+	idx option<usize>,
 }
 
 impl<'a, K: Hash + Eq, V> Entry<'a, K, V> {
 	// The key this entry is for.
-	pub fn key(&self) -> &K {
+	pub fun key(&self) &K {
 		return &self.key
 	}
 
 	// Whether the map already has a value for the key.
-	pub fn is_occupied(&self) -> bool {
+	pub fun is_occupied(&self) bool {
 		return self.idx.is_some()
 	}
 
 	// The value, inserting `default` first if there is none.
-	pub fn or_insert(self, default: V) -> &'a mut V {
+	pub fun or_insert(self, default V) &'a mut V {
 		e mut := self
 		idx := match e.idx {
 			Some(i) => i,
@@ -395,7 +395,7 @@ impl<'a, K: Hash + Eq, V> Entry<'a, K, V> {
 	}
 
 	// The value, inserting `make()` first if there is none.
-	pub fn or_insert_with(self, make: fn mut() -> V) -> &'a mut V {
+	pub fun or_insert_with(self, make fun mut() V) &'a mut V {
 		e mut := self
 		idx := match e.idx {
 			Some(i) => i,
@@ -405,7 +405,7 @@ impl<'a, K: Hash + Eq, V> Entry<'a, K, V> {
 	}
 
 	// Calls `f` on the value if there is one, then returns the entry.
-	pub fn and_modify(self, f: fn mut(&mut V)) -> Entry<'a, K, V> {
+	pub fun and_modify(self, f fun mut(&mut V)) Entry<'a, K, V> {
 		e mut := self
 		if let Some(i) = e.idx {
 			f(&mut e.map.entries[i].value)
@@ -415,11 +415,11 @@ impl<'a, K: Hash + Eq, V> Entry<'a, K, V> {
 }
 
 pub struct Iter<'a, K, V> {
-	inner: std::iter::Iter<'a, Bucket<K, V>>,
+	inner std::iter::Iter<'a, Bucket<K, V>>,
 }
 
 impl<'a, K, V> Iterator<(&'a K, &'a V)> for Iter<'a, K, V> {
-	fn next(&mut self) -> Option<(&'a K, &'a V)> {
+	fun next(&mut self) option<(&'a K, &'a V)> {
 		match self.inner.next() {
 			Some(b) => return Some((&b.key, &b.value)),
 			None => return None,
@@ -428,11 +428,11 @@ impl<'a, K, V> Iterator<(&'a K, &'a V)> for Iter<'a, K, V> {
 }
 
 pub struct IterMut<'a, K, V> {
-	inner: std::iter::IterMut<'a, Bucket<K, V>>,
+	inner std::iter::IterMut<'a, Bucket<K, V>>,
 }
 
 impl<'a, K, V> Iterator<(&'a K, &'a mut V)> for IterMut<'a, K, V> {
-	fn next(&mut self) -> Option<(&'a K, &'a mut V)> {
+	fun next(&mut self) option<(&'a K, &'a mut V)> {
 		match self.inner.next() {
 			Some(b) => return Some((&b.key, &mut b.value)),
 			None => return None,
@@ -441,11 +441,11 @@ impl<'a, K, V> Iterator<(&'a K, &'a mut V)> for IterMut<'a, K, V> {
 }
 
 pub struct Keys<'a, K, V> {
-	inner: std::iter::Iter<'a, Bucket<K, V>>,
+	inner std::iter::Iter<'a, Bucket<K, V>>,
 }
 
 impl<'a, K, V> Iterator<&'a K> for Keys<'a, K, V> {
-	fn next(&mut self) -> Option<&'a K> {
+	fun next(&mut self) option<&'a K> {
 		match self.inner.next() {
 			Some(b) => return Some(&b.key),
 			None => return None,
@@ -454,11 +454,11 @@ impl<'a, K, V> Iterator<&'a K> for Keys<'a, K, V> {
 }
 
 pub struct Values<'a, K, V> {
-	inner: std::iter::Iter<'a, Bucket<K, V>>,
+	inner std::iter::Iter<'a, Bucket<K, V>>,
 }
 
 impl<'a, K, V> Iterator<&'a V> for Values<'a, K, V> {
-	fn next(&mut self) -> Option<&'a V> {
+	fun next(&mut self) option<&'a V> {
 		match self.inner.next() {
 			Some(b) => return Some(&b.value),
 			None => return None,
@@ -467,11 +467,11 @@ impl<'a, K, V> Iterator<&'a V> for Values<'a, K, V> {
 }
 
 pub struct ValuesMut<'a, K, V> {
-	inner: std::iter::IterMut<'a, Bucket<K, V>>,
+	inner std::iter::IterMut<'a, Bucket<K, V>>,
 }
 
 impl<'a, K, V> Iterator<&'a mut V> for ValuesMut<'a, K, V> {
-	fn next(&mut self) -> Option<&'a mut V> {
+	fun next(&mut self) option<&'a mut V> {
 		match self.inner.next() {
 			Some(b) => return Some(&mut b.value),
 			None => return None,
@@ -480,11 +480,11 @@ impl<'a, K, V> Iterator<&'a mut V> for ValuesMut<'a, K, V> {
 }
 
 pub struct IntoIter<K, V> {
-	inner: std::iter::IntoIter<Bucket<K, V>>,
+	inner std::iter::IntoIter<Bucket<K, V>>,
 }
 
 impl<K, V> Iterator<(K, V)> for IntoIter<K, V> {
-	fn next(&mut self) -> Option<(K, V)> {
+	fun next(&mut self) option<(K, V)> {
 		match self.inner.next() {
 			Some(b) => return Some((b.key, b.value)),
 			None => return None,
@@ -493,11 +493,11 @@ impl<K, V> Iterator<(K, V)> for IntoIter<K, V> {
 }
 
 pub struct IntoKeys<K, V> {
-	inner: std::iter::IntoIter<Bucket<K, V>>,
+	inner std::iter::IntoIter<Bucket<K, V>>,
 }
 
 impl<K, V> Iterator<K> for IntoKeys<K, V> {
-	fn next(&mut self) -> Option<K> {
+	fun next(&mut self) option<K> {
 		match self.inner.next() {
 			Some(b) => return Some(b.key),
 			None => return None,
@@ -506,11 +506,11 @@ impl<K, V> Iterator<K> for IntoKeys<K, V> {
 }
 
 pub struct IntoValues<K, V> {
-	inner: std::iter::IntoIter<Bucket<K, V>>,
+	inner std::iter::IntoIter<Bucket<K, V>>,
 }
 
 impl<K, V> Iterator<V> for IntoValues<K, V> {
-	fn next(&mut self) -> Option<V> {
+	fun next(&mut self) option<V> {
 		match self.inner.next() {
 			Some(b) => return Some(b.value),
 			None => return None,
@@ -522,72 +522,72 @@ impl<K, V> Iterator<V> for IntoValues<K, V> {
 
 // A set of distinct values, stored in a hash table.
 pub struct HashSet<T> {
-	map: HashMap<T, ()>,
+	map HashMap<T, void>,
 }
 
 impl<T> HashSet<T> {
 	// An empty set.
-	pub fn new() -> HashSet<T> {
+	pub fun new() HashSet<T> {
 		return HashSet { map: HashMap::new() }
 	}
 
-	pub fn len(&self) -> usize {
+	pub fun len(&self) usize {
 		return self.map.len()
 	}
 
-	pub fn is_empty(&self) -> bool {
+	pub fun is_empty(&self) bool {
 		return self.map.len() == 0
 	}
 
-	pub fn clear(&mut self) {
+	pub fun clear(&mut self) {
 		self.map.clear()
 	}
 
 	// The values.
-	pub fn iter<'a>(&'a self) -> Keys<'a, T, ()> {
+	pub fun iter<'a>(&'a self) Keys<'a, T, void> {
 		return self.map.keys()
 	}
 
 	// The values, consuming the set.
-	pub fn into_iter(self) -> IntoKeys<T, ()> {
+	pub fun into_iter(self) IntoKeys<T, void> {
 		return self.map.into_keys()
 	}
 
 	// Removes and returns every value.
-	pub fn drain(&mut self) -> IntoKeys<T, ()> {
+	pub fun drain(&mut self) IntoKeys<T, void> {
 		return IntoKeys { inner: self.map.drain().inner }
 	}
 }
 
 impl<T: Hash + Eq> HashSet<T> {
 	// An empty set with room for `n` values.
-	pub fn with_capacity(n: usize) -> HashSet<T> {
+	pub fun with_capacity(n usize) HashSet<T> {
 		return HashSet { map: HashMap::with_capacity(n) }
 	}
 
 	// A set of the values from `items`.
-	pub fn from_iter<I: Iterator<T>>(items: I) -> HashSet<T> {
+	pub fun from_iter<I: Iterator<T>>(items I) HashSet<T> {
 		s mut := HashSet::new()
 		s.extend(items)
 		return s
 	}
 
-	pub fn reserve(&mut self, n: usize) {
+	pub fun reserve(&mut self, n usize) {
 		self.map.reserve(n)
 	}
 
 	// Adds `value`; returns false if it was already present.
-	pub fn insert(&mut self, value: T) -> bool {
+	pub fun insert(&mut self, value T) bool {
 		return self.map.insert(value, ()).is_none()
 	}
 
 	// Whether `value` is in the set.
-	pub fn contains<Q: Hash + Eq>(&self, value: &Q) -> bool where T: Borrow<Q> {
+	pub fun contains<Q: Hash + Eq>(&self, value &Q) bool where T: Borrow<Q> {
 		return self.map.contains_key(value)
 	}
 
 	// The stored value equal to `value`.
-	pub fn get<Q: Hash + Eq>(&self, value: &Q) -> Option<&T> where T: Borrow<Q> {
+	pub fun get<Q: Hash + Eq>(&self, value &Q) option<&T> where T: Borrow<Q> {
 		match self.map.get_key_value(value) {
 			Some((k, _)) => return Some(k),
 			None => return None,
@@ -595,12 +595,12 @@ impl<T: Hash + Eq> HashSet<T> {
 	}
 
 	// Removes `value`; returns whether it was present.
-	pub fn remove<Q: Hash + Eq>(&mut self, value: &Q) -> bool where T: Borrow<Q> {
+	pub fun remove<Q: Hash + Eq>(&mut self, value &Q) bool where T: Borrow<Q> {
 		return self.map.remove(value).is_some()
 	}
 
 	// Removes and returns the stored value equal to `value`.
-	pub fn take<Q: Hash + Eq>(&mut self, value: &Q) -> Option<T> where T: Borrow<Q> {
+	pub fun take<Q: Hash + Eq>(&mut self, value &Q) option<T> where T: Borrow<Q> {
 		match self.map.remove_entry(value) {
 			Some((k, _)) => return Some(k),
 			None => return None,
@@ -608,12 +608,12 @@ impl<T: Hash + Eq> HashSet<T> {
 	}
 
 	// Keeps only the values for which `keep` returns true.
-	pub fn retain(&mut self, keep: fn mut(&T) -> bool) {
+	pub fun retain(&mut self, keep fun mut(&T) bool) {
 		self.map.retain(|k, _v| keep(k))
 	}
 
 	// Adds every value from `items`.
-	pub fn extend<I: Iterator<T>>(&mut self, items: I) {
+	pub fun extend<I: Iterator<T>>(&mut self, items I) {
 		it mut := items
 		while let Some(x) = it.next() {
 			self.map.insert(x, ())
@@ -621,7 +621,7 @@ impl<T: Hash + Eq> HashSet<T> {
 	}
 
 	// Whether every value of this set is in `other`.
-	pub fn is_subset(&self, other: &HashSet<T>) -> bool {
+	pub fun is_subset(&self, other &HashSet<T>) bool {
 		if self.len() > other.len() {
 			return false
 		}
@@ -634,12 +634,12 @@ impl<T: Hash + Eq> HashSet<T> {
 	}
 
 	// Whether every value of `other` is in this set.
-	pub fn is_superset(&self, other: &HashSet<T>) -> bool {
+	pub fun is_superset(&self, other &HashSet<T>) bool {
 		return other.is_subset(self)
 	}
 
 	// Whether the sets have no values in common.
-	pub fn is_disjoint(&self, other: &HashSet<T>) -> bool {
+	pub fun is_disjoint(&self, other &HashSet<T>) bool {
 		for x in self.iter() {
 			if other.contains(x) {
 				return false
@@ -649,7 +649,7 @@ impl<T: Hash + Eq> HashSet<T> {
 	}
 
 	// The values in both sets, as references into this one.
-	pub fn intersection<'a>(&'a self, other: &HashSet<T>) -> Vec<&'a T> {
+	pub fun intersection<'a>(&'a self, other &HashSet<T>) Vec<&'a T> {
 		out mut := Vec::new()
 		for x in self.iter() {
 			if other.contains(x) {
@@ -660,7 +660,7 @@ impl<T: Hash + Eq> HashSet<T> {
 	}
 
 	// The values in this set but not in `other`.
-	pub fn difference<'a>(&'a self, other: &HashSet<T>) -> Vec<&'a T> {
+	pub fun difference<'a>(&'a self, other &HashSet<T>) Vec<&'a T> {
 		out mut := Vec::new()
 		for x in self.iter() {
 			if !other.contains(x) {
@@ -671,7 +671,7 @@ impl<T: Hash + Eq> HashSet<T> {
 	}
 
 	// The values in either set (each once).
-	pub fn union<'a>(&'a self, other: &'a HashSet<T>) -> Vec<&'a T> {
+	pub fun union<'a>(&'a self, other &'a HashSet<T>) Vec<&'a T> {
 		out mut := Vec::new()
 		for x in self.iter() {
 			out.push(x)
@@ -685,7 +685,7 @@ impl<T: Hash + Eq> HashSet<T> {
 	}
 
 	// The values in exactly one of the sets.
-	pub fn symmetric_difference<'a>(&'a self, other: &'a HashSet<T>) -> Vec<&'a T> {
+	pub fun symmetric_difference<'a>(&'a self, other &'a HashSet<T>) Vec<&'a T> {
 		out mut := self.difference(other)
 		for x in other.iter() {
 			if !self.contains(x) {
@@ -697,19 +697,19 @@ impl<T: Hash + Eq> HashSet<T> {
 }
 
 impl<T: Hash + Eq> Eq for HashSet<T> {
-	fn eq(&self, other: &HashSet<T>) -> bool {
+	fun eq(&self, other &HashSet<T>) bool {
 		return self.len() == other.len() && self.is_subset(other)
 	}
 }
 
 impl<T: Clone> Clone for HashSet<T> {
-	fn clone(&self) -> HashSet<T> {
+	fun clone(&self) HashSet<T> {
 		return HashSet { map: self.map.clone() }
 	}
 }
 
 impl<T: Debug> Debug for HashSet<T> {
-	fn fmt_debug(&self, f: &mut std::fmt::Formatter) {
+	fun fmt_debug(&self, f &mut std::fmt::Formatter) {
 		f.begin("{{")
 		first mut := true
 		for e in self.map.entries.iter() {
@@ -726,51 +726,51 @@ impl<T: Debug> Debug for HashSet<T> {
 // A double-ended queue: a growable ring buffer with fast pushes and pops at
 // both ends.
 pub struct VecDeque<T> {
-	buf: Vec<Option<T>>,
-	head: usize,
-	len: usize,
+	buf Vec<option<T>>,
+	head usize,
+	len usize,
 }
 
 impl<T> VecDeque<T> {
 	// An empty queue. It allocates nothing until the first push.
-	pub fn new() -> VecDeque<T> {
+	pub fun new() VecDeque<T> {
 		return VecDeque { buf: Vec::new(), head: 0, len: 0 }
 	}
 
 	// An empty queue with room for `n` values.
-	pub fn with_capacity(n: usize) -> VecDeque<T> {
+	pub fun with_capacity(n usize) VecDeque<T> {
 		q mut := VecDeque::new()
 		q.grow_to(n)
 		return q
 	}
 
 	// A queue of the values from `items`, front to back.
-	pub fn from_iter<I: Iterator<T>>(items: I) -> VecDeque<T> {
+	pub fun from_iter<I: Iterator<T>>(items I) VecDeque<T> {
 		q mut := VecDeque::new()
 		q.extend(items)
 		return q
 	}
 
 	// A queue holding the values of `v`, front to back.
-	pub fn from_vec(v: Vec<T>) -> VecDeque<T> {
+	pub fun from_vec(v Vec<T>) VecDeque<T> {
 		return VecDeque::from_iter(v.into_iter())
 	}
 
-	pub fn len(&self) -> usize {
+	pub fun len(&self) usize {
 		return self.len
 	}
 
-	pub fn is_empty(&self) -> bool {
+	pub fun is_empty(&self) bool {
 		return self.len == 0
 	}
 
 	// How many values fit before the buffer grows.
-	pub fn capacity(&self) -> usize {
+	pub fun capacity(&self) usize {
 		return self.buf.len()
 	}
 
 	// The buffer index of logical position `i`.
-	fn slot(&self, i: usize) -> usize {
+	fun slot(&self, i usize) usize {
 		j := self.head + i
 		if j >= self.buf.len() {
 			return j - self.buf.len()
@@ -779,7 +779,7 @@ impl<T> VecDeque<T> {
 	}
 
 	// Reallocates to `cap` slots, moving the values to the front.
-	fn grow_to(&mut self, cap: usize) {
+	fun grow_to(&mut self, cap usize) {
 		if cap <= self.buf.len() {
 			return
 		}
@@ -798,7 +798,7 @@ impl<T> VecDeque<T> {
 	}
 
 	// Makes room for `n` more values.
-	pub fn reserve(&mut self, n: usize) {
+	pub fun reserve(&mut self, n usize) {
 		if self.len + n > self.buf.len() {
 			cap mut := self.buf.len() * 2
 			if cap < 4 {
@@ -812,7 +812,7 @@ impl<T> VecDeque<T> {
 	}
 
 	// Adds a value at the back.
-	pub fn push_back(&mut self, value: T) {
+	pub fun push_back(&mut self, value T) {
 		self.reserve(1)
 		s := self.slot(self.len)
 		self.buf[s] = Some(value)
@@ -820,7 +820,7 @@ impl<T> VecDeque<T> {
 	}
 
 	// Adds a value at the front.
-	pub fn push_front(&mut self, value: T) {
+	pub fun push_front(&mut self, value T) {
 		self.reserve(1)
 		if self.head == 0 {
 			self.head = self.buf.len() - 1
@@ -833,7 +833,7 @@ impl<T> VecDeque<T> {
 	}
 
 	// Removes and returns the back value.
-	pub fn pop_back(&mut self) -> Option<T> {
+	pub fun pop_back(&mut self) option<T> {
 		if self.len == 0 {
 			return None
 		}
@@ -843,7 +843,7 @@ impl<T> VecDeque<T> {
 	}
 
 	// Removes and returns the front value.
-	pub fn pop_front(&mut self) -> Option<T> {
+	pub fun pop_front(&mut self) option<T> {
 		if self.len == 0 {
 			return None
 		}
@@ -858,7 +858,7 @@ impl<T> VecDeque<T> {
 	}
 
 	// The value at position `i` from the front.
-	pub fn get(&self, i: usize) -> Option<&T> {
+	pub fun get(&self, i usize) option<&T> {
 		if i >= self.len {
 			return None
 		}
@@ -866,7 +866,7 @@ impl<T> VecDeque<T> {
 	}
 
 	// The value at position `i`, mutably.
-	pub fn get_mut(&mut self, i: usize) -> Option<&mut T> {
+	pub fun get_mut(&mut self, i usize) option<&mut T> {
 		if i >= self.len {
 			return None
 		}
@@ -874,22 +874,22 @@ impl<T> VecDeque<T> {
 		return self.buf[s].as_mut()
 	}
 
-	pub fn front(&self) -> Option<&T> {
+	pub fun front(&self) option<&T> {
 		return self.get(0)
 	}
 
-	pub fn back(&self) -> Option<&T> {
+	pub fun back(&self) option<&T> {
 		if self.len == 0 {
 			return None
 		}
 		return self.get(self.len - 1)
 	}
 
-	pub fn front_mut(&mut self) -> Option<&mut T> {
+	pub fun front_mut(&mut self) option<&mut T> {
 		return self.get_mut(0)
 	}
 
-	pub fn back_mut(&mut self) -> Option<&mut T> {
+	pub fun back_mut(&mut self) option<&mut T> {
 		if self.len == 0 {
 			return None
 		}
@@ -898,7 +898,7 @@ impl<T> VecDeque<T> {
 	}
 
 	// Swaps the values at positions `i` and `j`.
-	pub fn swap(&mut self, i: usize, j: usize) {
+	pub fun swap(&mut self, i usize, j usize) {
 		if i >= self.len || j >= self.len {
 			panic("VecDeque::swap: index out of bounds")
 		}
@@ -908,7 +908,7 @@ impl<T> VecDeque<T> {
 	}
 
 	// Removes every value.
-	pub fn clear(&mut self) {
+	pub fun clear(&mut self) {
 		while self.len > 0 {
 			self.pop_back()
 		}
@@ -916,14 +916,14 @@ impl<T> VecDeque<T> {
 	}
 
 	// Keeps the first `n` values, dropping the rest.
-	pub fn truncate(&mut self, n: usize) {
+	pub fun truncate(&mut self, n usize) {
 		while self.len > n {
 			self.pop_back()
 		}
 	}
 
 	// Inserts `value` at position `i`, shifting later values back.
-	pub fn insert(&mut self, i: usize, value: T) {
+	pub fun insert(&mut self, i usize, value T) {
 		if i > self.len {
 			panic("VecDeque::insert: index out of bounds")
 		}
@@ -936,7 +936,7 @@ impl<T> VecDeque<T> {
 	}
 
 	// Removes and returns the value at position `i`.
-	pub fn remove(&mut self, i: usize) -> Option<T> {
+	pub fun remove(&mut self, i usize) option<T> {
 		if i >= self.len {
 			return None
 		}
@@ -949,7 +949,7 @@ impl<T> VecDeque<T> {
 	}
 
 	// Moves the first `n` values to the back.
-	pub fn rotate_left(&mut self, n: usize) {
+	pub fun rotate_left(&mut self, n usize) {
 		i mut := 0
 		while i < n {
 			match self.pop_front() {
@@ -961,7 +961,7 @@ impl<T> VecDeque<T> {
 	}
 
 	// Moves the last `n` values to the front.
-	pub fn rotate_right(&mut self, n: usize) {
+	pub fun rotate_right(&mut self, n usize) {
 		i mut := 0
 		while i < n {
 			match self.pop_back() {
@@ -973,7 +973,7 @@ impl<T> VecDeque<T> {
 	}
 
 	// Keeps only the values for which `keep` returns true, in order.
-	pub fn retain(&mut self, keep: fn mut(&T) -> bool) {
+	pub fun retain(&mut self, keep fun mut(&T) bool) {
 		n := self.len
 		i mut := 0
 		while i < n {
@@ -986,7 +986,7 @@ impl<T> VecDeque<T> {
 	}
 
 	// Adds every value from `items` at the back.
-	pub fn extend<I: Iterator<T>>(&mut self, items: I) {
+	pub fun extend<I: Iterator<T>>(&mut self, items I) {
 		it mut := items
 		while let Some(x) = it.next() {
 			self.push_back(x)
@@ -995,7 +995,7 @@ impl<T> VecDeque<T> {
 
 	// Moves the values to the start of the buffer, so `iter_mut` and
 	// `as_slices` see them in order.
-	fn make_contiguous(&mut self) {
+	fun make_contiguous(&mut self) {
 		if self.head != 0 {
 			h := self.head
 			self.buf.rotate_left(h)
@@ -1004,24 +1004,24 @@ impl<T> VecDeque<T> {
 	}
 
 	// The values, front to back.
-	pub fn iter<'a>(&'a self) -> DequeIter<'a, T> {
+	pub fun iter<'a>(&'a self) DequeIter<'a, T> {
 		return DequeIter { q: self, front: 0, back: self.len }
 	}
 
 	// The values, mutably, front to back.
-	pub fn iter_mut<'a>(&'a mut self) -> DequeIterMut<'a, T> {
+	pub fun iter_mut<'a>(&'a mut self) DequeIterMut<'a, T> {
 		self.make_contiguous()
 		n := self.len
 		return DequeIterMut { inner: self.buf.iter_mut(), left: n }
 	}
 
 	// The values, front to back, consuming the queue.
-	pub fn into_iter(self) -> DequeIntoIter<T> {
+	pub fun into_iter(self) DequeIntoIter<T> {
 		return DequeIntoIter { q: self }
 	}
 
 	// Removes and returns every value.
-	pub fn drain(&mut self) -> DequeIntoIter<T> {
+	pub fun drain(&mut self) DequeIntoIter<T> {
 		q mut := VecDeque::new()
 		std::mem::swap(self, &mut q)
 		return DequeIntoIter { q: q }
@@ -1030,7 +1030,7 @@ impl<T> VecDeque<T> {
 
 impl<T: Eq> VecDeque<T> {
 	// Whether some value equals `x`.
-	pub fn contains(&self, x: &T) -> bool {
+	pub fun contains(&self, x &T) bool {
 		for y in self.iter() {
 			if y == x {
 				return true
@@ -1042,7 +1042,7 @@ impl<T: Eq> VecDeque<T> {
 
 impl<T: Clone> VecDeque<T> {
 	// The values, front to back, in a vector.
-	pub fn to_vec(&self) -> Vec<T> {
+	pub fun to_vec(&self) Vec<T> {
 		out mut := Vec::with_capacity(self.len)
 		for x in self.iter() {
 			out.push(x.clone())
@@ -1052,7 +1052,7 @@ impl<T: Clone> VecDeque<T> {
 }
 
 impl<T: Eq> Eq for VecDeque<T> {
-	fn eq(&self, other: &VecDeque<T>) -> bool {
+	fun eq(&self, other &VecDeque<T>) bool {
 		if self.len != other.len {
 			return false
 		}
@@ -1068,25 +1068,25 @@ impl<T: Eq> Eq for VecDeque<T> {
 }
 
 impl<T: Clone> Clone for VecDeque<T> {
-	fn clone(&self) -> VecDeque<T> {
+	fun clone(&self) VecDeque<T> {
 		return VecDeque::from_vec(self.to_vec())
 	}
 }
 
 impl<T: Debug> Debug for VecDeque<T> {
-	fn fmt_debug(&self, f: &mut std::fmt::Formatter) {
+	fun fmt_debug(&self, f &mut std::fmt::Formatter) {
 		f.list(self.iter())
 	}
 }
 
 pub struct DequeIter<'a, T> {
-	q: &'a VecDeque<T>,
-	front: usize,
-	back: usize,
+	q &'a VecDeque<T>,
+	front usize,
+	back usize,
 }
 
 impl<'a, T> Iterator<&'a T> for DequeIter<'a, T> {
-	fn next(&mut self) -> Option<&'a T> {
+	fun next(&mut self) option<&'a T> {
 		if self.front == self.back {
 			return None
 		}
@@ -1097,7 +1097,7 @@ impl<'a, T> Iterator<&'a T> for DequeIter<'a, T> {
 }
 
 impl<'a, T> std::iter::DoubleEndedIterator<&'a T> for DequeIter<'a, T> {
-	fn next_back(&mut self) -> Option<&'a T> {
+	fun next_back(&mut self) option<&'a T> {
 		if self.front == self.back {
 			return None
 		}
@@ -1107,12 +1107,12 @@ impl<'a, T> std::iter::DoubleEndedIterator<&'a T> for DequeIter<'a, T> {
 }
 
 pub struct DequeIterMut<'a, T> {
-	inner: std::iter::IterMut<'a, Option<T>>,
-	left: usize,
+	inner std::iter::IterMut<'a, option<T>>,
+	left usize,
 }
 
 impl<'a, T> Iterator<&'a mut T> for DequeIterMut<'a, T> {
-	fn next(&mut self) -> Option<&'a mut T> {
+	fun next(&mut self) option<&'a mut T> {
 		if self.left == 0 {
 			return None
 		}
@@ -1125,17 +1125,17 @@ impl<'a, T> Iterator<&'a mut T> for DequeIterMut<'a, T> {
 }
 
 pub struct DequeIntoIter<T> {
-	q: VecDeque<T>,
+	q VecDeque<T>,
 }
 
 impl<T> Iterator<T> for DequeIntoIter<T> {
-	fn next(&mut self) -> Option<T> {
+	fun next(&mut self) option<T> {
 		return self.q.pop_front()
 	}
 }
 
 impl<T> std::iter::DoubleEndedIterator<T> for DequeIntoIter<T> {
-	fn next_back(&mut self) -> Option<T> {
+	fun next_back(&mut self) option<T> {
 		return self.q.pop_back()
 	}
 }
@@ -1143,40 +1143,40 @@ impl<T> std::iter::DoubleEndedIterator<T> for DequeIntoIter<T> {
 // ===== BTreeMap ===================================================================
 
 // Minimum degree: nodes other than the root hold B-1 to 2B-1 keys.
-const B: usize = 6
+const B usize = 6
 
 struct Node<K, V> {
-	keys: Vec<K>,
-	vals: Vec<V>,
+	keys Vec<K>,
+	vals Vec<V>,
 	// Child node indices; empty for a leaf.
-	kids: Vec<usize>,
+	kids Vec<usize>,
 }
 
 // A map with keys kept in sorted order, stored in a B-tree. Keys need Ord.
 // Iteration visits keys in ascending order, and `range` visits a slice of them.
 pub struct BTreeMap<K, V> {
-	nodes: Vec<Node<K, V>>,
-	free: Vec<usize>,
-	root: Option<usize>,
-	len: usize,
+	nodes Vec<Node<K, V>>,
+	free Vec<usize>,
+	root option<usize>,
+	len usize,
 }
 
 impl<K, V> BTreeMap<K, V> {
 	// An empty map.
-	pub fn new() -> BTreeMap<K, V> {
+	pub fun new() BTreeMap<K, V> {
 		return BTreeMap { nodes: Vec::new(), free: Vec::new(), root: None, len: 0 }
 	}
 
-	pub fn len(&self) -> usize {
+	pub fun len(&self) usize {
 		return self.len
 	}
 
-	pub fn is_empty(&self) -> bool {
+	pub fun is_empty(&self) bool {
 		return self.len == 0
 	}
 
 	// Removes every entry.
-	pub fn clear(&mut self) {
+	pub fun clear(&mut self) {
 		self.nodes.clear()
 		self.free.clear()
 		self.root = None
@@ -1184,7 +1184,7 @@ impl<K, V> BTreeMap<K, V> {
 	}
 
 	// The entries in key order, as `(&key, &value)` pairs.
-	pub fn iter<'a>(&'a self) -> BTreeIter<'a, K, V> {
+	pub fun iter<'a>(&'a self) BTreeIter<'a, K, V> {
 		it mut := BTreeIter { nodes: &self.nodes, stack: Vec::new(), left: self.len }
 		if let Some(r) = self.root {
 			it.descend(r)
@@ -1193,17 +1193,17 @@ impl<K, V> BTreeMap<K, V> {
 	}
 
 	// The keys in order.
-	pub fn keys<'a>(&'a self) -> BTreeKeys<'a, K, V> {
+	pub fun keys<'a>(&'a self) BTreeKeys<'a, K, V> {
 		return BTreeKeys { inner: self.iter() }
 	}
 
 	// The values in key order.
-	pub fn values<'a>(&'a self) -> BTreeValues<'a, K, V> {
+	pub fun values<'a>(&'a self) BTreeValues<'a, K, V> {
 		return BTreeValues { inner: self.iter() }
 	}
 
 	// The values in key order, mutably.
-	pub fn values_mut<'a>(&'a mut self) -> BTreeValuesMut<'a, K, V> {
+	pub fun values_mut<'a>(&'a mut self) BTreeValuesMut<'a, K, V> {
 		ptrs mut := Vec::with_capacity(self.len)
 		{
 			it mut := self.iter()
@@ -1215,12 +1215,12 @@ impl<K, V> BTreeMap<K, V> {
 	}
 
 	// The entries in key order, consuming the map.
-	pub fn into_iter(self) -> BTreeIntoIter<K, V> {
+	pub fun into_iter(self) BTreeIntoIter<K, V> {
 		return BTreeIntoIter { map: self }
 	}
 
 	// The first (smallest) entry.
-	pub fn first_key_value(&self) -> Option<(&K, &V)> {
+	pub fun first_key_value(&self) option<(&K, &V)> {
 		n mut := self.root?
 		while self.nodes[n].kids.len() > 0 {
 			n = self.nodes[n].kids[0]
@@ -1229,7 +1229,7 @@ impl<K, V> BTreeMap<K, V> {
 	}
 
 	// The last (largest) entry.
-	pub fn last_key_value(&self) -> Option<(&K, &V)> {
+	pub fun last_key_value(&self) option<(&K, &V)> {
 		n mut := self.root?
 		while self.nodes[n].kids.len() > 0 {
 			k := self.nodes[n].kids.len() - 1
@@ -1240,7 +1240,7 @@ impl<K, V> BTreeMap<K, V> {
 	}
 
 	// Removes and returns the first entry.
-	pub fn pop_first(&mut self) -> Option<(K, V)> {
+	pub fun pop_first(&mut self) option<(K, V)> {
 		r := self.root?
 		out := self.remove_end(r, false)
 		self.len -= 1
@@ -1249,7 +1249,7 @@ impl<K, V> BTreeMap<K, V> {
 	}
 
 	// Removes and returns the last entry.
-	pub fn pop_last(&mut self) -> Option<(K, V)> {
+	pub fun pop_last(&mut self) option<(K, V)> {
 		r := self.root?
 		out := self.remove_end(r, true)
 		self.len -= 1
@@ -1257,7 +1257,7 @@ impl<K, V> BTreeMap<K, V> {
 		return Some(out)
 	}
 
-	fn new_node(&mut self, node: Node<K, V>) -> usize {
+	fun new_node(&mut self, node Node<K, V>) usize {
 		match self.free.pop() {
 			Some(i) => {
 				self.nodes[i] = node
@@ -1270,16 +1270,16 @@ impl<K, V> BTreeMap<K, V> {
 		}
 	}
 
-	fn is_leaf(&self, n: usize) -> bool {
+	fun is_leaf(&self, n usize) bool {
 		return self.nodes[n].kids.len() == 0
 	}
 
-	fn nkeys(&self, n: usize) -> usize {
+	fun nkeys(&self, n usize) usize {
 		return self.nodes[n].keys.len()
 	}
 
 	// Splits the full child `i` of `x` around its median key.
-	fn split_child(&mut self, x: usize, i: usize) {
+	fun split_child(&mut self, x usize, i usize) {
 		y := self.nodes[x].kids[i]
 		keys := self.nodes[y].keys.split_off(B)
 		vals := self.nodes[y].vals.split_off(B)
@@ -1296,7 +1296,7 @@ impl<K, V> BTreeMap<K, V> {
 	}
 
 	// Merges child `i + 1` of `x` and the key between them into child `i`.
-	fn merge(&mut self, x: usize, i: usize) {
+	fun merge(&mut self, x usize, i usize) {
 		y := self.nodes[x].kids[i]
 		z := self.nodes[x].kids.remove(i + 1)
 		k := self.nodes[x].keys.remove(i)
@@ -1317,7 +1317,7 @@ impl<K, V> BTreeMap<K, V> {
 
 	// Makes sure child `i` of `x` has at least B keys before descending into
 	// it, by borrowing from a sibling or merging. Returns the child's new index.
-	fn fill_child(&mut self, x: usize, i: usize) -> usize {
+	fun fill_child(&mut self, x usize, i usize) usize {
 		c := self.nodes[x].kids[i]
 		if self.nkeys(c) >= B {
 			return i
@@ -1364,7 +1364,7 @@ impl<K, V> BTreeMap<K, V> {
 
 	// Removes the last (or first) entry of the subtree at `x`, which has at
 	// least B keys or is the root.
-	fn remove_end(&mut self, x: usize, last: bool) -> (K, V) {
+	fun remove_end(&mut self, x usize, last bool) (K, V) {
 		n mut := x
 		loop {
 			if self.is_leaf(n) {
@@ -1383,7 +1383,7 @@ impl<K, V> BTreeMap<K, V> {
 	}
 
 	// After a removal: an empty root is replaced by its only child (or none).
-	fn shrink_root(&mut self) {
+	fun shrink_root(&mut self) {
 		if let Some(r) = self.root {
 			if self.nkeys(r) == 0 {
 				if self.is_leaf(r) {
@@ -1398,10 +1398,10 @@ impl<K, V> BTreeMap<K, V> {
 }
 
 // The position of `q` among `keys`: (index, found).
-fn search<K: Borrow<Q>, Q: Ord>(keys: &Vec<K>, q: &Q) -> (usize, bool) {
+fun search<K: Borrow<Q>, Q: Ord>(keys &Vec<K>, q &Q) (usize, bool) {
 	i mut := 0
 	while i < keys.len() {
-		let kb: &Q = Borrow::borrow(&keys[i])
+		let kb &Q = Borrow::borrow(&keys[i])
 		match kb.cmp(q) {
 			Ordering::Less => {}
 			Ordering::Equal => return (i, true),
@@ -1414,14 +1414,14 @@ fn search<K: Borrow<Q>, Q: Ord>(keys: &Vec<K>, q: &Q) -> (usize, bool) {
 
 impl<K: Ord, V> BTreeMap<K, V> {
 	// A map of the pairs from `items`; later duplicates win.
-	pub fn from_iter<I: Iterator<(K, V)>>(items: I) -> BTreeMap<K, V> {
+	pub fun from_iter<I: Iterator<(K, V)>>(items I) BTreeMap<K, V> {
 		m mut := BTreeMap::new()
 		m.extend(items)
 		return m
 	}
 
 	// The node and index holding `key`.
-	fn locate<Q: Ord>(&self, key: &Q) -> Option<(usize, usize)> where K: Borrow<Q> {
+	fun locate<Q: Ord>(&self, key &Q) option<(usize, usize)> where K: Borrow<Q> {
 		n mut := self.root?
 		loop {
 			(i, found) := search(&self.nodes[n].keys, key)
@@ -1436,30 +1436,30 @@ impl<K: Ord, V> BTreeMap<K, V> {
 	}
 
 	// The value for `key`.
-	pub fn get<Q: Ord>(&self, key: &Q) -> Option<&V> where K: Borrow<Q> {
+	pub fun get<Q: Ord>(&self, key &Q) option<&V> where K: Borrow<Q> {
 		(n, i) := self.locate(key)?
 		return Some(&self.nodes[n].vals[i])
 	}
 
 	// The value for `key`, mutably.
-	pub fn get_mut<Q: Ord>(&mut self, key: &Q) -> Option<&mut V> where K: Borrow<Q> {
+	pub fun get_mut<Q: Ord>(&mut self, key &Q) option<&mut V> where K: Borrow<Q> {
 		(n, i) := self.locate(key)?
 		return Some(&mut self.nodes[n].vals[i])
 	}
 
 	// The stored key and value for `key`.
-	pub fn get_key_value<Q: Ord>(&self, key: &Q) -> Option<(&K, &V)> where K: Borrow<Q> {
+	pub fun get_key_value<Q: Ord>(&self, key &Q) option<(&K, &V)> where K: Borrow<Q> {
 		(n, i) := self.locate(key)?
 		return Some((&self.nodes[n].keys[i], &self.nodes[n].vals[i]))
 	}
 
 	// Whether the map has an entry for `key`.
-	pub fn contains_key<Q: Ord>(&self, key: &Q) -> bool where K: Borrow<Q> {
+	pub fun contains_key<Q: Ord>(&self, key &Q) bool where K: Borrow<Q> {
 		return self.locate(key).is_some()
 	}
 
 	// Sets `key` to `value`, returning the old value if there was one.
-	pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+	pub fun insert(&mut self, key K, value V) option<V> {
 		if let Some((n, i)) = self.locate(&key) {
 			return Some(std::mem::replace(&mut self.nodes[n].vals[i], value))
 		}
@@ -1500,7 +1500,7 @@ impl<K: Ord, V> BTreeMap<K, V> {
 	}
 
 	// Removes `key`, returning its value.
-	pub fn remove<Q: Ord>(&mut self, key: &Q) -> Option<V> where K: Borrow<Q> {
+	pub fun remove<Q: Ord>(&mut self, key &Q) option<V> where K: Borrow<Q> {
 		match self.remove_entry(key) {
 			Some((_, v)) => return Some(v),
 			None => return None,
@@ -1508,7 +1508,7 @@ impl<K: Ord, V> BTreeMap<K, V> {
 	}
 
 	// Removes `key`, returning the stored key and value.
-	pub fn remove_entry<Q: Ord>(&mut self, key: &Q) -> Option<(K, V)> where K: Borrow<Q> {
+	pub fun remove_entry<Q: Ord>(&mut self, key &Q) option<(K, V)> where K: Borrow<Q> {
 		if !self.contains_key(key) {
 			return None
 		}
@@ -1557,23 +1557,23 @@ impl<K: Ord, V> BTreeMap<K, V> {
 		}
 	}
 
-	fn finish_remove(&mut self) {
+	fun finish_remove(&mut self) {
 		self.len -= 1
 		self.shrink_root()
 	}
 
 	// The entries with keys in `from..to` (`to` excluded), in order.
-	pub fn range<'a, Q: Ord>(&'a self, from: &Q, to: &'a Q) -> BTreeRange<'a, K, V, Q> where K: Borrow<Q> {
+	pub fun range<'a, Q: Ord>(&'a self, from &Q, to &'a Q) BTreeRange<'a, K, V, Q> where K: Borrow<Q> {
 		return BTreeRange { inner: self.iter_from(from), end: Some(to) }
 	}
 
 	// The entries with keys from `from` on, in order.
-	pub fn range_from<'a, Q: Ord>(&'a self, from: &Q) -> BTreeRange<'a, K, V, Q> where K: Borrow<Q> {
+	pub fun range_from<'a, Q: Ord>(&'a self, from &Q) BTreeRange<'a, K, V, Q> where K: Borrow<Q> {
 		return BTreeRange { inner: self.iter_from(from), end: None }
 	}
 
 	// An iterator starting at the first key not less than `from`.
-	fn iter_from<'a, Q: Ord>(&'a self, from: &Q) -> BTreeIter<'a, K, V> where K: Borrow<Q> {
+	fun iter_from<'a, Q: Ord>(&'a self, from &Q) BTreeIter<'a, K, V> where K: Borrow<Q> {
 		it mut := BTreeIter { nodes: &self.nodes, stack: Vec::new(), left: self.len }
 		if let Some(r) = self.root {
 			n mut := r
@@ -1590,7 +1590,7 @@ impl<K: Ord, V> BTreeMap<K, V> {
 	}
 
 	// Keeps only the entries for which `keep` returns true.
-	pub fn retain(&mut self, keep: fn mut(&K, &mut V) -> bool) {
+	pub fun retain(&mut self, keep fun mut(&K, &mut V) bool) {
 		old mut := BTreeMap::new()
 		std::mem::swap(self, &mut old)
 		for (k, v) in old.into_iter() {
@@ -1602,7 +1602,7 @@ impl<K: Ord, V> BTreeMap<K, V> {
 	}
 
 	// Inserts every pair from `items`.
-	pub fn extend<I: Iterator<(K, V)>>(&mut self, items: I) {
+	pub fun extend<I: Iterator<(K, V)>>(&mut self, items I) {
 		it mut := items
 		while let Some((k, v)) = it.next() {
 			self.insert(k, v)
@@ -1610,12 +1610,12 @@ impl<K: Ord, V> BTreeMap<K, V> {
 	}
 
 	// Moves every entry with a key at or after `key` into a new map.
-	pub fn split_off<Q: Ord>(&mut self, key: &Q) -> BTreeMap<K, V> where K: Borrow<Q> {
+	pub fun split_off<Q: Ord>(&mut self, key &Q) BTreeMap<K, V> where K: Borrow<Q> {
 		out mut := BTreeMap::new()
 		loop {
 			match self.last_key_value() {
 				Some((k, _)) => {
-					let kb: &Q = Borrow::borrow(k)
+					let kb &Q = Borrow::borrow(k)
 					if kb < key {
 						break
 					}
@@ -1630,7 +1630,7 @@ impl<K: Ord, V> BTreeMap<K, V> {
 }
 
 impl<K: Eq, V: Eq> Eq for BTreeMap<K, V> {
-	fn eq(&self, other: &BTreeMap<K, V>) -> bool {
+	fun eq(&self, other &BTreeMap<K, V>) bool {
 		if self.len != other.len {
 			return false
 		}
@@ -1647,7 +1647,7 @@ impl<K: Eq, V: Eq> Eq for BTreeMap<K, V> {
 }
 
 impl<K: Clone, V: Clone> Clone for BTreeMap<K, V> {
-	fn clone(&self) -> BTreeMap<K, V> {
+	fun clone(&self) BTreeMap<K, V> {
 		nodes mut := Vec::with_capacity(self.nodes.len())
 		for n in self.nodes.iter() {
 			nodes.push(Node { keys: n.keys.clone(), vals: n.vals.clone(), kids: n.kids.clone() })
@@ -1657,7 +1657,7 @@ impl<K: Clone, V: Clone> Clone for BTreeMap<K, V> {
 }
 
 impl<K: Debug, V: Debug> Debug for BTreeMap<K, V> {
-	fn fmt_debug(&self, f: &mut std::fmt::Formatter) {
+	fun fmt_debug(&self, f &mut std::fmt::Formatter) {
 		f.begin("{{")
 		first mut := true
 		for (k, v) in self.iter() {
@@ -1674,13 +1674,13 @@ impl<K: Debug, V: Debug> Debug for BTreeMap<K, V> {
 // In-order traversal. Each stack entry `(node, i)` means: the next key to
 // yield from `node` is `i` (its left subtree is done).
 pub struct BTreeIter<'a, K, V> {
-	nodes: &'a Vec<Node<K, V>>,
-	stack: Vec<(usize, usize)>,
-	left: usize,
+	nodes &'a Vec<Node<K, V>>,
+	stack Vec<(usize, usize)>,
+	left usize,
 }
 
 impl<'a, K, V> BTreeIter<'a, K, V> {
-	fn descend(&mut self, from: usize) {
+	fun descend(&mut self, from usize) {
 		n mut := from
 		loop {
 			self.stack.push((n, 0))
@@ -1693,7 +1693,7 @@ impl<'a, K, V> BTreeIter<'a, K, V> {
 }
 
 impl<'a, K, V> Iterator<(&'a K, &'a V)> for BTreeIter<'a, K, V> {
-	fn next(&mut self) -> Option<(&'a K, &'a V)> {
+	fun next(&mut self) option<(&'a K, &'a V)> {
 		loop {
 			(n, i) := *self.stack.last()?
 			nodes := self.nodes
@@ -1715,15 +1715,15 @@ impl<'a, K, V> Iterator<(&'a K, &'a V)> for BTreeIter<'a, K, V> {
 }
 
 pub struct BTreeRange<'a, K, V, Q> {
-	inner: BTreeIter<'a, K, V>,
-	end: Option<&'a Q>,
+	inner BTreeIter<'a, K, V>,
+	end option<&'a Q>,
 }
 
 impl<'a, K: Borrow<Q>, V, Q: Ord> Iterator<(&'a K, &'a V)> for BTreeRange<'a, K, V, Q> {
-	fn next(&mut self) -> Option<(&'a K, &'a V)> {
+	fun next(&mut self) option<(&'a K, &'a V)> {
 		(k, v) := self.inner.next()?
 		if let Some(e) = self.end {
-			let kb: &Q = Borrow::borrow(k)
+			let kb &Q = Borrow::borrow(k)
 			if !(kb < e) {
 				self.inner.stack.clear()
 				return None
@@ -1734,22 +1734,22 @@ impl<'a, K: Borrow<Q>, V, Q: Ord> Iterator<(&'a K, &'a V)> for BTreeRange<'a, K,
 }
 
 pub struct BTreeKeys<'a, K, V> {
-	inner: BTreeIter<'a, K, V>,
+	inner BTreeIter<'a, K, V>,
 }
 
 impl<'a, K, V> Iterator<&'a K> for BTreeKeys<'a, K, V> {
-	fn next(&mut self) -> Option<&'a K> {
+	fun next(&mut self) option<&'a K> {
 		(k, _) := self.inner.next()?
 		return Some(k)
 	}
 }
 
 pub struct BTreeValues<'a, K, V> {
-	inner: BTreeIter<'a, K, V>,
+	inner BTreeIter<'a, K, V>,
 }
 
 impl<'a, K, V> Iterator<&'a V> for BTreeValues<'a, K, V> {
-	fn next(&mut self) -> Option<&'a V> {
+	fun next(&mut self) option<&'a V> {
 		(_, v) := self.inner.next()?
 		return Some(v)
 	}
@@ -1758,12 +1758,12 @@ impl<'a, K, V> Iterator<&'a V> for BTreeValues<'a, K, V> {
 // Pointers to each value, collected in order while the map is mutably
 // borrowed by `owner`, so each `&mut V` is handed out once.
 pub struct BTreeValuesMut<'a, K, V> {
-	ptrs: std::iter::IntoIter<*mut V>,
-	owner: &'a mut BTreeMap<K, V>,
+	ptrs std::iter::IntoIter<*mut V>,
+	owner &'a mut BTreeMap<K, V>,
 }
 
 impl<'a, K, V> Iterator<&'a mut V> for BTreeValuesMut<'a, K, V> {
-	fn next(&mut self) -> Option<&'a mut V> {
+	fun next(&mut self) option<&'a mut V> {
 		p := self.ptrs.next()?
 		unsafe {
 			return Some(&mut *p)
@@ -1772,17 +1772,17 @@ impl<'a, K, V> Iterator<&'a mut V> for BTreeValuesMut<'a, K, V> {
 }
 
 pub struct BTreeIntoIter<K, V> {
-	map: BTreeMap<K, V>,
+	map BTreeMap<K, V>,
 }
 
 impl<K, V> Iterator<(K, V)> for BTreeIntoIter<K, V> {
-	fn next(&mut self) -> Option<(K, V)> {
+	fun next(&mut self) option<(K, V)> {
 		return self.map.pop_first()
 	}
 }
 
 impl<K, V> std::iter::DoubleEndedIterator<(K, V)> for BTreeIntoIter<K, V> {
-	fn next_back(&mut self) -> Option<(K, V)> {
+	fun next_back(&mut self) option<(K, V)> {
 		return self.map.pop_last()
 	}
 }
@@ -1791,97 +1791,97 @@ impl<K, V> std::iter::DoubleEndedIterator<(K, V)> for BTreeIntoIter<K, V> {
 
 // A set of values kept in sorted order.
 pub struct BTreeSet<T> {
-	map: BTreeMap<T, ()>,
+	map BTreeMap<T, void>,
 }
 
 impl<T> BTreeSet<T> {
-	pub fn new() -> BTreeSet<T> {
+	pub fun new() BTreeSet<T> {
 		return BTreeSet { map: BTreeMap::new() }
 	}
 
-	pub fn len(&self) -> usize {
+	pub fun len(&self) usize {
 		return self.map.len()
 	}
 
-	pub fn is_empty(&self) -> bool {
+	pub fun is_empty(&self) bool {
 		return self.map.len() == 0
 	}
 
-	pub fn clear(&mut self) {
+	pub fun clear(&mut self) {
 		self.map.clear()
 	}
 
 	// The values in ascending order.
-	pub fn iter<'a>(&'a self) -> BTreeKeys<'a, T, ()> {
+	pub fun iter<'a>(&'a self) BTreeKeys<'a, T, void> {
 		return self.map.keys()
 	}
 
 	// The values in order, consuming the set.
-	pub fn into_iter(self) -> BTreeSetIntoIter<T> {
+	pub fun into_iter(self) BTreeSetIntoIter<T> {
 		return BTreeSetIntoIter { inner: self.map.into_iter() }
 	}
 
 	// The smallest value.
-	pub fn first(&self) -> Option<&T> {
+	pub fun first(&self) option<&T> {
 		(k, _) := self.map.first_key_value()?
 		return Some(k)
 	}
 
 	// The largest value.
-	pub fn last(&self) -> Option<&T> {
+	pub fun last(&self) option<&T> {
 		(k, _) := self.map.last_key_value()?
 		return Some(k)
 	}
 
-	pub fn pop_first(&mut self) -> Option<T> {
+	pub fun pop_first(&mut self) option<T> {
 		(k, _) := self.map.pop_first()?
 		return Some(k)
 	}
 
-	pub fn pop_last(&mut self) -> Option<T> {
+	pub fun pop_last(&mut self) option<T> {
 		(k, _) := self.map.pop_last()?
 		return Some(k)
 	}
 }
 
 impl<T: Ord> BTreeSet<T> {
-	pub fn from_iter<I: Iterator<T>>(items: I) -> BTreeSet<T> {
+	pub fun from_iter<I: Iterator<T>>(items I) BTreeSet<T> {
 		s mut := BTreeSet::new()
 		s.extend(items)
 		return s
 	}
 
 	// Adds `value`; returns false if it was already present.
-	pub fn insert(&mut self, value: T) -> bool {
+	pub fun insert(&mut self, value T) bool {
 		return self.map.insert(value, ()).is_none()
 	}
 
-	pub fn contains<Q: Ord>(&self, value: &Q) -> bool where T: Borrow<Q> {
+	pub fun contains<Q: Ord>(&self, value &Q) bool where T: Borrow<Q> {
 		return self.map.contains_key(value)
 	}
 
 	// Removes `value`; returns whether it was present.
-	pub fn remove<Q: Ord>(&mut self, value: &Q) -> bool where T: Borrow<Q> {
+	pub fun remove<Q: Ord>(&mut self, value &Q) bool where T: Borrow<Q> {
 		return self.map.remove(value).is_some()
 	}
 
 	// The values in `from..to`, in order.
-	pub fn range<'a, Q: Ord>(&'a self, from: &Q, to: &'a Q) -> BTreeSetRange<'a, T, Q> where T: Borrow<Q> {
+	pub fun range<'a, Q: Ord>(&'a self, from &Q, to &'a Q) BTreeSetRange<'a, T, Q> where T: Borrow<Q> {
 		return BTreeSetRange { inner: self.map.range(from, to) }
 	}
 
-	pub fn retain(&mut self, keep: fn mut(&T) -> bool) {
+	pub fun retain(&mut self, keep fun mut(&T) bool) {
 		self.map.retain(|k, _v| keep(k))
 	}
 
-	pub fn extend<I: Iterator<T>>(&mut self, items: I) {
+	pub fun extend<I: Iterator<T>>(&mut self, items I) {
 		it mut := items
 		while let Some(x) = it.next() {
 			self.map.insert(x, ())
 		}
 	}
 
-	pub fn is_subset(&self, other: &BTreeSet<T>) -> bool {
+	pub fun is_subset(&self, other &BTreeSet<T>) bool {
 		for x in self.iter() {
 			if !other.contains(x) {
 				return false
@@ -1891,7 +1891,7 @@ impl<T: Ord> BTreeSet<T> {
 	}
 
 	// The values in both sets, in order.
-	pub fn intersection<'a>(&'a self, other: &BTreeSet<T>) -> Vec<&'a T> {
+	pub fun intersection<'a>(&'a self, other &BTreeSet<T>) Vec<&'a T> {
 		out mut := Vec::new()
 		for x in self.iter() {
 			if other.contains(x) {
@@ -1902,7 +1902,7 @@ impl<T: Ord> BTreeSet<T> {
 	}
 
 	// The values in this set but not `other`, in order.
-	pub fn difference<'a>(&'a self, other: &BTreeSet<T>) -> Vec<&'a T> {
+	pub fun difference<'a>(&'a self, other &BTreeSet<T>) Vec<&'a T> {
 		out mut := Vec::new()
 		for x in self.iter() {
 			if !other.contains(x) {
@@ -1913,7 +1913,7 @@ impl<T: Ord> BTreeSet<T> {
 	}
 
 	// The values in either set, in order, each once.
-	pub fn union<'a>(&'a self, other: &'a BTreeSet<T>) -> Vec<&'a T> {
+	pub fun union<'a>(&'a self, other &'a BTreeSet<T>) Vec<&'a T> {
 		out mut := Vec::new()
 		a mut := self.iter().peekable()
 		b mut := other.iter().peekable()
@@ -1942,40 +1942,40 @@ impl<T: Ord> BTreeSet<T> {
 }
 
 impl<T: Eq> Eq for BTreeSet<T> {
-	fn eq(&self, other: &BTreeSet<T>) -> bool {
+	fun eq(&self, other &BTreeSet<T>) bool {
 		return self.map == other.map
 	}
 }
 
 impl<T: Clone> Clone for BTreeSet<T> {
-	fn clone(&self) -> BTreeSet<T> {
+	fun clone(&self) BTreeSet<T> {
 		return BTreeSet { map: self.map.clone() }
 	}
 }
 
 impl<T: Debug> Debug for BTreeSet<T> {
-	fn fmt_debug(&self, f: &mut std::fmt::Formatter) {
+	fun fmt_debug(&self, f &mut std::fmt::Formatter) {
 		f.list(self.iter())
 	}
 }
 
 pub struct BTreeSetRange<'a, T, Q> {
-	inner: BTreeRange<'a, T, (), Q>,
+	inner BTreeRange<'a, T, void, Q>,
 }
 
 impl<'a, T: Borrow<Q>, Q: Ord> Iterator<&'a T> for BTreeSetRange<'a, T, Q> {
-	fn next(&mut self) -> Option<&'a T> {
+	fun next(&mut self) option<&'a T> {
 		(k, _) := self.inner.next()?
 		return Some(k)
 	}
 }
 
 pub struct BTreeSetIntoIter<T> {
-	inner: BTreeIntoIter<T, ()>,
+	inner BTreeIntoIter<T, void>,
 }
 
 impl<T> Iterator<T> for BTreeSetIntoIter<T> {
-	fn next(&mut self) -> Option<T> {
+	fun next(&mut self) option<T> {
 		(k, _) := self.inner.next()?
 		return Some(k)
 	}

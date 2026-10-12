@@ -67,7 +67,7 @@ impl Keyword {
         ("enum", Keyword::Enum),
         ("extern", Keyword::Extern),
         ("false", Keyword::False),
-        ("fn", Keyword::Fn),
+        ("fun", Keyword::Fn),
         ("for", Keyword::For),
         ("go", Keyword::Go),
         ("if", Keyword::If),

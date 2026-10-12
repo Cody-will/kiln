@@ -4,11 +4,11 @@
 //	b := hex::decode("6869")?         // [104, 105]
 //	print(hex::dump(&data))           // a hexdump -C style listing
 
-const LOWER: &str = "0123456789abcdef"
-const UPPER: &str = "0123456789ABCDEF"
+const LOWER &str = "0123456789abcdef"
+const UPPER &str = "0123456789ABCDEF"
 
 // Why hex decoding failed.
-#[derive(Debug, Clone, Eq)]
+@derive(Debug, Clone, Eq)
 pub enum DecodeError {
 	// The input has an odd number of digits.
 	OddLength,
@@ -17,7 +17,7 @@ pub enum DecodeError {
 }
 
 impl Display for DecodeError {
-	fn to_string(&self) -> String {
+	fun to_string(&self) string {
 		match self {
 			DecodeError::OddLength => return "hex: odd length input".to_string(),
 			DecodeError::InvalidByte(i, b) => return "hex: invalid byte {*b:#04x} at offset {i}",
@@ -27,9 +27,9 @@ impl Display for DecodeError {
 
 impl Error for DecodeError {}
 
-fn encode_with(b: &[u8], digits: &str) -> String {
+fun encode_with(b &[u8], digits &str) string {
 	d := digits.as_bytes()
-	out mut := String::with_capacity(b.len() * 2)
+	out mut := string::with_capacity(b.len() * 2)
 	for x in b.iter() {
 		out.push_char(d[(*x >> 4) as usize] as char)
 		out.push_char(d[(*x & 15) as usize] as char)
@@ -38,16 +38,16 @@ fn encode_with(b: &[u8], digits: &str) -> String {
 }
 
 // Lowercase hex digits for `b`.
-pub fn encode(b: &[u8]) -> String {
+pub fun encode(b &[u8]) string {
 	return encode_with(b, LOWER)
 }
 
 // Uppercase hex digits for `b`.
-pub fn encode_upper(b: &[u8]) -> String {
+pub fun encode_upper(b &[u8]) string {
 	return encode_with(b, UPPER)
 }
 
-fn digit(c: u8) -> Option<u8> {
+fun digit(c u8) option<u8> {
 	if c >= 48 && c <= 57 {
 		return Some(c - 48)
 	}
@@ -61,7 +61,7 @@ fn digit(c: u8) -> Option<u8> {
 }
 
 // The bytes written as hex digits in `s` (either case).
-pub fn decode(s: &str) -> Result<Vec<u8>, DecodeError> {
+pub fun decode(s &str) result<Vec<u8>, DecodeError> {
 	b := s.as_bytes()
 	out mut := Vec::with_capacity(b.len() / 2)
 	i mut := 0
@@ -88,8 +88,8 @@ pub fn decode(s: &str) -> Result<Vec<u8>, DecodeError> {
 
 // A hexdump -C style listing: offset, 16 bytes in hex, and the printable
 // characters.
-pub fn dump(b: &[u8]) -> String {
-	out mut := String::new()
+pub fun dump(b &[u8]) string {
+	out mut := string::new()
 	off mut := 0
 	while off < b.len() {
 		out.push("{off:08x}  ")

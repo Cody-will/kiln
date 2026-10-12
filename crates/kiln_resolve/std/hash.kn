@@ -9,29 +9,29 @@
 // tables from inputs crafted to collide). It is not a cryptographic hash;
 // see `std::crypto` for those.
 
-fn kn_hash_u64(h: *mut u64, x: i64)
-fn kn_hash_bytes(h: *mut u64, p: *const u8, n: usize)
-fn kn_hash_finish(h: u64) -> u64
-fn kn_hash_seed() -> u64
+fun kn_hash_u64(h *mut u64, x i64)
+fun kn_hash_bytes(h *mut u64, p *const u8, n usize)
+fun kn_hash_finish(h u64) u64
+fun kn_hash_seed() u64
 
 // Accumulates input and produces a hash.
 pub struct Hasher {
-	h: u64,
+	h u64,
 }
 
 impl Hasher {
 	// A hasher with this process's random seed.
-	pub fn new() -> Hasher {
+	pub fun new() Hasher {
 		return Hasher { h: kn_hash_seed() }
 	}
 
 	// A hasher with a fixed seed: the same input always gives the same hash.
-	pub fn with_seed(seed: u64) -> Hasher {
+	pub fun with_seed(seed u64) Hasher {
 		return Hasher { h: seed }
 	}
 
 	// Adds bytes.
-	pub fn write(&mut self, b: &[u8]) {
+	pub fun write(&mut self, b &[u8]) {
 		p := &mut self.h as *mut u64
 		unsafe {
 			kn_hash_bytes(p, std::ptr::slice_ptr(b) as *const u8, b.len())
@@ -39,7 +39,7 @@ impl Hasher {
 	}
 
 	// Adds a number.
-	pub fn write_u64(&mut self, x: u64) {
+	pub fun write_u64(&mut self, x u64) {
 		p := &mut self.h as *mut u64
 		unsafe {
 			kn_hash_u64(p, x as i64)
@@ -47,13 +47,13 @@ impl Hasher {
 	}
 
 	// The hash of everything added so far.
-	pub fn finish(&self) -> u64 {
+	pub fun finish(&self) u64 {
 		return kn_hash_finish(self.h)
 	}
 }
 
 // The hash of `v` with this process's seed.
-pub fn hash<T: Hash>(v: &T) -> u64 {
+pub fun hash<T: Hash>(v &T) u64 {
 	h mut := Hasher::new()
 	v.hash(&mut h)
 	return h.finish()
@@ -61,4 +61,4 @@ pub fn hash<T: Hash>(v: &T) -> u64 {
 
 // Field-by-field hashing, ignoring any hand-written `hash` of `T` itself:
 // the default `Hash::hash`.
-pub fn derived_hash<T>(v: &T, h: &mut Hasher)
+pub fun derived_hash<T>(v &T, h &mut Hasher)

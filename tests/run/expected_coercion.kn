@@ -1,12 +1,12 @@
-fn f() -> Option<String> {
+fun f() option<string> {
 	return Some(3).map(|x| "{x}")
 }
 
-fn g(s: &String) -> Option<&str> {
+fun g(s &string) option<&str> {
 	return Some(s)
 }
 
-fn main() {
-	let o: Option<&str> = Some(&"hi".to_string())
+fun main() {
+	let o option<&str> = Some(&"hi".to_string())
 	println("{f():?} {g(&"a".to_string()):?} {o:?}")
 }

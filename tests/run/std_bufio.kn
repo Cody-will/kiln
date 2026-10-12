@@ -1,12 +1,12 @@
 import std::io
 import std::io::{BufReader, BufWriter, Read, Scanner, Split, Write}
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	r mut := BufReader::with_capacity(8, io::Cursor::from_str("héllo wörld\r\nsecond line\nno newline"))
-	println("{String::from_utf8_lossy(r.peek(3)?)}")
+	println("{string::from_utf8_lossy(r.peek(3)?)}")
 	println("{r.read_byte()?:?} {r.read_char()?:?} {r.read_char()?:?}")
 	println("{r.discard(3)?}")
-	println("{String::from_utf8_lossy(r.peek(8)?):?}")
+	println("{string::from_utf8_lossy(r.peek(8)?):?}")
 	match r.peek(9) {
 		Ok(_) => println("unexpected"),
 		Err(e) => println("{e}"),
@@ -28,9 +28,9 @@ fn main() -> Result<(), io::Error> {
 		Err(e) => println("{e}"),
 	}
 
-	let sink: Vec<u8> = Vec::new()
+	let sink Vec<u8> = Vec::new()
 	bw mut := BufWriter::with_capacity(16, sink)
 	bw.write_str("hello")?
 	println("{bw.buffered()} {bw.available()}")
-	return Ok(())
+	return Ok()
 }

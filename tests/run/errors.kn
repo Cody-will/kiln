@@ -1,22 +1,22 @@
 enum ParseError {
 	Empty,
-	Bad(String),
+	Bad(string),
 }
 
 struct AppError {
-	msg: String,
+	msg string,
 }
 
 impl From<ParseError> for AppError {
-	fn from(e: ParseError) -> AppError {
+	fun from(e ParseError) AppError {
 		return match e {
-			ParseError::Empty => AppError { msg: String::from("empty input") },
+			ParseError::Empty => AppError { msg: string::from("empty input") },
 			ParseError::Bad(s) => AppError { msg: "bad input: {s}" },
 		}
 	}
 }
 
-fn parse_digit(s: &str) -> Result<i32, ParseError> {
+fun parse_digit(s &str) result<i32, ParseError> {
 	if s.is_empty() {
 		return Err(ParseError::Empty)
 	}
@@ -29,32 +29,32 @@ fn parse_digit(s: &str) -> Result<i32, ParseError> {
 	return Err(ParseError::Bad(s.to_string()))
 }
 
-fn sum(a: &str, b: &str) -> Result<i32, AppError> {
+fun sum(a &str, b &str) result<i32, AppError> {
 	x := parse_digit(a)?
 	y := parse_digit(b)?
 	return Ok(x + y)
 }
 
-fn half(n: i32) -> Option<i32> {
+fun half(n i32) option<i32> {
 	if n % 2 == 0 {
 		return Some(n / 2)
 	}
 	return None
 }
 
-fn quarter(n: i32) -> Option<i32> {
+fun quarter(n i32) option<i32> {
 	h := half(n)?
 	return half(h)
 }
 
-fn report(r: Result<i32, AppError>) {
+fun report(r result<i32, AppError>) {
 	match r {
 		Ok(v) => println("ok: {v}"),
 		Err(e) => println("error: {e.msg}"),
 	}
 }
 
-fn main() {
+fun main() {
 	report(sum("1", "2"))
 	report(sum("", "2"))
 	report(sum("1", "x"))

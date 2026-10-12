@@ -3,7 +3,7 @@ import std::crypto::{sha256, sha1, md5, hmac}
 import std::encoding::hex
 import std::io
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	for s in ["", "abc", "The quick brown fox jumps over the lazy dog", "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"].iter() {
 		b := s.as_bytes()
 		println("{sha256::hex(b)} {sha1::hex(b)} {md5::hex(b)}")
@@ -30,5 +30,5 @@ fn main() -> Result<(), io::Error> {
 	tag := hmac::sha256("k".as_bytes(), "m".as_bytes())
 	println("{hmac::verify_sha256("k".as_bytes(), "m".as_bytes(), &tag)} {hmac::verify_sha256("k".as_bytes(), "x".as_bytes(), &tag)}")
 	println("{crypto::constant_time_eq("ab".as_bytes(), "ab".as_bytes())} {crypto::constant_time_eq("ab".as_bytes(), "ac".as_bytes())}")
-	return Ok(())
+	return Ok()
 }

@@ -36,7 +36,7 @@ fn has(src: &str, needle: &str) {
 }
 
 fn main_with(body: &str) -> String {
-    format!("fn take(s: String) {{}}\nfn read(s: &String) {{}}\nfn main() {{\n{body}\n}}")
+    format!("fun take(s string) {{}}\nfun read(s &string) {{}}\nfun main() {{\n{body}\n}}")
 }
 
 // ----- moves -------------------------------------------------------------------------------
@@ -44,14 +44,14 @@ fn main_with(body: &str) -> String {
 #[test]
 fn use_after_move() {
     err1(
-        &main_with(" s := String::from(\"a\")\n take(s)\n take(s)"),
+        &main_with(" s := string::from(\"a\")\n take(s)\n take(s)"),
         "use of moved value: `s`",
     );
 }
 
 #[test]
 fn use_after_move_has_note() {
-    let src = main_with(" s := String::from(\"a\")\n t := s\n read(&s)");
+    let src = main_with(" s := string::from(\"a\")\n t := s\n read(&s)");
     let e = check_source(&src);
     assert_eq!(e.len(), 1, "{e:?}");
     assert_eq!(e[0].message, "borrow of moved value: `s`");
@@ -74,32 +74,32 @@ fn copy_types_are_not_moved() {
 
 #[test]
 fn derive_copy_struct_copies() {
-    ok("#[derive(Copy, Clone)]\nstruct P {\n x: i32,\n}\nfn eat(p: P) {}\nfn main() {\n p := P { x: 1 }\n eat(p)\n eat(p)\n}");
-    err1("struct P {\n x: i32,\n}\nfn eat(p: P) {}\nfn main() {\n p := P { x: 1 }\n eat(p)\n eat(p)\n}", "use of moved value: `p`");
+    ok("@derive(Copy, Clone)\nstruct P {\n x i32,\n}\nfun eat(p P) {}\nfun main() {\n p := P { x: 1 }\n eat(p)\n eat(p)\n}");
+    err1("struct P {\n x i32,\n}\nfun eat(p P) {}\nfun main() {\n p := P { x: 1 }\n eat(p)\n eat(p)\n}", "use of moved value: `p`");
 }
 
 #[test]
 fn reassignment_reinitializes() {
     ok(&main_with(
-        " s mut := String::from(\"a\")\n take(s)\n s = String::from(\"b\")\n take(s)",
+        " s mut := string::from(\"a\")\n take(s)\n s = string::from(\"b\")\n take(s)",
     ));
 }
 
 #[test]
 fn move_in_one_branch() {
     err1(
-        &main_with(" s := String::from(\"a\")\n c := true\n if c {\n take(s)\n }\n read(&s)"),
+        &main_with(" s := string::from(\"a\")\n c := true\n if c {\n take(s)\n }\n read(&s)"),
         "borrow of moved value: `s`",
     );
     ok(&main_with(
-        " s := String::from(\"a\")\n c := true\n if c {\n take(s)\n } else {\n read(&s)\n }",
+        " s := string::from(\"a\")\n c := true\n if c {\n take(s)\n } else {\n read(&s)\n }",
     ));
 }
 
 #[test]
 fn move_in_loop() {
     let e = check_source(&main_with(
-        " s := String::from(\"a\")\n for i in 0..3 {\n take(s)\n }",
+        " s := string::from(\"a\")\n for i in 0..3 {\n take(s)\n }",
     ));
     assert_eq!(e.len(), 1, "{e:?}");
     assert!(
@@ -113,39 +113,39 @@ fn move_in_loop() {
 
 #[test]
 fn partial_moves() {
-    let src = "struct P {\n a: String,\n b: String,\n}\nfn take(s: String) {}\nfn eat(p: P) {}\nfn main() {\n";
-    ok(&format!("{src} p := P {{ a: String::from(\"x\"), b: String::from(\"y\") }}\n take(p.a)\n take(p.b)\n}}"));
-    err1(&format!("{src} p := P {{ a: String::from(\"x\"), b: String::from(\"y\") }}\n take(p.a)\n eat(p)\n}}"), "use of partially moved value: `p`");
-    err1(&format!("{src} p := P {{ a: String::from(\"x\"), b: String::from(\"y\") }}\n take(p.a)\n take(p.a)\n}}"), "use of moved value: `p.a`");
+    let src = "struct P {\n a string,\n b string,\n}\nfun take(s string) {}\nfun eat(p P) {}\nfun main() {\n";
+    ok(&format!("{src} p := P {{ a: string::from(\"x\"), b: string::from(\"y\") }}\n take(p.a)\n take(p.b)\n}}"));
+    err1(&format!("{src} p := P {{ a: string::from(\"x\"), b: string::from(\"y\") }}\n take(p.a)\n eat(p)\n}}"), "use of partially moved value: `p`");
+    err1(&format!("{src} p := P {{ a: string::from(\"x\"), b: string::from(\"y\") }}\n take(p.a)\n take(p.a)\n}}"), "use of moved value: `p.a`");
 }
 
 #[test]
 fn move_out_of_reference() {
     err1(
-        "struct P {\n a: String,\n}\nfn f(p: &P) -> String {\n return p.a\n}\nfn main() {}",
+        "struct P {\n a string,\n}\nfun f(p &P) string {\n return p.a\n}\nfun main() {}",
         "cannot move out of `*p.a`, which is behind a shared reference",
     );
-    ok("struct P {\n a: String,\n}\nfn f(p: &P) -> String {\n return p.a.clone()\n}\nfn main() {}");
+    ok("struct P {\n a string,\n}\nfun f(p &P) string {\n return p.a.clone()\n}\nfun main() {}");
 }
 
 #[test]
 fn move_out_of_index() {
     err1(
-        "fn f(v: Vec<String>) -> String {\n return v[0]\n}\nfn main() {}",
+        "fun f(v Vec<string>) string {\n return v[0]\n}\nfun main() {}",
         "cannot move out of index",
     );
-    ok("fn f(v: Vec<i32>) -> i32 {\n return v[0]\n}\nfn main() {}");
+    ok("fun f(v Vec<i32>) i32 {\n return v[0]\n}\nfun main() {}");
 }
 
 #[test]
 fn uninitialized_binding() {
     err1(
-        "fn main() {\n let x: i32\n y := x + 1\n}",
+        "fun main() {\n let x i32\n y := x + 1\n}",
         "used binding `x` isn't initialized",
     );
-    ok("fn main() {\n let x: i32\n if true {\n x = 1\n } else {\n x = 2\n }\n y := x\n}");
+    ok("fun main() {\n let x i32\n if true {\n x = 1\n } else {\n x = 2\n }\n y := x\n}");
     err1(
-        "fn main() {\n let x: i32\n x = 1\n x = 2\n}",
+        "fun main() {\n let x i32\n x = 1\n x = 2\n}",
         "cannot assign twice to immutable variable `x`",
     );
 }
@@ -153,18 +153,18 @@ fn uninitialized_binding() {
 #[test]
 fn moving_into_method_with_value_self() {
     err1(
-        "fn main() {\n o := Some(String::from(\"a\"))\n a := o.unwrap()\n b := o.is_some()\n}",
+        "fun main() {\n o := Some(string::from(\"a\"))\n a := o.unwrap()\n b := o.is_some()\n}",
         "borrow of moved value: `o`",
     );
 }
 
 #[test]
 fn match_moves_and_ref_bindings() {
-    let e = "enum E {\n A(String),\n B,\n}\nfn take(s: String) {}\n";
+    let e = "enum E {\n A(string),\n B,\n}\nfun take(s string) {}\n";
     // Matching through a reference binds by reference: no move.
-    ok(&format!("{e}fn f(e: &E) {{\n match e {{\n E::A(s) => println(s),\n E::B => {{}},\n }}\n}}\nfn main() {{}}"));
+    ok(&format!("{e}fun f(e &E) {{\n match e {{\n E::A(s) => println(s),\n E::B => {{}},\n }}\n}}\nfun main() {{}}"));
     // Matching by value moves the payload out.
-    has(&format!("{e}fn main() {{\n e := E::A(String::from(\"a\"))\n match e {{\n E::A(s) => take(s),\n E::B => {{}},\n }}\n match e {{\n E::A(s) => take(s),\n E::B => {{}},\n }}\n}}"), "moved value");
+    has(&format!("{e}fun main() {{\n e := E::A(string::from(\"a\"))\n match e {{\n E::A(s) => take(s),\n E::B => {{}},\n }}\n match e {{\n E::A(s) => take(s),\n E::B => {{}},\n }}\n}}"), "moved value");
 }
 
 // ----- borrows ------------------------------------------------------------------------------
@@ -172,7 +172,7 @@ fn match_moves_and_ref_bindings() {
 #[test]
 fn shared_and_mutable_conflict() {
     err1(
-        &main_with(" s mut := String::from(\"a\")\n r := &s\n m := &mut s\n read(r)"),
+        &main_with(" s mut := string::from(\"a\")\n r := &s\n m := &mut s\n read(r)"),
         "cannot borrow `s` as mutable because it is also borrowed as immutable",
     );
 }
@@ -180,7 +180,7 @@ fn shared_and_mutable_conflict() {
 #[test]
 fn two_mutable_borrows() {
     err1(
-        &main_with(" s mut := String::from(\"a\")\n a := &mut s\n b := &mut s\n a.push(\"x\")"),
+        &main_with(" s mut := string::from(\"a\")\n a := &mut s\n b := &mut s\n a.push(\"x\")"),
         "cannot borrow `s` as mutable more than once at a time",
     );
 }
@@ -188,16 +188,16 @@ fn two_mutable_borrows() {
 #[test]
 fn non_lexical_lifetimes() {
     // The shared borrow's last use is before the mutable borrow.
-    ok(&main_with(" s mut := String::from(\"a\")\n r := &s\n read(r)\n m := &mut s\n m.push(\"x\")\n read(&s)"));
+    ok(&main_with(" s mut := string::from(\"a\")\n r := &s\n read(r)\n m := &mut s\n m.push(\"x\")\n read(&s)"));
     ok(&main_with(
-        " s mut := String::from(\"a\")\n a := &mut s\n a.push(\"x\")\n b := &mut s\n b.push(\"y\")",
+        " s mut := string::from(\"a\")\n a := &mut s\n a.push(\"x\")\n b := &mut s\n b.push(\"y\")",
     ));
 }
 
 #[test]
 fn use_while_mutably_borrowed() {
     err1(
-        &main_with(" s mut := String::from(\"a\")\n m := &mut s\n read(&s)\n m.push(\"x\")"),
+        &main_with(" s mut := string::from(\"a\")\n m := &mut s\n read(&s)\n m.push(\"x\")"),
         "cannot borrow `s` as immutable because it is also borrowed as mutable",
     );
     err1(
@@ -220,7 +220,7 @@ fn assign_while_borrowed() {
 #[test]
 fn move_while_borrowed() {
     err1(
-        &main_with(" s := String::from(\"a\")\n r := &s\n take(s)\n read(r)"),
+        &main_with(" s := string::from(\"a\")\n r := &s\n take(s)\n read(r)"),
         "cannot move out of `s` because it is borrowed",
     );
 }
@@ -234,7 +234,7 @@ fn writing_through_mut_ref_is_fine() {
 
 #[test]
 fn disjoint_fields() {
-    let s = "struct P {\n a: String,\n b: String,\n}\nfn main() {\n p mut := P { a: String::from(\"x\"), b: String::from(\"y\") }\n";
+    let s = "struct P {\n a string,\n b string,\n}\nfun main() {\n p mut := P { a: string::from(\"x\"), b: string::from(\"y\") }\n";
     ok(&format!(
         "{s} x := &mut p.a\n y := &p.b\n x.push(\"!\")\n println(y)\n}}"
     ));
@@ -246,18 +246,18 @@ fn disjoint_fields() {
 
 #[test]
 fn two_phase_method_calls() {
-    ok("fn main() {\n v mut := Vec::new()\n v.push(1)\n v.push(v.len())\n}");
+    ok("fun main() {\n v mut := Vec::new()\n v.push(1)\n v.push(v.len())\n}");
 }
 
 #[test]
 fn reborrows_through_references() {
-    ok("fn bump(n: &mut i32) {\n *n += 1\n}\nfn main() {\n x mut := 0\n r := &mut x\n bump(r)\n bump(r)\n println(\"{x}\")\n}");
+    ok("fun bump(n &mut i32) {\n *n += 1\n}\nfun main() {\n x mut := 0\n r := &mut x\n bump(r)\n bump(r)\n println(\"{x}\")\n}");
 }
 
 #[test]
 fn iterating_while_mutating() {
     has(
-        "fn main() {\n v mut := Vec::new()\n v.push(1)\n for x in &v {\n v.push(*x)\n }\n}",
+        "fun main() {\n v mut := Vec::new()\n v.push(1)\n for x in &v {\n v.push(*x)\n }\n}",
         "cannot borrow `v` as mutable because it is also borrowed as immutable",
     );
 }
@@ -265,7 +265,7 @@ fn iterating_while_mutating() {
 #[test]
 fn borrow_outlives_owner() {
     let e =
-        check_source("fn main() {\n let r: &i32\n {\n x := 5\n r = &x\n }\n println(\"{r}\")\n}");
+        check_source("fun main() {\n let r &i32\n {\n x := 5\n r = &x\n }\n println(\"{r}\")\n}");
     assert_eq!(e.len(), 1, "{e:?}");
     assert_eq!(e[0].message, "`x` does not live long enough");
     assert!(e[0]
@@ -281,21 +281,21 @@ fn borrow_outlives_owner() {
 #[test]
 fn block_value_borrowing_local() {
     err1(
-        "fn main() {\n r := {\n x := 5\n &x\n }\n println(\"{r}\")\n}",
+        "fun main() {\n r := {\n x := 5\n &x\n }\n println(\"{r}\")\n}",
         "`x` does not live long enough",
     );
 }
 
 #[test]
 fn drop_order_with_destructors() {
-    let s = "struct Guard<'a> {\n r: &'a i32,\n}\nimpl<'a> Drop for Guard<'a> {\n fn drop(&mut self) {}\n}\n";
+    let s = "struct Guard<'a> {\n r &'a i32,\n}\nimpl<'a> Drop for Guard<'a> {\n fun drop(&mut self) {}\n}\n";
     // `g` is declared first, so `x` is dropped first while `g` (whose destructor runs later) still borrows it.
     has(
-        &format!("{s}fn main() {{\n let mut g: Guard\n x := 1\n g = Guard {{ r: &x }}\n}}"),
+        &format!("{s}fun main() {{\n let mut g Guard\n x := 1\n g = Guard {{ r: &x }}\n}}"),
         "`x` does not live long enough",
     );
     ok(&format!(
-        "{s}fn main() {{\n x := 1\n g := Guard {{ r: &x }}\n}}"
+        "{s}fun main() {{\n x := 1\n g := Guard {{ r: &x }}\n}}"
     ));
 }
 
@@ -304,41 +304,41 @@ fn drop_order_with_destructors() {
 #[test]
 fn return_reference_to_local() {
     err1(
-        "fn f() -> &'static i32 {\n x := 5\n return &x\n}\nfn main() {}",
+        "fun f() &'static i32 {\n x := 5\n return &x\n}\nfun main() {}",
         "cannot return reference to local variable `x`",
     );
     err1(
-        "fn f(s: String) -> &'static str {\n return s.as_str()\n}\nfn main() {}",
+        "fun f(s string) &'static str {\n return s.as_str()\n}\nfun main() {}",
         "cannot return reference to function parameter `s`",
     );
 }
 
 #[test]
 fn return_borrow_of_parameter() {
-    ok("fn first(v: &Vec<i32>) -> &i32 {\n return &v[0]\n}\nfn main() {}");
-    ok("struct P {\n name: String,\n}\nimpl P {\n fn name(&self) -> &str {\n return self.name.as_str()\n }\n}\nfn main() {}");
+    ok("fun first(v &Vec<i32>) &i32 {\n return &v[0]\n}\nfun main() {}");
+    ok("struct P {\n name string,\n}\nimpl P {\n fun name(&self) &str {\n return self.name.as_str()\n }\n}\nfun main() {}");
 }
 
 #[test]
 fn missing_lifetime_specifier() {
-    let e = errs("fn longest(a: &str, b: &str) -> &str {\n return a\n}\nfn main() {}");
+    let e = errs("fun longest(a &str, b &str) &str {\n return a\n}\nfun main() {}");
     assert_eq!(e, vec!["missing lifetime specifier"]);
     err1(
-        "fn make() -> &str {\n return \"x\"\n}\nfn main() {}",
+        "fun make() &str {\n return \"x\"\n}\nfun main() {}",
         "missing lifetime specifier",
     );
-    ok("fn make() -> &'static str {\n return \"x\"\n}\nfn main() {}");
+    ok("fun make() &'static str {\n return \"x\"\n}\nfun main() {}");
 }
 
 #[test]
 fn explicit_lifetimes() {
-    ok("fn longest<'a>(a: &'a str, b: &'a str) -> &'a str {\n if a.len() > b.len() {\n return a\n }\n return b\n}\nfn main() {}");
+    ok("fun longest<'a>(a &'a str, b &'a str) &'a str {\n if a.len() > b.len() {\n return a\n }\n return b\n}\nfun main() {}");
     err1(
-        "fn first<'a, 'b>(a: &'a str, b: &'b str) -> &'a str {\n return b\n}\nfn main() {}",
+        "fun first<'a, 'b>(a &'a str, b &'b str) &'a str {\n return b\n}\nfun main() {}",
         "lifetime may not live long enough: the returned value borrows from `b`",
     );
     err1(
-        "fn f(a: &'x str) {}\nfn main() {}",
+        "fun f(a &'x str) {}\nfun main() {}",
         "use of undeclared lifetime name `'x`",
     );
 }
@@ -346,7 +346,7 @@ fn explicit_lifetimes() {
 #[test]
 fn self_elision() {
     err1(
-        "struct P {\n name: String,\n}\nimpl P {\n fn pick(&self, other: &str) -> &str {\n return other\n }\n}\nfn main() {}",
+        "struct P {\n name string,\n}\nimpl P {\n fun pick(&self, other &str) &str {\n return other\n }\n}\nfun main() {}",
         "lifetime may not live long enough: the returned value borrows from `other`",
     );
 }
@@ -354,20 +354,20 @@ fn self_elision() {
 #[test]
 fn borrowed_result_keeps_argument_borrowed() {
     err1(
-        "fn first(v: &Vec<String>) -> &String {\n return &v[0]\n}\nfn main() {\n v mut := Vec::new()\n v.push(String::from(\"a\"))\n f := first(&v)\n v.push(String::from(\"b\"))\n println(f)\n}",
+        "fun first(v &Vec<string>) &string {\n return &v[0]\n}\nfun main() {\n v mut := Vec::new()\n v.push(string::from(\"a\"))\n f := first(&v)\n v.push(string::from(\"b\"))\n println(f)\n}",
         "cannot borrow `v` as mutable because it is also borrowed as immutable",
     );
 }
 
 #[test]
 fn structs_with_references() {
-    ok("struct Parser<'src> {\n input: &'src str,\n pos: usize,\n}\nfn main() {\n text := String::from(\"abc\")\n p := Parser { input: text.as_str(), pos: 0 }\n println(p.input)\n}");
+    ok("struct Parser<'src> {\n input &'src str,\n pos usize,\n}\nfun main() {\n text := string::from(\"abc\")\n p := Parser { input: text.as_str(), pos: 0 }\n println(p.input)\n}");
     err1(
-        "struct Parser {\n input: &str,\n}\nfn main() {}",
+        "struct Parser {\n input &str,\n}\nfun main() {}",
         "missing lifetime specifier",
     );
     has(
-        "struct View<'a> {\n s: &'a str,\n}\nfn main() {\n let v: View\n {\n t := String::from(\"x\")\n v = View { s: t.as_str() }\n }\n println(v.s)\n}",
+        "struct View<'a> {\n s &'a str,\n}\nfun main() {\n let v View\n {\n t := string::from(\"x\")\n v = View { s: t.as_str() }\n }\n println(v.s)\n}",
         "`t` does not live long enough",
     );
 }
@@ -377,33 +377,33 @@ fn structs_with_references() {
 #[test]
 fn defer_evaluates_arguments_at_the_defer_statement() {
     ok(&main_with(
-        " s := String::from(\"a\")\n defer read(&s)\n println(\"working\")",
+        " s := string::from(\"a\")\n defer read(&s)\n println(\"working\")",
     ));
     // The deferred call keeps its borrow of `s` until the function returns.
     err1(
-        &main_with(" s := String::from(\"a\")\n defer read(&s)\n take(s)"),
+        &main_with(" s := string::from(\"a\")\n defer read(&s)\n take(s)"),
         "cannot move out of `s` because it is borrowed",
     );
     // A moved argument is moved at the `defer`, like any call.
     err1(
-        &main_with(" s := String::from(\"a\")\n defer take(s)\n println(s)"),
+        &main_with(" s := string::from(\"a\")\n defer take(s)\n println(s)"),
         "use of moved value: `s`",
     );
     // Copy arguments are copied: later assignments don't affect the deferred call.
-    ok("fn show(n: i32) {\n}\nfn main() {\n x mut := 1\n defer show(x)\n x = 2\n show(x)\n}");
+    ok("fun show(n i32) {\n}\nfun main() {\n x mut := 1\n defer show(x)\n x = 2\n show(x)\n}");
     // Printing an interpolated string formats it at the `defer`.
-    ok("fn main() {\n for i in 0..3 {\n defer println(\"{i}\")\n }\n}");
+    ok("fun main() {\n for i in 0..3 {\n defer println(\"{i}\")\n }\n}");
 }
 
 #[test]
 fn defer_blocks_see_values_at_exit() {
     // `defer { ... }` runs the block at exit, like a Go closure.
     err1(
-        &main_with(" s := String::from(\"a\")\n defer {\n read(&s)\n }\n take(s)"),
+        &main_with(" s := string::from(\"a\")\n defer {\n read(&s)\n }\n take(s)"),
         "borrow of moved value: `s`",
     );
     err1(
-        &main_with(" {\n t := String::from(\"a\")\n defer {\n read(&t)\n }\n }"),
+        &main_with(" {\n t := string::from(\"a\")\n defer {\n read(&t)\n }\n }"),
         "`t` is dropped before this deferred call runs",
     );
 }
@@ -413,19 +413,19 @@ fn defer_blocks_see_values_at_exit() {
 #[test]
 fn closure_captures_by_reference() {
     ok(&main_with(
-        " s := String::from(\"a\")\n f := || println(s)\n f()\n read(&s)",
+        " s := string::from(\"a\")\n f := || println(s)\n f()\n read(&s)",
     ));
     err1(
-        &main_with(" s mut := String::from(\"a\")\n f := || read(&s)\n s.push(\"x\")\n f()"),
+        &main_with(" s mut := string::from(\"a\")\n f := || read(&s)\n s.push(\"x\")\n f()"),
         "cannot borrow `s` as mutable because it is also borrowed as immutable",
     );
 }
 
 #[test]
 fn closure_captures_by_mut_reference() {
-    ok("fn main() {\n n mut := 0\n inc := || {\n n += 1\n }\n inc()\n inc()\n println(\"{n}\")\n}");
+    ok("fun main() {\n n mut := 0\n inc := || {\n n += 1\n }\n inc()\n inc()\n println(\"{n}\")\n}");
     err1(
-        "fn main() {\n n mut := 0\n inc := || {\n n += 1\n }\n println(\"{n}\")\n inc()\n}",
+        "fun main() {\n n mut := 0\n inc := || {\n n += 1\n }\n println(\"{n}\")\n inc()\n}",
         "cannot use `n` because it was mutably borrowed",
     );
 }
@@ -433,11 +433,11 @@ fn closure_captures_by_mut_reference() {
 #[test]
 fn closure_captures_by_move() {
     err1(
-        &main_with(" s := String::from(\"a\")\n f := || take(s)\n read(&s)"),
+        &main_with(" s := string::from(\"a\")\n f := || take(s)\n read(&s)"),
         "borrow of moved value: `s`",
     );
     err1(
-        &main_with(" s := String::from(\"a\")\n f := move || println(s)\n read(&s)"),
+        &main_with(" s := string::from(\"a\")\n f := move || println(s)\n read(&s)"),
         "borrow of moved value: `s`",
     );
 }
@@ -445,7 +445,7 @@ fn closure_captures_by_move() {
 #[test]
 fn closure_body_is_checked() {
     err1(
-        "fn take(s: String) {}\nfn main() {\n f := |s: String| {\n take(s)\n take(s)\n }\n}",
+        "fun take(s string) {}\nfun main() {\n f := |s string| {\n take(s)\n take(s)\n }\n}",
         "use of moved value: `s`",
     );
 }
@@ -455,7 +455,7 @@ fn closure_body_is_checked() {
 #[test]
 fn go_moves_arguments() {
     err1(
-        &main_with(" s := String::from(\"a\")\n go take(s)\n read(&s)"),
+        &main_with(" s := string::from(\"a\")\n go take(s)\n read(&s)"),
         "borrow of moved value: `s`",
     );
 }
@@ -463,75 +463,75 @@ fn go_moves_arguments() {
 #[test]
 fn go_rejects_borrowed_arguments() {
     err1(
-        &main_with(" s := String::from(\"a\")\n go read(&s)"),
+        &main_with(" s := string::from(\"a\")\n go read(&s)"),
         "argument to `go` borrows `s`",
     );
     err1(
-        "fn read(s: &String) {}\nfn f(s: &String) {\n go read(s)\n}\nfn main() {}",
+        "fun read(s &string) {}\nfun f(s &string) {\n go read(s)\n}\nfun main() {}",
         "borrows parameter `s`",
     );
-    ok("fn say(s: &str) {}\nfn main() {\n go say(\"literal\")\n}");
+    ok("fun say(s &str) {}\nfun main() {\n go say(\"literal\")\n}");
 }
 
 #[test]
 fn go_block_needs_move() {
     err1(
-        &main_with(" s := String::from(\"a\")\n go {\n read(&s)\n }"),
+        &main_with(" s := string::from(\"a\")\n go {\n read(&s)\n }"),
         "`go` block may outlive the current function, but it borrows `s`",
     );
     ok(&main_with(
-        " s := String::from(\"a\")\n go move {\n read(&s)\n }",
+        " s := string::from(\"a\")\n go move {\n read(&s)\n }",
     ));
     err1(
-        &main_with(" s := String::from(\"a\")\n go move {\n read(&s)\n }\n read(&s)"),
+        &main_with(" s := string::from(\"a\")\n go move {\n read(&s)\n }\n read(&s)"),
         "borrow of moved value: `s`",
     );
 }
 
 #[test]
 fn go_requires_send() {
-    let s = "struct Handle {\n p: *const u8,\n}\nfn use_it(h: Handle) {}\n";
+    let s = "struct Handle {\n p *const u8,\n}\nfun use_it(h Handle) {}\n";
     err1(
-        &format!("{s}fn main() {{\n h := Handle {{ p: 0 as *const u8 }}\n go use_it(h)\n}}"),
+        &format!("{s}fun main() {{\n h := Handle {{ p: 0 as *const u8 }}\n go use_it(h)\n}}"),
         "`Handle` cannot be sent between tasks safely",
     );
-    err1(&format!("{s}fn main() {{\n h := Handle {{ p: 0 as *const u8 }}\n go move {{\n use_it(h)\n }}\n}}"), "cannot be sent between tasks safely");
-    ok(&format!("{s}unsafe impl Send for Handle {{}}\nfn main() {{\n h := Handle {{ p: 0 as *const u8 }}\n go use_it(h)\n}}"));
+    err1(&format!("{s}fun main() {{\n h := Handle {{ p: 0 as *const u8 }}\n go move {{\n use_it(h)\n }}\n}}"), "cannot be sent between tasks safely");
+    ok(&format!("{s}unsafe impl Send for Handle {{}}\nfun main() {{\n h := Handle {{ p: 0 as *const u8 }}\n go use_it(h)\n}}"));
 }
 
 #[test]
 fn send_is_structural() {
-    let s = "struct Inner {\n p: *const u8,\n}\nstruct Outer {\n name: String,\n inner: Inner,\n}\nfn use_it(o: Outer) {}\n";
-    has(&format!("{s}fn main() {{\n o := Outer {{ name: String::from(\"a\"), inner: Inner {{ p: 0 as *const u8 }} }}\n go use_it(o)\n}}"), "`Outer` cannot be sent");
+    let s = "struct Inner {\n p *const u8,\n}\nstruct Outer {\n name string,\n inner Inner,\n}\nfun use_it(o Outer) {}\n";
+    has(&format!("{s}fun main() {{\n o := Outer {{ name: string::from(\"a\"), inner: Inner {{ p: 0 as *const u8 }} }}\n go use_it(o)\n}}"), "`Outer` cannot be sent");
 }
 
 #[test]
 fn channels_of_owned_values_are_fine() {
-    ok("fn worker(rx: <-chan String, tx: chan<- usize) {\n for s in rx {\n tx <- s.len()\n }\n}\nfn main() {\n (tx, rx) := chan::<String>(1)\n (otx, orx) := chan::<usize>(1)\n go worker(rx, otx)\n tx <- String::from(\"a\")\n n := <-orx\n}");
+    ok("fun worker(rx <-chan string, tx chan<- usize) {\n for s in rx {\n tx <- s.len()\n }\n}\nfun main() {\n (tx, rx) := chan::<string>(1)\n (otx, orx) := chan::<usize>(1)\n go worker(rx, otx)\n tx <- string::from(\"a\")\n n := <-orx\n}");
 }
 
 #[test]
 fn scoped_tasks_may_borrow() {
-    ok("fn main() {\n data := Vec::<i32>::new()\n scope(|s| {\n s.spawn(|| {\n println(\"{data.len()}\")\n })\n })\n println(\"{data.len()}\")\n}");
+    ok("fun main() {\n data := Vec::<i32>::new()\n scope(|s| {\n s.spawn(|| {\n println(\"{data.len()}\")\n })\n })\n println(\"{data.len()}\")\n}");
 }
 
 #[test]
 fn scoped_tasks_check_sync() {
-    let s = "struct Handle {\n p: *const u8,\n}\n";
-    has(&format!("{s}fn main() {{\n h := Handle {{ p: 0 as *const u8 }}\n scope(|s| {{\n s.spawn(|| {{\n x := &h\n }})\n }})\n}}"), "`Handle` cannot be shared between tasks safely");
+    let s = "struct Handle {\n p *const u8,\n}\n";
+    has(&format!("{s}fun main() {{\n h := Handle {{ p: 0 as *const u8 }}\n scope(|s| {{\n s.spawn(|| {{\n x := &h\n }})\n }})\n}}"), "`Handle` cannot be shared between tasks safely");
 }
 
 #[test]
 fn scoped_task_borrows_last_until_the_scope_ends() {
     // Two tasks may not mutate the same variable: both borrows last until the scope ends.
-    has("fn main() {\n hits mut := 0\n scope(|s| {\n s.spawn(|| {\n hits += 1\n })\n s.spawn(|| {\n hits += 1\n })\n })\n}", "cannot borrow `hits` as mutable more than once at a time");
+    has("fun main() {\n hits mut := 0\n scope(|s| {\n s.spawn(|| {\n hits += 1\n })\n s.spawn(|| {\n hits += 1\n })\n })\n}", "cannot borrow `hits` as mutable more than once at a time");
     // A task may not borrow a local of the scope body, which ends before the tasks are joined.
     has(
-        "fn main() {\n scope(|s| {\n x := 5\n s.spawn(|| {\n println(\"{x}\")\n })\n })\n}",
+        "fun main() {\n scope(|s| {\n x := 5\n s.spawn(|| {\n println(\"{x}\")\n })\n })\n}",
         "`x` does not live long enough",
     );
     // Sharing is fine.
-    ok("fn main() {\n n := 3\n scope(|s| {\n s.spawn(|| {\n println(\"{n}\")\n })\n s.spawn(|| {\n println(\"{n}\")\n })\n })\n}");
+    ok("fun main() {\n n := 3\n scope(|s| {\n s.spawn(|| {\n println(\"{n}\")\n })\n s.spawn(|| {\n println(\"{n}\")\n })\n })\n}");
 }
 
 // ----- whole programs -----------------------------------------------------------------------------
@@ -592,20 +592,20 @@ fn website_examples_check() {
 
 #[test]
 fn send_and_sync_impls_must_be_unsafe() {
-    let s = "struct Handle {\n p: *const u8,\n}\n";
+    let s = "struct Handle {\n p *const u8,\n}\n";
     err1(
-        &format!("{s}impl Send for Handle {{}}\nfn main() {{}}"),
+        &format!("{s}impl Send for Handle {{}}\nfun main() {{}}"),
         "the trait `Send` requires an `unsafe impl` declaration",
     );
     err1(
-        &format!("{s}impl Sync for Handle {{}}\nfn main() {{}}"),
+        &format!("{s}impl Sync for Handle {{}}\nfun main() {{}}"),
         "requires an `unsafe impl`",
     );
     ok(&format!(
-        "{s}unsafe impl Sync for Handle {{}}\nfn main() {{}}"
+        "{s}unsafe impl Sync for Handle {{}}\nfun main() {{}}"
     ));
     err1(
-        &format!("{s}trait T {{}}\nunsafe impl T for Handle {{}}\nfn main() {{}}"),
+        &format!("{s}trait T {{}}\nunsafe impl T for Handle {{}}\nfun main() {{}}"),
         "implementing the trait `T` is not unsafe",
     );
 }
@@ -613,47 +613,47 @@ fn send_and_sync_impls_must_be_unsafe() {
 #[test]
 fn lifetime_bounds() {
     // `'b: 'a` lets data borrowed for `'b` be returned as `'a`.
-    ok("fn pick<'a, 'b: 'a>(x: &'a str, y: &'b str) -> &'a str {\n return y\n}\nfn main() {}");
-    ok("fn pick<'a, 'b>(x: &'a str, y: &'b str) -> &'a str where 'b: 'a {\n return y\n}\nfn main() {}");
+    ok("fun pick<'a, 'b: 'a>(x &'a str, y &'b str) &'a str {\n return y\n}\nfun main() {}");
+    ok("fun pick<'a, 'b>(x &'a str, y &'b str) &'a str where 'b: 'a {\n return y\n}\nfun main() {}");
     // Transitive.
-    ok("fn pick<'a, 'b: 'c, 'c: 'a>(x: &'a str, y: &'b str) -> &'a str {\n return y\n}\nfn main() {}");
+    ok("fun pick<'a, 'b: 'c, 'c: 'a>(x &'a str, y &'b str) &'a str {\n return y\n}\nfun main() {}");
     err1(
-        "fn pick<'a, 'b>(x: &'a str, y: &'b str) -> &'a str {\n return y\n}\nfn main() {}",
+        "fun pick<'a, 'b>(x &'a str, y &'b str) &'a str {\n return y\n}\nfun main() {}",
         "lifetime may not live long enough",
     );
     err1(
-        "fn pick<'a>(x: &'a str) -> &'a str where 'a: 'q {\n return x\n}\nfn main() {}",
+        "fun pick<'a>(x &'a str) &'a str where 'a: 'q {\n return x\n}\nfun main() {}",
         "use of undeclared lifetime name `'q`",
     );
 }
 
 #[test]
 fn trait_object_lifetimes() {
-    let s = "trait Show {\n fn show(&self) -> String\n}\nstruct Wrap<'a> {\n s: &'a str,\n}\nimpl<'a> Show for Wrap<'a> {\n fn show(&self) -> String {\n return String::from(self.s)\n }\n}\n";
+    let s = "trait Show {\n fun show(&self) string\n}\nstruct Wrap<'a> {\n s &'a str,\n}\nimpl<'a> Show for Wrap<'a> {\n fun show(&self) string {\n return string::from(self.s)\n }\n}\n";
     // `Box<dyn Show>` means `Box<dyn Show + 'static>`: it can't hold a borrow of `s`.
-    err1(&format!("{s}fn make(s: &str) -> Box<dyn Show> {{\n return Box::new(Wrap {{ s: s }})\n}}\nfn main() {{}}"), "lifetime may not live long enough");
-    ok(&format!("{s}fn make<'a>(s: &'a str) -> Box<dyn Show + 'a> {{\n return Box::new(Wrap {{ s: s }})\n}}\nfn main() {{}}"));
+    err1(&format!("{s}fun make(s &str) Box<dyn Show> {{\n return Box::new(Wrap {{ s: s }})\n}}\nfun main() {{}}"), "lifetime may not live long enough");
+    ok(&format!("{s}fun make<'a>(s &'a str) Box<dyn Show + 'a> {{\n return Box::new(Wrap {{ s: s }})\n}}\nfun main() {{}}"));
 }
 
 #[test]
 fn reassigned_reference_drops_old_borrow() {
     // After `r = &b`, `r` no longer borrows `a`, so `a` may be mutated.
-    ok("fn main() {\n a mut := 1\n b := 2\n r mut := &a\n println(\"{r}\")\n r = &b\n a = 5\n println(\"{r} {a}\")\n}");
+    ok("fun main() {\n a mut := 1\n b := 2\n r mut := &a\n println(\"{r}\")\n r = &b\n a = 5\n println(\"{r} {a}\")\n}");
     // ...but while `r` may still point at `a` (one branch), it is borrowed.
-    has("fn main() {\n a mut := 1\n b := 2\n r mut := &a\n if b > 1 {\n r = &b\n }\n a = 5\n println(\"{r}\")\n}", "cannot assign to `a` because it is borrowed");
+    has("fun main() {\n a mut := 1\n b := 2\n r mut := &a\n if b > 1 {\n r = &b\n }\n a = 5\n println(\"{r}\")\n}", "cannot assign to `a` because it is borrowed");
 }
 
 #[test]
 fn closures_that_move_captures_run_once() {
     err1(
-        &main_with(" s := String::from(\"a\")\n f := || take(s)\n f()\n f()"),
+        &main_with(" s := string::from(\"a\")\n f := || take(s)\n f()\n f()"),
         "use of moved value: `f`",
     );
     ok(&main_with(
-        " s := String::from(\"a\")\n f := || take(s)\n f()",
+        " s := string::from(\"a\")\n f := || take(s)\n f()",
     ));
     ok(&main_with(
-        " s := String::from(\"a\")\n f := || read(&s)\n f()\n f()",
+        " s := string::from(\"a\")\n f := || read(&s)\n f()\n f()",
     ));
 }
 
@@ -661,26 +661,26 @@ fn closures_that_move_captures_run_once() {
 fn defer_per_execution() {
     // A defer in a loop registers one call per iteration; all of them run at exit.
     err1(
-        &main_with(" s := String::from(\"a\")\n for i in 0..3 {\n defer take(s)\n }"),
+        &main_with(" s := string::from(\"a\")\n for i in 0..3 {\n defer take(s)\n }"),
         "use of moved value: `s`",
     );
     ok(&main_with(
-        " s := String::from(\"a\")\n for i in 0..3 {\n defer read(&s)\n }",
+        " s := string::from(\"a\")\n for i in 0..3 {\n defer read(&s)\n }",
     ));
     // A conditional defer may or may not run.
     ok(&main_with(
-        " s := String::from(\"a\")\n if true {\n defer take(s)\n }",
+        " s := string::from(\"a\")\n if true {\n defer take(s)\n }",
     ));
     // A deferred call can't keep a borrow of a variable whose scope ends first.
     err1(
-        &main_with(" {\n t := String::from(\"a\")\n defer read(&t)\n }"),
+        &main_with(" {\n t := string::from(\"a\")\n defer read(&t)\n }"),
         "`t` does not live long enough",
     );
 }
 
 #[test]
 fn defer_mir_shape() {
-    let src = "fn main() {\n for i in 0..2 {\n defer println(\"x\")\n }\n}";
+    let src = "fun main() {\n for i in 0..2 {\n defer println(\"x\")\n }\n}";
     let p = kiln_parser::parse(src);
     let pre = kiln_resolve::parse_prelude();
     let r = kiln_resolve::resolve(&p.file, &pre);
@@ -694,7 +694,7 @@ fn defer_mir_shape() {
 /// The standard library (written in Kiln) passes the borrow checker.
 #[test]
 fn standard_library_borrow_checks() {
-    let parsed = kiln_parser::parse("fn main() {}");
+    let parsed = kiln_parser::parse("fun main() {}");
     let prelude = kiln_resolve::parse_prelude();
     let resolved = kiln_resolve::resolve(&parsed.file, &prelude);
     assert!(resolved.errors.is_empty());
@@ -703,7 +703,7 @@ fn standard_library_borrow_checks() {
     let errors = crate::check_std(&mut typed);
     let shown: Vec<String> = errors
         .iter()
-        .map(|d| d.render("x.kn", "fn main() {}"))
+        .map(|d| d.render("x.kn", "fun main() {}"))
         .collect();
     assert!(errors.is_empty(), "{}", shown.join("\n"));
 }
@@ -713,41 +713,41 @@ fn closure_capabilities() {
     // A closure that moves a capture out can't become a `fn` value (it could
     // be called twice).
     err1(
-        "fn twice(f: fn()) {\n f()\n f()\n}\nfn main() {\n s := String::from(\"x\")\n twice(move || {\n  t := s\n })\n}",
+        "fun twice(f fun()) {\n f()\n f()\n}\nfun main() {\n s := string::from(\"x\")\n twice(move || {\n  t := s\n })\n}",
         "moves a captured value out",
     );
     // Mutating closures need `fn mut`; plain `fn` values are shared freely.
     err1(
-        "fn each(f: fn(i32)) {\n f(1)\n}\nfn main() {\n n mut := 0\n each(|x| {\n  n += x\n })\n}",
+        "fun each(f fun(i32)) {\n f(1)\n}\nfun main() {\n n mut := 0\n each(|x| {\n  n += x\n })\n}",
         "mutates the captured variable `n`",
     );
-    ok("fn each(f: fn mut(i32)) {\n f(1)\n f(2)\n}\nfn main() {\n n mut := 0\n each(|x| {\n  n += x\n })\n f := |x| {\n  n += x\n }\n f(3)\n}");
+    ok("fun each(f fun mut(i32)) {\n f(1)\n f(2)\n}\nfun main() {\n n mut := 0\n each(|x| {\n  n += x\n })\n f := |x| {\n  n += x\n }\n f(3)\n}");
     // Captures must be `Send + Sync` for the closure to be a `fn` value.
     err1(
-        "fn run(f: fn()) {\n f()\n}\nfn main() {\n x mut := 1\n p := &mut x as *mut i32\n run(move || {\n  q := p\n })\n}",
+        "fun run(f fun()) {\n f()\n}\nfun main() {\n x mut := 1\n p := &mut x as *mut i32\n run(move || {\n  q := p\n })\n}",
         "which is not `Send` and `Sync`",
     );
     // `fn mut` values are not `Copy`, `Send`, or `Sync`.
     err1(
-        "fn each(f: fn mut(i32)) {\n g := f\n f(1)\n}\nfn main() {}",
+        "fun each(f fun mut(i32)) {\n g := f\n f(1)\n}\nfun main() {}",
         "use of moved value",
     );
     // A plain `fn` coerces to `fn mut`, not the other way around.
-    ok("fn each(f: fn mut(i32)) {\n f(1)\n}\nfn show(x: i32) {}\nfn main() {\n each(show)\n}");
+    ok("fun each(f fun mut(i32)) {\n f(1)\n}\nfun show(x i32) {}\nfun main() {\n each(show)\n}");
 }
 
 #[test]
 fn deep_flows_through_generic_results() {
     // `take` returns a value from behind `&mut self`, not a borrow of it.
-    ok("fn main() {\n o mut := Some(5)\n v := o.take()\n b := o.is_none()\n w := v\n}");
-    ok("fn main() {\n v mut := Vec::new()\n v.push(1)\n old := std::mem::replace(&mut v, Vec::new())\n v.push(2)\n n := old.len()\n}");
+    ok("fun main() {\n o mut := Some(5)\n v := o.take()\n b := o.is_none()\n w := v\n}");
+    ok("fun main() {\n v mut := Vec::new()\n v.push(1)\n old := std::mem::replace(&mut v, Vec::new())\n v.push(2)\n n := old.len()\n}");
     // But a reference moved out keeps its own loan.
     err1(
-        "fn main() {\n x mut := 1\n slot mut := Some(&x)\n r := slot.take().unwrap()\n x = 3\n y := *r\n}",
+        "fun main() {\n x mut := 1\n slot mut := Some(&x)\n r := slot.take().unwrap()\n x = 3\n y := *r\n}",
         "cannot assign to `x` because it is borrowed",
     );
     err1(
-        "fn main() {\n x mut := 1\n y := 2\n v mut := &x\n r := std::mem::replace(&mut v, &y)\n x = 3\n z := *r\n}",
+        "fun main() {\n x mut := 1\n y := 2\n v mut := &x\n r := std::mem::replace(&mut v, &y)\n x = 3\n z := *r\n}",
         "cannot assign to `x` because it is borrowed",
     );
 }
@@ -755,28 +755,28 @@ fn deep_flows_through_generic_results() {
 #[test]
 fn reassigning_a_reference_keeps_borrows_through_it() {
     // Walking a linked structure: `cur` moves on while `&(*e).next` is live.
-    ok("struct N {\n v: i32,\n next: Option<Box<N>>,\n}\nfn sum(n: &N) -> i32 {\n t mut := 0\n cur mut := Some(n)\n while let Some(e) = cur {\n  t += e.v\n  cur = match &e.next {\n   Some(b) => Some(&**b),\n   None => None,\n  }\n }\n return t\n}\nfn main() {}");
+    ok("struct N {\n v i32,\n next option<Box<N>>,\n}\nfun sum(n &N) i32 {\n t mut := 0\n cur mut := Some(n)\n while let Some(e) = cur {\n  t += e.v\n  cur = match &e.next {\n   Some(b) => Some(&**b),\n   None => None,\n  }\n }\n return t\n}\nfun main() {}");
     // But overwriting an owner is still a conflict.
     err1(
-        "fn main() {\n v mut := Vec::new()\n v.push(1)\n r := &v[0]\n v = Vec::new()\n x := *r\n}",
+        "fun main() {\n v mut := Vec::new()\n v.push(1)\n r := &v[0]\n v = Vec::new()\n x := *r\n}",
         "cannot assign to `v` because it is borrowed",
     );
 }
 
 #[test]
 fn references_stored_in_structs_outlive_the_struct() {
-    let ty = "struct S<'a> {\n r: &'a str,\n owned: String,\n}\n";
+    let ty = "struct S<'a> {\n r &'a str,\n owned string,\n}\n";
     // A `&'a` field read through `&self` lives as long as the original data.
-    let good = format!("{ty}impl<'a> S<'a> {{\n fn head(&self) -> &'a str {{\n  return &self.r[0..1]\n }}\n fn all(&self) -> &'a str {{\n  return self.r\n }}\n}}\nfn main() {{\n text := \"hello\".to_string()\n x mut := \"\"\n {{\n  s := S {{ r: text.as_str(), owned: String::new() }}\n  x = s.head()\n }}\n println(x)\n}}");
+    let good = format!("{ty}impl<'a> S<'a> {{\n fun head(&self) &'a str {{\n  return &self.r[0..1]\n }}\n fun all(&self) &'a str {{\n  return self.r\n }}\n}}\nfun main() {{\n text := \"hello\".to_string()\n x mut := \"\"\n {{\n  s := S {{ r: text.as_str(), owned: string::new() }}\n  x = s.head()\n }}\n println(x)\n}}");
     ok(&good);
     // But data the struct owns does not.
     err1(
-        &format!("{ty}impl<'a> S<'a> {{\n fn bad(&self) -> &'a String {{\n  return &self.owned\n }}\n}}\nfn main() {{}}"),
+        &format!("{ty}impl<'a> S<'a> {{\n fun bad(&self) &'a string {{\n  return &self.owned\n }}\n}}\nfun main() {{}}"),
         "lifetime may not live long enough",
     );
     // And the original data stays borrowed while the result is used.
     has(
-        &format!("{ty}impl<'a> S<'a> {{\n fn all(&self) -> &'a str {{\n  return self.r\n }}\n}}\nfn main() {{\n text mut := \"hello\".to_string()\n s := S {{ r: text.as_str(), owned: String::new() }}\n x := s.all()\n text = String::new()\n println(x)\n}}"),
+        &format!("{ty}impl<'a> S<'a> {{\n fun all(&self) &'a str {{\n  return self.r\n }}\n}}\nfun main() {{\n text mut := \"hello\".to_string()\n s := S {{ r: text.as_str(), owned: string::new() }}\n x := s.all()\n text = string::new()\n println(x)\n}}"),
         "because it is borrowed",
     );
 }

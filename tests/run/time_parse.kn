@@ -1,6 +1,6 @@
 import std::time
 
-fn main() {
+fun main() {
 	for s in ["300ms", "-1.5h", "2h45m", "1m30.5s", "0", "1us", "2µs", ".5s", "1.s", "+5ns", "1h2m3.5s", "", "s", "5", "3x", "1.2.3s", "-", "9999999999h", "0.000000001s"] {
 		match time::parse_duration(s) {
 			Ok(d) => println("{s:?} -> {d} ({d.as_nanos()})"),

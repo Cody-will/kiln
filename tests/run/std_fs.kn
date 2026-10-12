@@ -4,7 +4,7 @@ import std::io::{Read, Write}
 import std::os
 import std::path
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	dir := path::join(&os::temp_dir(), "kiln_std_fs_{os::pid()}")
 	fs::create_dir_all(&path::join(&dir, "sub/deeper"))?
 	f := path::join(&dir, "a.txt")
@@ -25,7 +25,7 @@ fn main() -> Result<(), io::Error> {
 		file.seek(fs::SeekFrom::Start(4))?
 		buf mut := [0 as u8; 3]
 		file.read_exact(&mut buf)?
-		println("read at 4: {String::from_utf8_lossy(&buf)}")
+		println("read at 4: {string::from_utf8_lossy(&buf)}")
 		pos := file.seek(fs::SeekFrom::End(-2))?
 		println("end-2 at {pos}")
 	}
@@ -50,5 +50,5 @@ fn main() -> Result<(), io::Error> {
 	}
 	fs::remove_dir_all(&dir)?
 	println("cleaned up: {!fs::exists(&dir)}")
-	return Ok(())
+	return Ok()
 }

@@ -69,7 +69,7 @@ impl<'a> Resolver<'a> {
         s.in_prelude = true;
         s.collect_items(&prelude.items, prelude_id);
         // Prelude variants of Option/Result are values (`Some`, `None`, `Ok`, `Err`).
-        for name in ["Option", "Result"] {
+        for name in ["option", "result"] {
             let id = s.r.modules[&prelude_id].types[name];
             for v in s.r.variants(id) {
                 let vname = s.r.def(v).name.clone();
@@ -611,7 +611,7 @@ impl<'a> Resolver<'a> {
                             }
                         }
                         _ => self.error(
-                            "only `fn`, `const`, and `type` items are allowed in a trait",
+                            "only `fun`, `const`, and `type` items are allowed in a trait",
                             it.span,
                         ),
                     }
@@ -672,7 +672,7 @@ impl<'a> Resolver<'a> {
                             }
                         }
                         _ => self.error(
-                            "only `fn`, `const`, and `type` items are allowed in an impl",
+                            "only `fun`, `const`, and `type` items are allowed in an impl",
                             it.span,
                         ),
                     }

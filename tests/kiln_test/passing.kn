@@ -1,43 +1,43 @@
 // Fixture for `kiln test` (crates/kiln_cli/tests/cli.rs): every test passes.
 import std::strconv
 
-fn add(a: i64, b: i64) -> i64 {
+fun add(a i64, b i64) i64 {
 	return a + b
 }
 
-fn main() {
+fun main() {
 	println("main is replaced by the test harness")
 }
 
-#[test]
-fn adds() {
+@test
+fun adds() {
 	assert_eq(add(2, 2), 4)
 	assert_ne(add(2, 2), 5)
 }
 
-#[test]
-fn returns_ok() -> Result<(), strconv::ParseError> {
+@test
+fun returns_ok() result<void, strconv::ParseError> {
 	n := i64::parse("42")?
 	assert_eq(n, 42)
-	return Ok(())
+	return Ok()
 }
 
-#[test]
-#[should_panic(expected = "divide by zero")]
-fn divides_by_zero() {
+@test
+@should_panic(expected = "divide by zero")
+fun divides_by_zero() {
 	z := 0
 	println("{10 / z}")
 }
 
-#[test]
-#[ignore]
-fn slow() {
+@test
+@ignore
+fun slow() {
 	panic("ignored tests do not run")
 }
 
 mod inner {
-	#[test]
-	fn nested() {
+	@test
+	fun nested() {
 		assert("a" < "b")
 	}
 }

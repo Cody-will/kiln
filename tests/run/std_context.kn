@@ -2,7 +2,7 @@ import std::context
 import std::net::{TcpListener, TcpStream}
 import std::time
 
-fn worker(ctx: context::Context, out: chan<- String) {
+fun worker(ctx context::Context, out chan<- string) {
 	n mut := 0
 	loop {
 		select {
@@ -17,7 +17,7 @@ fn worker(ctx: context::Context, out: chan<- String) {
 	}
 }
 
-fn main() {
+fun main() {
 	root := context::background()
 	println("{root.err():?} {root.deadline().is_some()}")
 
@@ -31,7 +31,7 @@ fn main() {
 	println("child of cancelled: {late.check():?}")
 
 	// A deadline cancels a worker blocked in select.
-	(tx, rx) := chan::<String>(1)
+	(tx, rx) := chan::<string>(1)
 	ctx := context::with_timeout(&root, time::millis(40))
 	start := time::Instant::now()
 	w := ctx.clone()

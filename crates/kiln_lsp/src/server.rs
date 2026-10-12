@@ -615,7 +615,7 @@ fn handle_request(st: &State, req: Request) -> Response {
                         "method" => CompletionItemKind::METHOD,
                         "field" => CompletionItemKind::FIELD,
                         "local" => CompletionItemKind::VARIABLE,
-                        "fn" => CompletionItemKind::FUNCTION,
+                        "fun" => CompletionItemKind::FUNCTION,
                         "struct" => CompletionItemKind::STRUCT,
                         "enum" => CompletionItemKind::ENUM,
                         "trait" => CompletionItemKind::INTERFACE,

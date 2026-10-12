@@ -139,7 +139,7 @@ fn object(var: &str, fields: &[(String, String)]) -> String {
 fn struct_to(s: &StructDecl) -> String {
     let name = &s.name.name;
     let mut out = header(name, &s.generics, "ToJson");
-    out.push_str(&format!(" {{\n\tfn to_json(&self) -> {J}::Value {{\n"));
+    out.push_str(&format!(" {{\n\tfun to_json(&self) {J}::Value {{\n"));
     match &s.fields {
         Fields::Named(fs) => {
             let pairs: Vec<_> = fs
@@ -195,7 +195,7 @@ fn struct_from(s: &StructDecl) -> String {
     let name = &s.name.name;
     let mut out = header(name, &s.generics, "FromJson");
     out.push_str(&format!(
-        " {{\n\tfn from_json(v: &{J}::Value) -> Result<Self, {J}::Error> {{\n"
+        " {{\n\tfun from_json(v &{J}::Value) result<Self, {J}::Error> {{\n"
     ));
     if let Fields::Unit = s.fields {
         out.push_str("\t\tif !v.is_null() {\n");
@@ -213,7 +213,7 @@ fn enum_to(e: &EnumDecl) -> String {
     let name = &e.name.name;
     let mut out = header(name, &e.generics, "ToJson");
     out.push_str(&format!(
-        " {{\n\tfn to_json(&self) -> {J}::Value {{\n\t\tmatch self {{\n"
+        " {{\n\tfun to_json(&self) {J}::Value {{\n\t\tmatch self {{\n"
     ));
     for v in &e.variants {
         let vn = &v.name.name;
@@ -268,7 +268,7 @@ fn enum_from(e: &EnumDecl) -> String {
     let name = &e.name.name;
     let mut out = header(name, &e.generics, "FromJson");
     out.push_str(&format!(
-        " {{\n\tfn from_json(v: &{J}::Value) -> Result<Self, {J}::Error> {{\n"
+        " {{\n\tfun from_json(v &{J}::Value) result<Self, {J}::Error> {{\n"
     ));
     let _ = writeln!(out, "\t\t(name, p) := {J}::variant(v, \"{name}\")?");
     for v in &e.variants {

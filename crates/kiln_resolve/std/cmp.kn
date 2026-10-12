@@ -8,7 +8,7 @@
 pub import Ordering
 
 // The larger of `a` and `b` (`b` if they are equal).
-pub fn max<T: Ord>(a: T, b: T) -> T {
+pub fun max<T: Ord>(a T, b T) T {
 	if b.cmp(&a) == Ordering::Less {
 		return a
 	}
@@ -16,7 +16,7 @@ pub fn max<T: Ord>(a: T, b: T) -> T {
 }
 
 // The smaller of `a` and `b` (`a` if they are equal).
-pub fn min<T: Ord>(a: T, b: T) -> T {
+pub fun min<T: Ord>(a T, b T) T {
 	if b.cmp(&a) == Ordering::Less {
 		return b
 	}
@@ -24,7 +24,7 @@ pub fn min<T: Ord>(a: T, b: T) -> T {
 }
 
 // `v` limited to the range `lo..=hi`.
-pub fn clamp<T: Ord>(v: T, lo: T, hi: T) -> T {
+pub fun clamp<T: Ord>(v T, lo T, hi T) T {
 	if v.cmp(&lo) == Ordering::Less {
 		return lo
 	}
@@ -35,18 +35,18 @@ pub fn clamp<T: Ord>(v: T, lo: T, hi: T) -> T {
 }
 
 // Wraps a value to reverse its ordering (for descending sorts).
-#[derive(Clone, Copy, Eq, Hash, Debug)]
+@derive(Clone, Copy, Eq, Hash, Debug)
 pub struct Reverse<T>(pub T)
 
 impl<T: Ord> Ord for Reverse<T> {
-	fn cmp(&self, other: &Reverse<T>) -> Ordering {
+	fun cmp(&self, other &Reverse<T>) Ordering {
 		return other.0.cmp(&self.0)
 	}
 }
 
 // Field-by-field equality, ignoring any hand-written `eq` of `T` itself
 // (fields still use theirs). This is the default `Eq::eq`.
-pub fn derived_eq<T>(a: &T, b: &T) -> bool
+pub fun derived_eq<T>(a &T, b &T) bool
 
 // Field-by-field ordering: the default `Ord::cmp`.
-pub fn derived_cmp<T>(a: &T, b: &T) -> Ordering
+pub fun derived_cmp<T>(a &T, b &T) Ordering

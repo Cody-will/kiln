@@ -6,7 +6,7 @@
 import std::crypto::sha1::Sha1
 import std::crypto::sha256::Sha256
 
-fn pads(key: &[u8], hashed: &[u8]) -> ([u8; 64], [u8; 64]) {
+fun pads(key &[u8], hashed &[u8]) ([u8; 64], [u8; 64]) {
 	k := if key.len() > 64 { hashed } else { key }
 	ipad mut := [0x36 as u8; 64]
 	opad mut := [0x5c as u8; 64]
@@ -18,7 +18,7 @@ fn pads(key: &[u8], hashed: &[u8]) -> ([u8; 64], [u8; 64]) {
 }
 
 // HMAC-SHA256 of `msg` under `key`.
-pub fn sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
+pub fun sha256(key &[u8], msg &[u8]) [u8; 32] {
 	hk := std::crypto::sha256::sum(key)
 	(ipad, opad) := pads(key, &hk)
 	inner mut := Sha256::new()
@@ -32,7 +32,7 @@ pub fn sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
 }
 
 // HMAC-SHA1 of `msg` under `key`.
-pub fn sha1(key: &[u8], msg: &[u8]) -> [u8; 20] {
+pub fun sha1(key &[u8], msg &[u8]) [u8; 20] {
 	hk := std::crypto::sha1::sum(key)
 	(ipad, opad) := pads(key, &hk)
 	inner mut := Sha1::new()
@@ -46,7 +46,7 @@ pub fn sha1(key: &[u8], msg: &[u8]) -> [u8; 20] {
 }
 
 // Whether `tag` is the HMAC-SHA256 of `msg` under `key` (constant time).
-pub fn verify_sha256(key: &[u8], msg: &[u8], tag: &[u8]) -> bool {
+pub fun verify_sha256(key &[u8], msg &[u8], tag &[u8]) bool {
 	want := sha256(key, msg)
 	return std::crypto::constant_time_eq(&want, tag)
 }

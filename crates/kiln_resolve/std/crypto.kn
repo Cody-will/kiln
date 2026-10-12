@@ -6,7 +6,7 @@
 // `crypto::constant_time_eq`, which does not leak where they differ.
 
 // Whether `a` and `b` are equal, taking the same time wherever they differ.
-pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub fun constant_time_eq(a &[u8], b &[u8]) bool {
 	if a.len() != b.len() {
 		return false
 	}

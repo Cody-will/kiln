@@ -1,6 +1,6 @@
 import std::strconv
 
-fn main() {
+fun main() {
 	println("{i8::MIN} {i8::MAX} {u8::MAX} {i64::MIN} {u64::MAX} {i32::BITS} {usize::MAX}")
 	println("{(200 as u8).checked_add(100).is_none()} {(200 as u8).wrapping_add(100)} {(200 as u8).saturating_add(100)} {(-100 as i8).saturating_sub(100)}")
 	(r, o) := i32::MAX.overflowing_add(1)

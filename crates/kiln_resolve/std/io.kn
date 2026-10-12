@@ -8,15 +8,15 @@
 
 import super::super::Error as ErrorTrait
 
-fn kn_os_error_message(kind: i64, code: i64, out: &mut String)
-fn kn_io_write(fd: i64, buf: &[u8]) -> i64
-fn kn_io_flush(fd: i64) -> i64
-fn kn_io_read_stdin(buf: &mut [u8]) -> i64
+fun kn_os_error_message(kind i64, code i64, out &mut string)
+fun kn_io_write(fd i64, buf &[u8]) i64
+fun kn_io_flush(fd i64) i64
+fun kn_io_read_stdin(buf &mut [u8]) i64
 
 // ----- errors -----------------------------------------------------------------
 
 // The category of an I/O error, for matching on.
-#[derive(Copy, Clone, Eq, Debug)]
+@derive(Copy, Clone, Eq, Debug)
 pub enum ErrorKind {
 	Other,
 	NotFound,
@@ -45,7 +45,7 @@ pub enum ErrorKind {
 
 impl ErrorKind {
 	// The kind with runtime number `k` (see kiln_std.c).
-	fn from_number(k: i64) -> ErrorKind {
+	fun from_number(k i64) ErrorKind {
 		match k {
 			1 => return ErrorKind::NotFound,
 			2 => return ErrorKind::PermissionDenied,
@@ -74,7 +74,7 @@ impl ErrorKind {
 	}
 
 	// A short description, used when an error has no message of its own.
-	pub fn description(&self) -> &str {
+	pub fun description(&self) &str {
 		match self {
 			ErrorKind::Other => return "other error",
 			ErrorKind::NotFound => return "not found",
@@ -104,31 +104,31 @@ impl ErrorKind {
 }
 
 // An I/O error: a kind to match on and a message to show.
-#[derive(Clone, Debug)]
+@derive(Clone, Debug)
 pub struct Error {
-	kind: ErrorKind,
-	code: i64,
-	msg: String,
+	kind ErrorKind,
+	code i64,
+	msg string,
 }
 
 impl Error {
 	// An error of `kind` with message `msg`.
-	pub fn new(kind: ErrorKind, msg: &str) -> Error {
+	pub fun new(kind ErrorKind, msg &str) Error {
 		return Error { kind: kind, code: -1, msg: msg.to_string() }
 	}
 
 	// An error of kind `Other`.
-	pub fn other(msg: &str) -> Error {
+	pub fun other(msg &str) Error {
 		return Error::new(ErrorKind::Other, msg)
 	}
 
 	// The error for a negative result `r` from the runtime (used by the
 	// standard library).
-	pub fn from_runtime(r: i64) -> Error {
+	pub fun from_runtime(r i64) Error {
 		c := 0 - r
 		kind := c >> 32
 		code := c & 4294967295
-		msg mut := String::new()
+		msg mut := string::new()
 		if code != 0 || kind == 22 {
 			kn_os_error_message(kind, code, &mut msg)
 		}
@@ -140,12 +140,12 @@ impl Error {
 	}
 
 	// The error's kind.
-	pub fn kind(&self) -> ErrorKind {
+	pub fun kind(&self) ErrorKind {
 		return self.kind
 	}
 
 	// The operating system's error number, if the error came from the OS.
-	pub fn os_code(&self) -> Option<i64> {
+	pub fun os_code(&self) option<i64> {
 		if self.code < 0 {
 			return None
 		}
@@ -154,7 +154,7 @@ impl Error {
 
 	// The error with `what` in front of its message, as in Go:
 	// `open config.toml: no such file or directory`.
-	pub fn context(self, what: &str) -> Error {
+	pub fun context(self, what &str) Error {
 		return Error { kind: self.kind, code: self.code, msg: "{what}: {self.msg}" }
 	}
 }
@@ -162,13 +162,13 @@ impl Error {
 impl ErrorTrait for Error {}
 
 impl Display for Error {
-	fn to_string(&self) -> String {
+	fun to_string(&self) string {
 		return self.msg.clone()
 	}
 }
 
 // Turns a runtime result into a Result (used by the standard library).
-pub fn check(r: i64) -> Result<i64, Error> {
+pub fun check(r i64) result<i64, Error> {
 	if r < 0 {
 		return Err(Error::from_runtime(r))
 	}
@@ -181,10 +181,10 @@ pub fn check(r: i64) -> Result<i64, Error> {
 pub trait Read {
 	// Reads up to `buf.len()` bytes into `buf`; returns how many. 0 means the
 	// end of the input (or an empty `buf`).
-	fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error>
+	fun read(&mut self, buf &mut [u8]) result<usize, Error>
 
 	// Reads everything until the end, appending to `out`; returns the count.
-		fn read_to_end(&mut self, out: &mut Vec<u8>) -> Result<usize, Error> {
+		fun read_to_end(&mut self, out &mut Vec<u8>) result<usize, Error> {
 			buf mut := [0 as u8; 8192]
 			total mut := 0
 			loop {
@@ -198,10 +198,10 @@ pub trait Read {
 		}
 
 	// Reads everything until the end as UTF-8 text, appending to `out`.
-	fn read_to_string(&mut self, out: &mut String) -> Result<usize, Error> {
+	fun read_to_string(&mut self, out &mut string) result<usize, Error> {
 		bytes mut := Vec::new()
 		n := self.read_to_end(&mut bytes)?
-		match String::from_utf8(bytes) {
+		match string::from_utf8(bytes) {
 			Ok(s) => {
 				out.push(&s)
 				return Ok(n)
@@ -211,7 +211,7 @@ pub trait Read {
 	}
 
 	// Fills `buf` completely, or fails with `UnexpectedEof`.
-	fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Error> {
+	fun read_exact(&mut self, buf &mut [u8]) result<void, Error> {
 		got mut := 0
 		while got < buf.len() {
 			n := self.read(&mut buf[got..])?
@@ -220,22 +220,22 @@ pub trait Read {
 			}
 			got += n
 		}
-		return Ok(())
+		return Ok()
 	}
 }
 
 // A destination for bytes.
 pub trait Write {
 	// Writes some of `buf`; returns how many bytes were taken.
-	fn write(&mut self, buf: &[u8]) -> Result<usize, Error>
+	fun write(&mut self, buf &[u8]) result<usize, Error>
 
 	// Pushes buffered data to its destination.
-		fn flush(&mut self) -> Result<(), Error> {
-			return Ok(())
+		fun flush(&mut self) result<void, Error> {
+			return Ok()
 		}
 
 	// Writes all of `buf`.
-	fn write_all(&mut self, buf: &[u8]) -> Result<(), Error> {
+	fun write_all(&mut self, buf &[u8]) result<void, Error> {
 		done mut := 0
 		while done < buf.len() {
 			n := self.write(&buf[done..])?
@@ -244,17 +244,17 @@ pub trait Write {
 			}
 			done += n
 		}
-		return Ok(())
+		return Ok()
 	}
 
 	// Writes all of `s`.
-	fn write_str(&mut self, s: &str) -> Result<(), Error> {
+	fun write_str(&mut self, s &str) result<void, Error> {
 		return self.write_all(s.as_bytes())
 	}
 }
 
 // Copies everything from `r` to `w`; returns the number of bytes copied.
-pub fn copy<R: Read, W: Write>(r: &mut R, w: &mut W) -> Result<u64, Error> {
+pub fun copy<R: Read, W: Write>(r &mut R, w &mut W) result<u64, Error> {
 	buf mut := [0 as u8; 8192]
 	total mut := 0 as u64
 	loop {
@@ -269,25 +269,25 @@ pub fn copy<R: Read, W: Write>(r: &mut R, w: &mut W) -> Result<u64, Error> {
 
 // A mutable reference to a reader is a reader.
 impl<R: Read> Read for &mut R {
-	fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+	fun read(&mut self, buf &mut [u8]) result<usize, Error> {
 		return (**self).read(buf)
 	}
 }
 
 // A mutable reference to a writer is a writer.
 impl<W: Write> Write for &mut W {
-	fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
+	fun write(&mut self, buf &[u8]) result<usize, Error> {
 		return (**self).write(buf)
 	}
 
-	fn flush(&mut self) -> Result<(), Error> {
+	fun flush(&mut self) result<void, Error> {
 		return (**self).flush()
 	}
 }
 
 // Appending to a byte vector.
 impl Write for Vec<u8> {
-	fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
+	fun write(&mut self, buf &[u8]) result<usize, Error> {
 		self.extend_from_slice(buf)
 		return Ok(buf.len())
 	}
@@ -297,66 +297,66 @@ impl Write for Vec<u8> {
 
 // The process's standard input.
 pub struct Stdin {
-	fd: i64,
+	fd i64,
 }
 
 // The process's standard output. Output is buffered by the C library and
 // shares that buffer with `print`/`println`, so the two never reorder.
 pub struct Stdout {
-	fd: i64,
+	fd i64,
 }
 
 // The process's standard error (unbuffered).
 pub struct Stderr {
-	fd: i64,
+	fd i64,
 }
 
 // A handle to standard input. Wrap it in a `BufReader` to read lines.
-pub fn stdin() -> Stdin {
+pub fun stdin() Stdin {
 	return Stdin { fd: 0 }
 }
 
 // A handle to standard output.
-pub fn stdout() -> Stdout {
+pub fun stdout() Stdout {
 	return Stdout { fd: 1 }
 }
 
 // A handle to standard error.
-pub fn stderr() -> Stderr {
+pub fun stderr() Stderr {
 	return Stderr { fd: 2 }
 }
 
 impl Read for Stdin {
-	fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+	fun read(&mut self, buf &mut [u8]) result<usize, Error> {
 		return Ok(check(kn_io_read_stdin(buf))? as usize)
 	}
 }
 
 impl Write for Stdout {
-	fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
+	fun write(&mut self, buf &[u8]) result<usize, Error> {
 		return Ok(check(kn_io_write(self.fd, buf))? as usize)
 	}
 
-	fn flush(&mut self) -> Result<(), Error> {
+	fun flush(&mut self) result<void, Error> {
 		check(kn_io_flush(self.fd))?
-		return Ok(())
+		return Ok()
 	}
 }
 
 impl Write for Stderr {
-	fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
+	fun write(&mut self, buf &[u8]) result<usize, Error> {
 		return Ok(check(kn_io_write(self.fd, buf))? as usize)
 	}
 
-	fn flush(&mut self) -> Result<(), Error> {
+	fun flush(&mut self) result<void, Error> {
 		check(kn_io_flush(self.fd))?
-		return Ok(())
+		return Ok()
 	}
 }
 
 // Reads one line from standard input, without its line ending. Returns None
 // at the end of input.
-pub fn read_line() -> Result<Option<String>, Error> {
+pub fun read_line() result<option<string>, Error> {
 	r mut := stdin()
 	line mut := Vec::new()
 	b mut := [0 as u8; 1]
@@ -376,7 +376,7 @@ pub fn read_line() -> Result<Option<String>, Error> {
 	if line.len() > 0 && line[line.len() - 1] == 13 {
 		line.pop()
 	}
-	return Ok(Some(String::from_utf8_lossy(line.as_slice())))
+	return Ok(Some(string::from_utf8_lossy(line.as_slice())))
 }
 
 // ----- buffering -------------------------------------------------------------------------
@@ -384,20 +384,20 @@ pub fn read_line() -> Result<Option<String>, Error> {
 // Adds a buffer to a reader, so many small reads become few large ones, and
 // lines can be read.
 pub struct BufReader<R> {
-	inner: R,
-	buf: Vec<u8>,
-	pos: usize,
-	end: usize,
+	inner R,
+	buf Vec<u8>,
+	pos usize,
+	end usize,
 }
 
 impl<R: Read> BufReader<R> {
 	// A reader with an 8 KiB buffer.
-	pub fn new(inner: R) -> BufReader<R> {
+	pub fun new(inner R) BufReader<R> {
 		return BufReader::with_capacity(8192, inner)
 	}
 
 	// A reader with a buffer of `n` bytes.
-	pub fn with_capacity(n: usize, inner: R) -> BufReader<R> {
+	pub fun with_capacity(n usize, inner R) BufReader<R> {
 		buf mut := Vec::with_capacity(n)
 		for _ in 0..n {
 			buf.push(0 as u8)
@@ -406,7 +406,7 @@ impl<R: Read> BufReader<R> {
 	}
 
 	// Refills the buffer if it is empty; returns how many bytes are buffered.
-	fn fill(&mut self) -> Result<usize, Error> {
+	fun fill(&mut self) result<usize, Error> {
 		if self.pos == self.end {
 			self.pos = 0
 			self.end = self.inner.read(self.buf.as_mut_slice())?
@@ -416,7 +416,7 @@ impl<R: Read> BufReader<R> {
 
 	// Reads bytes up to and including `delim` (or the end), appending them to
 	// `out`. Returns the count; 0 means the end of input.
-	pub fn read_until(&mut self, delim: u8, out: &mut Vec<u8>) -> Result<usize, Error> {
+	pub fun read_until(&mut self, delim u8, out &mut Vec<u8>) result<usize, Error> {
 		total mut := 0
 		loop {
 			if self.fill()? == 0 {
@@ -439,10 +439,10 @@ impl<R: Read> BufReader<R> {
 
 	// Reads a line including its `\n`, appending it to `out`. Returns the
 	// number of bytes; 0 means the end of input.
-	pub fn read_line(&mut self, out: &mut String) -> Result<usize, Error> {
+	pub fun read_line(&mut self, out &mut string) result<usize, Error> {
 		bytes mut := Vec::new()
 		n := self.read_until(10 as u8, &mut bytes)?
-		match String::from_utf8(bytes) {
+		match string::from_utf8(bytes) {
 			Ok(s) => out.push(&s),
 			Err(_) => return Err(Error::new(ErrorKind::InvalidData, "stream did not contain valid UTF-8")),
 		}
@@ -450,8 +450,8 @@ impl<R: Read> BufReader<R> {
 	}
 
 	// The next line without its line ending (`\n` or `\r\n`), or None at the end.
-	pub fn next_line(&mut self) -> Result<Option<String>, Error> {
-		line mut := String::new()
+	pub fun next_line(&mut self) result<option<string>, Error> {
+		line mut := string::new()
 		if self.read_line(&mut line)? == 0 {
 			return Ok(None)
 		}
@@ -465,23 +465,23 @@ impl<R: Read> BufReader<R> {
 	}
 
 	// The wrapped reader.
-	pub fn get_ref(&self) -> &R {
+	pub fun get_ref(&self) &R {
 		return &self.inner
 	}
 
 	// The wrapped reader, mutably. Reading from it directly skips buffered data.
-	pub fn get_mut(&mut self) -> &mut R {
+	pub fun get_mut(&mut self) &mut R {
 		return &mut self.inner
 	}
 
 	// The bytes buffered but not yet read.
-	pub fn buffered(&self) -> &[u8] {
+	pub fun buffered(&self) &[u8] {
 		return &self.buf[self.pos..self.end]
 	}
 
 	// The next `n` bytes without consuming them (fewer only at the end of
 	// input). `n` must not exceed the buffer capacity.
-	pub fn peek(&mut self, n: usize) -> Result<&[u8], Error> {
+	pub fun peek(&mut self, n usize) result<&[u8], Error> {
 		if n > self.buf.len() {
 			return Err(Error::new(ErrorKind::InvalidInput, "peek: count exceeds buffer size"))
 		}
@@ -505,7 +505,7 @@ impl<R: Read> BufReader<R> {
 	}
 
 	// Reads one byte, or `None` at the end of input.
-	pub fn read_byte(&mut self) -> Result<Option<u8>, Error> {
+	pub fun read_byte(&mut self) result<option<u8>, Error> {
 		if self.fill()? == 0 {
 			return Ok(None)
 		}
@@ -516,7 +516,7 @@ impl<R: Read> BufReader<R> {
 
 	// Reads one UTF-8 character, or `None` at the end of input. Invalid
 	// bytes read as U+FFFD, one byte at a time.
-	pub fn read_char(&mut self) -> Result<Option<char>, Error> {
+	pub fun read_char(&mut self) result<option<char>, Error> {
 		p := self.peek(4)?
 		if p.len() == 0 {
 			return Ok(None)
@@ -527,7 +527,7 @@ impl<R: Read> BufReader<R> {
 	}
 
 	// Skips up to `n` bytes; returns how many were skipped.
-	pub fn discard(&mut self, n: usize) -> Result<usize, Error> {
+	pub fun discard(&mut self, n usize) result<usize, Error> {
 		done mut := 0
 		while done < n {
 			avail := self.fill()?
@@ -542,13 +542,13 @@ impl<R: Read> BufReader<R> {
 	}
 
 	// The wrapped reader; buffered data is lost.
-	pub fn into_inner(self) -> R {
+	pub fun into_inner(self) R {
 		return self.inner
 	}
 }
 
 // How a `Scanner` splits its input into tokens.
-#[derive(Clone, Copy, Debug, Eq)]
+@derive(Clone, Copy, Debug, Eq)
 pub enum Split {
 	// Lines without their `\n` or `\r\n` (the default).
 	Lines,
@@ -566,33 +566,33 @@ pub enum Split {
 // A token longer than `max_token` bytes (64 KiB by default) is an
 // `InvalidData` error rather than unbounded buffering.
 pub struct Scanner<R> {
-	r: BufReader<R>,
-	split: Split,
-	max: usize,
+	r BufReader<R>,
+	split Split,
+	max usize,
 }
 
 impl<R: Read> Scanner<R> {
 	// A line scanner.
-	pub fn new(inner: R) -> Scanner<R> {
+	pub fun new(inner R) Scanner<R> {
 		return Scanner { r: BufReader::new(inner), split: Split::Lines, max: 65536 }
 	}
 
 	// Changes how input is split.
-	pub fn split(&mut self, how: Split) {
+	pub fun split(&mut self, how Split) {
 		self.split = how
 	}
 
 	// Changes the largest allowed token size.
-	pub fn max_token(&mut self, n: usize) {
+	pub fun max_token(&mut self, n usize) {
 		self.max = n
 	}
 
-	fn too_long(&self) -> Error {
+	fun too_long(&self) Error {
 		return Error::new(ErrorKind::InvalidData, "scanner: token too long")
 	}
 
 	// The next token, or `None` at the end of input.
-	pub fn next(&mut self) -> Result<Option<String>, Error> {
+	pub fun next(&mut self) result<option<string>, Error> {
 		match self.split {
 			Split::Lines => {
 				line mut := Vec::new()
@@ -617,10 +617,10 @@ impl<R: Read> Scanner<R> {
 				if line.len() > 0 && line[line.len() - 1] == 13 {
 					line.pop()
 				}
-				return Ok(Some(String::from_utf8_lossy(&line)))
+				return Ok(Some(string::from_utf8_lossy(&line)))
 			},
 			Split::Words => {
-				word mut := String::new()
+				word mut := string::new()
 				loop {
 					c := match self.r.read_char()? {
 						Some(c) => c,
@@ -645,7 +645,7 @@ impl<R: Read> Scanner<R> {
 			Split::Chars => {
 				match self.r.read_char()? {
 					Some(c) => {
-						s mut := String::new()
+						s mut := string::new()
 						s.push_char(c)
 						return Ok(Some(s))
 					},
@@ -656,7 +656,7 @@ impl<R: Read> Scanner<R> {
 	}
 
 	// All remaining tokens.
-	pub fn collect_all(&mut self) -> Result<Vec<String>, Error> {
+	pub fun collect_all(&mut self) result<Vec<string>, Error> {
 		out mut := Vec::new()
 		while let Some(t) = self.next()? {
 			out.push(t)
@@ -666,7 +666,7 @@ impl<R: Read> Scanner<R> {
 }
 
 impl<R: Read> Read for BufReader<R> {
-	fn read(&mut self, out: &mut [u8]) -> Result<usize, Error> {
+	fun read(&mut self, out &mut [u8]) result<usize, Error> {
 		// Large reads with an empty buffer go straight through.
 		if self.pos == self.end && out.len() >= self.buf.len() {
 			return self.inner.read(out)
@@ -685,49 +685,49 @@ impl<R: Read> Read for BufReader<R> {
 // Call `flush` to push the data out; dropping the writer flushes too (and
 // ignores errors).
 pub struct BufWriter<W: Write> {
-	inner: W,
-	buf: Vec<u8>,
-	cap: usize,
+	inner W,
+	buf Vec<u8>,
+	cap usize,
 }
 
 impl<W: Write> BufWriter<W> {
 	// A writer with an 8 KiB buffer.
-	pub fn new(inner: W) -> BufWriter<W> {
+	pub fun new(inner W) BufWriter<W> {
 		return BufWriter::with_capacity(8192, inner)
 	}
 
 	// A writer with a buffer of `n` bytes.
-	pub fn with_capacity(n: usize, inner: W) -> BufWriter<W> {
+	pub fun with_capacity(n usize, inner W) BufWriter<W> {
 		return BufWriter { inner: inner, buf: Vec::with_capacity(n), cap: n }
 	}
 
 	// Writes out the buffered bytes.
-	fn flush_buf(&mut self) -> Result<(), Error> {
+	fun flush_buf(&mut self) result<void, Error> {
 		if self.buf.len() > 0 {
 			self.inner.write_all(self.buf.as_slice())?
 			self.buf.clear()
 		}
-		return Ok(())
+		return Ok()
 	}
 
 	// The wrapped writer.
-	pub fn get_ref(&self) -> &W {
+	pub fun get_ref(&self) &W {
 		return &self.inner
 	}
 
 	// Number of bytes waiting in the buffer.
-	pub fn buffered(&self) -> usize {
+	pub fun buffered(&self) usize {
 		return self.buf.len()
 	}
 
 	// Free space left in the buffer before it flushes.
-	pub fn available(&self) -> usize {
+	pub fun available(&self) usize {
 		return self.cap - self.buf.len()
 	}
 }
 
 impl<W: Write> Write for BufWriter<W> {
-	fn write(&mut self, data: &[u8]) -> Result<usize, Error> {
+	fun write(&mut self, data &[u8]) result<usize, Error> {
 		if self.buf.len() + data.len() > self.cap {
 			self.flush_buf()?
 		}
@@ -738,60 +738,60 @@ impl<W: Write> Write for BufWriter<W> {
 		return Ok(data.len())
 	}
 
-	fn flush(&mut self) -> Result<(), Error> {
+	fun flush(&mut self) result<void, Error> {
 		self.flush_buf()?
 		return self.inner.flush()
 	}
 }
 
 impl<W: Write> Drop for BufWriter<W> {
-	fn drop(&mut self) {
+	fun drop(&mut self) {
 		self.flush_buf()
 	}
 }
 
 // An in-memory reader and writer over a byte vector, with a position.
 pub struct Cursor {
-	data: Vec<u8>,
-	pos: usize,
+	data Vec<u8>,
+	pos usize,
 }
 
 impl Cursor {
 	// A cursor at the start of `data`.
-	pub fn new(data: Vec<u8>) -> Cursor {
+	pub fun new(data Vec<u8>) Cursor {
 		return Cursor { data: data, pos: 0 }
 	}
 
 	// A cursor over a copy of `s`.
-	pub fn from_str(s: &str) -> Cursor {
+	pub fun from_str(s &str) Cursor {
 		v mut := Vec::new()
 		v.extend_from_slice(s.as_bytes())
 		return Cursor::new(v)
 	}
 
 	// The position of the next read or write.
-	pub fn position(&self) -> usize {
+	pub fun position(&self) usize {
 		return self.pos
 	}
 
 	// Moves to byte `pos`.
-	pub fn set_position(&mut self, pos: usize) {
+	pub fun set_position(&mut self, pos usize) {
 		self.pos = pos
 	}
 
 	// The underlying bytes.
-	pub fn get_ref(&self) -> &Vec<u8> {
+	pub fun get_ref(&self) &Vec<u8> {
 		return &self.data
 	}
 
 	// Takes the underlying bytes.
-	pub fn into_inner(self) -> Vec<u8> {
+	pub fun into_inner(self) Vec<u8> {
 		return self.data
 	}
 }
 
 impl Read for Cursor {
-	fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+	fun read(&mut self, buf &mut [u8]) result<usize, Error> {
 		if self.pos >= self.data.len() {
 			return Ok(0)
 		}
@@ -806,7 +806,7 @@ impl Read for Cursor {
 }
 
 impl Write for Cursor {
-	fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
+	fun write(&mut self, buf &[u8]) result<usize, Error> {
 		for i in 0..buf.len() {
 			if self.pos < self.data.len() {
 				self.data[self.pos] = buf[i]

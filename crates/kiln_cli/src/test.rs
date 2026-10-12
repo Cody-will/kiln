@@ -76,7 +76,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
                 walk(&p, out);
             }
         } else if name.ends_with(".kn")
-            && std::fs::read_to_string(&p).is_ok_and(|s| s.contains("#[test]"))
+            && std::fs::read_to_string(&p).is_ok_and(|s| s.contains("@test"))
         {
             out.push(p);
         }

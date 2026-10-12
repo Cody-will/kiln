@@ -2,16 +2,16 @@
 // Functions without bodies are provided by the compiler.
 
 // Size of `T` in bytes.
-pub fn size_of<T>() -> usize
+pub fun size_of<T>() usize
 
 // Alignment of `T` in bytes.
-pub fn align_of<T>() -> usize
+pub fun align_of<T>() usize
 
 // Takes ownership of `value` without running its destructor.
-pub fn forget<T>(value: T)
+pub fun forget<T>(value T)
 
 // Swaps two values.
-pub fn swap<T>(a: &mut T, b: &mut T)
+pub fun swap<T>(a &mut T, b &mut T)
 
 // Replaces `*dest` with `value`, returning the old value.
-pub fn replace<T>(dest: &mut T, value: T) -> T
+pub fun replace<T>(dest &mut T, value T) T

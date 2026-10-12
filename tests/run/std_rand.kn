@@ -1,6 +1,6 @@
 import std::rand
 
-fn main() {
+fun main() {
 	r mut := rand::Rng::with_seed(42)
 	a := r.next_u64()
 	r2 mut := rand::Rng::with_seed(42)

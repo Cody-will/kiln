@@ -321,7 +321,8 @@ impl<'s> Parser<'s> {
                     | Kw::Pub
                     | Kw::Use
             ) | T::Hash
-        ) || (self.at_kw(Kw::Unsafe)
+                | T::At
+        ) || (matches!(self.peek(), T::Ident(n) if n == "fn") && matches!(self.nth(1), T::Ident(_))) || (self.at_kw(Kw::Unsafe)
             && matches!(self.nth(1), T::Keyword(Kw::Fn | Kw::Impl | Kw::Trait)))
     }
 
@@ -406,8 +407,15 @@ impl<'s> Parser<'s> {
     }
 
     fn parse_attr(&mut self) -> PResult<Attribute> {
-        let start = self.expect(&T::Hash)?;
-        self.expect(&T::LBracket)?;
+        if self.at(&T::Hash) {
+            let span = self.span();
+            self.errors.push(
+                Diagnostic::error("attributes are written with `@` in Kiln", span)
+                    .with_help("write `@test` or `@derive(Debug)` instead of `#[...]`"),
+            );
+            return Err(Reported);
+        }
+        let start = self.expect(&T::At)?;
         let name = self.expect_ident()?;
         let mut args = None;
         if self.at(&T::LParen) {
@@ -434,7 +442,7 @@ impl<'s> Parser<'s> {
                     .to_string(),
             );
         }
-        let end = self.expect(&T::RBracket)?;
+        let end = self.prev_span();
         Ok(Attribute {
             name,
             args,
@@ -475,13 +483,14 @@ impl<'s> Parser<'s> {
         };
         let doc = self.take_docs(start.start, boundary);
         let mut attrs = Vec::new();
-        while self.at(&T::Hash) {
+        while self.at(&T::At) || self.at(&T::Hash) {
             attrs.push(self.parse_attr()?);
             self.skip_semis();
         }
         let vis = self.parse_vis();
         let kind = match self.peek() {
             T::Keyword(Kw::Fn) => ItemKind::Fn(self.parse_fn(false)?),
+            T::Ident(n) if n == "fn" && matches!(self.nth(1), T::Ident(_)) => ItemKind::Fn(self.parse_fn(false)?),
             T::Keyword(Kw::Unsafe) if *self.nth(1) == T::Keyword(Kw::Fn) => {
                 self.bump();
                 ItemKind::Fn(self.parse_fn(true)?)
@@ -518,8 +527,7 @@ impl<'s> Parser<'s> {
             T::Keyword(Kw::Const) => {
                 self.bump();
                 let name = self.expect_ident()?;
-                self.expect(&T::Colon)?;
-                let ty = self.parse_type()?;
+                let ty = self.parse_annot()?;
                 let value = self.opt_eq_expr()?;
                 ItemKind::Const { name, ty, value }
             }
@@ -527,8 +535,7 @@ impl<'s> Parser<'s> {
                 self.bump();
                 let mutable = self.eat_kw(Kw::Mut);
                 let name = self.expect_ident()?;
-                self.expect(&T::Colon)?;
-                let ty = self.parse_type()?;
+                let ty = self.parse_annot()?;
                 self.expect(&T::Eq)?;
                 let value = self.parse_expr()?;
                 ItemKind::Static {
@@ -563,7 +570,7 @@ impl<'s> Parser<'s> {
             }
             _ => {
                 return self
-                    .unexpected("item (`fn`, `struct`, `enum`, `trait`, `impl`, `import`, ...)")
+                    .unexpected("item (`fun`, `struct`, `enum`, `trait`, `impl`, `import`, ...)")
             }
         };
         Ok(Item {
@@ -575,8 +582,65 @@ impl<'s> Parser<'s> {
         })
     }
 
+    /// Whether the next token can start a type (so a return type or a
+    /// type annotation follows).
+    fn starts_type(&self) -> bool {
+        matches!(
+            self.peek(),
+            T::Ident(_)
+                | T::Amp
+                | T::AndAnd
+                | T::Star
+                | T::LParen
+                | T::LBracket
+                | T::Bang
+                | T::Underscore
+                | T::LArrow
+                | T::Keyword(Kw::Fn | Kw::Dyn | Kw::Impl | Kw::Chan | Kw::SelfType)
+        )
+    }
+
+    /// The type after a name (`x i32`). An old-style `x: i32` is reported
+    /// and accepted, so the rest of the file still parses.
+    fn parse_annot(&mut self) -> PResult<Type> {
+        if self.at(&T::Colon) {
+            let span = self.span();
+            self.errors.push(
+                Diagnostic::error("types follow names without `:` in Kiln", span)
+                    .with_help("write `name Type`, as in `x i32` or `s string`"),
+            );
+            self.bump();
+        }
+        self.parse_type()
+    }
+
+    /// An optional return type after a parameter list: `fun f() i32`.
+    fn parse_ret(&mut self) -> PResult<Option<Type>> {
+        if self.at(&T::Arrow) {
+            let span = self.span();
+            self.errors.push(
+                Diagnostic::error("return types follow the parameters without `->` in Kiln", span)
+                    .with_help("write `fun f(x i32) i32 { ... }`; no return type means `void`"),
+            );
+            self.bump();
+            return Ok(Some(self.parse_type()?));
+        }
+        if self.starts_type() {
+            return Ok(Some(self.parse_type()?));
+        }
+        Ok(None)
+    }
+
     fn parse_fn(&mut self, is_unsafe: bool) -> PResult<FnDecl> {
-        self.expect_kw(Kw::Fn)?;
+        if matches!(self.peek(), T::Ident(n) if n == "fn") {
+            let span = self.span();
+            self.errors.push(
+                Diagnostic::error("Kiln declares functions with `fun`", span).with_help("write `fun name(...)`"),
+            );
+            self.bump();
+        } else {
+            self.expect_kw(Kw::Fn)?;
+        }
         let name = self.expect_ident()?;
         let mut generics = self.parse_generics()?;
         self.expect(&T::LParen)?;
@@ -590,11 +654,7 @@ impl<'s> Parser<'s> {
             }
             None => self.comma_list(&T::RParen, Self::parse_param)?,
         };
-        let ret = if self.eat(&T::Arrow) {
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
+        let ret = self.parse_ret()?;
         generics.where_clause = self.parse_where()?;
         let body = if self.at(&T::LBrace) {
             Some(self.parse_block()?)
@@ -651,10 +711,35 @@ impl<'s> Parser<'s> {
         Ok(Some(SelfParam::Ref { lifetime, mutable }))
     }
 
+    /// A pattern that may be followed by a type: `x (i32, i32)` binds `x`
+    /// (a name, then a space, then a tuple or array type), while `Some(x)`
+    /// is a tuple-struct pattern.
+    fn parse_binding_pattern(&mut self) -> PResult<Pattern> {
+        let mut i = 0;
+        if self.at_kw(Kw::Mut) {
+            i = 1;
+        }
+        if let T::Ident(name) = self.nth(i).clone() {
+            let next = self.tokens.get(self.pos + i + 1);
+            let spaced = next.is_some_and(|t| {
+                matches!(t.kind, T::LParen | T::LBracket) && t.span.start > self.tokens[self.pos + i].span.end
+            });
+            if spaced {
+                let start = self.span();
+                let mutable = self.eat_kw(Kw::Mut);
+                let span = self.bump().span;
+                return Ok(Pattern {
+                    kind: PatternKind::Ident { name: Ident { name, span }, mutable, sub: None },
+                    span: start.to(span),
+                });
+            }
+        }
+        self.parse_pattern_no_or()
+    }
+
     fn parse_param(&mut self) -> PResult<Param> {
-        let pat = self.parse_pattern_no_or()?;
-        self.expect(&T::Colon)?;
-        let ty = self.parse_type()?;
+        let pat = self.parse_binding_pattern()?;
+        let ty = self.parse_annot()?;
         Ok(Param {
             span: pat.span.to(ty.span),
             pat,
@@ -689,8 +774,7 @@ impl<'s> Parser<'s> {
                 T::Keyword(Kw::Const) => {
                     self.bump();
                     let name = self.expect_ident()?;
-                    self.expect(&T::Colon)?;
-                    let ty = self.parse_type()?;
+                    let ty = self.parse_annot()?;
                     GenericParam::Const { name, ty }
                 }
                 _ => {
@@ -821,8 +905,7 @@ impl<'s> Parser<'s> {
         let start = self.span();
         let vis = self.parse_vis();
         let name = self.expect_ident()?;
-        self.expect(&T::Colon)?;
-        let ty = self.parse_type()?;
+        let ty = self.parse_annot()?;
         Ok(FieldDecl {
             vis,
             name,
@@ -1089,11 +1172,7 @@ impl<'s> Parser<'s> {
                 let is_mut = self.eat(&T::Keyword(Kw::Mut));
                 self.expect(&T::LParen)?;
                 let params = self.comma_list(&T::RParen, Self::parse_type)?;
-                let ret = if self.eat(&T::Arrow) {
-                    Some(Box::new(self.parse_type()?))
-                } else {
-                    None
-                };
+                let ret = self.parse_ret()?.map(Box::new);
                 TypeKind::Fn {
                     params,
                     ret,
@@ -1133,6 +1212,19 @@ impl<'s> Parser<'s> {
             T::Underscore => {
                 self.bump();
                 TypeKind::Infer
+            }
+            T::Ident(ref n) if n == "fn" && *self.nth(1) == T::LParen => {
+                let span = self.span();
+                self.errors.push(
+                    Diagnostic::error("function types are written `fun(...)` in Kiln", span)
+                        .with_help("write `fun(i32) i32`"),
+                );
+                return Err(Reported);
+            }
+            // `void` is the unit type, `()`.
+            T::Ident(ref n) if n == "void" && *self.nth(1) != T::ColonColon => {
+                self.bump();
+                TypeKind::Tuple(Vec::new())
             }
             T::Ident(_) | T::Keyword(Kw::SelfType | Kw::SelfValue) => {
                 TypeKind::Path(self.parse_type_path()?)
@@ -1275,7 +1367,11 @@ impl<'s> Parser<'s> {
                 match self.peek() {
                     T::LParen => {
                         self.bump();
-                        let elems = self.comma_list(&T::RParen, Self::parse_pattern)?;
+                        let mut elems = self.comma_list(&T::RParen, Self::parse_pattern)?;
+                        // `Ok()` matches `Ok(void)`.
+                        if elems.is_empty() && path.segments.len() == 1 && path.segments[0].ident.name == "Ok" {
+                            elems.push(Pattern { kind: PatternKind::Tuple(Vec::new()), span: self.prev_span() });
+                        }
                         PatternKind::TupleStruct(path, elems)
                     }
                     T::LBrace => self.parse_struct_pattern(path)?,
@@ -1449,9 +1545,19 @@ impl<'s> Parser<'s> {
         let kind = if self.at_item_start() {
             StmtKind::Item(Box::new(self.parse_item()?))
         } else if self.eat_kw(Kw::Let) {
-            let pat = self.parse_pattern()?;
-            let ty = if self.eat(&T::Colon) {
-                Some(self.parse_type()?)
+            let pat = self.parse_binding_pattern()?;
+            let pat = if self.at(&T::Pipe) {
+                let mut alts = vec![pat];
+                while self.eat(&T::Pipe) {
+                    alts.push(self.parse_pattern_no_or()?);
+                }
+                let span = alts[0].span.to(alts.last().unwrap().span);
+                Pattern { kind: PatternKind::Or(alts), span }
+            } else {
+                pat
+            };
+            let ty = if self.at(&T::Colon) || self.starts_type() {
+                Some(self.parse_annot()?)
             } else {
                 None
             };
@@ -1492,7 +1598,7 @@ impl<'s> Parser<'s> {
                 let span = self.span();
                 self.errors.push(
                     Diagnostic::error("type annotations require `let`", span)
-                        .with_help("write `let x: T = value`, or use a typed literal with `:=`"),
+                        .with_help("write `let x T = value`, or use a typed literal with `:=`"),
                 );
                 return Err(Reported);
             } else {
@@ -1697,7 +1803,19 @@ impl<'s> Parser<'s> {
                 }
                 T::LParen => {
                     self.bump();
-                    ExprKind::Call(Box::new(e), self.call_args()?)
+                {
+                    let mut args = self.call_args()?;
+                    // `Ok()` is `Ok(void)`.
+                    if args.is_empty() {
+                        if let ExprKind::Path(p) = &e.kind {
+                            if p.segments.len() == 1 && p.segments[0].ident.name == "Ok" {
+                                let sp = self.prev_span();
+                                args.push(Expr { kind: ExprKind::Tuple(Vec::new()), span: sp });
+                            }
+                        }
+                    }
+                    ExprKind::Call(Box::new(e), args)
+                }
                 }
                 T::LBracket => {
                     self.bump();
@@ -2166,24 +2284,24 @@ impl<'s> Parser<'s> {
         } else {
             self.expect(&T::Pipe)?;
             self.comma_list(&T::Pipe, |p| {
-                let pat = p.parse_pattern_no_or()?;
-                let ty = if p.eat(&T::Colon) {
-                    Some(p.parse_type()?)
+                let pat = p.parse_binding_pattern()?;
+                let ty = if p.at(&T::Colon) || p.starts_type() {
+                    Some(p.parse_annot()?)
                 } else {
                     None
                 };
                 Ok(ClosureParam { pat, ty })
             })?
         };
-        let ret = if self.eat(&T::Arrow) {
-            let t = self.parse_type()?;
-            if !self.at(&T::LBrace) {
-                return self.unexpected("`{` (closures with a return type need a block body)");
-            }
-            Some(t)
-        } else {
-            None
-        };
+        if self.at(&T::Arrow) {
+            let span = self.span();
+            self.errors.push(
+                Diagnostic::error("closures don't take a return type; it is inferred", span)
+                    .with_help("remove `-> T`; annotate the value inside instead"),
+            );
+            return Err(Reported);
+        }
+        let ret = None;
         let body = Box::new(self.with_no_struct(false, Self::parse_expr)?);
         Ok(ExprKind::Closure {
             is_move,

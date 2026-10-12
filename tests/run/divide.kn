@@ -1,8 +1,8 @@
-fn div(a: i32, b: i32) -> i32 {
+fun div(a i32, b i32) i32 {
 	return a / b
 }
 
-fn main() {
+fun main() {
 	println("{div(7, 2)} {div(-7, 2)} {-7 % 3}")
 	println("{div(-2147483648, -1)}")
 }

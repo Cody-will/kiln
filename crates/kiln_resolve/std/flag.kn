@@ -18,17 +18,17 @@ import std::time
 import std::time::Duration
 import super::super::Error as ErrorTrait
 
-#[derive(Clone, Debug)]
+@derive(Clone, Debug)
 enum Value {
 	Bool(bool),
 	Int(i64),
 	Float(f64),
-	Str(String),
+	Str(string),
 	Dur(Duration),
 }
 
 impl Value {
-	fn kind(&self) -> &str {
+	fun kind(&self) &str {
 		match self {
 			Value::Bool(_) => return "",
 			Value::Int(_) => return "int",
@@ -38,7 +38,7 @@ impl Value {
 		}
 	}
 
-	fn show(&self) -> String {
+	fun show(&self) string {
 		match self {
 			Value::Bool(b) => return "{b}",
 			Value::Int(i) => return "{i}",
@@ -50,28 +50,28 @@ impl Value {
 }
 
 struct Flag {
-	name: String,
-	usage: String,
-	default: Value,
-	value: Value,
-	set: bool,
+	name string,
+	usage string,
+	default Value,
+	value Value,
+	set bool,
 }
 
 // Why parsing failed.
-#[derive(Debug, Clone, Eq)]
+@derive(Debug, Clone, Eq)
 pub enum Error {
 	// `-h` or `-help` was given.
 	Help,
 	// A flag that was not defined.
-	Unknown(String),
+	Unknown(string),
 	// A non-boolean flag at the end with no value.
-	MissingValue(String),
+	MissingValue(string),
 	// The value could not be parsed: flag, value, expected type.
-	Invalid(String, String, String),
+	Invalid(string, string, string),
 }
 
 impl Display for Error {
-	fn to_string(&self) -> String {
+	fun to_string(&self) string {
 		match self {
 			Error::Help => return "flag: help requested".to_string(),
 			Error::Unknown(n) => return "flag provided but not defined: -{n}",
@@ -85,18 +85,18 @@ impl ErrorTrait for Error {}
 
 // A set of defined flags.
 pub struct FlagSet {
-	name: String,
-	flags: Vec<Flag>,
-	rest: Vec<String>,
+	name string,
+	flags Vec<Flag>,
+	rest Vec<string>,
 }
 
 impl FlagSet {
 	// An empty set for the program or subcommand `name` (shown in usage).
-	pub fn new(name: &str) -> FlagSet {
+	pub fun new(name &str) FlagSet {
 		return FlagSet { name: name.to_string(), flags: Vec::new(), rest: Vec::new() }
 	}
 
-	fn define(&mut self, name: &str, v: Value, usage: &str) {
+	fun define(&mut self, name &str, v Value, usage &str) {
 		if self.find(name).is_some() {
 			panic("flag redefined: {name}")
 		}
@@ -104,32 +104,32 @@ impl FlagSet {
 	}
 
 	// Defines a boolean flag.
-	pub fn bool(&mut self, name: &str, default: bool, usage: &str) {
+	pub fun bool(&mut self, name &str, default bool, usage &str) {
 		self.define(name, Value::Bool(default), usage)
 	}
 
 	// Defines an integer flag (decimal, or `0x`/`0o`/`0b` prefixed).
-	pub fn int(&mut self, name: &str, default: i64, usage: &str) {
+	pub fun int(&mut self, name &str, default i64, usage &str) {
 		self.define(name, Value::Int(default), usage)
 	}
 
 	// Defines a floating-point flag.
-	pub fn float(&mut self, name: &str, default: f64, usage: &str) {
+	pub fun float(&mut self, name &str, default f64, usage &str) {
 		self.define(name, Value::Float(default), usage)
 	}
 
 	// Defines a string flag.
-	pub fn string(&mut self, name: &str, default: &str, usage: &str) {
+	pub fun string(&mut self, name &str, default &str, usage &str) {
 		self.define(name, Value::Str(default.to_string()), usage)
 	}
 
 	// Defines a duration flag, written like `-timeout 1m30s` (see
 	// `time::parse_duration`).
-	pub fn duration(&mut self, name: &str, default: Duration, usage: &str) {
+	pub fun duration(&mut self, name &str, default Duration, usage &str) {
 		self.define(name, Value::Dur(default), usage)
 	}
 
-	fn find(&self, name: &str) -> Option<usize> {
+	fun find(&self, name &str) option<usize> {
 		for i in 0..self.flags.len() {
 			if self.flags[i].name == name {
 				return Some(i)
@@ -138,7 +138,7 @@ impl FlagSet {
 		return None
 	}
 
-	fn get(&self, name: &str) -> &Value {
+	fun get(&self, name &str) &Value {
 		match self.find(name) {
 			Some(i) => return &self.flags[i].value,
 			None => panic("flag not defined: {name}"),
@@ -146,7 +146,7 @@ impl FlagSet {
 	}
 
 	// The value of boolean flag `name`. Panics if it is not a defined bool flag.
-	pub fn get_bool(&self, name: &str) -> bool {
+	pub fun get_bool(&self, name &str) bool {
 		match self.get(name) {
 			Value::Bool(b) => return *b,
 			_ => panic("flag -{name} is not a bool"),
@@ -154,7 +154,7 @@ impl FlagSet {
 	}
 
 	// The value of integer flag `name`.
-	pub fn get_int(&self, name: &str) -> i64 {
+	pub fun get_int(&self, name &str) i64 {
 		match self.get(name) {
 			Value::Int(i) => return *i,
 			_ => panic("flag -{name} is not an int"),
@@ -162,7 +162,7 @@ impl FlagSet {
 	}
 
 	// The value of float flag `name`.
-	pub fn get_float(&self, name: &str) -> f64 {
+	pub fun get_float(&self, name &str) f64 {
 		match self.get(name) {
 			Value::Float(f) => return *f,
 			_ => panic("flag -{name} is not a float"),
@@ -170,7 +170,7 @@ impl FlagSet {
 	}
 
 	// The value of string flag `name`.
-	pub fn get_string(&self, name: &str) -> String {
+	pub fun get_string(&self, name &str) string {
 		match self.get(name) {
 			Value::Str(s) => return s.clone(),
 			_ => panic("flag -{name} is not a string"),
@@ -178,7 +178,7 @@ impl FlagSet {
 	}
 
 	// The value of duration flag `name`.
-	pub fn get_duration(&self, name: &str) -> Duration {
+	pub fun get_duration(&self, name &str) Duration {
 		match self.get(name) {
 			Value::Dur(d) => return *d,
 			_ => panic("flag -{name} is not a duration"),
@@ -186,7 +186,7 @@ impl FlagSet {
 	}
 
 	// Whether `name` was given on the command line (not just defaulted).
-	pub fn is_set(&self, name: &str) -> bool {
+	pub fun is_set(&self, name &str) bool {
 		match self.find(name) {
 			Some(i) => return self.flags[i].set,
 			None => return false,
@@ -194,11 +194,11 @@ impl FlagSet {
 	}
 
 	// The arguments left after the flags.
-	pub fn args(&self) -> &[String] {
+	pub fun args(&self) &[string] {
 		return &self.rest
 	}
 
-	fn assign(&mut self, i: usize, raw: &str) -> Result<(), Error> {
+	fun assign(&mut self, i usize, raw &str) result<void, Error> {
 		name := self.flags[i].name.clone()
 		bad := Error::Invalid(name, raw.to_string(), self.flags[i].default.kind().to_string())
 		v := match &self.flags[i].default {
@@ -222,11 +222,11 @@ impl FlagSet {
 		}
 		self.flags[i].value = v
 		self.flags[i].set = true
-		return Ok(())
+		return Ok()
 	}
 
 	// Parses `args` (without the program name). Later flags override earlier ones.
-	pub fn parse(&mut self, args: &[String]) -> Result<(), Error> {
+	pub fun parse(&mut self, args &[string]) result<void, Error> {
 		self.rest = Vec::new()
 		i mut := 0
 		while i < args.len() {
@@ -276,14 +276,14 @@ impl FlagSet {
 			self.rest.push(args[i].clone())
 			i += 1
 		}
-		return Ok(())
+		return Ok()
 	}
 
 	// Parses `args`; on error prints the message and usage to stderr and
 	// exits with status 2 (0 for `-h`), as Go programs do.
-	pub fn parse_or_exit(&mut self, args: &[String]) {
+	pub fun parse_or_exit(&mut self, args &[string]) {
 		match self.parse(args) {
-			Ok(()) => return,
+			Ok() => return,
 			Err(Error::Help) => {
 				eprint(&self.usage())
 				std::os::exit(0)
@@ -297,7 +297,7 @@ impl FlagSet {
 	}
 
 	// The usage text: one entry per flag, sorted by name.
-	pub fn usage(&self) -> String {
+	pub fun usage(&self) string {
 		out mut := "Usage of {self.name}:\n"
 		order mut := Vec::new()
 		for i in 0..self.flags.len() {
@@ -329,7 +329,7 @@ impl FlagSet {
 	}
 }
 
-fn parse_int(s: &str) -> Option<i64> {
+fun parse_int(s &str) option<i64> {
 	(neg, body) := match s.strip_prefix("-") {
 		Some(r) => (true, r),
 		None => (false, s),

@@ -1,14 +1,14 @@
 struct Job {
-	id: i32,
-	n: i64,
+	id i32,
+	n i64,
 }
 
 struct Output {
-	id: i32,
-	sum: i64,
+	id i32,
+	sum i64,
 }
 
-fn work(n: i64) -> i64 {
+fun work(n i64) i64 {
 	total mut := 0
 	for i in 0..n {
 		total += i
@@ -16,13 +16,13 @@ fn work(n: i64) -> i64 {
 	return total
 }
 
-fn worker(jobs: <-chan Job, results: chan<- Output) {
+fun worker(jobs <-chan Job, results chan<- Output) {
 	for job in jobs {
 		results <- Output { id: job.id, sum: work(job.n) }
 	}
 }
 
-fn main() {
+fun main() {
 	(jobs_tx, jobs_rx) := chan::<Job>(16)
 	(res_tx, res_rx) := chan::<Output>(16)
 	workers mut := Vec::new()

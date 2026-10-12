@@ -10,42 +10,42 @@
 
 impl i8 {
 	// The smallest value: -2^7.
-	pub const MIN: i8 = -127 - 1
+	pub const MIN i8 = -127 - 1
 	// The largest value.
-	pub const MAX: i8 = 127
+	pub const MAX i8 = 127
 	// The size in bits.
-	pub const BITS: u32 = 8
+	pub const BITS u32 = 8
 
 	// Arithmetic that wraps around at the ends of the range instead of
 	// panicking on overflow.
-	pub fn wrapping_add(self, b: i8) -> i8
-	pub fn wrapping_sub(self, b: i8) -> i8
-	pub fn wrapping_mul(self, b: i8) -> i8
-	pub fn wrapping_neg(self) -> i8
+	pub fun wrapping_add(self, b i8) i8
+	pub fun wrapping_sub(self, b i8) i8
+	pub fun wrapping_mul(self, b i8) i8
+	pub fun wrapping_neg(self) i8
 	// Shifts by `n % BITS`.
-	pub fn wrapping_shl(self, n: u32) -> i8
-	pub fn wrapping_shr(self, n: u32) -> i8
+	pub fun wrapping_shl(self, n u32) i8
+	pub fun wrapping_shr(self, n u32) i8
 
 	// The wrapped result and whether it overflowed.
-	pub fn overflowing_add(self, b: i8) -> (i8, bool)
-	pub fn overflowing_sub(self, b: i8) -> (i8, bool)
-	pub fn overflowing_mul(self, b: i8) -> (i8, bool)
+	pub fun overflowing_add(self, b i8) (i8, bool)
+	pub fun overflowing_sub(self, b i8) (i8, bool)
+	pub fun overflowing_mul(self, b i8) (i8, bool)
 
 	// Bit operations.
-	pub fn count_ones(self) -> u32
-	pub fn leading_zeros(self) -> u32
-	pub fn trailing_zeros(self) -> u32
-	pub fn rotate_left(self, n: u32) -> i8
-	pub fn rotate_right(self, n: u32) -> i8
-	pub fn swap_bytes(self) -> i8
-	pub fn reverse_bits(self) -> i8
+	pub fun count_ones(self) u32
+	pub fun leading_zeros(self) u32
+	pub fun trailing_zeros(self) u32
+	pub fun rotate_left(self, n u32) i8
+	pub fun rotate_right(self, n u32) i8
+	pub fun swap_bytes(self) i8
+	pub fun reverse_bits(self) i8
 
-	pub fn count_zeros(self) -> u32 {
+	pub fun count_zeros(self) u32 {
 		return 8 - self.count_ones()
 	}
 
 	// `None` on overflow.
-	pub fn checked_add(self, b: i8) -> Option<i8> {
+	pub fun checked_add(self, b i8) option<i8> {
 		(r, o) := self.overflowing_add(b)
 		if o {
 			return None
@@ -54,7 +54,7 @@ impl i8 {
 	}
 
 	// `None` on overflow.
-	pub fn checked_sub(self, b: i8) -> Option<i8> {
+	pub fun checked_sub(self, b i8) option<i8> {
 		(r, o) := self.overflowing_sub(b)
 		if o {
 			return None
@@ -63,7 +63,7 @@ impl i8 {
 	}
 
 	// `None` on overflow.
-	pub fn checked_mul(self, b: i8) -> Option<i8> {
+	pub fun checked_mul(self, b i8) option<i8> {
 		(r, o) := self.overflowing_mul(b)
 		if o {
 			return None
@@ -72,7 +72,7 @@ impl i8 {
 	}
 
 	// `None` if `b` is zero or the result overflows.
-	pub fn checked_div(self, b: i8) -> Option<i8> {
+	pub fun checked_div(self, b i8) option<i8> {
 		if b == 0 || (self == i8::MIN && b == -1) {
 			return None
 		}
@@ -80,14 +80,14 @@ impl i8 {
 	}
 
 	// `None` if `b` is zero or the result overflows.
-	pub fn checked_rem(self, b: i8) -> Option<i8> {
+	pub fun checked_rem(self, b i8) option<i8> {
 		if b == 0 || (self == i8::MIN && b == -1) {
 			return None
 		}
 		return Some(self % b)
 	}
 
-	pub fn checked_neg(self) -> Option<i8> {
+	pub fun checked_neg(self) option<i8> {
 		if self == i8::MIN {
 			return None
 		}
@@ -95,7 +95,7 @@ impl i8 {
 	}
 
 	// Arithmetic that stops at MIN or MAX instead of overflowing.
-	pub fn saturating_add(self, b: i8) -> i8 {
+	pub fun saturating_add(self, b i8) i8 {
 		(r, o) := self.overflowing_add(b)
 		if !o {
 			return r
@@ -106,7 +106,7 @@ impl i8 {
 		return i8::MAX
 	}
 
-	pub fn saturating_sub(self, b: i8) -> i8 {
+	pub fun saturating_sub(self, b i8) i8 {
 		(r, o) := self.overflowing_sub(b)
 		if !o {
 			return r
@@ -117,7 +117,7 @@ impl i8 {
 		return i8::MIN
 	}
 
-	pub fn saturating_mul(self, b: i8) -> i8 {
+	pub fun saturating_mul(self, b i8) i8 {
 		(r, o) := self.overflowing_mul(b)
 		if !o {
 			return r
@@ -129,15 +129,15 @@ impl i8 {
 	}
 
 	// `self` to the power `exp`. Panics on overflow (see `checked_pow`).
-	pub fn pow(self, exp: u32) -> i8 {
+	pub fun pow(self, exp u32) i8 {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => panic("attempt to raise to a power with overflow"),
 		}
 	}
 
-	pub fn checked_pow(self, exp: u32) -> Option<i8> {
-		let mut r: i8 = 1
+	pub fun checked_pow(self, exp u32) option<i8> {
+		let mut r i8 = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -152,8 +152,8 @@ impl i8 {
 		return Some(r)
 	}
 
-	pub fn wrapping_pow(self, exp: u32) -> i8 {
-		let mut r: i8 = 1
+	pub fun wrapping_pow(self, exp u32) i8 {
+		let mut r i8 = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -166,7 +166,7 @@ impl i8 {
 		return r
 	}
 
-	pub fn saturating_pow(self, exp: u32) -> i8 {
+	pub fun saturating_pow(self, exp u32) i8 {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => {
@@ -178,14 +178,14 @@ impl i8 {
 		}
 	}
 
-	pub fn min(self, b: i8) -> i8 {
+	pub fun min(self, b i8) i8 {
 		if b < self {
 			return b
 		}
 		return self
 	}
 
-	pub fn max(self, b: i8) -> i8 {
+	pub fun max(self, b i8) i8 {
 		if b > self {
 			return b
 		}
@@ -193,7 +193,7 @@ impl i8 {
 	}
 
 	// `self` limited to `lo..=hi`.
-	pub fn clamp(self, lo: i8, hi: i8) -> i8 {
+	pub fun clamp(self, lo i8, hi i8) i8 {
 		if self < lo {
 			return lo
 		}
@@ -204,7 +204,7 @@ impl i8 {
 	}
 
 	// The distance between `self` and `b`, which never overflows.
-	pub fn abs_diff(self, b: i8) -> u8 {
+	pub fun abs_diff(self, b i8) u8 {
 		if self < b {
 			return (b as u8).wrapping_sub(self as u8)
 		}
@@ -212,7 +212,7 @@ impl i8 {
 	}
 
 	// The absolute value. Panics for MIN in debug builds.
-	pub fn abs(self) -> i8 {
+	pub fun abs(self) i8 {
 		if self < 0 {
 			return -self
 		}
@@ -220,7 +220,7 @@ impl i8 {
 	}
 
 	// The absolute value as an unsigned number (never overflows).
-	pub fn unsigned_abs(self) -> u8 {
+	pub fun unsigned_abs(self) u8 {
 		if self < 0 {
 			return (0 as u8).wrapping_sub(self as u8)
 		}
@@ -228,7 +228,7 @@ impl i8 {
 	}
 
 	// -1, 0, or 1.
-	pub fn signum(self) -> i8 {
+	pub fun signum(self) i8 {
 		if self < 0 {
 			return -1
 		}
@@ -238,17 +238,17 @@ impl i8 {
 		return 0
 	}
 
-	pub fn is_negative(self) -> bool {
+	pub fun is_negative(self) bool {
 		return self < 0
 	}
 
-	pub fn is_positive(self) -> bool {
+	pub fun is_positive(self) bool {
 		return self > 0
 	}
 
 	// Euclidean division: the quotient for which the remainder is never
 	// negative (`-7.div_euclid(2)` is -4).
-	pub fn div_euclid(self, b: i8) -> i8 {
+	pub fun div_euclid(self, b i8) i8 {
 		q := self / b
 		if self % b < 0 {
 			if b > 0 {
@@ -260,7 +260,7 @@ impl i8 {
 	}
 
 	// The remainder of Euclidean division, in `0..b.abs()`.
-	pub fn rem_euclid(self, b: i8) -> i8 {
+	pub fun rem_euclid(self, b i8) i8 {
 		r := self % b
 		if r < 0 {
 			return r + b.abs()
@@ -269,7 +269,7 @@ impl i8 {
 	}
 
 	// The base-2 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog2(self) -> u32 {
+	pub fun ilog2(self) u32 {
 		if self <= 0 {
 			panic("ilog2 of a non-positive number")
 		}
@@ -277,7 +277,7 @@ impl i8 {
 	}
 
 	// The base-10 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog10(self) -> u32 {
+	pub fun ilog10(self) u32 {
 		if self <= 0 {
 			panic("ilog10 of a non-positive number")
 		}
@@ -291,7 +291,7 @@ impl i8 {
 	}
 
 	// The integer square root, rounded down. Panics if negative.
-	pub fn isqrt(self) -> i8 {
+	pub fun isqrt(self) i8 {
 		if self < 0 {
 			panic("isqrt of a negative number")
 		}
@@ -311,18 +311,18 @@ impl i8 {
 	}
 
 	// The decimal text of the number.
-	pub fn to_string(self) -> String {
+	pub fun to_string(self) string {
 		return "{self}"
 	}
 
 	// Parses decimal text, like `strconv::parse_int`.
-	pub fn parse(s: &str) -> Result<i8, std::strconv::ParseError> {
+	pub fun parse(s &str) result<i8, std::strconv::ParseError> {
 		return i8::from_str_radix(s, 10)
 	}
 
 	// Parses text in base `radix` (2 to 36), with an optional sign
 	// (and `_` separators between digits).
-	pub fn from_str_radix(s: &str, radix: u32) -> Result<i8, std::strconv::ParseError> {
+	pub fun from_str_radix(s &str, radix u32) result<i8, std::strconv::ParseError> {
 		v := std::strconv::parse_digits(s, radix, true, 8)?
 		return Ok(v as i8)
 	}
@@ -330,42 +330,42 @@ impl i8 {
 
 impl i16 {
 	// The smallest value: -2^15.
-	pub const MIN: i16 = -32767 - 1
+	pub const MIN i16 = -32767 - 1
 	// The largest value.
-	pub const MAX: i16 = 32767
+	pub const MAX i16 = 32767
 	// The size in bits.
-	pub const BITS: u32 = 16
+	pub const BITS u32 = 16
 
 	// Arithmetic that wraps around at the ends of the range instead of
 	// panicking on overflow.
-	pub fn wrapping_add(self, b: i16) -> i16
-	pub fn wrapping_sub(self, b: i16) -> i16
-	pub fn wrapping_mul(self, b: i16) -> i16
-	pub fn wrapping_neg(self) -> i16
+	pub fun wrapping_add(self, b i16) i16
+	pub fun wrapping_sub(self, b i16) i16
+	pub fun wrapping_mul(self, b i16) i16
+	pub fun wrapping_neg(self) i16
 	// Shifts by `n % BITS`.
-	pub fn wrapping_shl(self, n: u32) -> i16
-	pub fn wrapping_shr(self, n: u32) -> i16
+	pub fun wrapping_shl(self, n u32) i16
+	pub fun wrapping_shr(self, n u32) i16
 
 	// The wrapped result and whether it overflowed.
-	pub fn overflowing_add(self, b: i16) -> (i16, bool)
-	pub fn overflowing_sub(self, b: i16) -> (i16, bool)
-	pub fn overflowing_mul(self, b: i16) -> (i16, bool)
+	pub fun overflowing_add(self, b i16) (i16, bool)
+	pub fun overflowing_sub(self, b i16) (i16, bool)
+	pub fun overflowing_mul(self, b i16) (i16, bool)
 
 	// Bit operations.
-	pub fn count_ones(self) -> u32
-	pub fn leading_zeros(self) -> u32
-	pub fn trailing_zeros(self) -> u32
-	pub fn rotate_left(self, n: u32) -> i16
-	pub fn rotate_right(self, n: u32) -> i16
-	pub fn swap_bytes(self) -> i16
-	pub fn reverse_bits(self) -> i16
+	pub fun count_ones(self) u32
+	pub fun leading_zeros(self) u32
+	pub fun trailing_zeros(self) u32
+	pub fun rotate_left(self, n u32) i16
+	pub fun rotate_right(self, n u32) i16
+	pub fun swap_bytes(self) i16
+	pub fun reverse_bits(self) i16
 
-	pub fn count_zeros(self) -> u32 {
+	pub fun count_zeros(self) u32 {
 		return 16 - self.count_ones()
 	}
 
 	// `None` on overflow.
-	pub fn checked_add(self, b: i16) -> Option<i16> {
+	pub fun checked_add(self, b i16) option<i16> {
 		(r, o) := self.overflowing_add(b)
 		if o {
 			return None
@@ -374,7 +374,7 @@ impl i16 {
 	}
 
 	// `None` on overflow.
-	pub fn checked_sub(self, b: i16) -> Option<i16> {
+	pub fun checked_sub(self, b i16) option<i16> {
 		(r, o) := self.overflowing_sub(b)
 		if o {
 			return None
@@ -383,7 +383,7 @@ impl i16 {
 	}
 
 	// `None` on overflow.
-	pub fn checked_mul(self, b: i16) -> Option<i16> {
+	pub fun checked_mul(self, b i16) option<i16> {
 		(r, o) := self.overflowing_mul(b)
 		if o {
 			return None
@@ -392,7 +392,7 @@ impl i16 {
 	}
 
 	// `None` if `b` is zero or the result overflows.
-	pub fn checked_div(self, b: i16) -> Option<i16> {
+	pub fun checked_div(self, b i16) option<i16> {
 		if b == 0 || (self == i16::MIN && b == -1) {
 			return None
 		}
@@ -400,14 +400,14 @@ impl i16 {
 	}
 
 	// `None` if `b` is zero or the result overflows.
-	pub fn checked_rem(self, b: i16) -> Option<i16> {
+	pub fun checked_rem(self, b i16) option<i16> {
 		if b == 0 || (self == i16::MIN && b == -1) {
 			return None
 		}
 		return Some(self % b)
 	}
 
-	pub fn checked_neg(self) -> Option<i16> {
+	pub fun checked_neg(self) option<i16> {
 		if self == i16::MIN {
 			return None
 		}
@@ -415,7 +415,7 @@ impl i16 {
 	}
 
 	// Arithmetic that stops at MIN or MAX instead of overflowing.
-	pub fn saturating_add(self, b: i16) -> i16 {
+	pub fun saturating_add(self, b i16) i16 {
 		(r, o) := self.overflowing_add(b)
 		if !o {
 			return r
@@ -426,7 +426,7 @@ impl i16 {
 		return i16::MAX
 	}
 
-	pub fn saturating_sub(self, b: i16) -> i16 {
+	pub fun saturating_sub(self, b i16) i16 {
 		(r, o) := self.overflowing_sub(b)
 		if !o {
 			return r
@@ -437,7 +437,7 @@ impl i16 {
 		return i16::MIN
 	}
 
-	pub fn saturating_mul(self, b: i16) -> i16 {
+	pub fun saturating_mul(self, b i16) i16 {
 		(r, o) := self.overflowing_mul(b)
 		if !o {
 			return r
@@ -449,15 +449,15 @@ impl i16 {
 	}
 
 	// `self` to the power `exp`. Panics on overflow (see `checked_pow`).
-	pub fn pow(self, exp: u32) -> i16 {
+	pub fun pow(self, exp u32) i16 {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => panic("attempt to raise to a power with overflow"),
 		}
 	}
 
-	pub fn checked_pow(self, exp: u32) -> Option<i16> {
-		let mut r: i16 = 1
+	pub fun checked_pow(self, exp u32) option<i16> {
+		let mut r i16 = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -472,8 +472,8 @@ impl i16 {
 		return Some(r)
 	}
 
-	pub fn wrapping_pow(self, exp: u32) -> i16 {
-		let mut r: i16 = 1
+	pub fun wrapping_pow(self, exp u32) i16 {
+		let mut r i16 = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -486,7 +486,7 @@ impl i16 {
 		return r
 	}
 
-	pub fn saturating_pow(self, exp: u32) -> i16 {
+	pub fun saturating_pow(self, exp u32) i16 {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => {
@@ -498,14 +498,14 @@ impl i16 {
 		}
 	}
 
-	pub fn min(self, b: i16) -> i16 {
+	pub fun min(self, b i16) i16 {
 		if b < self {
 			return b
 		}
 		return self
 	}
 
-	pub fn max(self, b: i16) -> i16 {
+	pub fun max(self, b i16) i16 {
 		if b > self {
 			return b
 		}
@@ -513,7 +513,7 @@ impl i16 {
 	}
 
 	// `self` limited to `lo..=hi`.
-	pub fn clamp(self, lo: i16, hi: i16) -> i16 {
+	pub fun clamp(self, lo i16, hi i16) i16 {
 		if self < lo {
 			return lo
 		}
@@ -524,7 +524,7 @@ impl i16 {
 	}
 
 	// The distance between `self` and `b`, which never overflows.
-	pub fn abs_diff(self, b: i16) -> u16 {
+	pub fun abs_diff(self, b i16) u16 {
 		if self < b {
 			return (b as u16).wrapping_sub(self as u16)
 		}
@@ -532,7 +532,7 @@ impl i16 {
 	}
 
 	// The absolute value. Panics for MIN in debug builds.
-	pub fn abs(self) -> i16 {
+	pub fun abs(self) i16 {
 		if self < 0 {
 			return -self
 		}
@@ -540,7 +540,7 @@ impl i16 {
 	}
 
 	// The absolute value as an unsigned number (never overflows).
-	pub fn unsigned_abs(self) -> u16 {
+	pub fun unsigned_abs(self) u16 {
 		if self < 0 {
 			return (0 as u16).wrapping_sub(self as u16)
 		}
@@ -548,7 +548,7 @@ impl i16 {
 	}
 
 	// -1, 0, or 1.
-	pub fn signum(self) -> i16 {
+	pub fun signum(self) i16 {
 		if self < 0 {
 			return -1
 		}
@@ -558,17 +558,17 @@ impl i16 {
 		return 0
 	}
 
-	pub fn is_negative(self) -> bool {
+	pub fun is_negative(self) bool {
 		return self < 0
 	}
 
-	pub fn is_positive(self) -> bool {
+	pub fun is_positive(self) bool {
 		return self > 0
 	}
 
 	// Euclidean division: the quotient for which the remainder is never
 	// negative (`-7.div_euclid(2)` is -4).
-	pub fn div_euclid(self, b: i16) -> i16 {
+	pub fun div_euclid(self, b i16) i16 {
 		q := self / b
 		if self % b < 0 {
 			if b > 0 {
@@ -580,7 +580,7 @@ impl i16 {
 	}
 
 	// The remainder of Euclidean division, in `0..b.abs()`.
-	pub fn rem_euclid(self, b: i16) -> i16 {
+	pub fun rem_euclid(self, b i16) i16 {
 		r := self % b
 		if r < 0 {
 			return r + b.abs()
@@ -589,7 +589,7 @@ impl i16 {
 	}
 
 	// The base-2 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog2(self) -> u32 {
+	pub fun ilog2(self) u32 {
 		if self <= 0 {
 			panic("ilog2 of a non-positive number")
 		}
@@ -597,7 +597,7 @@ impl i16 {
 	}
 
 	// The base-10 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog10(self) -> u32 {
+	pub fun ilog10(self) u32 {
 		if self <= 0 {
 			panic("ilog10 of a non-positive number")
 		}
@@ -611,7 +611,7 @@ impl i16 {
 	}
 
 	// The integer square root, rounded down. Panics if negative.
-	pub fn isqrt(self) -> i16 {
+	pub fun isqrt(self) i16 {
 		if self < 0 {
 			panic("isqrt of a negative number")
 		}
@@ -631,18 +631,18 @@ impl i16 {
 	}
 
 	// The decimal text of the number.
-	pub fn to_string(self) -> String {
+	pub fun to_string(self) string {
 		return "{self}"
 	}
 
 	// Parses decimal text, like `strconv::parse_int`.
-	pub fn parse(s: &str) -> Result<i16, std::strconv::ParseError> {
+	pub fun parse(s &str) result<i16, std::strconv::ParseError> {
 		return i16::from_str_radix(s, 10)
 	}
 
 	// Parses text in base `radix` (2 to 36), with an optional sign
 	// (and `_` separators between digits).
-	pub fn from_str_radix(s: &str, radix: u32) -> Result<i16, std::strconv::ParseError> {
+	pub fun from_str_radix(s &str, radix u32) result<i16, std::strconv::ParseError> {
 		v := std::strconv::parse_digits(s, radix, true, 16)?
 		return Ok(v as i16)
 	}
@@ -650,42 +650,42 @@ impl i16 {
 
 impl i32 {
 	// The smallest value: -2^31.
-	pub const MIN: i32 = -2147483647 - 1
+	pub const MIN i32 = -2147483647 - 1
 	// The largest value.
-	pub const MAX: i32 = 2147483647
+	pub const MAX i32 = 2147483647
 	// The size in bits.
-	pub const BITS: u32 = 32
+	pub const BITS u32 = 32
 
 	// Arithmetic that wraps around at the ends of the range instead of
 	// panicking on overflow.
-	pub fn wrapping_add(self, b: i32) -> i32
-	pub fn wrapping_sub(self, b: i32) -> i32
-	pub fn wrapping_mul(self, b: i32) -> i32
-	pub fn wrapping_neg(self) -> i32
+	pub fun wrapping_add(self, b i32) i32
+	pub fun wrapping_sub(self, b i32) i32
+	pub fun wrapping_mul(self, b i32) i32
+	pub fun wrapping_neg(self) i32
 	// Shifts by `n % BITS`.
-	pub fn wrapping_shl(self, n: u32) -> i32
-	pub fn wrapping_shr(self, n: u32) -> i32
+	pub fun wrapping_shl(self, n u32) i32
+	pub fun wrapping_shr(self, n u32) i32
 
 	// The wrapped result and whether it overflowed.
-	pub fn overflowing_add(self, b: i32) -> (i32, bool)
-	pub fn overflowing_sub(self, b: i32) -> (i32, bool)
-	pub fn overflowing_mul(self, b: i32) -> (i32, bool)
+	pub fun overflowing_add(self, b i32) (i32, bool)
+	pub fun overflowing_sub(self, b i32) (i32, bool)
+	pub fun overflowing_mul(self, b i32) (i32, bool)
 
 	// Bit operations.
-	pub fn count_ones(self) -> u32
-	pub fn leading_zeros(self) -> u32
-	pub fn trailing_zeros(self) -> u32
-	pub fn rotate_left(self, n: u32) -> i32
-	pub fn rotate_right(self, n: u32) -> i32
-	pub fn swap_bytes(self) -> i32
-	pub fn reverse_bits(self) -> i32
+	pub fun count_ones(self) u32
+	pub fun leading_zeros(self) u32
+	pub fun trailing_zeros(self) u32
+	pub fun rotate_left(self, n u32) i32
+	pub fun rotate_right(self, n u32) i32
+	pub fun swap_bytes(self) i32
+	pub fun reverse_bits(self) i32
 
-	pub fn count_zeros(self) -> u32 {
+	pub fun count_zeros(self) u32 {
 		return 32 - self.count_ones()
 	}
 
 	// `None` on overflow.
-	pub fn checked_add(self, b: i32) -> Option<i32> {
+	pub fun checked_add(self, b i32) option<i32> {
 		(r, o) := self.overflowing_add(b)
 		if o {
 			return None
@@ -694,7 +694,7 @@ impl i32 {
 	}
 
 	// `None` on overflow.
-	pub fn checked_sub(self, b: i32) -> Option<i32> {
+	pub fun checked_sub(self, b i32) option<i32> {
 		(r, o) := self.overflowing_sub(b)
 		if o {
 			return None
@@ -703,7 +703,7 @@ impl i32 {
 	}
 
 	// `None` on overflow.
-	pub fn checked_mul(self, b: i32) -> Option<i32> {
+	pub fun checked_mul(self, b i32) option<i32> {
 		(r, o) := self.overflowing_mul(b)
 		if o {
 			return None
@@ -712,7 +712,7 @@ impl i32 {
 	}
 
 	// `None` if `b` is zero or the result overflows.
-	pub fn checked_div(self, b: i32) -> Option<i32> {
+	pub fun checked_div(self, b i32) option<i32> {
 		if b == 0 || (self == i32::MIN && b == -1) {
 			return None
 		}
@@ -720,14 +720,14 @@ impl i32 {
 	}
 
 	// `None` if `b` is zero or the result overflows.
-	pub fn checked_rem(self, b: i32) -> Option<i32> {
+	pub fun checked_rem(self, b i32) option<i32> {
 		if b == 0 || (self == i32::MIN && b == -1) {
 			return None
 		}
 		return Some(self % b)
 	}
 
-	pub fn checked_neg(self) -> Option<i32> {
+	pub fun checked_neg(self) option<i32> {
 		if self == i32::MIN {
 			return None
 		}
@@ -735,7 +735,7 @@ impl i32 {
 	}
 
 	// Arithmetic that stops at MIN or MAX instead of overflowing.
-	pub fn saturating_add(self, b: i32) -> i32 {
+	pub fun saturating_add(self, b i32) i32 {
 		(r, o) := self.overflowing_add(b)
 		if !o {
 			return r
@@ -746,7 +746,7 @@ impl i32 {
 		return i32::MAX
 	}
 
-	pub fn saturating_sub(self, b: i32) -> i32 {
+	pub fun saturating_sub(self, b i32) i32 {
 		(r, o) := self.overflowing_sub(b)
 		if !o {
 			return r
@@ -757,7 +757,7 @@ impl i32 {
 		return i32::MIN
 	}
 
-	pub fn saturating_mul(self, b: i32) -> i32 {
+	pub fun saturating_mul(self, b i32) i32 {
 		(r, o) := self.overflowing_mul(b)
 		if !o {
 			return r
@@ -769,15 +769,15 @@ impl i32 {
 	}
 
 	// `self` to the power `exp`. Panics on overflow (see `checked_pow`).
-	pub fn pow(self, exp: u32) -> i32 {
+	pub fun pow(self, exp u32) i32 {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => panic("attempt to raise to a power with overflow"),
 		}
 	}
 
-	pub fn checked_pow(self, exp: u32) -> Option<i32> {
-		let mut r: i32 = 1
+	pub fun checked_pow(self, exp u32) option<i32> {
+		let mut r i32 = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -792,8 +792,8 @@ impl i32 {
 		return Some(r)
 	}
 
-	pub fn wrapping_pow(self, exp: u32) -> i32 {
-		let mut r: i32 = 1
+	pub fun wrapping_pow(self, exp u32) i32 {
+		let mut r i32 = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -806,7 +806,7 @@ impl i32 {
 		return r
 	}
 
-	pub fn saturating_pow(self, exp: u32) -> i32 {
+	pub fun saturating_pow(self, exp u32) i32 {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => {
@@ -818,14 +818,14 @@ impl i32 {
 		}
 	}
 
-	pub fn min(self, b: i32) -> i32 {
+	pub fun min(self, b i32) i32 {
 		if b < self {
 			return b
 		}
 		return self
 	}
 
-	pub fn max(self, b: i32) -> i32 {
+	pub fun max(self, b i32) i32 {
 		if b > self {
 			return b
 		}
@@ -833,7 +833,7 @@ impl i32 {
 	}
 
 	// `self` limited to `lo..=hi`.
-	pub fn clamp(self, lo: i32, hi: i32) -> i32 {
+	pub fun clamp(self, lo i32, hi i32) i32 {
 		if self < lo {
 			return lo
 		}
@@ -844,7 +844,7 @@ impl i32 {
 	}
 
 	// The distance between `self` and `b`, which never overflows.
-	pub fn abs_diff(self, b: i32) -> u32 {
+	pub fun abs_diff(self, b i32) u32 {
 		if self < b {
 			return (b as u32).wrapping_sub(self as u32)
 		}
@@ -852,7 +852,7 @@ impl i32 {
 	}
 
 	// The absolute value. Panics for MIN in debug builds.
-	pub fn abs(self) -> i32 {
+	pub fun abs(self) i32 {
 		if self < 0 {
 			return -self
 		}
@@ -860,7 +860,7 @@ impl i32 {
 	}
 
 	// The absolute value as an unsigned number (never overflows).
-	pub fn unsigned_abs(self) -> u32 {
+	pub fun unsigned_abs(self) u32 {
 		if self < 0 {
 			return (0 as u32).wrapping_sub(self as u32)
 		}
@@ -868,7 +868,7 @@ impl i32 {
 	}
 
 	// -1, 0, or 1.
-	pub fn signum(self) -> i32 {
+	pub fun signum(self) i32 {
 		if self < 0 {
 			return -1
 		}
@@ -878,17 +878,17 @@ impl i32 {
 		return 0
 	}
 
-	pub fn is_negative(self) -> bool {
+	pub fun is_negative(self) bool {
 		return self < 0
 	}
 
-	pub fn is_positive(self) -> bool {
+	pub fun is_positive(self) bool {
 		return self > 0
 	}
 
 	// Euclidean division: the quotient for which the remainder is never
 	// negative (`-7.div_euclid(2)` is -4).
-	pub fn div_euclid(self, b: i32) -> i32 {
+	pub fun div_euclid(self, b i32) i32 {
 		q := self / b
 		if self % b < 0 {
 			if b > 0 {
@@ -900,7 +900,7 @@ impl i32 {
 	}
 
 	// The remainder of Euclidean division, in `0..b.abs()`.
-	pub fn rem_euclid(self, b: i32) -> i32 {
+	pub fun rem_euclid(self, b i32) i32 {
 		r := self % b
 		if r < 0 {
 			return r + b.abs()
@@ -909,7 +909,7 @@ impl i32 {
 	}
 
 	// The base-2 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog2(self) -> u32 {
+	pub fun ilog2(self) u32 {
 		if self <= 0 {
 			panic("ilog2 of a non-positive number")
 		}
@@ -917,7 +917,7 @@ impl i32 {
 	}
 
 	// The base-10 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog10(self) -> u32 {
+	pub fun ilog10(self) u32 {
 		if self <= 0 {
 			panic("ilog10 of a non-positive number")
 		}
@@ -931,7 +931,7 @@ impl i32 {
 	}
 
 	// The integer square root, rounded down. Panics if negative.
-	pub fn isqrt(self) -> i32 {
+	pub fun isqrt(self) i32 {
 		if self < 0 {
 			panic("isqrt of a negative number")
 		}
@@ -951,18 +951,18 @@ impl i32 {
 	}
 
 	// The decimal text of the number.
-	pub fn to_string(self) -> String {
+	pub fun to_string(self) string {
 		return "{self}"
 	}
 
 	// Parses decimal text, like `strconv::parse_int`.
-	pub fn parse(s: &str) -> Result<i32, std::strconv::ParseError> {
+	pub fun parse(s &str) result<i32, std::strconv::ParseError> {
 		return i32::from_str_radix(s, 10)
 	}
 
 	// Parses text in base `radix` (2 to 36), with an optional sign
 	// (and `_` separators between digits).
-	pub fn from_str_radix(s: &str, radix: u32) -> Result<i32, std::strconv::ParseError> {
+	pub fun from_str_radix(s &str, radix u32) result<i32, std::strconv::ParseError> {
 		v := std::strconv::parse_digits(s, radix, true, 32)?
 		return Ok(v as i32)
 	}
@@ -970,42 +970,42 @@ impl i32 {
 
 impl i64 {
 	// The smallest value: -2^63.
-	pub const MIN: i64 = -9223372036854775807 - 1
+	pub const MIN i64 = -9223372036854775807 - 1
 	// The largest value.
-	pub const MAX: i64 = 9223372036854775807
+	pub const MAX i64 = 9223372036854775807
 	// The size in bits.
-	pub const BITS: u32 = 64
+	pub const BITS u32 = 64
 
 	// Arithmetic that wraps around at the ends of the range instead of
 	// panicking on overflow.
-	pub fn wrapping_add(self, b: i64) -> i64
-	pub fn wrapping_sub(self, b: i64) -> i64
-	pub fn wrapping_mul(self, b: i64) -> i64
-	pub fn wrapping_neg(self) -> i64
+	pub fun wrapping_add(self, b i64) i64
+	pub fun wrapping_sub(self, b i64) i64
+	pub fun wrapping_mul(self, b i64) i64
+	pub fun wrapping_neg(self) i64
 	// Shifts by `n % BITS`.
-	pub fn wrapping_shl(self, n: u32) -> i64
-	pub fn wrapping_shr(self, n: u32) -> i64
+	pub fun wrapping_shl(self, n u32) i64
+	pub fun wrapping_shr(self, n u32) i64
 
 	// The wrapped result and whether it overflowed.
-	pub fn overflowing_add(self, b: i64) -> (i64, bool)
-	pub fn overflowing_sub(self, b: i64) -> (i64, bool)
-	pub fn overflowing_mul(self, b: i64) -> (i64, bool)
+	pub fun overflowing_add(self, b i64) (i64, bool)
+	pub fun overflowing_sub(self, b i64) (i64, bool)
+	pub fun overflowing_mul(self, b i64) (i64, bool)
 
 	// Bit operations.
-	pub fn count_ones(self) -> u32
-	pub fn leading_zeros(self) -> u32
-	pub fn trailing_zeros(self) -> u32
-	pub fn rotate_left(self, n: u32) -> i64
-	pub fn rotate_right(self, n: u32) -> i64
-	pub fn swap_bytes(self) -> i64
-	pub fn reverse_bits(self) -> i64
+	pub fun count_ones(self) u32
+	pub fun leading_zeros(self) u32
+	pub fun trailing_zeros(self) u32
+	pub fun rotate_left(self, n u32) i64
+	pub fun rotate_right(self, n u32) i64
+	pub fun swap_bytes(self) i64
+	pub fun reverse_bits(self) i64
 
-	pub fn count_zeros(self) -> u32 {
+	pub fun count_zeros(self) u32 {
 		return 64 - self.count_ones()
 	}
 
 	// `None` on overflow.
-	pub fn checked_add(self, b: i64) -> Option<i64> {
+	pub fun checked_add(self, b i64) option<i64> {
 		(r, o) := self.overflowing_add(b)
 		if o {
 			return None
@@ -1014,7 +1014,7 @@ impl i64 {
 	}
 
 	// `None` on overflow.
-	pub fn checked_sub(self, b: i64) -> Option<i64> {
+	pub fun checked_sub(self, b i64) option<i64> {
 		(r, o) := self.overflowing_sub(b)
 		if o {
 			return None
@@ -1023,7 +1023,7 @@ impl i64 {
 	}
 
 	// `None` on overflow.
-	pub fn checked_mul(self, b: i64) -> Option<i64> {
+	pub fun checked_mul(self, b i64) option<i64> {
 		(r, o) := self.overflowing_mul(b)
 		if o {
 			return None
@@ -1032,7 +1032,7 @@ impl i64 {
 	}
 
 	// `None` if `b` is zero or the result overflows.
-	pub fn checked_div(self, b: i64) -> Option<i64> {
+	pub fun checked_div(self, b i64) option<i64> {
 		if b == 0 || (self == i64::MIN && b == -1) {
 			return None
 		}
@@ -1040,14 +1040,14 @@ impl i64 {
 	}
 
 	// `None` if `b` is zero or the result overflows.
-	pub fn checked_rem(self, b: i64) -> Option<i64> {
+	pub fun checked_rem(self, b i64) option<i64> {
 		if b == 0 || (self == i64::MIN && b == -1) {
 			return None
 		}
 		return Some(self % b)
 	}
 
-	pub fn checked_neg(self) -> Option<i64> {
+	pub fun checked_neg(self) option<i64> {
 		if self == i64::MIN {
 			return None
 		}
@@ -1055,7 +1055,7 @@ impl i64 {
 	}
 
 	// Arithmetic that stops at MIN or MAX instead of overflowing.
-	pub fn saturating_add(self, b: i64) -> i64 {
+	pub fun saturating_add(self, b i64) i64 {
 		(r, o) := self.overflowing_add(b)
 		if !o {
 			return r
@@ -1066,7 +1066,7 @@ impl i64 {
 		return i64::MAX
 	}
 
-	pub fn saturating_sub(self, b: i64) -> i64 {
+	pub fun saturating_sub(self, b i64) i64 {
 		(r, o) := self.overflowing_sub(b)
 		if !o {
 			return r
@@ -1077,7 +1077,7 @@ impl i64 {
 		return i64::MIN
 	}
 
-	pub fn saturating_mul(self, b: i64) -> i64 {
+	pub fun saturating_mul(self, b i64) i64 {
 		(r, o) := self.overflowing_mul(b)
 		if !o {
 			return r
@@ -1089,15 +1089,15 @@ impl i64 {
 	}
 
 	// `self` to the power `exp`. Panics on overflow (see `checked_pow`).
-	pub fn pow(self, exp: u32) -> i64 {
+	pub fun pow(self, exp u32) i64 {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => panic("attempt to raise to a power with overflow"),
 		}
 	}
 
-	pub fn checked_pow(self, exp: u32) -> Option<i64> {
-		let mut r: i64 = 1
+	pub fun checked_pow(self, exp u32) option<i64> {
+		let mut r i64 = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -1112,8 +1112,8 @@ impl i64 {
 		return Some(r)
 	}
 
-	pub fn wrapping_pow(self, exp: u32) -> i64 {
-		let mut r: i64 = 1
+	pub fun wrapping_pow(self, exp u32) i64 {
+		let mut r i64 = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -1126,7 +1126,7 @@ impl i64 {
 		return r
 	}
 
-	pub fn saturating_pow(self, exp: u32) -> i64 {
+	pub fun saturating_pow(self, exp u32) i64 {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => {
@@ -1138,14 +1138,14 @@ impl i64 {
 		}
 	}
 
-	pub fn min(self, b: i64) -> i64 {
+	pub fun min(self, b i64) i64 {
 		if b < self {
 			return b
 		}
 		return self
 	}
 
-	pub fn max(self, b: i64) -> i64 {
+	pub fun max(self, b i64) i64 {
 		if b > self {
 			return b
 		}
@@ -1153,7 +1153,7 @@ impl i64 {
 	}
 
 	// `self` limited to `lo..=hi`.
-	pub fn clamp(self, lo: i64, hi: i64) -> i64 {
+	pub fun clamp(self, lo i64, hi i64) i64 {
 		if self < lo {
 			return lo
 		}
@@ -1164,7 +1164,7 @@ impl i64 {
 	}
 
 	// The distance between `self` and `b`, which never overflows.
-	pub fn abs_diff(self, b: i64) -> u64 {
+	pub fun abs_diff(self, b i64) u64 {
 		if self < b {
 			return (b as u64).wrapping_sub(self as u64)
 		}
@@ -1172,7 +1172,7 @@ impl i64 {
 	}
 
 	// The absolute value. Panics for MIN in debug builds.
-	pub fn abs(self) -> i64 {
+	pub fun abs(self) i64 {
 		if self < 0 {
 			return -self
 		}
@@ -1180,7 +1180,7 @@ impl i64 {
 	}
 
 	// The absolute value as an unsigned number (never overflows).
-	pub fn unsigned_abs(self) -> u64 {
+	pub fun unsigned_abs(self) u64 {
 		if self < 0 {
 			return (0 as u64).wrapping_sub(self as u64)
 		}
@@ -1188,7 +1188,7 @@ impl i64 {
 	}
 
 	// -1, 0, or 1.
-	pub fn signum(self) -> i64 {
+	pub fun signum(self) i64 {
 		if self < 0 {
 			return -1
 		}
@@ -1198,17 +1198,17 @@ impl i64 {
 		return 0
 	}
 
-	pub fn is_negative(self) -> bool {
+	pub fun is_negative(self) bool {
 		return self < 0
 	}
 
-	pub fn is_positive(self) -> bool {
+	pub fun is_positive(self) bool {
 		return self > 0
 	}
 
 	// Euclidean division: the quotient for which the remainder is never
 	// negative (`-7.div_euclid(2)` is -4).
-	pub fn div_euclid(self, b: i64) -> i64 {
+	pub fun div_euclid(self, b i64) i64 {
 		q := self / b
 		if self % b < 0 {
 			if b > 0 {
@@ -1220,7 +1220,7 @@ impl i64 {
 	}
 
 	// The remainder of Euclidean division, in `0..b.abs()`.
-	pub fn rem_euclid(self, b: i64) -> i64 {
+	pub fun rem_euclid(self, b i64) i64 {
 		r := self % b
 		if r < 0 {
 			return r + b.abs()
@@ -1229,7 +1229,7 @@ impl i64 {
 	}
 
 	// The base-2 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog2(self) -> u32 {
+	pub fun ilog2(self) u32 {
 		if self <= 0 {
 			panic("ilog2 of a non-positive number")
 		}
@@ -1237,7 +1237,7 @@ impl i64 {
 	}
 
 	// The base-10 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog10(self) -> u32 {
+	pub fun ilog10(self) u32 {
 		if self <= 0 {
 			panic("ilog10 of a non-positive number")
 		}
@@ -1251,7 +1251,7 @@ impl i64 {
 	}
 
 	// The integer square root, rounded down. Panics if negative.
-	pub fn isqrt(self) -> i64 {
+	pub fun isqrt(self) i64 {
 		if self < 0 {
 			panic("isqrt of a negative number")
 		}
@@ -1271,18 +1271,18 @@ impl i64 {
 	}
 
 	// The decimal text of the number.
-	pub fn to_string(self) -> String {
+	pub fun to_string(self) string {
 		return "{self}"
 	}
 
 	// Parses decimal text, like `strconv::parse_int`.
-	pub fn parse(s: &str) -> Result<i64, std::strconv::ParseError> {
+	pub fun parse(s &str) result<i64, std::strconv::ParseError> {
 		return i64::from_str_radix(s, 10)
 	}
 
 	// Parses text in base `radix` (2 to 36), with an optional sign
 	// (and `_` separators between digits).
-	pub fn from_str_radix(s: &str, radix: u32) -> Result<i64, std::strconv::ParseError> {
+	pub fun from_str_radix(s &str, radix u32) result<i64, std::strconv::ParseError> {
 		v := std::strconv::parse_digits(s, radix, true, 64)?
 		return Ok(v as i64)
 	}
@@ -1290,42 +1290,42 @@ impl i64 {
 
 impl isize {
 	// The smallest value: -2^63.
-	pub const MIN: isize = -9223372036854775807 - 1
+	pub const MIN isize = -9223372036854775807 - 1
 	// The largest value.
-	pub const MAX: isize = 9223372036854775807
+	pub const MAX isize = 9223372036854775807
 	// The size in bits.
-	pub const BITS: u32 = 64
+	pub const BITS u32 = 64
 
 	// Arithmetic that wraps around at the ends of the range instead of
 	// panicking on overflow.
-	pub fn wrapping_add(self, b: isize) -> isize
-	pub fn wrapping_sub(self, b: isize) -> isize
-	pub fn wrapping_mul(self, b: isize) -> isize
-	pub fn wrapping_neg(self) -> isize
+	pub fun wrapping_add(self, b isize) isize
+	pub fun wrapping_sub(self, b isize) isize
+	pub fun wrapping_mul(self, b isize) isize
+	pub fun wrapping_neg(self) isize
 	// Shifts by `n % BITS`.
-	pub fn wrapping_shl(self, n: u32) -> isize
-	pub fn wrapping_shr(self, n: u32) -> isize
+	pub fun wrapping_shl(self, n u32) isize
+	pub fun wrapping_shr(self, n u32) isize
 
 	// The wrapped result and whether it overflowed.
-	pub fn overflowing_add(self, b: isize) -> (isize, bool)
-	pub fn overflowing_sub(self, b: isize) -> (isize, bool)
-	pub fn overflowing_mul(self, b: isize) -> (isize, bool)
+	pub fun overflowing_add(self, b isize) (isize, bool)
+	pub fun overflowing_sub(self, b isize) (isize, bool)
+	pub fun overflowing_mul(self, b isize) (isize, bool)
 
 	// Bit operations.
-	pub fn count_ones(self) -> u32
-	pub fn leading_zeros(self) -> u32
-	pub fn trailing_zeros(self) -> u32
-	pub fn rotate_left(self, n: u32) -> isize
-	pub fn rotate_right(self, n: u32) -> isize
-	pub fn swap_bytes(self) -> isize
-	pub fn reverse_bits(self) -> isize
+	pub fun count_ones(self) u32
+	pub fun leading_zeros(self) u32
+	pub fun trailing_zeros(self) u32
+	pub fun rotate_left(self, n u32) isize
+	pub fun rotate_right(self, n u32) isize
+	pub fun swap_bytes(self) isize
+	pub fun reverse_bits(self) isize
 
-	pub fn count_zeros(self) -> u32 {
+	pub fun count_zeros(self) u32 {
 		return 64 - self.count_ones()
 	}
 
 	// `None` on overflow.
-	pub fn checked_add(self, b: isize) -> Option<isize> {
+	pub fun checked_add(self, b isize) option<isize> {
 		(r, o) := self.overflowing_add(b)
 		if o {
 			return None
@@ -1334,7 +1334,7 @@ impl isize {
 	}
 
 	// `None` on overflow.
-	pub fn checked_sub(self, b: isize) -> Option<isize> {
+	pub fun checked_sub(self, b isize) option<isize> {
 		(r, o) := self.overflowing_sub(b)
 		if o {
 			return None
@@ -1343,7 +1343,7 @@ impl isize {
 	}
 
 	// `None` on overflow.
-	pub fn checked_mul(self, b: isize) -> Option<isize> {
+	pub fun checked_mul(self, b isize) option<isize> {
 		(r, o) := self.overflowing_mul(b)
 		if o {
 			return None
@@ -1352,7 +1352,7 @@ impl isize {
 	}
 
 	// `None` if `b` is zero or the result overflows.
-	pub fn checked_div(self, b: isize) -> Option<isize> {
+	pub fun checked_div(self, b isize) option<isize> {
 		if b == 0 || (self == isize::MIN && b == -1) {
 			return None
 		}
@@ -1360,14 +1360,14 @@ impl isize {
 	}
 
 	// `None` if `b` is zero or the result overflows.
-	pub fn checked_rem(self, b: isize) -> Option<isize> {
+	pub fun checked_rem(self, b isize) option<isize> {
 		if b == 0 || (self == isize::MIN && b == -1) {
 			return None
 		}
 		return Some(self % b)
 	}
 
-	pub fn checked_neg(self) -> Option<isize> {
+	pub fun checked_neg(self) option<isize> {
 		if self == isize::MIN {
 			return None
 		}
@@ -1375,7 +1375,7 @@ impl isize {
 	}
 
 	// Arithmetic that stops at MIN or MAX instead of overflowing.
-	pub fn saturating_add(self, b: isize) -> isize {
+	pub fun saturating_add(self, b isize) isize {
 		(r, o) := self.overflowing_add(b)
 		if !o {
 			return r
@@ -1386,7 +1386,7 @@ impl isize {
 		return isize::MAX
 	}
 
-	pub fn saturating_sub(self, b: isize) -> isize {
+	pub fun saturating_sub(self, b isize) isize {
 		(r, o) := self.overflowing_sub(b)
 		if !o {
 			return r
@@ -1397,7 +1397,7 @@ impl isize {
 		return isize::MIN
 	}
 
-	pub fn saturating_mul(self, b: isize) -> isize {
+	pub fun saturating_mul(self, b isize) isize {
 		(r, o) := self.overflowing_mul(b)
 		if !o {
 			return r
@@ -1409,15 +1409,15 @@ impl isize {
 	}
 
 	// `self` to the power `exp`. Panics on overflow (see `checked_pow`).
-	pub fn pow(self, exp: u32) -> isize {
+	pub fun pow(self, exp u32) isize {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => panic("attempt to raise to a power with overflow"),
 		}
 	}
 
-	pub fn checked_pow(self, exp: u32) -> Option<isize> {
-		let mut r: isize = 1
+	pub fun checked_pow(self, exp u32) option<isize> {
+		let mut r isize = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -1432,8 +1432,8 @@ impl isize {
 		return Some(r)
 	}
 
-	pub fn wrapping_pow(self, exp: u32) -> isize {
-		let mut r: isize = 1
+	pub fun wrapping_pow(self, exp u32) isize {
+		let mut r isize = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -1446,7 +1446,7 @@ impl isize {
 		return r
 	}
 
-	pub fn saturating_pow(self, exp: u32) -> isize {
+	pub fun saturating_pow(self, exp u32) isize {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => {
@@ -1458,14 +1458,14 @@ impl isize {
 		}
 	}
 
-	pub fn min(self, b: isize) -> isize {
+	pub fun min(self, b isize) isize {
 		if b < self {
 			return b
 		}
 		return self
 	}
 
-	pub fn max(self, b: isize) -> isize {
+	pub fun max(self, b isize) isize {
 		if b > self {
 			return b
 		}
@@ -1473,7 +1473,7 @@ impl isize {
 	}
 
 	// `self` limited to `lo..=hi`.
-	pub fn clamp(self, lo: isize, hi: isize) -> isize {
+	pub fun clamp(self, lo isize, hi isize) isize {
 		if self < lo {
 			return lo
 		}
@@ -1484,7 +1484,7 @@ impl isize {
 	}
 
 	// The distance between `self` and `b`, which never overflows.
-	pub fn abs_diff(self, b: isize) -> usize {
+	pub fun abs_diff(self, b isize) usize {
 		if self < b {
 			return (b as usize).wrapping_sub(self as usize)
 		}
@@ -1492,7 +1492,7 @@ impl isize {
 	}
 
 	// The absolute value. Panics for MIN in debug builds.
-	pub fn abs(self) -> isize {
+	pub fun abs(self) isize {
 		if self < 0 {
 			return -self
 		}
@@ -1500,7 +1500,7 @@ impl isize {
 	}
 
 	// The absolute value as an unsigned number (never overflows).
-	pub fn unsigned_abs(self) -> usize {
+	pub fun unsigned_abs(self) usize {
 		if self < 0 {
 			return (0 as usize).wrapping_sub(self as usize)
 		}
@@ -1508,7 +1508,7 @@ impl isize {
 	}
 
 	// -1, 0, or 1.
-	pub fn signum(self) -> isize {
+	pub fun signum(self) isize {
 		if self < 0 {
 			return -1
 		}
@@ -1518,17 +1518,17 @@ impl isize {
 		return 0
 	}
 
-	pub fn is_negative(self) -> bool {
+	pub fun is_negative(self) bool {
 		return self < 0
 	}
 
-	pub fn is_positive(self) -> bool {
+	pub fun is_positive(self) bool {
 		return self > 0
 	}
 
 	// Euclidean division: the quotient for which the remainder is never
 	// negative (`-7.div_euclid(2)` is -4).
-	pub fn div_euclid(self, b: isize) -> isize {
+	pub fun div_euclid(self, b isize) isize {
 		q := self / b
 		if self % b < 0 {
 			if b > 0 {
@@ -1540,7 +1540,7 @@ impl isize {
 	}
 
 	// The remainder of Euclidean division, in `0..b.abs()`.
-	pub fn rem_euclid(self, b: isize) -> isize {
+	pub fun rem_euclid(self, b isize) isize {
 		r := self % b
 		if r < 0 {
 			return r + b.abs()
@@ -1549,7 +1549,7 @@ impl isize {
 	}
 
 	// The base-2 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog2(self) -> u32 {
+	pub fun ilog2(self) u32 {
 		if self <= 0 {
 			panic("ilog2 of a non-positive number")
 		}
@@ -1557,7 +1557,7 @@ impl isize {
 	}
 
 	// The base-10 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog10(self) -> u32 {
+	pub fun ilog10(self) u32 {
 		if self <= 0 {
 			panic("ilog10 of a non-positive number")
 		}
@@ -1571,7 +1571,7 @@ impl isize {
 	}
 
 	// The integer square root, rounded down. Panics if negative.
-	pub fn isqrt(self) -> isize {
+	pub fun isqrt(self) isize {
 		if self < 0 {
 			panic("isqrt of a negative number")
 		}
@@ -1591,18 +1591,18 @@ impl isize {
 	}
 
 	// The decimal text of the number.
-	pub fn to_string(self) -> String {
+	pub fun to_string(self) string {
 		return "{self}"
 	}
 
 	// Parses decimal text, like `strconv::parse_int`.
-	pub fn parse(s: &str) -> Result<isize, std::strconv::ParseError> {
+	pub fun parse(s &str) result<isize, std::strconv::ParseError> {
 		return isize::from_str_radix(s, 10)
 	}
 
 	// Parses text in base `radix` (2 to 36), with an optional sign
 	// (and `_` separators between digits).
-	pub fn from_str_radix(s: &str, radix: u32) -> Result<isize, std::strconv::ParseError> {
+	pub fun from_str_radix(s &str, radix u32) result<isize, std::strconv::ParseError> {
 		v := std::strconv::parse_digits(s, radix, true, 64)?
 		return Ok(v as isize)
 	}
@@ -1610,42 +1610,42 @@ impl isize {
 
 impl u8 {
 	// The smallest value.
-	pub const MIN: u8 = 0
+	pub const MIN u8 = 0
 	// The largest value.
-	pub const MAX: u8 = 255
+	pub const MAX u8 = 255
 	// The size in bits.
-	pub const BITS: u32 = 8
+	pub const BITS u32 = 8
 
 	// Arithmetic that wraps around at the ends of the range instead of
 	// panicking on overflow.
-	pub fn wrapping_add(self, b: u8) -> u8
-	pub fn wrapping_sub(self, b: u8) -> u8
-	pub fn wrapping_mul(self, b: u8) -> u8
-	pub fn wrapping_neg(self) -> u8
+	pub fun wrapping_add(self, b u8) u8
+	pub fun wrapping_sub(self, b u8) u8
+	pub fun wrapping_mul(self, b u8) u8
+	pub fun wrapping_neg(self) u8
 	// Shifts by `n % BITS`.
-	pub fn wrapping_shl(self, n: u32) -> u8
-	pub fn wrapping_shr(self, n: u32) -> u8
+	pub fun wrapping_shl(self, n u32) u8
+	pub fun wrapping_shr(self, n u32) u8
 
 	// The wrapped result and whether it overflowed.
-	pub fn overflowing_add(self, b: u8) -> (u8, bool)
-	pub fn overflowing_sub(self, b: u8) -> (u8, bool)
-	pub fn overflowing_mul(self, b: u8) -> (u8, bool)
+	pub fun overflowing_add(self, b u8) (u8, bool)
+	pub fun overflowing_sub(self, b u8) (u8, bool)
+	pub fun overflowing_mul(self, b u8) (u8, bool)
 
 	// Bit operations.
-	pub fn count_ones(self) -> u32
-	pub fn leading_zeros(self) -> u32
-	pub fn trailing_zeros(self) -> u32
-	pub fn rotate_left(self, n: u32) -> u8
-	pub fn rotate_right(self, n: u32) -> u8
-	pub fn swap_bytes(self) -> u8
-	pub fn reverse_bits(self) -> u8
+	pub fun count_ones(self) u32
+	pub fun leading_zeros(self) u32
+	pub fun trailing_zeros(self) u32
+	pub fun rotate_left(self, n u32) u8
+	pub fun rotate_right(self, n u32) u8
+	pub fun swap_bytes(self) u8
+	pub fun reverse_bits(self) u8
 
-	pub fn count_zeros(self) -> u32 {
+	pub fun count_zeros(self) u32 {
 		return 8 - self.count_ones()
 	}
 
 	// `None` on overflow.
-	pub fn checked_add(self, b: u8) -> Option<u8> {
+	pub fun checked_add(self, b u8) option<u8> {
 		(r, o) := self.overflowing_add(b)
 		if o {
 			return None
@@ -1654,7 +1654,7 @@ impl u8 {
 	}
 
 	// `None` on overflow.
-	pub fn checked_sub(self, b: u8) -> Option<u8> {
+	pub fun checked_sub(self, b u8) option<u8> {
 		(r, o) := self.overflowing_sub(b)
 		if o {
 			return None
@@ -1663,7 +1663,7 @@ impl u8 {
 	}
 
 	// `None` on overflow.
-	pub fn checked_mul(self, b: u8) -> Option<u8> {
+	pub fun checked_mul(self, b u8) option<u8> {
 		(r, o) := self.overflowing_mul(b)
 		if o {
 			return None
@@ -1672,7 +1672,7 @@ impl u8 {
 	}
 
 	// `None` if `b` is zero.
-	pub fn checked_div(self, b: u8) -> Option<u8> {
+	pub fun checked_div(self, b u8) option<u8> {
 		if b == 0 {
 			return None
 		}
@@ -1680,14 +1680,14 @@ impl u8 {
 	}
 
 	// `None` if `b` is zero.
-	pub fn checked_rem(self, b: u8) -> Option<u8> {
+	pub fun checked_rem(self, b u8) option<u8> {
 		if b == 0 {
 			return None
 		}
 		return Some(self % b)
 	}
 
-	pub fn checked_neg(self) -> Option<u8> {
+	pub fun checked_neg(self) option<u8> {
 		if self != 0 {
 			return None
 		}
@@ -1695,7 +1695,7 @@ impl u8 {
 	}
 
 	// Arithmetic that stops at MIN or MAX instead of overflowing.
-	pub fn saturating_add(self, b: u8) -> u8 {
+	pub fun saturating_add(self, b u8) u8 {
 		(r, o) := self.overflowing_add(b)
 		if !o {
 			return r
@@ -1703,7 +1703,7 @@ impl u8 {
 		return u8::MAX
 	}
 
-	pub fn saturating_sub(self, b: u8) -> u8 {
+	pub fun saturating_sub(self, b u8) u8 {
 		(r, o) := self.overflowing_sub(b)
 		if !o {
 			return r
@@ -1711,7 +1711,7 @@ impl u8 {
 		return u8::MIN
 	}
 
-	pub fn saturating_mul(self, b: u8) -> u8 {
+	pub fun saturating_mul(self, b u8) u8 {
 		(r, o) := self.overflowing_mul(b)
 		if !o {
 			return r
@@ -1720,15 +1720,15 @@ impl u8 {
 	}
 
 	// `self` to the power `exp`. Panics on overflow (see `checked_pow`).
-	pub fn pow(self, exp: u32) -> u8 {
+	pub fun pow(self, exp u32) u8 {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => panic("attempt to raise to a power with overflow"),
 		}
 	}
 
-	pub fn checked_pow(self, exp: u32) -> Option<u8> {
-		let mut r: u8 = 1
+	pub fun checked_pow(self, exp u32) option<u8> {
+		let mut r u8 = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -1743,8 +1743,8 @@ impl u8 {
 		return Some(r)
 	}
 
-	pub fn wrapping_pow(self, exp: u32) -> u8 {
-		let mut r: u8 = 1
+	pub fun wrapping_pow(self, exp u32) u8 {
+		let mut r u8 = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -1757,7 +1757,7 @@ impl u8 {
 		return r
 	}
 
-	pub fn saturating_pow(self, exp: u32) -> u8 {
+	pub fun saturating_pow(self, exp u32) u8 {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => {
@@ -1766,14 +1766,14 @@ impl u8 {
 		}
 	}
 
-	pub fn min(self, b: u8) -> u8 {
+	pub fun min(self, b u8) u8 {
 		if b < self {
 			return b
 		}
 		return self
 	}
 
-	pub fn max(self, b: u8) -> u8 {
+	pub fun max(self, b u8) u8 {
 		if b > self {
 			return b
 		}
@@ -1781,7 +1781,7 @@ impl u8 {
 	}
 
 	// `self` limited to `lo..=hi`.
-	pub fn clamp(self, lo: u8, hi: u8) -> u8 {
+	pub fun clamp(self, lo u8, hi u8) u8 {
 		if self < lo {
 			return lo
 		}
@@ -1792,29 +1792,29 @@ impl u8 {
 	}
 
 	// The distance between `self` and `b`, which never overflows.
-	pub fn abs_diff(self, b: u8) -> u8 {
+	pub fun abs_diff(self, b u8) u8 {
 		if self < b {
 			return (b as u8).wrapping_sub(self as u8)
 		}
 		return (self as u8).wrapping_sub(b as u8)
 	}
 
-	pub fn div_euclid(self, b: u8) -> u8 {
+	pub fun div_euclid(self, b u8) u8 {
 		return self / b
 	}
 
-	pub fn rem_euclid(self, b: u8) -> u8 {
+	pub fun rem_euclid(self, b u8) u8 {
 		return self % b
 	}
 
 	// Whether the value is a power of two (0 is not).
-	pub fn is_power_of_two(self) -> bool {
+	pub fun is_power_of_two(self) bool {
 		return self != 0 && self & (self - 1) == 0
 	}
 
 	// The smallest power of two that is at least `self`. Panics on
 	// overflow in debug builds.
-	pub fn next_power_of_two(self) -> u8 {
+	pub fun next_power_of_two(self) u8 {
 		if self <= 1 {
 			return 1
 		}
@@ -1826,7 +1826,7 @@ impl u8 {
 	}
 
 	// The base-2 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog2(self) -> u32 {
+	pub fun ilog2(self) u32 {
 		if self <= 0 {
 			panic("ilog2 of a non-positive number")
 		}
@@ -1834,7 +1834,7 @@ impl u8 {
 	}
 
 	// The base-10 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog10(self) -> u32 {
+	pub fun ilog10(self) u32 {
 		if self <= 0 {
 			panic("ilog10 of a non-positive number")
 		}
@@ -1848,7 +1848,7 @@ impl u8 {
 	}
 
 	// The integer square root, rounded down. Panics if negative.
-	pub fn isqrt(self) -> u8 {
+	pub fun isqrt(self) u8 {
 		if self < 0 {
 			panic("isqrt of a negative number")
 		}
@@ -1868,18 +1868,18 @@ impl u8 {
 	}
 
 	// The decimal text of the number.
-	pub fn to_string(self) -> String {
+	pub fun to_string(self) string {
 		return "{self}"
 	}
 
 	// Parses decimal text, like `strconv::parse_int`.
-	pub fn parse(s: &str) -> Result<u8, std::strconv::ParseError> {
+	pub fun parse(s &str) result<u8, std::strconv::ParseError> {
 		return u8::from_str_radix(s, 10)
 	}
 
 	// Parses text in base `radix` (2 to 36), with an optional sign
 	// (and `_` separators between digits).
-	pub fn from_str_radix(s: &str, radix: u32) -> Result<u8, std::strconv::ParseError> {
+	pub fun from_str_radix(s &str, radix u32) result<u8, std::strconv::ParseError> {
 		v := std::strconv::parse_digits(s, radix, false, 8)?
 		return Ok(v as u8)
 	}
@@ -1887,42 +1887,42 @@ impl u8 {
 
 impl u16 {
 	// The smallest value.
-	pub const MIN: u16 = 0
+	pub const MIN u16 = 0
 	// The largest value.
-	pub const MAX: u16 = 65535
+	pub const MAX u16 = 65535
 	// The size in bits.
-	pub const BITS: u32 = 16
+	pub const BITS u32 = 16
 
 	// Arithmetic that wraps around at the ends of the range instead of
 	// panicking on overflow.
-	pub fn wrapping_add(self, b: u16) -> u16
-	pub fn wrapping_sub(self, b: u16) -> u16
-	pub fn wrapping_mul(self, b: u16) -> u16
-	pub fn wrapping_neg(self) -> u16
+	pub fun wrapping_add(self, b u16) u16
+	pub fun wrapping_sub(self, b u16) u16
+	pub fun wrapping_mul(self, b u16) u16
+	pub fun wrapping_neg(self) u16
 	// Shifts by `n % BITS`.
-	pub fn wrapping_shl(self, n: u32) -> u16
-	pub fn wrapping_shr(self, n: u32) -> u16
+	pub fun wrapping_shl(self, n u32) u16
+	pub fun wrapping_shr(self, n u32) u16
 
 	// The wrapped result and whether it overflowed.
-	pub fn overflowing_add(self, b: u16) -> (u16, bool)
-	pub fn overflowing_sub(self, b: u16) -> (u16, bool)
-	pub fn overflowing_mul(self, b: u16) -> (u16, bool)
+	pub fun overflowing_add(self, b u16) (u16, bool)
+	pub fun overflowing_sub(self, b u16) (u16, bool)
+	pub fun overflowing_mul(self, b u16) (u16, bool)
 
 	// Bit operations.
-	pub fn count_ones(self) -> u32
-	pub fn leading_zeros(self) -> u32
-	pub fn trailing_zeros(self) -> u32
-	pub fn rotate_left(self, n: u32) -> u16
-	pub fn rotate_right(self, n: u32) -> u16
-	pub fn swap_bytes(self) -> u16
-	pub fn reverse_bits(self) -> u16
+	pub fun count_ones(self) u32
+	pub fun leading_zeros(self) u32
+	pub fun trailing_zeros(self) u32
+	pub fun rotate_left(self, n u32) u16
+	pub fun rotate_right(self, n u32) u16
+	pub fun swap_bytes(self) u16
+	pub fun reverse_bits(self) u16
 
-	pub fn count_zeros(self) -> u32 {
+	pub fun count_zeros(self) u32 {
 		return 16 - self.count_ones()
 	}
 
 	// `None` on overflow.
-	pub fn checked_add(self, b: u16) -> Option<u16> {
+	pub fun checked_add(self, b u16) option<u16> {
 		(r, o) := self.overflowing_add(b)
 		if o {
 			return None
@@ -1931,7 +1931,7 @@ impl u16 {
 	}
 
 	// `None` on overflow.
-	pub fn checked_sub(self, b: u16) -> Option<u16> {
+	pub fun checked_sub(self, b u16) option<u16> {
 		(r, o) := self.overflowing_sub(b)
 		if o {
 			return None
@@ -1940,7 +1940,7 @@ impl u16 {
 	}
 
 	// `None` on overflow.
-	pub fn checked_mul(self, b: u16) -> Option<u16> {
+	pub fun checked_mul(self, b u16) option<u16> {
 		(r, o) := self.overflowing_mul(b)
 		if o {
 			return None
@@ -1949,7 +1949,7 @@ impl u16 {
 	}
 
 	// `None` if `b` is zero.
-	pub fn checked_div(self, b: u16) -> Option<u16> {
+	pub fun checked_div(self, b u16) option<u16> {
 		if b == 0 {
 			return None
 		}
@@ -1957,14 +1957,14 @@ impl u16 {
 	}
 
 	// `None` if `b` is zero.
-	pub fn checked_rem(self, b: u16) -> Option<u16> {
+	pub fun checked_rem(self, b u16) option<u16> {
 		if b == 0 {
 			return None
 		}
 		return Some(self % b)
 	}
 
-	pub fn checked_neg(self) -> Option<u16> {
+	pub fun checked_neg(self) option<u16> {
 		if self != 0 {
 			return None
 		}
@@ -1972,7 +1972,7 @@ impl u16 {
 	}
 
 	// Arithmetic that stops at MIN or MAX instead of overflowing.
-	pub fn saturating_add(self, b: u16) -> u16 {
+	pub fun saturating_add(self, b u16) u16 {
 		(r, o) := self.overflowing_add(b)
 		if !o {
 			return r
@@ -1980,7 +1980,7 @@ impl u16 {
 		return u16::MAX
 	}
 
-	pub fn saturating_sub(self, b: u16) -> u16 {
+	pub fun saturating_sub(self, b u16) u16 {
 		(r, o) := self.overflowing_sub(b)
 		if !o {
 			return r
@@ -1988,7 +1988,7 @@ impl u16 {
 		return u16::MIN
 	}
 
-	pub fn saturating_mul(self, b: u16) -> u16 {
+	pub fun saturating_mul(self, b u16) u16 {
 		(r, o) := self.overflowing_mul(b)
 		if !o {
 			return r
@@ -1997,15 +1997,15 @@ impl u16 {
 	}
 
 	// `self` to the power `exp`. Panics on overflow (see `checked_pow`).
-	pub fn pow(self, exp: u32) -> u16 {
+	pub fun pow(self, exp u32) u16 {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => panic("attempt to raise to a power with overflow"),
 		}
 	}
 
-	pub fn checked_pow(self, exp: u32) -> Option<u16> {
-		let mut r: u16 = 1
+	pub fun checked_pow(self, exp u32) option<u16> {
+		let mut r u16 = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -2020,8 +2020,8 @@ impl u16 {
 		return Some(r)
 	}
 
-	pub fn wrapping_pow(self, exp: u32) -> u16 {
-		let mut r: u16 = 1
+	pub fun wrapping_pow(self, exp u32) u16 {
+		let mut r u16 = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -2034,7 +2034,7 @@ impl u16 {
 		return r
 	}
 
-	pub fn saturating_pow(self, exp: u32) -> u16 {
+	pub fun saturating_pow(self, exp u32) u16 {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => {
@@ -2043,14 +2043,14 @@ impl u16 {
 		}
 	}
 
-	pub fn min(self, b: u16) -> u16 {
+	pub fun min(self, b u16) u16 {
 		if b < self {
 			return b
 		}
 		return self
 	}
 
-	pub fn max(self, b: u16) -> u16 {
+	pub fun max(self, b u16) u16 {
 		if b > self {
 			return b
 		}
@@ -2058,7 +2058,7 @@ impl u16 {
 	}
 
 	// `self` limited to `lo..=hi`.
-	pub fn clamp(self, lo: u16, hi: u16) -> u16 {
+	pub fun clamp(self, lo u16, hi u16) u16 {
 		if self < lo {
 			return lo
 		}
@@ -2069,29 +2069,29 @@ impl u16 {
 	}
 
 	// The distance between `self` and `b`, which never overflows.
-	pub fn abs_diff(self, b: u16) -> u16 {
+	pub fun abs_diff(self, b u16) u16 {
 		if self < b {
 			return (b as u16).wrapping_sub(self as u16)
 		}
 		return (self as u16).wrapping_sub(b as u16)
 	}
 
-	pub fn div_euclid(self, b: u16) -> u16 {
+	pub fun div_euclid(self, b u16) u16 {
 		return self / b
 	}
 
-	pub fn rem_euclid(self, b: u16) -> u16 {
+	pub fun rem_euclid(self, b u16) u16 {
 		return self % b
 	}
 
 	// Whether the value is a power of two (0 is not).
-	pub fn is_power_of_two(self) -> bool {
+	pub fun is_power_of_two(self) bool {
 		return self != 0 && self & (self - 1) == 0
 	}
 
 	// The smallest power of two that is at least `self`. Panics on
 	// overflow in debug builds.
-	pub fn next_power_of_two(self) -> u16 {
+	pub fun next_power_of_two(self) u16 {
 		if self <= 1 {
 			return 1
 		}
@@ -2103,7 +2103,7 @@ impl u16 {
 	}
 
 	// The base-2 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog2(self) -> u32 {
+	pub fun ilog2(self) u32 {
 		if self <= 0 {
 			panic("ilog2 of a non-positive number")
 		}
@@ -2111,7 +2111,7 @@ impl u16 {
 	}
 
 	// The base-10 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog10(self) -> u32 {
+	pub fun ilog10(self) u32 {
 		if self <= 0 {
 			panic("ilog10 of a non-positive number")
 		}
@@ -2125,7 +2125,7 @@ impl u16 {
 	}
 
 	// The integer square root, rounded down. Panics if negative.
-	pub fn isqrt(self) -> u16 {
+	pub fun isqrt(self) u16 {
 		if self < 0 {
 			panic("isqrt of a negative number")
 		}
@@ -2145,18 +2145,18 @@ impl u16 {
 	}
 
 	// The decimal text of the number.
-	pub fn to_string(self) -> String {
+	pub fun to_string(self) string {
 		return "{self}"
 	}
 
 	// Parses decimal text, like `strconv::parse_int`.
-	pub fn parse(s: &str) -> Result<u16, std::strconv::ParseError> {
+	pub fun parse(s &str) result<u16, std::strconv::ParseError> {
 		return u16::from_str_radix(s, 10)
 	}
 
 	// Parses text in base `radix` (2 to 36), with an optional sign
 	// (and `_` separators between digits).
-	pub fn from_str_radix(s: &str, radix: u32) -> Result<u16, std::strconv::ParseError> {
+	pub fun from_str_radix(s &str, radix u32) result<u16, std::strconv::ParseError> {
 		v := std::strconv::parse_digits(s, radix, false, 16)?
 		return Ok(v as u16)
 	}
@@ -2164,42 +2164,42 @@ impl u16 {
 
 impl u32 {
 	// The smallest value.
-	pub const MIN: u32 = 0
+	pub const MIN u32 = 0
 	// The largest value.
-	pub const MAX: u32 = 4294967295
+	pub const MAX u32 = 4294967295
 	// The size in bits.
-	pub const BITS: u32 = 32
+	pub const BITS u32 = 32
 
 	// Arithmetic that wraps around at the ends of the range instead of
 	// panicking on overflow.
-	pub fn wrapping_add(self, b: u32) -> u32
-	pub fn wrapping_sub(self, b: u32) -> u32
-	pub fn wrapping_mul(self, b: u32) -> u32
-	pub fn wrapping_neg(self) -> u32
+	pub fun wrapping_add(self, b u32) u32
+	pub fun wrapping_sub(self, b u32) u32
+	pub fun wrapping_mul(self, b u32) u32
+	pub fun wrapping_neg(self) u32
 	// Shifts by `n % BITS`.
-	pub fn wrapping_shl(self, n: u32) -> u32
-	pub fn wrapping_shr(self, n: u32) -> u32
+	pub fun wrapping_shl(self, n u32) u32
+	pub fun wrapping_shr(self, n u32) u32
 
 	// The wrapped result and whether it overflowed.
-	pub fn overflowing_add(self, b: u32) -> (u32, bool)
-	pub fn overflowing_sub(self, b: u32) -> (u32, bool)
-	pub fn overflowing_mul(self, b: u32) -> (u32, bool)
+	pub fun overflowing_add(self, b u32) (u32, bool)
+	pub fun overflowing_sub(self, b u32) (u32, bool)
+	pub fun overflowing_mul(self, b u32) (u32, bool)
 
 	// Bit operations.
-	pub fn count_ones(self) -> u32
-	pub fn leading_zeros(self) -> u32
-	pub fn trailing_zeros(self) -> u32
-	pub fn rotate_left(self, n: u32) -> u32
-	pub fn rotate_right(self, n: u32) -> u32
-	pub fn swap_bytes(self) -> u32
-	pub fn reverse_bits(self) -> u32
+	pub fun count_ones(self) u32
+	pub fun leading_zeros(self) u32
+	pub fun trailing_zeros(self) u32
+	pub fun rotate_left(self, n u32) u32
+	pub fun rotate_right(self, n u32) u32
+	pub fun swap_bytes(self) u32
+	pub fun reverse_bits(self) u32
 
-	pub fn count_zeros(self) -> u32 {
+	pub fun count_zeros(self) u32 {
 		return 32 - self.count_ones()
 	}
 
 	// `None` on overflow.
-	pub fn checked_add(self, b: u32) -> Option<u32> {
+	pub fun checked_add(self, b u32) option<u32> {
 		(r, o) := self.overflowing_add(b)
 		if o {
 			return None
@@ -2208,7 +2208,7 @@ impl u32 {
 	}
 
 	// `None` on overflow.
-	pub fn checked_sub(self, b: u32) -> Option<u32> {
+	pub fun checked_sub(self, b u32) option<u32> {
 		(r, o) := self.overflowing_sub(b)
 		if o {
 			return None
@@ -2217,7 +2217,7 @@ impl u32 {
 	}
 
 	// `None` on overflow.
-	pub fn checked_mul(self, b: u32) -> Option<u32> {
+	pub fun checked_mul(self, b u32) option<u32> {
 		(r, o) := self.overflowing_mul(b)
 		if o {
 			return None
@@ -2226,7 +2226,7 @@ impl u32 {
 	}
 
 	// `None` if `b` is zero.
-	pub fn checked_div(self, b: u32) -> Option<u32> {
+	pub fun checked_div(self, b u32) option<u32> {
 		if b == 0 {
 			return None
 		}
@@ -2234,14 +2234,14 @@ impl u32 {
 	}
 
 	// `None` if `b` is zero.
-	pub fn checked_rem(self, b: u32) -> Option<u32> {
+	pub fun checked_rem(self, b u32) option<u32> {
 		if b == 0 {
 			return None
 		}
 		return Some(self % b)
 	}
 
-	pub fn checked_neg(self) -> Option<u32> {
+	pub fun checked_neg(self) option<u32> {
 		if self != 0 {
 			return None
 		}
@@ -2249,7 +2249,7 @@ impl u32 {
 	}
 
 	// Arithmetic that stops at MIN or MAX instead of overflowing.
-	pub fn saturating_add(self, b: u32) -> u32 {
+	pub fun saturating_add(self, b u32) u32 {
 		(r, o) := self.overflowing_add(b)
 		if !o {
 			return r
@@ -2257,7 +2257,7 @@ impl u32 {
 		return u32::MAX
 	}
 
-	pub fn saturating_sub(self, b: u32) -> u32 {
+	pub fun saturating_sub(self, b u32) u32 {
 		(r, o) := self.overflowing_sub(b)
 		if !o {
 			return r
@@ -2265,7 +2265,7 @@ impl u32 {
 		return u32::MIN
 	}
 
-	pub fn saturating_mul(self, b: u32) -> u32 {
+	pub fun saturating_mul(self, b u32) u32 {
 		(r, o) := self.overflowing_mul(b)
 		if !o {
 			return r
@@ -2274,15 +2274,15 @@ impl u32 {
 	}
 
 	// `self` to the power `exp`. Panics on overflow (see `checked_pow`).
-	pub fn pow(self, exp: u32) -> u32 {
+	pub fun pow(self, exp u32) u32 {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => panic("attempt to raise to a power with overflow"),
 		}
 	}
 
-	pub fn checked_pow(self, exp: u32) -> Option<u32> {
-		let mut r: u32 = 1
+	pub fun checked_pow(self, exp u32) option<u32> {
+		let mut r u32 = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -2297,8 +2297,8 @@ impl u32 {
 		return Some(r)
 	}
 
-	pub fn wrapping_pow(self, exp: u32) -> u32 {
-		let mut r: u32 = 1
+	pub fun wrapping_pow(self, exp u32) u32 {
+		let mut r u32 = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -2311,7 +2311,7 @@ impl u32 {
 		return r
 	}
 
-	pub fn saturating_pow(self, exp: u32) -> u32 {
+	pub fun saturating_pow(self, exp u32) u32 {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => {
@@ -2320,14 +2320,14 @@ impl u32 {
 		}
 	}
 
-	pub fn min(self, b: u32) -> u32 {
+	pub fun min(self, b u32) u32 {
 		if b < self {
 			return b
 		}
 		return self
 	}
 
-	pub fn max(self, b: u32) -> u32 {
+	pub fun max(self, b u32) u32 {
 		if b > self {
 			return b
 		}
@@ -2335,7 +2335,7 @@ impl u32 {
 	}
 
 	// `self` limited to `lo..=hi`.
-	pub fn clamp(self, lo: u32, hi: u32) -> u32 {
+	pub fun clamp(self, lo u32, hi u32) u32 {
 		if self < lo {
 			return lo
 		}
@@ -2346,29 +2346,29 @@ impl u32 {
 	}
 
 	// The distance between `self` and `b`, which never overflows.
-	pub fn abs_diff(self, b: u32) -> u32 {
+	pub fun abs_diff(self, b u32) u32 {
 		if self < b {
 			return (b as u32).wrapping_sub(self as u32)
 		}
 		return (self as u32).wrapping_sub(b as u32)
 	}
 
-	pub fn div_euclid(self, b: u32) -> u32 {
+	pub fun div_euclid(self, b u32) u32 {
 		return self / b
 	}
 
-	pub fn rem_euclid(self, b: u32) -> u32 {
+	pub fun rem_euclid(self, b u32) u32 {
 		return self % b
 	}
 
 	// Whether the value is a power of two (0 is not).
-	pub fn is_power_of_two(self) -> bool {
+	pub fun is_power_of_two(self) bool {
 		return self != 0 && self & (self - 1) == 0
 	}
 
 	// The smallest power of two that is at least `self`. Panics on
 	// overflow in debug builds.
-	pub fn next_power_of_two(self) -> u32 {
+	pub fun next_power_of_two(self) u32 {
 		if self <= 1 {
 			return 1
 		}
@@ -2380,7 +2380,7 @@ impl u32 {
 	}
 
 	// The base-2 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog2(self) -> u32 {
+	pub fun ilog2(self) u32 {
 		if self <= 0 {
 			panic("ilog2 of a non-positive number")
 		}
@@ -2388,7 +2388,7 @@ impl u32 {
 	}
 
 	// The base-10 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog10(self) -> u32 {
+	pub fun ilog10(self) u32 {
 		if self <= 0 {
 			panic("ilog10 of a non-positive number")
 		}
@@ -2402,7 +2402,7 @@ impl u32 {
 	}
 
 	// The integer square root, rounded down. Panics if negative.
-	pub fn isqrt(self) -> u32 {
+	pub fun isqrt(self) u32 {
 		if self < 0 {
 			panic("isqrt of a negative number")
 		}
@@ -2422,18 +2422,18 @@ impl u32 {
 	}
 
 	// The decimal text of the number.
-	pub fn to_string(self) -> String {
+	pub fun to_string(self) string {
 		return "{self}"
 	}
 
 	// Parses decimal text, like `strconv::parse_int`.
-	pub fn parse(s: &str) -> Result<u32, std::strconv::ParseError> {
+	pub fun parse(s &str) result<u32, std::strconv::ParseError> {
 		return u32::from_str_radix(s, 10)
 	}
 
 	// Parses text in base `radix` (2 to 36), with an optional sign
 	// (and `_` separators between digits).
-	pub fn from_str_radix(s: &str, radix: u32) -> Result<u32, std::strconv::ParseError> {
+	pub fun from_str_radix(s &str, radix u32) result<u32, std::strconv::ParseError> {
 		v := std::strconv::parse_digits(s, radix, false, 32)?
 		return Ok(v as u32)
 	}
@@ -2441,42 +2441,42 @@ impl u32 {
 
 impl u64 {
 	// The smallest value.
-	pub const MIN: u64 = 0
+	pub const MIN u64 = 0
 	// The largest value.
-	pub const MAX: u64 = 18446744073709551615
+	pub const MAX u64 = 18446744073709551615
 	// The size in bits.
-	pub const BITS: u32 = 64
+	pub const BITS u32 = 64
 
 	// Arithmetic that wraps around at the ends of the range instead of
 	// panicking on overflow.
-	pub fn wrapping_add(self, b: u64) -> u64
-	pub fn wrapping_sub(self, b: u64) -> u64
-	pub fn wrapping_mul(self, b: u64) -> u64
-	pub fn wrapping_neg(self) -> u64
+	pub fun wrapping_add(self, b u64) u64
+	pub fun wrapping_sub(self, b u64) u64
+	pub fun wrapping_mul(self, b u64) u64
+	pub fun wrapping_neg(self) u64
 	// Shifts by `n % BITS`.
-	pub fn wrapping_shl(self, n: u32) -> u64
-	pub fn wrapping_shr(self, n: u32) -> u64
+	pub fun wrapping_shl(self, n u32) u64
+	pub fun wrapping_shr(self, n u32) u64
 
 	// The wrapped result and whether it overflowed.
-	pub fn overflowing_add(self, b: u64) -> (u64, bool)
-	pub fn overflowing_sub(self, b: u64) -> (u64, bool)
-	pub fn overflowing_mul(self, b: u64) -> (u64, bool)
+	pub fun overflowing_add(self, b u64) (u64, bool)
+	pub fun overflowing_sub(self, b u64) (u64, bool)
+	pub fun overflowing_mul(self, b u64) (u64, bool)
 
 	// Bit operations.
-	pub fn count_ones(self) -> u32
-	pub fn leading_zeros(self) -> u32
-	pub fn trailing_zeros(self) -> u32
-	pub fn rotate_left(self, n: u32) -> u64
-	pub fn rotate_right(self, n: u32) -> u64
-	pub fn swap_bytes(self) -> u64
-	pub fn reverse_bits(self) -> u64
+	pub fun count_ones(self) u32
+	pub fun leading_zeros(self) u32
+	pub fun trailing_zeros(self) u32
+	pub fun rotate_left(self, n u32) u64
+	pub fun rotate_right(self, n u32) u64
+	pub fun swap_bytes(self) u64
+	pub fun reverse_bits(self) u64
 
-	pub fn count_zeros(self) -> u32 {
+	pub fun count_zeros(self) u32 {
 		return 64 - self.count_ones()
 	}
 
 	// `None` on overflow.
-	pub fn checked_add(self, b: u64) -> Option<u64> {
+	pub fun checked_add(self, b u64) option<u64> {
 		(r, o) := self.overflowing_add(b)
 		if o {
 			return None
@@ -2485,7 +2485,7 @@ impl u64 {
 	}
 
 	// `None` on overflow.
-	pub fn checked_sub(self, b: u64) -> Option<u64> {
+	pub fun checked_sub(self, b u64) option<u64> {
 		(r, o) := self.overflowing_sub(b)
 		if o {
 			return None
@@ -2494,7 +2494,7 @@ impl u64 {
 	}
 
 	// `None` on overflow.
-	pub fn checked_mul(self, b: u64) -> Option<u64> {
+	pub fun checked_mul(self, b u64) option<u64> {
 		(r, o) := self.overflowing_mul(b)
 		if o {
 			return None
@@ -2503,7 +2503,7 @@ impl u64 {
 	}
 
 	// `None` if `b` is zero.
-	pub fn checked_div(self, b: u64) -> Option<u64> {
+	pub fun checked_div(self, b u64) option<u64> {
 		if b == 0 {
 			return None
 		}
@@ -2511,14 +2511,14 @@ impl u64 {
 	}
 
 	// `None` if `b` is zero.
-	pub fn checked_rem(self, b: u64) -> Option<u64> {
+	pub fun checked_rem(self, b u64) option<u64> {
 		if b == 0 {
 			return None
 		}
 		return Some(self % b)
 	}
 
-	pub fn checked_neg(self) -> Option<u64> {
+	pub fun checked_neg(self) option<u64> {
 		if self != 0 {
 			return None
 		}
@@ -2526,7 +2526,7 @@ impl u64 {
 	}
 
 	// Arithmetic that stops at MIN or MAX instead of overflowing.
-	pub fn saturating_add(self, b: u64) -> u64 {
+	pub fun saturating_add(self, b u64) u64 {
 		(r, o) := self.overflowing_add(b)
 		if !o {
 			return r
@@ -2534,7 +2534,7 @@ impl u64 {
 		return u64::MAX
 	}
 
-	pub fn saturating_sub(self, b: u64) -> u64 {
+	pub fun saturating_sub(self, b u64) u64 {
 		(r, o) := self.overflowing_sub(b)
 		if !o {
 			return r
@@ -2542,7 +2542,7 @@ impl u64 {
 		return u64::MIN
 	}
 
-	pub fn saturating_mul(self, b: u64) -> u64 {
+	pub fun saturating_mul(self, b u64) u64 {
 		(r, o) := self.overflowing_mul(b)
 		if !o {
 			return r
@@ -2551,15 +2551,15 @@ impl u64 {
 	}
 
 	// `self` to the power `exp`. Panics on overflow (see `checked_pow`).
-	pub fn pow(self, exp: u32) -> u64 {
+	pub fun pow(self, exp u32) u64 {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => panic("attempt to raise to a power with overflow"),
 		}
 	}
 
-	pub fn checked_pow(self, exp: u32) -> Option<u64> {
-		let mut r: u64 = 1
+	pub fun checked_pow(self, exp u32) option<u64> {
+		let mut r u64 = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -2574,8 +2574,8 @@ impl u64 {
 		return Some(r)
 	}
 
-	pub fn wrapping_pow(self, exp: u32) -> u64 {
-		let mut r: u64 = 1
+	pub fun wrapping_pow(self, exp u32) u64 {
+		let mut r u64 = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -2588,7 +2588,7 @@ impl u64 {
 		return r
 	}
 
-	pub fn saturating_pow(self, exp: u32) -> u64 {
+	pub fun saturating_pow(self, exp u32) u64 {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => {
@@ -2597,14 +2597,14 @@ impl u64 {
 		}
 	}
 
-	pub fn min(self, b: u64) -> u64 {
+	pub fun min(self, b u64) u64 {
 		if b < self {
 			return b
 		}
 		return self
 	}
 
-	pub fn max(self, b: u64) -> u64 {
+	pub fun max(self, b u64) u64 {
 		if b > self {
 			return b
 		}
@@ -2612,7 +2612,7 @@ impl u64 {
 	}
 
 	// `self` limited to `lo..=hi`.
-	pub fn clamp(self, lo: u64, hi: u64) -> u64 {
+	pub fun clamp(self, lo u64, hi u64) u64 {
 		if self < lo {
 			return lo
 		}
@@ -2623,29 +2623,29 @@ impl u64 {
 	}
 
 	// The distance between `self` and `b`, which never overflows.
-	pub fn abs_diff(self, b: u64) -> u64 {
+	pub fun abs_diff(self, b u64) u64 {
 		if self < b {
 			return (b as u64).wrapping_sub(self as u64)
 		}
 		return (self as u64).wrapping_sub(b as u64)
 	}
 
-	pub fn div_euclid(self, b: u64) -> u64 {
+	pub fun div_euclid(self, b u64) u64 {
 		return self / b
 	}
 
-	pub fn rem_euclid(self, b: u64) -> u64 {
+	pub fun rem_euclid(self, b u64) u64 {
 		return self % b
 	}
 
 	// Whether the value is a power of two (0 is not).
-	pub fn is_power_of_two(self) -> bool {
+	pub fun is_power_of_two(self) bool {
 		return self != 0 && self & (self - 1) == 0
 	}
 
 	// The smallest power of two that is at least `self`. Panics on
 	// overflow in debug builds.
-	pub fn next_power_of_two(self) -> u64 {
+	pub fun next_power_of_two(self) u64 {
 		if self <= 1 {
 			return 1
 		}
@@ -2657,7 +2657,7 @@ impl u64 {
 	}
 
 	// The base-2 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog2(self) -> u32 {
+	pub fun ilog2(self) u32 {
 		if self <= 0 {
 			panic("ilog2 of a non-positive number")
 		}
@@ -2665,7 +2665,7 @@ impl u64 {
 	}
 
 	// The base-10 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog10(self) -> u32 {
+	pub fun ilog10(self) u32 {
 		if self <= 0 {
 			panic("ilog10 of a non-positive number")
 		}
@@ -2679,7 +2679,7 @@ impl u64 {
 	}
 
 	// The integer square root, rounded down. Panics if negative.
-	pub fn isqrt(self) -> u64 {
+	pub fun isqrt(self) u64 {
 		if self < 0 {
 			panic("isqrt of a negative number")
 		}
@@ -2699,18 +2699,18 @@ impl u64 {
 	}
 
 	// The decimal text of the number.
-	pub fn to_string(self) -> String {
+	pub fun to_string(self) string {
 		return "{self}"
 	}
 
 	// Parses decimal text, like `strconv::parse_int`.
-	pub fn parse(s: &str) -> Result<u64, std::strconv::ParseError> {
+	pub fun parse(s &str) result<u64, std::strconv::ParseError> {
 		return u64::from_str_radix(s, 10)
 	}
 
 	// Parses text in base `radix` (2 to 36), with an optional sign
 	// (and `_` separators between digits).
-	pub fn from_str_radix(s: &str, radix: u32) -> Result<u64, std::strconv::ParseError> {
+	pub fun from_str_radix(s &str, radix u32) result<u64, std::strconv::ParseError> {
 		v := std::strconv::parse_digits(s, radix, false, 64)?
 		return Ok(v as u64)
 	}
@@ -2718,42 +2718,42 @@ impl u64 {
 
 impl usize {
 	// The smallest value.
-	pub const MIN: usize = 0
+	pub const MIN usize = 0
 	// The largest value.
-	pub const MAX: usize = 18446744073709551615
+	pub const MAX usize = 18446744073709551615
 	// The size in bits.
-	pub const BITS: u32 = 64
+	pub const BITS u32 = 64
 
 	// Arithmetic that wraps around at the ends of the range instead of
 	// panicking on overflow.
-	pub fn wrapping_add(self, b: usize) -> usize
-	pub fn wrapping_sub(self, b: usize) -> usize
-	pub fn wrapping_mul(self, b: usize) -> usize
-	pub fn wrapping_neg(self) -> usize
+	pub fun wrapping_add(self, b usize) usize
+	pub fun wrapping_sub(self, b usize) usize
+	pub fun wrapping_mul(self, b usize) usize
+	pub fun wrapping_neg(self) usize
 	// Shifts by `n % BITS`.
-	pub fn wrapping_shl(self, n: u32) -> usize
-	pub fn wrapping_shr(self, n: u32) -> usize
+	pub fun wrapping_shl(self, n u32) usize
+	pub fun wrapping_shr(self, n u32) usize
 
 	// The wrapped result and whether it overflowed.
-	pub fn overflowing_add(self, b: usize) -> (usize, bool)
-	pub fn overflowing_sub(self, b: usize) -> (usize, bool)
-	pub fn overflowing_mul(self, b: usize) -> (usize, bool)
+	pub fun overflowing_add(self, b usize) (usize, bool)
+	pub fun overflowing_sub(self, b usize) (usize, bool)
+	pub fun overflowing_mul(self, b usize) (usize, bool)
 
 	// Bit operations.
-	pub fn count_ones(self) -> u32
-	pub fn leading_zeros(self) -> u32
-	pub fn trailing_zeros(self) -> u32
-	pub fn rotate_left(self, n: u32) -> usize
-	pub fn rotate_right(self, n: u32) -> usize
-	pub fn swap_bytes(self) -> usize
-	pub fn reverse_bits(self) -> usize
+	pub fun count_ones(self) u32
+	pub fun leading_zeros(self) u32
+	pub fun trailing_zeros(self) u32
+	pub fun rotate_left(self, n u32) usize
+	pub fun rotate_right(self, n u32) usize
+	pub fun swap_bytes(self) usize
+	pub fun reverse_bits(self) usize
 
-	pub fn count_zeros(self) -> u32 {
+	pub fun count_zeros(self) u32 {
 		return 64 - self.count_ones()
 	}
 
 	// `None` on overflow.
-	pub fn checked_add(self, b: usize) -> Option<usize> {
+	pub fun checked_add(self, b usize) option<usize> {
 		(r, o) := self.overflowing_add(b)
 		if o {
 			return None
@@ -2762,7 +2762,7 @@ impl usize {
 	}
 
 	// `None` on overflow.
-	pub fn checked_sub(self, b: usize) -> Option<usize> {
+	pub fun checked_sub(self, b usize) option<usize> {
 		(r, o) := self.overflowing_sub(b)
 		if o {
 			return None
@@ -2771,7 +2771,7 @@ impl usize {
 	}
 
 	// `None` on overflow.
-	pub fn checked_mul(self, b: usize) -> Option<usize> {
+	pub fun checked_mul(self, b usize) option<usize> {
 		(r, o) := self.overflowing_mul(b)
 		if o {
 			return None
@@ -2780,7 +2780,7 @@ impl usize {
 	}
 
 	// `None` if `b` is zero.
-	pub fn checked_div(self, b: usize) -> Option<usize> {
+	pub fun checked_div(self, b usize) option<usize> {
 		if b == 0 {
 			return None
 		}
@@ -2788,14 +2788,14 @@ impl usize {
 	}
 
 	// `None` if `b` is zero.
-	pub fn checked_rem(self, b: usize) -> Option<usize> {
+	pub fun checked_rem(self, b usize) option<usize> {
 		if b == 0 {
 			return None
 		}
 		return Some(self % b)
 	}
 
-	pub fn checked_neg(self) -> Option<usize> {
+	pub fun checked_neg(self) option<usize> {
 		if self != 0 {
 			return None
 		}
@@ -2803,7 +2803,7 @@ impl usize {
 	}
 
 	// Arithmetic that stops at MIN or MAX instead of overflowing.
-	pub fn saturating_add(self, b: usize) -> usize {
+	pub fun saturating_add(self, b usize) usize {
 		(r, o) := self.overflowing_add(b)
 		if !o {
 			return r
@@ -2811,7 +2811,7 @@ impl usize {
 		return usize::MAX
 	}
 
-	pub fn saturating_sub(self, b: usize) -> usize {
+	pub fun saturating_sub(self, b usize) usize {
 		(r, o) := self.overflowing_sub(b)
 		if !o {
 			return r
@@ -2819,7 +2819,7 @@ impl usize {
 		return usize::MIN
 	}
 
-	pub fn saturating_mul(self, b: usize) -> usize {
+	pub fun saturating_mul(self, b usize) usize {
 		(r, o) := self.overflowing_mul(b)
 		if !o {
 			return r
@@ -2828,15 +2828,15 @@ impl usize {
 	}
 
 	// `self` to the power `exp`. Panics on overflow (see `checked_pow`).
-	pub fn pow(self, exp: u32) -> usize {
+	pub fun pow(self, exp u32) usize {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => panic("attempt to raise to a power with overflow"),
 		}
 	}
 
-	pub fn checked_pow(self, exp: u32) -> Option<usize> {
-		let mut r: usize = 1
+	pub fun checked_pow(self, exp u32) option<usize> {
+		let mut r usize = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -2851,8 +2851,8 @@ impl usize {
 		return Some(r)
 	}
 
-	pub fn wrapping_pow(self, exp: u32) -> usize {
-		let mut r: usize = 1
+	pub fun wrapping_pow(self, exp u32) usize {
+		let mut r usize = 1
 		base mut := self
 		e mut := exp
 		while e > 0 {
@@ -2865,7 +2865,7 @@ impl usize {
 		return r
 	}
 
-	pub fn saturating_pow(self, exp: u32) -> usize {
+	pub fun saturating_pow(self, exp u32) usize {
 		match self.checked_pow(exp) {
 			Some(r) => return r,
 			None => {
@@ -2874,14 +2874,14 @@ impl usize {
 		}
 	}
 
-	pub fn min(self, b: usize) -> usize {
+	pub fun min(self, b usize) usize {
 		if b < self {
 			return b
 		}
 		return self
 	}
 
-	pub fn max(self, b: usize) -> usize {
+	pub fun max(self, b usize) usize {
 		if b > self {
 			return b
 		}
@@ -2889,7 +2889,7 @@ impl usize {
 	}
 
 	// `self` limited to `lo..=hi`.
-	pub fn clamp(self, lo: usize, hi: usize) -> usize {
+	pub fun clamp(self, lo usize, hi usize) usize {
 		if self < lo {
 			return lo
 		}
@@ -2900,29 +2900,29 @@ impl usize {
 	}
 
 	// The distance between `self` and `b`, which never overflows.
-	pub fn abs_diff(self, b: usize) -> usize {
+	pub fun abs_diff(self, b usize) usize {
 		if self < b {
 			return (b as usize).wrapping_sub(self as usize)
 		}
 		return (self as usize).wrapping_sub(b as usize)
 	}
 
-	pub fn div_euclid(self, b: usize) -> usize {
+	pub fun div_euclid(self, b usize) usize {
 		return self / b
 	}
 
-	pub fn rem_euclid(self, b: usize) -> usize {
+	pub fun rem_euclid(self, b usize) usize {
 		return self % b
 	}
 
 	// Whether the value is a power of two (0 is not).
-	pub fn is_power_of_two(self) -> bool {
+	pub fun is_power_of_two(self) bool {
 		return self != 0 && self & (self - 1) == 0
 	}
 
 	// The smallest power of two that is at least `self`. Panics on
 	// overflow in debug builds.
-	pub fn next_power_of_two(self) -> usize {
+	pub fun next_power_of_two(self) usize {
 		if self <= 1 {
 			return 1
 		}
@@ -2934,7 +2934,7 @@ impl usize {
 	}
 
 	// The base-2 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog2(self) -> u32 {
+	pub fun ilog2(self) u32 {
 		if self <= 0 {
 			panic("ilog2 of a non-positive number")
 		}
@@ -2942,7 +2942,7 @@ impl usize {
 	}
 
 	// The base-10 logarithm, rounded down. Panics if `self <= 0`.
-	pub fn ilog10(self) -> u32 {
+	pub fun ilog10(self) u32 {
 		if self <= 0 {
 			panic("ilog10 of a non-positive number")
 		}
@@ -2956,7 +2956,7 @@ impl usize {
 	}
 
 	// The integer square root, rounded down. Panics if negative.
-	pub fn isqrt(self) -> usize {
+	pub fun isqrt(self) usize {
 		if self < 0 {
 			panic("isqrt of a negative number")
 		}
@@ -2976,18 +2976,18 @@ impl usize {
 	}
 
 	// The decimal text of the number.
-	pub fn to_string(self) -> String {
+	pub fun to_string(self) string {
 		return "{self}"
 	}
 
 	// Parses decimal text, like `strconv::parse_int`.
-	pub fn parse(s: &str) -> Result<usize, std::strconv::ParseError> {
+	pub fun parse(s &str) result<usize, std::strconv::ParseError> {
 		return usize::from_str_radix(s, 10)
 	}
 
 	// Parses text in base `radix` (2 to 36), with an optional sign
 	// (and `_` separators between digits).
-	pub fn from_str_radix(s: &str, radix: u32) -> Result<usize, std::strconv::ParseError> {
+	pub fun from_str_radix(s &str, radix u32) result<usize, std::strconv::ParseError> {
 		v := std::strconv::parse_digits(s, radix, false, 64)?
 		return Ok(v as usize)
 	}

@@ -7,18 +7,18 @@
 //	path::base("/a/b/c.txt")        // "c.txt"
 //	path::ext("c.tar.gz")           // ".gz"
 
-fn kn_os_kind() -> i64
+fun kn_os_kind() i64
 
-fn windows() -> bool {
+fun windows() bool {
 	return kn_os_kind() == 2
 }
 
-fn is_sep(b: u8) -> bool {
+fun is_sep(b u8) bool {
 	return b == 47 || (b == 92 && windows())
 }
 
 // The preferred separator: `\` on Windows, `/` elsewhere.
-pub fn separator() -> &'static str {
+pub fun separator() &'static str {
 	if windows() {
 		return "\\"
 	}
@@ -26,7 +26,7 @@ pub fn separator() -> &'static str {
 }
 
 // Length of a Windows volume prefix like `C:` (0 elsewhere).
-fn volume_len(p: &str) -> usize {
+fun volume_len(p &str) usize {
 	b := p.as_bytes()
 	if windows() && b.len() >= 2 && b[1] == 58 {
 		c := b[0]
@@ -38,7 +38,7 @@ fn volume_len(p: &str) -> usize {
 }
 
 // Whether the path is absolute.
-pub fn is_absolute(p: &str) -> bool {
+pub fun is_absolute(p &str) bool {
 	b := p.as_bytes()
 	v := volume_len(p)
 	if windows() {
@@ -48,7 +48,7 @@ pub fn is_absolute(p: &str) -> bool {
 }
 
 // `a` and `b` joined with a separator. If `b` is absolute it is returned as is.
-pub fn join(a: &str, b: &str) -> String {
+pub fun join(a &str, b &str) string {
 	if a.is_empty() || is_absolute(b) {
 		return b.to_string()
 	}
@@ -64,8 +64,8 @@ pub fn join(a: &str, b: &str) -> String {
 }
 
 // All `parts` joined with separators.
-pub fn join_all(parts: &[&str]) -> String {
-	out mut := String::new()
+pub fun join_all(parts &[&str]) string {
+	out mut := string::new()
 	for p in parts {
 		out = join(&out, *p)
 	}
@@ -74,7 +74,7 @@ pub fn join_all(parts: &[&str]) -> String {
 
 // The last element, without trailing separators: `base("a/b/")` is "b".
 // The base of "" is "." and of "/" is "/".
-pub fn base(p: &str) -> &str {
+pub fun base(p &str) &str {
 	if p.is_empty() {
 		return "."
 	}
@@ -94,7 +94,7 @@ pub fn base(p: &str) -> &str {
 }
 
 // Everything but the last element: `dir("a/b/c")` is "a/b", `dir("c")` is ".".
-pub fn dir(p: &str) -> &str {
+pub fun dir(p &str) &str {
 	b := p.as_bytes()
 	end mut := b.len()
 	while end > 0 && is_sep(b[end - 1]) {
@@ -113,7 +113,7 @@ pub fn dir(p: &str) -> &str {
 }
 
 // The extension of the last element, with its dot (`".txt"`), or "".
-pub fn ext(p: &str) -> &str {
+pub fun ext(p &str) &str {
 	name := base(p)
 	b := name.as_bytes()
 	i mut := b.len()
@@ -130,7 +130,7 @@ pub fn ext(p: &str) -> &str {
 }
 
 // The last element without its extension: `stem("a/b.tar.gz")` is "b.tar".
-pub fn stem(p: &str) -> &str {
+pub fun stem(p &str) &str {
 	name := base(p)
 	e := ext(name)
 	return &name[0..name.len() - e.len()]
@@ -138,7 +138,7 @@ pub fn stem(p: &str) -> &str {
 
 // The shortest equivalent path: removes `.` elements, resolves `..` against
 // the element before it, and collapses repeated separators.
-pub fn clean(p: &str) -> String {
+pub fun clean(p &str) string {
 	if p.is_empty() {
 		return ".".to_string()
 	}

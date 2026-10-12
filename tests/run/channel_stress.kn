@@ -1,10 +1,10 @@
-fn producer(id: i64, n: i64, out: chan<- i64) {
+fun producer(id i64, n i64, out chan<- i64) {
 	for i in 0..n {
 		out <- id * 1000000 + i
 	}
 }
 
-fn main() {
+fun main() {
 	(tx, rx) := chan::<i64>(0)
 	(dtx, drx) := chan::<i64>(3)
 	for p in 0..8 {
@@ -51,6 +51,6 @@ fn main() {
 	println("squares {acc}")
 }
 
-fn square(x: i64) -> i64 {
+fun square(x i64) i64 {
 	return x * x
 }

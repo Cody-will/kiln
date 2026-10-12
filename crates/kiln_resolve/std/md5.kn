@@ -7,14 +7,14 @@
 
 import std::io
 
-const S: [u32; 64] = [
+const S [u32; 64] = [
 	7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
 	5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
 	4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
 	6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
 ]
 
-const K: [u32; 64] = [
+const K [u32; 64] = [
 	0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
 	0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
 	0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
@@ -26,22 +26,22 @@ const K: [u32; 64] = [
 ]
 
 // Digest size in bytes.
-pub const SIZE: usize = 16
+pub const SIZE usize = 16
 
 // Block size in bytes.
-pub const BLOCK_SIZE: usize = 64
+pub const BLOCK_SIZE usize = 64
 
 // A streaming MD5 hasher.
 pub struct Md5 {
-	h: [u32; 4],
-	buf: [u8; 64],
-	nbuf: usize,
-	len: u64,
+	h [u32; 4],
+	buf [u8; 64],
+	nbuf usize,
+	len u64,
 }
 
 impl Md5 {
 	// A fresh hasher.
-	pub fn new() -> Md5 {
+	pub fun new() Md5 {
 		return Md5 {
 			h: [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476],
 			buf: [0 as u8; 64],
@@ -51,7 +51,7 @@ impl Md5 {
 	}
 
 	// Feeds more data.
-	pub fn update(&mut self, data: &[u8]) {
+	pub fun update(&mut self, data &[u8]) {
 		self.len += data.len() as u64
 		i mut := 0
 		while i < data.len() {
@@ -72,7 +72,7 @@ impl Md5 {
 	}
 
 	// The digest of everything fed so far. The hasher can keep going.
-	pub fn finish(&self) -> [u8; 16] {
+	pub fun finish(&self) [u8; 16] {
 		d mut := Md5 { h: self.h, buf: self.buf, nbuf: self.nbuf, len: self.len }
 		bits := d.len * 8
 		pad mut := [0 as u8; 72]
@@ -92,11 +92,11 @@ impl Md5 {
 	}
 
 	// Starts over.
-	pub fn reset(&mut self) {
+	pub fun reset(&mut self) {
 		*self = Md5::new()
 	}
 
-	fn block(&mut self, p: &[u8]) {
+	fun block(&mut self, p &[u8]) {
 		m mut := [0 as u32; 16]
 		for i in 0..16 {
 			m[i] = (p[4 * i] as u32) | ((p[4 * i + 1] as u32) << 8) | ((p[4 * i + 2] as u32) << 16) | ((p[4 * i + 3] as u32) << 24)
@@ -135,21 +135,21 @@ impl Md5 {
 }
 
 impl io::Write for Md5 {
-	fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
+	fun write(&mut self, buf &[u8]) result<usize, io::Error> {
 		self.update(buf)
 		return Ok(buf.len())
 	}
 }
 
 // The MD5 digest of `data`.
-pub fn sum(data: &[u8]) -> [u8; 16] {
+pub fun sum(data &[u8]) [u8; 16] {
 	h mut := Md5::new()
 	h.update(data)
 	return h.finish()
 }
 
 // The MD5 digest of `data` as lowercase hex.
-pub fn hex(data: &[u8]) -> String {
+pub fun hex(data &[u8]) string {
 	d := sum(data)
 	return std::encoding::hex::encode(&d)
 }

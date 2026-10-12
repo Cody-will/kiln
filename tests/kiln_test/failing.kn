@@ -1,25 +1,25 @@
 // Fixture for `kiln test` (crates/kiln_cli/tests/cli.rs): some tests fail.
 import std::strconv
 
-#[test]
-fn passes() {
+@test
+fun passes() {
 	assert(true)
 }
 
-#[test]
-fn wrong_sum() {
+@test
+fun wrong_sum() {
 	println("captured output")
 	assert_eq(2 + 2, 5)
 }
 
-#[test]
-fn returns_err() -> Result<(), strconv::ParseError> {
+@test
+fun returns_err() result<void, strconv::ParseError> {
 	n := i64::parse("forty-two")?
 	assert_eq(n, 42)
-	return Ok(())
+	return Ok()
 }
 
-#[test]
-#[should_panic]
-fn never_panics() {
+@test
+@should_panic
+fun never_panics() {
 }

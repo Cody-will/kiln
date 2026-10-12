@@ -1,38 +1,38 @@
 import std::encoding::json
 
-#[derive(Json, Debug, Eq, Clone)]
+@derive(Json, Debug, Eq, Clone)
 struct Point {
-	x: i64,
-	y: i64,
+	x i64,
+	y i64,
 }
 
-#[derive(Json, Debug, Eq, Clone)]
+@derive(Json, Debug, Eq, Clone)
 struct Id(i64)
 
-#[derive(Json, Debug, Eq, Clone)]
+@derive(Json, Debug, Eq, Clone)
 enum Shape {
 	Empty,
 	Dot(Point),
 	Line(Point, Point),
-	Rect { w: i64, h: i64 },
+	Rect { w i64, h i64 },
 }
 
-#[derive(Json, Debug)]
+@derive(Json, Debug)
 struct Doc {
-	name: String,
-	tags: Vec<String>,
-	shapes: Vec<Shape>,
-	id: Option<Id>,
+	name string,
+	tags Vec<string>,
+	shapes Vec<Shape>,
+	id option<Id>,
 }
 
-#[derive(Json, Debug)]
+@derive(Json, Debug)
 struct Opt {
-	name: String,
-	nick: Option<String>,
+	name string,
+	nick option<string>,
 }
 
-fn main() -> Result<(), json::Error> {
-	let o: Opt = json::from_str(r#"{"name": "a"}"#)?
+fun main() result<void, json::Error> {
+	let o Opt = json::from_str(r#"{"name": "a"}"#)?
 	println("{o:?}")
 	v := json::parse(r#"{"z": 1, "a": 2, "m": 3}"#)?
 	println("{v}")
@@ -53,12 +53,12 @@ fn main() -> Result<(), json::Error> {
 	}
 	s := json::to_string(&d)
 	println(s)
-	let back: Doc = json::from_str(&s)?
+	let back Doc = json::from_str(&s)?
 	println("{back:?}")
-	let p: Result<Point, json::Error> = json::from_str(r#"{"x": 1}"#)
+	let p result<Point, json::Error> = json::from_str(r#"{"x": 1}"#)
 	match p {
 		Ok(_) => println("unexpected"),
 		Err(e) => println("error: {e}"),
 	}
-	return Ok(())
+	return Ok()
 }
