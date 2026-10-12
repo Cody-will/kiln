@@ -2,7 +2,7 @@
 Function with generics and where clause
 ================================================================================
 
-pub fn largest<T>(xs: &[T]) -> Option<&T> where T: Ord {
+pub fun largest<T>(xs &[T]) option<&T> where T: Ord {
 	return None
 }
 
@@ -40,19 +40,19 @@ pub fn largest<T>(xs: &[T]) -> Option<&T> where T: Ord {
 Struct, enum, and impl
 ================================================================================
 
-#[derive(Debug)]
+@derive(Debug)
 struct Point {
-	pub x: f64,
-	y: f64,
+	pub x f64,
+	y f64,
 }
 
 enum Shape {
 	Circle(f64),
-	Rect { w: f64, h: f64 },
+	Rect { w f64, h f64 },
 }
 
 impl Describe for Point {
-	fn describe(&self) -> String {
+	fun describe(&self) string {
 		return "({self.x})"
 	}
 }

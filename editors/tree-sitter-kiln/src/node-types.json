@@ -786,10 +786,6 @@
           "named": true
         },
         {
-          "type": "_type",
-          "named": true
-        },
-        {
           "type": "closure_parameters",
           "named": true
         }
@@ -3043,10 +3039,6 @@
     "named": false
   },
   {
-    "type": "#",
-    "named": false
-  },
-  {
     "type": "%",
     "named": false
   },
@@ -3104,10 +3096,6 @@
   },
   {
     "type": "-=",
-    "named": false
-  },
-  {
-    "type": "->",
     "named": false
   },
   {
@@ -3311,11 +3299,11 @@
     "named": true
   },
   {
-    "type": "fn",
+    "type": "for",
     "named": false
   },
   {
-    "type": "for",
+    "type": "fun",
     "named": false
   },
   {

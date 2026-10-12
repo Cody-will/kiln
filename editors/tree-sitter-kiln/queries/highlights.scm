@@ -22,6 +22,8 @@
 ; Types
 (type_identifier) @type
 (primitive_type) @type.builtin
+((type_identifier) @type.builtin
+  (#match? @type.builtin "^(string|option|result|void)$"))
 (lifetime) @label
 "Self" @type.builtin
 
@@ -55,7 +57,7 @@
 
 ; Keywords
 [
-  "fn" "struct" "enum" "trait" "impl" "type" "mod" "where" "as" "dyn" "chan"
+  "fun" "struct" "enum" "trait" "impl" "type" "mod" "where" "as" "dyn" "chan"
 ] @keyword
 [ "import" ] @keyword.import
 [ "pub" "mut" "const" "static" "let" "unsafe" "move" ] @keyword.modifier
@@ -69,10 +71,10 @@
 [
   "<-" ":=" "=" "+=" "-=" "*=" "/=" "%=" "^=" "&=" "|=" "<<=" ">>="
   "+" "-" "*" "/" "%" "^" "!" "&" "|" "&&" "||" "<<" ">>"
-  "==" "!=" "<" "<=" ">" ">=" ".." "..=" "?" "->" "=>"
+  "==" "!=" "<" "<=" ">" ">=" ".." "..=" "?" "=>"
 ] @operator
 
 ; Punctuation
 [ "(" ")" "[" "]" "{" "}" ] @punctuation.bracket
 [ "," ";" "." "::" ":" ] @punctuation.delimiter
-"#" @punctuation.special
+"@" @punctuation.special

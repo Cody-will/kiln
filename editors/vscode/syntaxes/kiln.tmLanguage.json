@@ -54,32 +54,36 @@
     },
     "attributes": {
       "name": "meta.attribute.kiln",
-      "begin": "#\\[",
-      "end": "\\]",
+      "begin": "(@)([A-Za-z_]\\w*)",
       "beginCaptures": {
-        "0": {
+        "1": {
           "name": "punctuation.definition.attribute.kiln"
+        },
+        "2": {
+          "name": "entity.name.function.attribute.kiln"
         }
       },
-      "endCaptures": {
-        "0": {
-          "name": "punctuation.definition.attribute.kiln"
-        }
-      },
+      "end": "(?<=\\))|(?!\\s*\\()",
       "patterns": [
         {
-          "match": "\\b[A-Za-z_]\\w*\\b",
-          "name": "entity.name.function.attribute.kiln"
-        },
-        {
-          "include": "#strings"
+          "begin": "\\(",
+          "end": "\\)",
+          "patterns": [
+            {
+              "match": "\\b[A-Za-z_]\\w*\\b",
+              "name": "entity.name.function.attribute.kiln"
+            },
+            {
+              "include": "#strings"
+            }
+          ]
         }
       ]
     },
     "items": {
       "patterns": [
         {
-          "match": "\\b(fn)\\s+([A-Za-z_]\\w*)",
+          "match": "\\b(fun)\\s+([A-Za-z_]\\w*)",
           "captures": {
             "1": {
               "name": "keyword.declaration.function.kiln"
@@ -256,7 +260,7 @@
         },
         {
           "name": "keyword.other.kiln",
-          "match": "\\b(fn|struct|enum|trait|impl|type|mod|import|where|as|chan|dyn|extern|unsafe|move)\\b"
+          "match": "\\b(fun|struct|enum|trait|impl|type|mod|import|where|as|chan|dyn|extern|unsafe|move)\\b"
         },
         {
           "name": "storage.modifier.kiln",
@@ -284,11 +288,11 @@
       "patterns": [
         {
           "name": "support.type.primitive.kiln",
-          "match": "\\b(i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize|f32|f64|bool|char|str)\\b"
+          "match": "\\b(i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize|f32|f64|bool|char|str|string|void|option|result)\\b"
         },
         {
           "name": "support.type.core.kiln",
-          "match": "\\b(String|Vec|Option|Result|Box|Rc|Arc)\\b"
+          "match": "\\b(Vec|Box|Rc|Arc|HashMap)\\b"
         },
         {
           "name": "support.constant.core.kiln",

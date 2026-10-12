@@ -38,8 +38,8 @@ function scopeOf(tokens, text) {
 }
 
 const cases = [
-  ["fn main() {}", "main", "entity.name.function.kiln"],
-  ["fn main() {}", "fn", "keyword.declaration.function.kiln"],
+  ["fun main() {}", "main", "entity.name.function.kiln"],
+  ["fun main() {}", "fun", "keyword.declaration.function.kiln"],
   ["struct Point {}", "Point", "entity.name.type.kiln"],
   ["x mut := 5", ":=", "keyword.operator.declaration.kiln"],
   ["x mut := 5", "mut", "storage.modifier.kiln"],
@@ -47,13 +47,16 @@ const cases = [
   ["go worker(1)", "go", "keyword.control.kiln"],
   ["x := 42u8", "42u8", "constant.numeric.integer.kiln"],
   ["x := 1.5e3f64", "1.5e3f64", "constant.numeric.float.kiln"],
-  ["fn f<'a>(s: &'a str) {}", "'a", "storage.modifier.lifetime.kiln"],
+  ["fun f<'a>(s &'a str) {}", "'a", "storage.modifier.lifetime.kiln"],
   ["c := 'x'", "'x'", "string.quoted.single.kiln"],
   ["s := \"a\\n\"", "\\n", "constant.character.escape.kiln"],
   ["s := \"hi {name}\"", "name", "meta.interpolation.kiln"],
   ["/// docs", "/// docs", "comment.line.documentation.kiln"],
-  ["#[derive(Debug)]", "derive", "entity.name.function.attribute.kiln"],
-  ["x: i64", "i64", "support.type.primitive.kiln"],
+  ["@derive(Debug)", "derive", "entity.name.function.attribute.kiln"],
+  ["let x i64 = 1", "i64", "support.type.primitive.kiln"],
+  ["@test", "test", "entity.name.function.attribute.kiln"],
+  ["fun f() result<void, E> {}", "result", "support.type.primitive.kiln"],
+  ["s string", "string", "support.type.primitive.kiln"],
   ["return None", "None", "support.constant.core.kiln"],
   ["x.await", "await", "invalid.deprecated.reserved.kiln"],
 ];

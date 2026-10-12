@@ -46,6 +46,7 @@ module.exports = grammar({
   conflicts: ($) => [
     [$.short_name, $._expression],
     [$._expression, $._type_identifier],
+    [$._pattern, $.tuple_struct_pattern],
   ],
 
   supertypes: ($) => [$._expression, $._type, $._pattern, $._item],
@@ -74,7 +75,7 @@ module.exports = grammar({
         $.mod_item,
       ),
 
-    attribute: ($) => seq('#', '[', $.identifier, optional($.token_tree), ']'),
+    attribute: ($) => prec.right(seq('@', $.identifier, optional($.token_tree))),
     token_tree: ($) => seq('(', repeat(choice($.token_tree, /[^()]+/)), ')'),
 
     visibility_modifier: (_) => prec.right(seq('pub', optional(seq('(', 'pkg', ')')))),
@@ -83,11 +84,11 @@ module.exports = grammar({
       prec.right(seq(
         ...itemPrefix($),
         optional('unsafe'),
-        'fn',
+        'fun',
         field('name', $.identifier),
         optional(field('type_parameters', $.type_parameters)),
         field('parameters', $.parameters),
-        optional(seq('->', field('return_type', $._type))),
+        optional(field('return_type', $._type)),
         optional($.where_clause),
         optional(field('body', $.block)),
       )),
@@ -95,14 +96,14 @@ module.exports = grammar({
     parameters: ($) =>
       seq('(', commaSep(seq(choice($.self_parameter, $.parameter))), ')'),
     self_parameter: ($) => seq(optional(seq('&', optional($.lifetime))), optional('mut'), 'self'),
-    parameter: ($) => seq(field('pattern', $._pattern), ':', field('type', $._type)),
+    parameter: ($) => seq(field('pattern', $._pattern), field('type', $._type)),
 
     type_parameters: ($) =>
       seq('<', commaSep(choice($.lifetime_parameter, $.type_parameter, $.const_parameter)), '>'),
     lifetime_parameter: ($) => seq($.lifetime, optional(seq(':', sep1($.lifetime, '+')))),
     type_parameter: ($) =>
       seq(field('name', $._type_identifier), optional(seq(':', $.trait_bounds)), optional(seq('=', $._type))),
-    const_parameter: ($) => seq('const', $.identifier, ':', $._type),
+    const_parameter: ($) => seq('const', $.identifier, $._type),
     trait_bounds: ($) => prec.right(sep1(choice($.lifetime, seq(optional('?'), $._type_path)), '+')),
     where_clause: ($) => prec.right(seq('where', sep1($.where_predicate, ','), optional(','))),
     where_predicate: ($) => seq($._type, ':', $.trait_bounds),
@@ -116,7 +117,7 @@ module.exports = grammar({
         optional(choice(seq($.ordered_field_list, optional($.where_clause)), seq(optional($.where_clause), $.field_list))),
       )),
     field_list: ($) => braceList($.field_declaration),
-    field_declaration: ($) => seq(optional($.visibility_modifier), field('name', $._field_identifier), ':', field('type', $._type)),
+    field_declaration: ($) => seq(optional($.visibility_modifier), field('name', $._field_identifier), field('type', $._type)),
     ordered_field_list: ($) => seq('(', commaSep(seq(optional($.visibility_modifier), $._type)), ')'),
 
     enum_item: ($) =>
@@ -154,8 +155,8 @@ module.exports = grammar({
       prec.right(seq($._path_segment, repeat(seq('::', choice($._path_segment, '*', $.import_group))), optional(seq('as', $.identifier)))),
     import_group: ($) => seq('{', commaSep($.import_tree), '}'),
 
-    const_item: ($) => prec.right(seq(...itemPrefix($), 'const', $.identifier, ':', $._type, optional(seq('=', $._expression)))),
-    static_item: ($) => prec.right(seq(...itemPrefix($), 'static', optional('mut'), $.identifier, ':', $._type, '=', $._expression)),
+    const_item: ($) => prec.right(seq(...itemPrefix($), 'const', $.identifier, $._type, optional(seq('=', $._expression)))),
+    static_item: ($) => prec.right(seq(...itemPrefix($), 'static', optional('mut'), $.identifier, $._type, '=', $._expression)),
     type_item: ($) => prec.right(seq(...itemPrefix($), 'type', $._type_identifier, optional($.type_parameters), optional(seq('=', $._type)))),
     mod_item: ($) => prec.right(seq(...itemPrefix($), 'mod', $.identifier, optional($.declaration_list))),
 
@@ -191,7 +192,7 @@ module.exports = grammar({
     slice_type: ($) => seq('[', $._type, ']'),
     tuple_type: ($) => seq('(', $._type, ',', commaSep($._type), ')'),
     unit_type: (_) => seq('(', ')'),
-    function_type: ($) => prec.right(seq('fn', '(', commaSep($._type), ')', optional(seq('->', $._type)))),
+    function_type: ($) => prec.right(seq('fun', optional('mut'), '(', commaSep($._type), ')', optional($._type))),
     dyn_type: ($) => prec.right(seq('dyn', $.trait_bounds)),
     impl_type: ($) => prec.right(seq('impl', $.trait_bounds)),
     send_channel_type: ($) => seq('chan', '<-', $._type),
@@ -215,7 +216,7 @@ module.exports = grammar({
       ),
 
     let_declaration: ($) =>
-      prec.right(seq('let', field('pattern', $._pattern), optional(seq(':', field('type', $._type))), optional(seq('=', field('value', $._expression))))),
+      prec.right(seq('let', field('pattern', $._pattern), optional(field('type', $._type)), optional(seq('=', field('value', $._expression))))),
 
     short_var_declaration: ($) =>
       prec.right(seq(field('left', choice($.short_name, seq('(', sep1($.short_name, ','), optional(','), ')'))), ':=', field('right', $._expression))),
@@ -331,8 +332,8 @@ module.exports = grammar({
     base_field_initializer: ($) => seq('..', $._expression),
 
     closure_expression: ($) =>
-      prec.right(seq(optional('move'), $.closure_parameters, choice(seq('->', $._type, $.block), $._expression))),
-    closure_parameters: ($) => choice('||', seq('|', commaSep(seq(choice($.identifier, $.mut_pattern, $.tuple_pattern, '_'), optional(seq(':', $._type)))), '|')),
+      prec.right(seq(optional('move'), $.closure_parameters, $._expression)),
+    closure_parameters: ($) => choice('||', seq('|', commaSep(seq(choice($.identifier, $.mut_pattern, $.tuple_pattern, '_'), optional($._type))), '|')),
 
     unsafe_block: ($) => seq('unsafe', $.block),
 
