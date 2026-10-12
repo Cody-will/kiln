@@ -22,6 +22,7 @@
 mod func;
 mod promote;
 mod glue;
+mod inline;
 mod intrinsics;
 mod layout;
 pub mod link;

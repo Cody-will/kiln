@@ -43,7 +43,7 @@ USAGE:
     Without a file, check/build/run/test use the package containing the
     current directory (the nearest kiln.toml).
     kiln test [--release] [--run <substr>] [--ignored] [--timeout <secs>] [paths...]
-                            Run #[test] functions in the given files, or in every
+                            Run @test functions in the given files, or in every
                             .kn file under the given directories (default: .)
     kiln fmt [--check] [--stdin] [paths...]
                             Format .kn files in place (default: every file under .);

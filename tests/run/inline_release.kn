@@ -1,0 +1,78 @@
+// flags: --release
+// Inlined calls (release): generics, trait methods, drops, early returns.
+
+struct Noisy {
+	name string,
+}
+
+impl Drop for Noisy {
+	fun drop(&mut self) {
+		println("drop {self.name}")
+	}
+}
+
+trait Area {
+	fun area(&self) i64
+}
+
+struct Sq {
+	s i64,
+}
+
+impl Area for Sq {
+	fun area(&self) i64 {
+		return self.s * self.s
+	}
+}
+
+fun total<T: Area>(xs &Vec<T>) i64 {
+	t mut := 0
+	for x in xs {
+		t += x.area()
+	}
+	return t
+}
+
+fun pick(a Noisy, b Noisy, first bool) Noisy {
+	if first {
+		return a
+	}
+	return b
+}
+
+fun clamp(x i64, lo i64, hi i64) i64 {
+	if x < lo {
+		return lo
+	}
+	if x > hi {
+		return hi
+	}
+	return x
+}
+
+fun first_or<T: Copy>(v &Vec<T>, d T) T {
+	if v.len() == 0 {
+		return d
+	}
+	return v[0]
+}
+
+fun make(n string) Noisy {
+	return Noisy { name: n }
+}
+
+fun main() {
+	v mut := Vec::new()
+	v.push(Sq { s: 2 })
+	v.push(Sq { s: 3 })
+	println("{total(&v)}")
+	println("{clamp(-5, 0, 10)} {clamp(50, 0, 10)} {clamp(7, 0, 10)}")
+	e mut := Vec::<i64>::new()
+	println("{first_or(&e, 9)}")
+	e.push(4)
+	println("{first_or(&e, 9)}")
+	k := pick(make("a".to_string()), make("b".to_string()), false)
+	println("kept {k.name}")
+	make("temp".to_string())
+	println("end")
+}

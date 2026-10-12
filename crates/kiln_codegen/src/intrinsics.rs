@@ -560,7 +560,7 @@ impl FnCx<'_, '_, '_, '_> {
                 };
                 let ok = self.call_rt("kn_chan_recv", &[h, dest]).unwrap();
                 let closed = self.b.ins().icmp_imm(IntCC::Equal, ok, 0);
-                self.when(closed, |cx| cx.panic_msg("receive on a closed channel"));
+                self.fail_if(closed, |cx| cx.panic_msg("receive on a closed channel"));
             }
             (_, "select_sent") => {
                 // The runtime already moved the value into the channel.
@@ -883,7 +883,7 @@ impl FnCx<'_, '_, '_, '_> {
             (_, "assert") => {
                 let c = self.op_scalar(&args[0]);
                 let bad = self.b.ins().icmp_imm(IntCC::Equal, c, 0);
-                self.when(bad, |cx| cx.panic_msg("assertion failed"));
+                self.fail_if(bad, |cx| cx.panic_msg("assertion failed"));
             }
             (_, "drop") => {
                 let t = self.op_ty(&args[0]);

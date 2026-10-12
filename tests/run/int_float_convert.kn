@@ -1,0 +1,14 @@
+// Integer -> f64 conversions and division by constants (shift/mask paths).
+fun main() {
+	let xs [i64; 9] = [0, 1, -1, 9223372036854775807, -9223372036854775807 - 1, 9007199254740993, -9007199254740993, 123456789, -42]
+	for x in xs {
+		println("{x as f64} {(x as u64) as f64} {(x as i32) as f64} {(x as u32) as f64} {(x as u8) as f64}")
+		println("{x / 8} {x % 8} {x / 1} {x % 1} {x / 2} {x % 2} {(x as u64) / 16} {(x as u64) % 16} {x / 7} {x % 7}")
+	}
+	n mut := 0i32
+	for i in 0..20 {
+		v := (i as i32) - 10
+		n += v / 4 + v % 4
+	}
+	println("{n}")
+}

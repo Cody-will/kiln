@@ -122,9 +122,12 @@ impl Codegen<'_, '_> {
         substs: HashMap<String, Ty>,
         abi: Abi,
     ) {
-        let Some(body) = self.bodies(fn_idx).get(body_i).cloned() else {
+        let Some(mut body) = self.bodies(fn_idx).get(body_i).cloned() else {
             return;
         };
+        if !self.checked && body.unsupported.is_empty() && std::env::var_os("KILN_NO_INLINE").is_none() {
+            self.inline_calls(&mut body, &substs, fn_idx);
+        }
         self.span = body.span;
         if !body.unsupported.is_empty() {
             for (what, span) in &body.unsupported {
@@ -464,6 +467,70 @@ impl FnCx<'_, '_, '_, '_> {
     pub(crate) fn panic_msg(&mut self, msg: &str) {
         let (p, n) = self.str_lit(msg);
         self.call_rt("kn_panic", &[p, n]);
+    }
+
+    /// Integer to `f64` without `cvtsi2sd`, whose write to only the low lane
+    /// of its destination makes it wait for that register's previous value
+    /// (with Cranelift's register choices, often a loop-carried float).
+    /// The two 32-bit halves become exact doubles by bit manipulation
+    /// (`2^84 + hi * 2^32` and `2^52 + lo`), and one addition rounds the sum
+    /// once, so the result is correctly rounded, as `cvtsi2sd` would give.
+    fn int_to_f64(&mut self, v: Value, from: ir::Type, signed: bool) -> Value {
+        let mut x = v;
+        if from.bits() < 64 {
+            x = if signed { self.b.ins().sextend(types::I64, v) } else { self.b.ins().uextend(types::I64, v) };
+        }
+        if signed {
+            // Bias into unsigned range; subtracted again exactly below.
+            let bias = self.b.ins().iconst(types::I64, i64::MIN);
+            x = self.b.ins().bxor(x, bias);
+        }
+        let (mask, hi_exp, lo_exp) = (
+            self.b.ins().iconst(types::I64, 0xffff_ffff),
+            self.b.ins().iconst(types::I64, 0x4530_0000_0000_0000),
+            self.b.ins().iconst(types::I64, 0x4330_0000_0000_0000),
+        );
+        let hi = self.b.ins().ushr_imm(x, 32);
+        let lo = self.b.ins().band(x, mask);
+        let hi = self.b.ins().bor(hi, hi_exp);
+        let lo = self.b.ins().bor(lo, lo_exp);
+        let hi = self.b.ins().bitcast(types::F64, MemFlags::new(), hi);
+        let lo = self.b.ins().bitcast(types::F64, MemFlags::new(), lo);
+        // 2^84 + 2^52, plus 2^63 for the signed bias: hi_d stays exact.
+        let mut k = 2f64.powi(84) + 2f64.powi(52);
+        if signed {
+            k += 2f64.powi(63);
+        }
+        let kc = self.b.ins().f64const(k);
+        let hi = self.b.ins().fsub(hi, kc);
+        self.b.ins().fadd(hi, lo)
+    }
+
+    /// The value of an integer constant (sign-extended from its type).
+    pub(crate) fn iconst_of(&self, v: Value) -> Option<i64> {
+        let inst = self.b.func.dfg.value_def(v).inst()?;
+        match self.b.func.dfg.insts[inst] {
+            ir::InstructionData::UnaryImm { opcode: ir::Opcode::Iconst, imm } => {
+                let t = self.b.func.dfg.value_type(v);
+                let raw = imm.bits();
+                let sh = 64 - t.bits().min(64) as i64;
+                Some((raw << sh) >> sh)
+            }
+            _ => None,
+        }
+    }
+
+    /// Runs `f`, which must not return (a panic), when `cond` is non-zero.
+    /// The panic path is a cold block ending in a trap, so values live
+    /// across the check need not survive the runtime call.
+    pub(crate) fn fail_if(&mut self, cond: Value, f: impl FnOnce(&mut Self)) {
+        let (yes, ok) = (self.b.create_block(), self.b.create_block());
+        self.b.set_cold_block(yes);
+        self.b.ins().brif(cond, yes, &[], ok, &[]);
+        self.b.switch_to_block(yes);
+        f(self);
+        self.b.ins().trap(TrapCode::user(1).unwrap());
+        self.b.switch_to_block(ok);
     }
 
     /// Runs `f` only when `cond` is non-zero.
@@ -972,7 +1039,7 @@ impl FnCx<'_, '_, '_, '_> {
                         (addr, self.iconst(0))
                     };
                     let oob = self.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, i, len);
-                    self.when(oob, |cx| {
+                    self.fail_if(oob, |cx| {
                         cx.call_rt("kn_panic_bounds", &[i, len]);
                     });
                     let size = self.cg.layout(&elem).size as i64;
@@ -1836,6 +1903,7 @@ impl FnCx<'_, '_, '_, '_> {
                     self.b.ins().uextend(ts, v)
                 }
             }
+            (false, true) if ts == types::F64 && fs.bits() <= 64 => self.int_to_f64(v, fs, Self::is_signed(from)),
             (false, true) => {
                 if Self::is_signed(from) {
                     self.b.ins().fcvt_from_sint(ts, v)
@@ -1932,7 +2000,7 @@ impl FnCx<'_, '_, '_, '_> {
                 }
             }
         };
-        self.when(overflow, |cx| cx.panic_msg(&msg));
+        self.fail_if(overflow, |cx| cx.panic_msg(&msg));
         res
     }
 
@@ -2079,15 +2147,49 @@ impl FnCx<'_, '_, '_, '_> {
             Add => Some(self.b.ins().iadd(a, b)),
             Sub => Some(self.b.ins().isub(a, b)),
             Mul => Some(self.b.ins().imul(a, b)),
+            Div | Rem if it != types::I128 && self.iconst_of(b).is_some_and(|c| c > 0 && (c as u64).is_power_of_two()) => {
+                // Division by a constant power of two: shifts and masks
+                // (Cranelift does not strength-reduce these).
+                let c = self.iconst_of(b).unwrap() as u64;
+                let k = c.trailing_zeros() as i64;
+                Some(match (op, signed) {
+                    (Div, false) => self.b.ins().ushr_imm(a, k),
+                    (_, false) => self.b.ins().band_imm(a, (c - 1) as i64),
+                    (_, true) if k == 0 => {
+                        if op == Div {
+                            a
+                        } else {
+                            self.b.ins().iconst(it, 0)
+                        }
+                    }
+                    (_, true) => {
+                        // Round toward zero: add c-1 to negative dividends.
+                        let bits = it.bits() as i64;
+                        let sign = self.b.ins().sshr_imm(a, bits - 1);
+                        let bias = self.b.ins().ushr_imm(sign, bits - k);
+                        let biased = self.b.ins().iadd(a, bias);
+                        let q = self.b.ins().sshr_imm(biased, k);
+                        if op == Div {
+                            q
+                        } else {
+                            let back = self.b.ins().ishl_imm(q, k);
+                            self.b.ins().isub(a, back)
+                        }
+                    }
+                })
+            }
             Div | Rem => {
+                let known = self.iconst_of(b);
                 let zero = self.b.ins().icmp_imm(IntCC::Equal, b, 0);
                 let msg = if op == Div {
                     "attempt to divide by zero"
                 } else {
                     "attempt to calculate the remainder with a divisor of zero"
                 };
-                self.when(zero, |cx| cx.panic_msg(msg));
-                if signed {
+                if known.is_none_or(|c| c == 0) {
+                    self.fail_if(zero, |cx| cx.panic_msg(msg));
+                }
+                if signed && known.is_none_or(|c| c == -1) {
                     // MIN / -1 overflows (and traps in hardware): panic in all builds.
                     let min = match it.bits() {
                         8 => i8::MIN as i64,
@@ -2104,7 +2206,7 @@ impl FnCx<'_, '_, '_, '_> {
                         } else {
                             "attempt to calculate the remainder with overflow"
                         };
-                        self.when(both, |cx| cx.panic_msg(msg));
+                        self.fail_if(both, |cx| cx.panic_msg(msg));
                     }
                 }
                 Some(match (op, signed) {
