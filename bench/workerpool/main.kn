@@ -1,6 +1,6 @@
 // Worker pool: 8 workers take 200,000 jobs (Collatz step counts) from a
 // buffered channel and send results back.
-fn collatz(n0: i64) -> i64 {
+fun collatz(n0 i64) i64 {
 	n mut := n0
 	steps mut := 0
 	while n != 1 {
@@ -14,13 +14,13 @@ fn collatz(n0: i64) -> i64 {
 	return steps
 }
 
-fn worker(jobs: <-chan i64, results: chan<- i64) {
+fun worker(jobs <-chan i64, results chan<- i64) {
 	for j in jobs {
 		results <- collatz(j)
 	}
 }
 
-fn main() {
+fun main() {
 	(jobs_tx, jobs_rx) := chan::<i64>(1024)
 	(res_tx, res_rx) := chan::<i64>(1024)
 	workers mut := Vec::new()

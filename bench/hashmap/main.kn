@@ -1,9 +1,9 @@
 // HashMap: 1M integer inserts, 2M lookups, 500k removes; 200k string keys.
 import std::collections::HashMap
 
-fn main() {
+fun main() {
 	m mut := HashMap::new()
-	let n: i64 = 1000000
+	let n i64 = 1000000
 	for i in 0..n {
 		m.insert(i * 7, i)
 	}

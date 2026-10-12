@@ -1,6 +1,6 @@
 // Channel ping-pong: two goroutines pass a counter back and forth 500,000
 // times over unbuffered channels.
-fn main() {
+fun main() {
 	(ping_tx, ping_rx) := chan::<i64>(0)
 	(pong_tx, pong_rx) := chan::<i64>(0)
 	t := go move {

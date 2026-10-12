@@ -1,5 +1,5 @@
 // fannkuch-redux (Benchmarks Game), n = 10, single-threaded.
-fn main() {
+fun main() {
 	n := 10
 	perm1 mut := Vec::new()
 	for i in 0..n {

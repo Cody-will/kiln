@@ -1,21 +1,21 @@
 import std::time
 
 struct Job {
-	id: u64,
-	payload: String,
+	id u64,
+	payload string,
 }
 
 struct Output {
-	worker: u32,
-	job: u64,
-	bytes: usize,
+	worker u32,
+	job u64,
+	bytes usize,
 }
 
-fn process(worker: u32, job: Job) -> Output {
+fun process(worker u32, job Job) Output {
 	return Output { worker: worker, job: job.id, bytes: job.payload.len() }
 }
 
-fn load_jobs() -> Vec<Job> {
+fun load_jobs() Vec<Job> {
 	jobs mut := Vec::new()
 	for i in 0..10 {
 		jobs.push(Job { id: i, payload: "job {i}" })
@@ -23,13 +23,13 @@ fn load_jobs() -> Vec<Job> {
 	return jobs
 }
 
-fn worker(id: u32, jobs: <-chan Job, results: chan<- Output) {
+fun worker(id u32, jobs <-chan Job, results chan<- Output) {
 	for job in jobs {
 		results <- process(id, job)
 	}
 }
 
-fn main() {
+fun main() {
 	(jobs_tx, jobs_rx) := chan::<Job>(100)
 	(res_tx, res_rx) := chan::<Output>(100)
 	for id in 0..4 {

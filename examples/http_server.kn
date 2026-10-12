@@ -3,17 +3,17 @@ import std::net::http
 import std::os
 
 // GET /hello?name=Ada
-fn hello(req: http::Request) -> http::Response {
+fun hello(req http::Request) http::Response {
 	name := req.query_param("name").unwrap_or("world".to_string())
 	return http::Response::text(200, "hello, {name}!\n")
 }
 
 // POST /echo
-fn echo(req: http::Request) -> http::Response {
+fun echo(req http::Request) http::Response {
 	return http::Response::text(200, &req.body_text())
 }
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	addr := os::getenv("ADDR").unwrap_or("0.0.0.0:8080".to_string())
 	router mut := http::Router::new()
 	router.get("/hello", hello)

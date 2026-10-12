@@ -4,12 +4,12 @@ import std::log
 import std::net::{TcpListener, TcpStream}
 import std::os
 
-fn handle(conn: TcpStream) -> Result<(), io::Error> {
+fun handle(conn TcpStream) result<void, io::Error> {
 	defer log::debug("connection closed")
 	reader mut := BufReader::new(&conn)
 	line := match reader.next_line()? {
 		Some(l) => l,
-		None => return Ok(()),
+		None => return Ok(),
 	}
 	parts := line.split(" ")
 	path := if parts.len() > 1 { parts[1] } else { "/" }
@@ -23,13 +23,13 @@ fn handle(conn: TcpStream) -> Result<(), io::Error> {
 	return respond(&conn, 200, body)
 }
 
-fn respond(conn: &TcpStream, code: u16, body: &str) -> Result<(), io::Error> {
+fun respond(conn &TcpStream, code u16, body &str) result<void, io::Error> {
 	reason := if code == 200 { "OK" } else { "Not Found" }
 	conn.write_str("HTTP/1.1 {code} {reason}\r\nContent-Length: {body.len()}\r\nConnection: close\r\n\r\n{body}")?
-	return Ok(())
+	return Ok()
 }
 
-fn main() -> Result<(), io::Error> {
+fun main() result<void, io::Error> {
 	addr := os::getenv("ADDR").unwrap_or("0.0.0.0:8080".to_string())
 	listener := TcpListener::bind(&addr)?
 	println("listening on {listener.local_addr()?}")
@@ -41,5 +41,5 @@ fn main() -> Result<(), io::Error> {
 			}
 		}
 	}
-	return Ok(())
+	return Ok()
 }

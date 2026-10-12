@@ -1,18 +1,18 @@
 // n-body (Computer Language Benchmarks Game), 5 bodies.
 import std::math
 
-#[derive(Copy, Clone)]
+@derive(Copy, Clone)
 struct Body {
-	x: f64,
-	y: f64,
-	z: f64,
-	vx: f64,
-	vy: f64,
-	vz: f64,
-	m: f64,
+	x f64,
+	y f64,
+	z f64,
+	vx f64,
+	vy f64,
+	vz f64,
+	m f64,
 }
 
-fn energy(b: &Vec<Body>) -> f64 {
+fun energy(b &Vec<Body>) f64 {
 	e mut := 0.0
 	for i in 0..b.len() {
 		e += 0.5 * b[i].m * (b[i].vx * b[i].vx + b[i].vy * b[i].vy + b[i].vz * b[i].vz)
@@ -26,7 +26,7 @@ fn energy(b: &Vec<Body>) -> f64 {
 	return e
 }
 
-fn advance(b: &mut Vec<Body>, dt: f64) {
+fun advance(b &mut Vec<Body>, dt f64) {
 	n := b.len()
 	for i in 0..n {
 		for j in i + 1..n {
@@ -52,7 +52,7 @@ fn advance(b: &mut Vec<Body>, dt: f64) {
 	}
 }
 
-fn main() {
+fun main() {
 	pi := 3.141592653589793
 	sm := 4.0 * pi * pi
 	dp := 365.24

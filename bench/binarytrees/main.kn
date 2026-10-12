@@ -1,17 +1,17 @@
 // binary-trees (Benchmarks Game), depth 18, single-threaded.
 struct Node {
-	left: Option<Box<Node>>,
-	right: Option<Box<Node>>,
+	left option<Box<Node>>,
+	right option<Box<Node>>,
 }
 
-fn make(d: i64) -> Box<Node> {
+fun make(d i64) Box<Node> {
 	if d == 0 {
 		return Box::new(Node { left: None, right: None })
 	}
 	return Box::new(Node { left: Some(make(d - 1)), right: Some(make(d - 1)) })
 }
 
-fn check(n: &Node) -> i64 {
+fun check(n &Node) i64 {
 	match &n.left {
 		Some(l) => {
 			match &n.right {
@@ -23,7 +23,7 @@ fn check(n: &Node) -> i64 {
 	}
 }
 
-fn main() {
+fun main() {
 	max := 18
 	stretch := make(max + 1)
 	println("stretch tree of depth {max + 1}\t check: {check(&stretch)}")
