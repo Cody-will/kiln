@@ -19,6 +19,7 @@
 //! Closures take an extra environment pointer after `ret`. Drops are driven by
 //! per-local drop flags set on initialization and cleared on moves.
 
+mod bce;
 mod func;
 mod promote;
 mod glue;

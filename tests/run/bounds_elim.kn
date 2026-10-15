@@ -1,0 +1,56 @@
+// flags: --release
+// Bounds-check elimination keeps the checks it cannot prove.
+
+fun sum(v &Vec<i64>) i64 {
+	t mut := 0
+	for i in 0..v.len() {
+		t += v[i]
+	}
+	for x in v {
+		t += *x
+	}
+	return t
+}
+
+fun scale(v &mut Vec<i64>, k i64) {
+	n := v.len()
+	for i in 0..n {
+		v[i] *= k
+	}
+}
+
+// `n` is the length of `a`, not `b`: indexing `b` keeps its check.
+fun other(a &Vec<i64>, b &Vec<i64>) i64 {
+	t mut := 0
+	n := a.len()
+	for i in 0..n {
+		t += b[i]
+	}
+	return t
+}
+
+// The vector shrinks inside the loop: the check stays.
+fun shrink(v &mut Vec<i64>) i64 {
+	n := v.len()
+	t mut := 0
+	for i in 0..n {
+		v.pop()
+		t += v[i]
+	}
+	return t
+}
+
+fun main() {
+	v mut := Vec::new()
+	for i in 0..5 {
+		v.push(i as i64)
+	}
+	println("{sum(&v)}")
+	scale(&mut v, 3)
+	println("{sum(&v)}")
+	short mut := Vec::new()
+	short.push(1i64)
+	println("{other(&short, &v)}")
+	go_on := shrink(&mut v)
+	println("unreachable {go_on}")
+}

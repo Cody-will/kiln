@@ -67,6 +67,9 @@ pub(crate) struct FnCx<'c, 'r, 'a, 'f> {
     pub last_task: Option<StackSlot>,
     pub span: kiln_lexer::Span,
     pub promo: crate::promote::Promo,
+    /// Index operations proven in bounds (release).
+    pub bce: crate::bce::Bce,
+    pub cur_stmt: usize,
 }
 
 /// Largest stack frame a function may have (see `define_fn`).
@@ -92,6 +95,7 @@ impl Codegen<'_, '_> {
         let b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
         let span = body.span;
         let promo = crate::promote::Promo { enabled: !self.checked, promoted, ..Default::default() };
+        let bce = if self.checked { Default::default() } else { self.bounds_facts(&body, &substs) };
         let mut cx = FnCx {
             cg: self,
             b,
@@ -107,6 +111,8 @@ impl Codegen<'_, '_> {
             preempt: None,
             span,
             promo,
+            bce,
+            cur_stmt: 0,
         };
         cx.translate(abi);
         cx.b.seal_all_blocks();
@@ -616,6 +622,14 @@ impl FnCx<'_, '_, '_, '_> {
             let ty = self.subst(&decl.ty);
             let addr = match decl.kind {
                 LocalKind::Return => params[0],
+                // Release: small arguments are copied into a slot of our own,
+                // which `promote` can keep in registers.
+                LocalKind::Arg if self.promo.enabled && self.cg.layout(&ty).size <= 16 => {
+                    let l = self.cg.layout(&ty);
+                    let s = self.slot(l.size.max(1), l.align);
+                    self.copy(s, params[extra + i - 1], l.size);
+                    s
+                }
                 LocalKind::Arg => params[extra + i - 1],
                 LocalKind::Upvar => match env_offsets.get(&kiln_mir::Local(i as u32)) {
                     Some((off, CaptureMode::Move)) => self.b.ins().iadd_imm(params[1], *off as i64),
@@ -710,10 +724,12 @@ impl FnCx<'_, '_, '_, '_> {
             let blk = self.blocks[bi];
             self.b.switch_to_block(blk);
             let stmts = self.body.blocks[bi].stmts.clone();
-            for s in &stmts {
+            for (si, s) in stmts.iter().enumerate() {
                 self.span = s.span;
+                self.cur_stmt = si;
                 self.stmt(&s.kind);
             }
+            self.cur_stmt = usize::MAX;
             let term = self.body.blocks[bi].term.clone();
             self.span = self.body.blocks[bi].term_span;
             self.terminator(&term);
@@ -996,7 +1012,7 @@ impl FnCx<'_, '_, '_, '_> {
         let info = &self.locals[p.local.0 as usize];
         let (mut addr, mut t) = (info.addr, info.ty.clone());
         let mut meta = None;
-        for pr in &p.proj {
+        for (k, pr) in p.proj.iter().enumerate() {
             match pr {
                 Proj::Deref(_) => {
                     let inner = self.cg.pointee(&t).unwrap_or(Ty::Unit);
@@ -1038,10 +1054,13 @@ impl FnCx<'_, '_, '_, '_> {
                         self.error("code generation does not support indexing this type yet");
                         (addr, self.iconst(0))
                     };
-                    let oob = self.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, i, len);
-                    self.fail_if(oob, |cx| {
-                        cx.call_rt("kn_panic_bounds", &[i, len]);
-                    });
+                    let base = Place { local: p.local, proj: p.proj[..k].to_vec() };
+                    if !self.bce.is_safe(self.cur_block, self.cur_stmt, *l, &base) {
+                        let oob = self.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, i, len);
+                        self.fail_if(oob, |cx| {
+                            cx.call_rt("kn_panic_bounds", &[i, len]);
+                        });
+                    }
                     let size = self.cg.layout(&elem).size as i64;
                     let off = self.b.ins().imul_imm(i, size);
                     addr = self.b.ins().iadd(data, off);

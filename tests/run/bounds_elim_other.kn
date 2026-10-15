@@ -1,0 +1,19 @@
+// flags: --release
+// The loop bound is another vector's length: the check stays.
+fun other(a &Vec<i64>, b &Vec<i64>) i64 {
+	t mut := 0
+	n := a.len()
+	for i in 0..n {
+		t += b[i]
+	}
+	return t
+}
+
+fun main() {
+	a mut := Vec::new()
+	a.push(1i64)
+	a.push(2i64)
+	b mut := Vec::new()
+	b.push(5i64)
+	println("{other(&a, &b)}")
+}
