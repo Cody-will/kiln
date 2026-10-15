@@ -340,7 +340,10 @@ fn generic_struct() {
 #[test]
 fn tuple_structs_and_index() {
     ok("struct Meters(f64)\nfun main() {\n m := Meters(3.0)\n let x f64 = m.0\n t := (1, true)\n let b bool = t.1\n}");
-    has("fun main() {\n t := (1, true)\n x := t.2\n}", "no field `2`");
+    has(
+        "fun main() {\n t := (1, true)\n x := t.2\n}",
+        "no field `2`",
+    );
 }
 
 // ----- traits and generics ---------------------------------------------------------------
@@ -396,7 +399,8 @@ fn generic_bound_methods() {
 
 #[test]
 fn trait_bounds_checked_at_call_sites() {
-    let src = "fun biggest<T: Ord>(a T, b T) T {\n if a > b {\n return a\n }\n return b\n}\nstruct P\n";
+    let src =
+        "fun biggest<T: Ord>(a T, b T) T {\n if a > b {\n return a\n }\n return b\n}\nstruct P\n";
     ok(&format!("{src}fun main() {{\n x := biggest(1, 2)\n}}"));
     err1(
         &format!("{src}fun main() {{\n x := biggest(P, P)\n}}"),
@@ -670,7 +674,9 @@ fn exhaustiveness_looks_inside_patterns() {
     let opt = "enum E {\n A(bool),\n B,\n}\n";
     ok(&format!("{opt}fun f(e E) i32 {{\n return match e {{\n E::A(true) => 1,\n E::A(false) => 2,\n E::B => 3,\n }}\n}}"));
     has(
-        &format!("{opt}fun f(e E) i32 {{\n return match e {{\n E::A(true) => 1,\n E::B => 3,\n }}\n}}"),
+        &format!(
+            "{opt}fun f(e E) i32 {{\n return match e {{\n E::A(true) => 1,\n E::B => 3,\n }}\n}}"
+        ),
         "non-exhaustive match: `A` not covered",
     );
     // Nested enums, tuples, and the unit pattern.

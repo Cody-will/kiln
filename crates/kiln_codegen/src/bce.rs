@@ -20,7 +20,9 @@
 //! Everything else keeps its check.
 
 use crate::Codegen;
-use kiln_mir::{AggKind, Body, Callee, Local, Op, Operand, Place, Proj, Rvalue, StmtKind, Terminator};
+use kiln_mir::{
+    AggKind, Body, Callee, Local, Op, Operand, Place, Proj, Rvalue, StmtKind, Terminator,
+};
 use kiln_parser::ast::BinOp;
 use kiln_resolve::PrimTy;
 use kiln_typeck::ty::Ty;
@@ -41,7 +43,8 @@ impl Bce {
         if base.proj.len() != 1 || !matches!(base.proj[0], Proj::Deref(_)) {
             return false;
         }
-        self.at.contains(&(block, stmt, idx, base.local)) || self.always.contains(&(idx, base.local))
+        self.at.contains(&(block, stmt, idx, base.local))
+            || self.always.contains(&(idx, base.local))
     }
 }
 
@@ -53,7 +56,9 @@ fn is_usize(t: &Ty) -> bool {
 /// (`Vec`, slice, array).
 fn ref_to_seq(cg: &Codegen<'_, '_>, t: &Ty) -> Option<bool> {
     match t {
-        Ty::Ref(m, x) if matches!(**x, Ty::Slice(_) | Ty::Array(..)) || cg.is_lang(x, "Vec") => Some(*m),
+        Ty::Ref(m, x) if matches!(**x, Ty::Slice(_) | Ty::Array(..)) || cg.is_lang(x, "Vec") => {
+            Some(*m)
+        }
         _ => None,
     }
 }
@@ -80,7 +85,11 @@ impl Codegen<'_, '_> {
         for blk in &body.blocks {
             for s in &blk.stmts {
                 if let StmtKind::Assign(p, rv) = &s.kind {
-                    if let Rvalue::Ref { mutable: true, place } = rv {
+                    if let Rvalue::Ref {
+                        mutable: true,
+                        place,
+                    } = rv
+                    {
                         mut_borrowed.insert(place.local);
                     }
                     // A write through a reference changes the referent, not the local.
@@ -102,7 +111,14 @@ impl Codegen<'_, '_> {
 
         // ---- shape 1: iterator loops ----
         for blk in &body.blocks {
-            let Terminator::SwitchBool { cond: Operand::Copy(c), t, .. } = &blk.term else { continue };
+            let Terminator::SwitchBool {
+                cond: Operand::Copy(c),
+                t,
+                ..
+            } = &blk.term
+            else {
+                continue;
+            };
             if !c.proj.is_empty() || preds.get(&t.0).map(|v| v.len()) != Some(1) {
                 continue;
             }
@@ -121,7 +137,9 @@ impl Codegen<'_, '_> {
                             }
                         }
                     }
-                    StmtKind::Assign(p, Rvalue::Pure(Op::Bin(BinOp::Lt), ops)) if p.local == c.local => {
+                    StmtKind::Assign(p, Rvalue::Pure(Op::Bin(BinOp::Lt), ops))
+                        if p.local == c.local =>
+                    {
                         if let [Operand::Copy(i), Operand::Copy(n)] = ops.as_slice() {
                             if i.proj.is_empty() && n.proj.is_empty() && is_usize(&ty(i.local)) {
                                 guard = len_of.get(&n.local).map(|s| (i.local, *s));
@@ -129,7 +147,9 @@ impl Codegen<'_, '_> {
                         }
                     }
                     StmtKind::Eval(Rvalue::Call { .. }) => len_of.clear(),
-                    StmtKind::Assign(p, _) => len_of.retain(|n, sq| *n != p.local && *sq != p.local),
+                    StmtKind::Assign(p, _) => {
+                        len_of.retain(|n, sq| *n != p.local && *sq != p.local)
+                    }
                     _ => {}
                 }
             }
@@ -138,7 +158,8 @@ impl Codegen<'_, '_> {
             for (si, s) in body.blocks[tb].stmts.iter().enumerate() {
                 let (place_ok, stop) = match &s.kind {
                     StmtKind::Assign(p, rv) => {
-                        let stop = p.local == i || p.local == seq || matches!(rv, Rvalue::Call { .. });
+                        let stop =
+                            p.local == i || p.local == seq || matches!(rv, Rvalue::Call { .. });
                         (true, stop)
                     }
                     StmtKind::Eval(_) => (false, true),
@@ -162,7 +183,10 @@ impl Codegen<'_, '_> {
                 }
                 match def.get(&l) {
                     Some(Rvalue::Use(Operand::Copy(p))) if p.proj.is_empty() => l = p.local,
-                    Some(Rvalue::Ref { mutable: false, place }) if place.proj.len() == 1 && matches!(place.proj[0], Proj::Deref(_)) => {
+                    Some(Rvalue::Ref {
+                        mutable: false,
+                        place,
+                    }) if place.proj.len() == 1 && matches!(place.proj[0], Proj::Deref(_)) => {
                         l = place.local
                     }
                     _ => break,
@@ -172,9 +196,11 @@ impl Codegen<'_, '_> {
         };
         // Length-invariant reference roots.
         let invariant = |r: Local| -> bool {
-            let Some(m) = ref_to_seq(self, &ty(r)) else { return false };
+            let Some(m) = ref_to_seq(self, &ty(r)) else {
+                return false;
+            };
             let is_arg = (1..=body.arg_count).contains(&(r.0 as usize));
-            if !(is_arg && writes.get(&r).is_none()) && !single(r) {
+            if !(is_arg && !writes.contains_key(&r)) && !single(r) {
                 return false;
             }
             if !m {
@@ -182,7 +208,10 @@ impl Codegen<'_, '_> {
             }
             // `&mut T`: only element accesses and shared reborrows.
             let ok_place = |p: &Place| {
-                p.local != r || (p.proj.len() >= 2 && matches!(p.proj[0], Proj::Deref(_)) && matches!(p.proj[1], Proj::Index(_)))
+                p.local != r
+                    || (p.proj.len() >= 2
+                        && matches!(p.proj[0], Proj::Deref(_))
+                        && matches!(p.proj[1], Proj::Index(_)))
             };
             for blk in &body.blocks {
                 for s in &blk.stmts {
@@ -227,7 +256,9 @@ impl Codegen<'_, '_> {
                 match def.get(&n)? {
                     Rvalue::Use(Operand::Copy(p)) if p.proj.is_empty() => n = p.local,
                     Rvalue::Call { callee, args, .. } if self.is_len(callee) => {
-                        let [Operand::Copy(a)] = args.as_slice() else { return None };
+                        let [Operand::Copy(a)] = args.as_slice() else {
+                            return None;
+                        };
                         if !a.proj.is_empty() {
                             return None;
                         }
@@ -261,11 +292,22 @@ impl Codegen<'_, '_> {
             let mut rv = *def.get(&r)?;
             for _ in 0..4 {
                 match rv {
-                    Rvalue::Use(Operand::Move(p) | Operand::Copy(p)) if p.proj.is_empty() && single(p.local) => {
+                    Rvalue::Use(Operand::Move(p) | Operand::Copy(p))
+                        if p.proj.is_empty() && single(p.local) =>
+                    {
                         rv = def.get(&p.local)?;
                     }
-                    Rvalue::Aggregate(AggKind::Range { has_end: true, inclusive: false, .. }, ops) => {
-                        let Operand::Copy(e) = ops.last()? else { return None };
+                    Rvalue::Aggregate(
+                        AggKind::Range {
+                            has_end: true,
+                            inclusive: false,
+                            ..
+                        },
+                        ops,
+                    ) => {
+                        let Operand::Copy(e) = ops.last()? else {
+                            return None;
+                        };
                         if !e.proj.is_empty() {
                             return None;
                         }
@@ -278,7 +320,14 @@ impl Codegen<'_, '_> {
         };
         let mut safe: HashMap<Local, Local> = HashMap::new(); // index local -> root
         for blk in &body.blocks {
-            let Terminator::SwitchBool { cond: Operand::Copy(c), t, .. } = &blk.term else { continue };
+            let Terminator::SwitchBool {
+                cond: Operand::Copy(c),
+                t,
+                ..
+            } = &blk.term
+            else {
+                continue;
+            };
             if !c.proj.is_empty() || preds.get(&t.0).map(|v| v.len()) != Some(1) {
                 continue;
             }
@@ -303,8 +352,13 @@ impl Codegen<'_, '_> {
                         break;
                     }
                     if let Rvalue::Use(Operand::Copy(q)) = rv {
-                        let from_start = q.local == r && matches!(q.proj.as_slice(), [Proj::Field(f)] if f == "start");
-                        if from_start && p.proj.is_empty() && single(p.local) && is_usize(&ty(p.local)) {
+                        let from_start = q.local == r
+                            && matches!(q.proj.as_slice(), [Proj::Field(f)] if f == "start");
+                        if from_start
+                            && p.proj.is_empty()
+                            && single(p.local)
+                            && is_usize(&ty(p.local))
+                        {
                             safe.insert(p.local, rt);
                         }
                     }
@@ -344,7 +398,9 @@ impl Codegen<'_, '_> {
                         }
                         places.extend(rv.operands().into_iter().filter_map(|o| o.place()));
                     }
-                    StmtKind::Eval(rv) => places.extend(rv.operands().into_iter().filter_map(|o| o.place())),
+                    StmtKind::Eval(rv) => {
+                        places.extend(rv.operands().into_iter().filter_map(|o| o.place()))
+                    }
                     _ => {}
                 }
                 for p in places {

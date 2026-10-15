@@ -94,8 +94,16 @@ impl Codegen<'_, '_> {
         let mut fbc = FunctionBuilderContext::new();
         let b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
         let span = body.span;
-        let promo = crate::promote::Promo { enabled: !self.checked, promoted, ..Default::default() };
-        let bce = if self.checked { Default::default() } else { self.bounds_facts(&body, &substs) };
+        let promo = crate::promote::Promo {
+            enabled: !self.checked,
+            promoted,
+            ..Default::default()
+        };
+        let bce = if self.checked {
+            Default::default()
+        } else {
+            self.bounds_facts(&body, &substs)
+        };
         let mut cx = FnCx {
             cg: self,
             b,
@@ -131,7 +139,10 @@ impl Codegen<'_, '_> {
         let Some(mut body) = self.bodies(fn_idx).get(body_i).cloned() else {
             return;
         };
-        if !self.checked && body.unsupported.is_empty() && std::env::var_os("KILN_NO_INLINE").is_none() {
+        if !self.checked
+            && body.unsupported.is_empty()
+            && std::env::var_os("KILN_NO_INLINE").is_none()
+        {
             self.inline_calls(&mut body, &substs, fn_idx);
         }
         self.span = body.span;
@@ -147,7 +158,8 @@ impl Codegen<'_, '_> {
         if !self.checked {
             let errs = self.errors.len();
             let mut ctx = self.module.make_context();
-            let promo = self.translate_body(&mut ctx, body.clone(), substs.clone(), fn_idx, abi, None);
+            let promo =
+                self.translate_body(&mut ctx, body.clone(), substs.clone(), fn_idx, abi, None);
             if self.errors.len() > errs {
                 return;
             }
@@ -484,7 +496,11 @@ impl FnCx<'_, '_, '_, '_> {
     fn int_to_f64(&mut self, v: Value, from: ir::Type, signed: bool) -> Value {
         let mut x = v;
         if from.bits() < 64 {
-            x = if signed { self.b.ins().sextend(types::I64, v) } else { self.b.ins().uextend(types::I64, v) };
+            x = if signed {
+                self.b.ins().sextend(types::I64, v)
+            } else {
+                self.b.ins().uextend(types::I64, v)
+            };
         }
         if signed {
             // Bias into unsigned range; subtracted again exactly below.
@@ -516,7 +532,10 @@ impl FnCx<'_, '_, '_, '_> {
     pub(crate) fn iconst_of(&self, v: Value) -> Option<i64> {
         let inst = self.b.func.dfg.value_def(v).inst()?;
         match self.b.func.dfg.insts[inst] {
-            ir::InstructionData::UnaryImm { opcode: ir::Opcode::Iconst, imm } => {
+            ir::InstructionData::UnaryImm {
+                opcode: ir::Opcode::Iconst,
+                imm,
+            } => {
                 let t = self.b.func.dfg.value_type(v);
                 let raw = imm.bits();
                 let sh = 64 - t.bits().min(64) as i64;
@@ -1054,7 +1073,10 @@ impl FnCx<'_, '_, '_, '_> {
                         self.error("code generation does not support indexing this type yet");
                         (addr, self.iconst(0))
                     };
-                    let base = Place { local: p.local, proj: p.proj[..k].to_vec() };
+                    let base = Place {
+                        local: p.local,
+                        proj: p.proj[..k].to_vec(),
+                    };
                     if !self.bce.is_safe(self.cur_block, self.cur_stmt, *l, &base) {
                         let oob = self.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, i, len);
                         self.fail_if(oob, |cx| {
@@ -1922,7 +1944,9 @@ impl FnCx<'_, '_, '_, '_> {
                     self.b.ins().uextend(ts, v)
                 }
             }
-            (false, true) if ts == types::F64 && fs.bits() <= 64 => self.int_to_f64(v, fs, Self::is_signed(from)),
+            (false, true) if ts == types::F64 && fs.bits() <= 64 => {
+                self.int_to_f64(v, fs, Self::is_signed(from))
+            }
             (false, true) => {
                 if Self::is_signed(from) {
                     self.b.ins().fcvt_from_sint(ts, v)
@@ -2166,7 +2190,12 @@ impl FnCx<'_, '_, '_, '_> {
             Add => Some(self.b.ins().iadd(a, b)),
             Sub => Some(self.b.ins().isub(a, b)),
             Mul => Some(self.b.ins().imul(a, b)),
-            Div | Rem if it != types::I128 && self.iconst_of(b).is_some_and(|c| c > 0 && (c as u64).is_power_of_two()) => {
+            Div | Rem
+                if it != types::I128
+                    && self
+                        .iconst_of(b)
+                        .is_some_and(|c| c > 0 && (c as u64).is_power_of_two()) =>
+            {
                 // Division by a constant power of two: shifts and masks
                 // (Cranelift does not strength-reduce these).
                 let c = self.iconst_of(b).unwrap() as u64;

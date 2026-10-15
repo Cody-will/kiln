@@ -82,8 +82,8 @@ impl<'r, 'a> Codegen<'r, 'a> {
                 preempt: None,
                 span,
                 promo: Default::default(),
-            bce: Default::default(),
-            cur_stmt: usize::MAX,
+                bce: Default::default(),
+                cur_stmt: usize::MAX,
             };
             f(&mut cx, &ps);
             cx.b.ins().return_(&[]);

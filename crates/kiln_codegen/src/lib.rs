@@ -21,12 +21,12 @@
 
 mod bce;
 mod func;
-mod promote;
 mod glue;
 mod inline;
 mod intrinsics;
 mod layout;
 pub mod link;
+mod promote;
 
 use cranelift_codegen::ir::{types, AbiParam, Signature, Type};
 use cranelift_codegen::settings::{self, Configurable};

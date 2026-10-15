@@ -484,10 +484,7 @@ fn let_statements() {
             ..
         }
     ));
-    assert!(matches!(
-        stmt("let x u8"),
-        StmtKind::Let { init: None, .. }
-    ));
+    assert!(matches!(stmt("let x u8"), StmtKind::Let { init: None, .. }));
 }
 
 #[test]
@@ -884,7 +881,8 @@ fn attributes_and_docs() {
 
 #[test]
 fn docs_attach_to_the_right_item() {
-    let f = ok("/// first\nfun a() {\n\t/// stray\n\tx := 1\n}\n\nfun b() {}\n/// third\nfun c() {}");
+    let f =
+        ok("/// first\nfun a() {\n\t/// stray\n\tx := 1\n}\n\nfun b() {}\n/// third\nfun c() {}");
     assert_eq!(f.items[0].doc.as_deref(), Some("first"));
     assert_eq!(f.items[1].doc, None);
     assert_eq!(f.items[2].doc.as_deref(), Some("third"));
@@ -1098,9 +1096,8 @@ fn unsafe_impl_and_trait() {
 
 #[test]
 fn lifetime_where_predicates() {
-    let f = ok(
-        "fun f<'a, 'b>(x &'a str, y &'b str) &'a str where 'b: 'a, T: Clone {\n\treturn x\n}\n",
-    );
+    let f =
+        ok("fun f<'a, 'b>(x &'a str, y &'b str) &'a str where 'b: 'a, T: Clone {\n\treturn x\n}\n");
     let ItemKind::Fn(d) = &f.items[0].kind else {
         panic!()
     };

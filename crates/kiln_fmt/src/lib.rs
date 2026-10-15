@@ -537,19 +537,28 @@ impl Fmt<'_> {
             return Some(false);
         }
         // `-> !` / `) !` (never returns).
-        if matches!(p, Bang) && i > 0 && matches!(self.k(i - 1), Arrow | RParen) && self.space_in_source(i - 1) {
+        if matches!(p, Bang)
+            && i > 0
+            && matches!(self.k(i - 1), Arrow | RParen)
+            && self.space_in_source(i - 1)
+        {
             return Some(true);
         }
         // A tuple or array type after a name or a parameter list:
         // `x (i32, i32)`, `fun f() [u8; 4]`.
-        if matches!(p, RParen | Ident(_)) && matches!(nx, LParen | LBracket) && self.space_in_source(i) {
+        if matches!(p, RParen | Ident(_))
+            && matches!(nx, LParen | LBracket)
+            && self.space_in_source(i)
+        {
             return Some(true);
         }
         if matches!(p, LParen | LBracket | Dot | ColonColon | Hash | Bang) {
             return Some(false);
         }
         // `@test`, `@derive(...)`: an attribute (at the start of its line).
-        if matches!(p, At) && (i == 0 || self.newline_after(i - 1) || !matches!(self.k(i - 1), Ident(_))) {
+        if matches!(p, At)
+            && (i == 0 || self.newline_after(i - 1) || !matches!(self.k(i - 1), Ident(_)))
+        {
             return Some(false);
         }
         if is_maybe_unary(p) && self.unary[i] {
@@ -663,11 +672,17 @@ impl Fmt<'_> {
                     let open_ends = is_open(pk)
                         || matches!(pk, T::Comma | T::Semi { .. })
                         || pk.ends_statement()
-                        || (matches!(pk, T::Bang) && pl > 0 && matches!(self.k(pl - 1), T::Arrow | T::RParen))
+                        || (matches!(pk, T::Bang)
+                            && pl > 0
+                            && matches!(self.k(pl - 1), T::Arrow | T::RParen))
                         || self.add_comma[pl];
                     let in_list_of_opener = stack.last().is_some_and(|(o, _)| *o == pl);
                     let after_attr = prev_first.is_some_and(|f| matches!(self.k(f), T::At));
-                    if starts_chain || (!open_ends && !in_list_of_opener && !matches!(pk, T::Hash) && !after_attr)
+                    if starts_chain
+                        || (!open_ends
+                            && !in_list_of_opener
+                            && !matches!(pk, T::Hash)
+                            && !after_attr)
                     {
                         indent += 1;
                     }

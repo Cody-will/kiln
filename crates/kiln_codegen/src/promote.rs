@@ -61,7 +61,11 @@ impl Promo {
             }
             let inst = func.dfg.value_def(v).inst()?;
             match func.dfg.insts[inst] {
-                InstructionData::BinaryImm64 { opcode: Opcode::IaddImm, arg, imm } => {
+                InstructionData::BinaryImm64 {
+                    opcode: Opcode::IaddImm,
+                    arg,
+                    imm,
+                } => {
                     off += imm.bits();
                     v = arg;
                 }
@@ -86,18 +90,27 @@ impl Promo {
                         if let InstructionData::Load { arg, offset, .. } = *data {
                             if let Some((s, o)) = self.resolve(func, arg) {
                                 let ty = func.dfg.value_type(func.dfg.first_result(inst));
-                                acc.entry(s).or_default().push((o + i64::from(i32::from(offset)), ty.bytes()));
+                                acc.entry(s)
+                                    .or_default()
+                                    .push((o + i64::from(i32::from(offset)), ty.bytes()));
                             }
                         }
                     }
                     (Opcode::Store, true) => {
-                        if let InstructionData::Store { args: [val, addr], offset, .. } = *data {
+                        if let InstructionData::Store {
+                            args: [val, addr],
+                            offset,
+                            ..
+                        } = *data
+                        {
                             if let Some((s, _)) = self.resolve(func, val) {
                                 bad.insert(s); // the address itself is stored
                             }
                             if let Some((s, o)) = self.resolve(func, addr) {
                                 let ty = func.dfg.value_type(val);
-                                acc.entry(s).or_default().push((o + i64::from(i32::from(offset)), ty.bytes()));
+                                acc.entry(s)
+                                    .or_default()
+                                    .push((o + i64::from(i32::from(offset)), ty.bytes()));
                             }
                         }
                     }
@@ -152,7 +165,11 @@ impl FnCx<'_, '_, '_, '_> {
         if self.promo.enabled {
             if let Some((var, ity)) = self.promoted_var(addr, off, t.bytes()) {
                 let v = self.b.use_var(var);
-                return if t == ity { v } else { self.b.ins().bitcast(t, MemFlags::new(), v) };
+                return if t == ity {
+                    v
+                } else {
+                    self.b.ins().bitcast(t, MemFlags::new(), v)
+                };
             }
         }
         let v = self.b.ins().load(t, crate::func::flags(), addr, off);
@@ -167,7 +184,11 @@ impl FnCx<'_, '_, '_, '_> {
         if self.promo.enabled {
             let t = self.b.func.dfg.value_type(v);
             if let Some((var, ity)) = self.promoted_var(addr, off, t.bytes()) {
-                let v = if t == ity { v } else { self.b.ins().bitcast(ity, MemFlags::new(), v) };
+                let v = if t == ity {
+                    v
+                } else {
+                    self.b.ins().bitcast(ity, MemFlags::new(), v)
+                };
                 self.b.def_var(var, v);
                 return;
             }
@@ -186,12 +207,16 @@ impl FnCx<'_, '_, '_, '_> {
         }
         let touches_slot = self.promo.enabled
             && size <= 64
-            && (self.promo.resolve(self.b.func, dst).is_some() || self.promo.resolve(self.b.func, src).is_some());
+            && (self.promo.resolve(self.b.func, dst).is_some()
+                || self.promo.resolve(self.b.func, src).is_some());
         if touches_slot {
             let mut off = 0u32;
             while off < size {
                 let rest = size - off;
-                let n = [8u32, 4, 2, 1].into_iter().find(|n| *n <= rest && off & (n - 1) == 0).unwrap_or(1);
+                let n = [8u32, 4, 2, 1]
+                    .into_iter()
+                    .find(|n| *n <= rest && off & (n - 1) == 0)
+                    .unwrap_or(1);
                 let t = int_of(n).expect("chunk size");
                 let v = self.load(t, src, off as i32);
                 self.store(v, dst, off as i32);

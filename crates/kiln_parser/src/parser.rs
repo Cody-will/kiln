@@ -322,8 +322,9 @@ impl<'s> Parser<'s> {
                     | Kw::Use
             ) | T::Hash
                 | T::At
-        ) || (matches!(self.peek(), T::Ident(n) if n == "fn") && matches!(self.nth(1), T::Ident(_))) || (self.at_kw(Kw::Unsafe)
-            && matches!(self.nth(1), T::Keyword(Kw::Fn | Kw::Impl | Kw::Trait)))
+        ) || (matches!(self.peek(), T::Ident(n) if n == "fn") && matches!(self.nth(1), T::Ident(_)))
+            || (self.at_kw(Kw::Unsafe)
+                && matches!(self.nth(1), T::Keyword(Kw::Fn | Kw::Impl | Kw::Trait)))
     }
 
     /// Skips tokens until the start of the next item at nesting depth 0.
@@ -490,7 +491,9 @@ impl<'s> Parser<'s> {
         let vis = self.parse_vis();
         let kind = match self.peek() {
             T::Keyword(Kw::Fn) => ItemKind::Fn(self.parse_fn(false)?),
-            T::Ident(n) if n == "fn" && matches!(self.nth(1), T::Ident(_)) => ItemKind::Fn(self.parse_fn(false)?),
+            T::Ident(n) if n == "fn" && matches!(self.nth(1), T::Ident(_)) => {
+                ItemKind::Fn(self.parse_fn(false)?)
+            }
             T::Keyword(Kw::Unsafe) if *self.nth(1) == T::Keyword(Kw::Fn) => {
                 self.bump();
                 ItemKind::Fn(self.parse_fn(true)?)
@@ -619,8 +622,11 @@ impl<'s> Parser<'s> {
         if self.at(&T::Arrow) {
             let span = self.span();
             self.errors.push(
-                Diagnostic::error("return types follow the parameters without `->` in Kiln", span)
-                    .with_help("write `fun f(x i32) i32 { ... }`; no return type means `void`"),
+                Diagnostic::error(
+                    "return types follow the parameters without `->` in Kiln",
+                    span,
+                )
+                .with_help("write `fun f(x i32) i32 { ... }`; no return type means `void`"),
             );
             self.bump();
             return Ok(Some(self.parse_type()?));
@@ -635,7 +641,8 @@ impl<'s> Parser<'s> {
         if matches!(self.peek(), T::Ident(n) if n == "fn") {
             let span = self.span();
             self.errors.push(
-                Diagnostic::error("Kiln declares functions with `fun`", span).with_help("write `fun name(...)`"),
+                Diagnostic::error("Kiln declares functions with `fun`", span)
+                    .with_help("write `fun name(...)`"),
             );
             self.bump();
         } else {
@@ -722,14 +729,19 @@ impl<'s> Parser<'s> {
         if let T::Ident(name) = self.nth(i).clone() {
             let next = self.tokens.get(self.pos + i + 1);
             let spaced = next.is_some_and(|t| {
-                matches!(t.kind, T::LParen | T::LBracket) && t.span.start > self.tokens[self.pos + i].span.end
+                matches!(t.kind, T::LParen | T::LBracket)
+                    && t.span.start > self.tokens[self.pos + i].span.end
             });
             if spaced {
                 let start = self.span();
                 let mutable = self.eat_kw(Kw::Mut);
                 let span = self.bump().span;
                 return Ok(Pattern {
-                    kind: PatternKind::Ident { name: Ident { name, span }, mutable, sub: None },
+                    kind: PatternKind::Ident {
+                        name: Ident { name, span },
+                        mutable,
+                        sub: None,
+                    },
                     span: start.to(span),
                 });
             }
@@ -1369,8 +1381,14 @@ impl<'s> Parser<'s> {
                         self.bump();
                         let mut elems = self.comma_list(&T::RParen, Self::parse_pattern)?;
                         // `Ok()` matches `Ok(void)`.
-                        if elems.is_empty() && path.segments.len() == 1 && path.segments[0].ident.name == "Ok" {
-                            elems.push(Pattern { kind: PatternKind::Tuple(Vec::new()), span: self.prev_span() });
+                        if elems.is_empty()
+                            && path.segments.len() == 1
+                            && path.segments[0].ident.name == "Ok"
+                        {
+                            elems.push(Pattern {
+                                kind: PatternKind::Tuple(Vec::new()),
+                                span: self.prev_span(),
+                            });
                         }
                         PatternKind::TupleStruct(path, elems)
                     }
@@ -1552,7 +1570,10 @@ impl<'s> Parser<'s> {
                     alts.push(self.parse_pattern_no_or()?);
                 }
                 let span = alts[0].span.to(alts.last().unwrap().span);
-                Pattern { kind: PatternKind::Or(alts), span }
+                Pattern {
+                    kind: PatternKind::Or(alts),
+                    span,
+                }
             } else {
                 pat
             };
@@ -1803,19 +1824,22 @@ impl<'s> Parser<'s> {
                 }
                 T::LParen => {
                     self.bump();
-                {
-                    let mut args = self.call_args()?;
-                    // `Ok()` is `Ok(void)`.
-                    if args.is_empty() {
-                        if let ExprKind::Path(p) = &e.kind {
-                            if p.segments.len() == 1 && p.segments[0].ident.name == "Ok" {
-                                let sp = self.prev_span();
-                                args.push(Expr { kind: ExprKind::Tuple(Vec::new()), span: sp });
+                    {
+                        let mut args = self.call_args()?;
+                        // `Ok()` is `Ok(void)`.
+                        if args.is_empty() {
+                            if let ExprKind::Path(p) = &e.kind {
+                                if p.segments.len() == 1 && p.segments[0].ident.name == "Ok" {
+                                    let sp = self.prev_span();
+                                    args.push(Expr {
+                                        kind: ExprKind::Tuple(Vec::new()),
+                                        span: sp,
+                                    });
+                                }
                             }
                         }
+                        ExprKind::Call(Box::new(e), args)
                     }
-                    ExprKind::Call(Box::new(e), args)
-                }
                 }
                 T::LBracket => {
                     self.bump();

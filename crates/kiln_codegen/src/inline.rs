@@ -23,8 +23,8 @@
 
 use crate::Codegen;
 use kiln_mir::{
-    AggKind, BlockData, BlockId, Body, BodyKind, Callee, ConstKind, Local, LocalKind, Op, Operand, Place, Proj,
-    Rvalue, Statement, StmtKind, Terminator,
+    AggKind, BlockData, BlockId, Body, BodyKind, Callee, ConstKind, Local, LocalKind, Op, Operand,
+    Place, Proj, Rvalue, Statement, StmtKind, Terminator,
 };
 use kiln_typeck::ty::Ty;
 use std::collections::HashMap;
@@ -76,7 +76,10 @@ impl Codegen<'_, '_> {
                 };
                 // Substitutions in this body may mention its own parameters
                 // (inlined parts are already concrete; subst is a no-op there).
-                let cs: Substs = cs.iter().map(|(k, v)| (k.clone(), v.subst(substs))).collect();
+                let cs: Substs = cs
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.subst(substs)))
+                    .collect();
                 let target = match self.static_target(*i, cs) {
                     Some((t, s)) if t != self_idx => (t, s),
                     _ => {
@@ -110,15 +113,18 @@ impl Codegen<'_, '_> {
 
 fn call_of(s: &StmtKind) -> Option<(&Callee, &Vec<Operand>)> {
     match s {
-        StmtKind::Assign(_, Rvalue::Call { callee, args, .. }) | StmtKind::Eval(Rvalue::Call { callee, args, .. }) => {
-            Some((callee, args))
-        }
+        StmtKind::Assign(_, Rvalue::Call { callee, args, .. })
+        | StmtKind::Eval(Rvalue::Call { callee, args, .. }) => Some((callee, args)),
         _ => None,
     }
 }
 
 fn inlinable(b: &Body) -> bool {
-    if b.kind != BodyKind::Fn || !b.unsupported.is_empty() || !b.errors.is_empty() || !b.captures.is_empty() {
+    if b.kind != BodyKind::Fn
+        || !b.unsupported.is_empty()
+        || !b.errors.is_empty()
+        || !b.captures.is_empty()
+    {
         return false;
     }
     let n: usize = b.blocks.iter().map(|x| x.stmts.len()).sum();
@@ -138,7 +144,9 @@ fn inlinable(b: &Body) -> bool {
         }
         for s in &blk.stmts {
             match &s.kind {
-                StmtKind::DeferPush(..) | StmtKind::DeferLoad(_) | StmtKind::Spawn { .. } => return false,
+                StmtKind::DeferPush(..) | StmtKind::DeferLoad(_) | StmtKind::Spawn { .. } => {
+                    return false
+                }
                 StmtKind::Assign(_, rv) | StmtKind::Eval(rv) => match rv {
                     Rvalue::Aggregate(AggKind::Closure(_), _) => return false,
                     Rvalue::Pure(Op::Unsupported(_), _) => return false,
@@ -177,7 +185,14 @@ fn has_cycle(b: &Body) -> bool {
 }
 
 /// Replaces call statement `si` of block `bi` with the callee's body.
-fn splice(body: &mut Body, bi: usize, si: usize, mut callee: Body, substs: &Substs, args: Vec<Operand>) {
+fn splice(
+    body: &mut Body,
+    bi: usize,
+    si: usize,
+    mut callee: Body,
+    substs: &Substs,
+    args: Vec<Operand>,
+) {
     // Locals: append the callee's, renumbered, with concrete types.
     let base = body.locals.len() as u32;
     for (i, mut d) in callee.locals.drain(..).enumerate() {
@@ -215,7 +230,11 @@ fn splice(body: &mut Body, bi: usize, si: usize, mut callee: Body, substs: &Subs
             Terminator::Goto(b) => Terminator::Goto(bmap(b)),
             Terminator::SwitchBool { mut cond, t, f } => {
                 map_op(&mut cond, &lmap, substs);
-                Terminator::SwitchBool { cond, t: bmap(t), f: bmap(f) }
+                Terminator::SwitchBool {
+                    cond,
+                    t: bmap(t),
+                    f: bmap(f),
+                }
             }
             t @ Terminator::Unreachable => t,
             Terminator::Branch(_) => unreachable!("not inlinable"),
@@ -229,10 +248,17 @@ fn splice(body: &mut Body, bi: usize, si: usize, mut callee: Body, substs: &Subs
             kind: StmtKind::Assign(p, Rvalue::Use(Operand::Move(Place::local(ret)))),
             span: call.span,
         }),
-        _ => stmts.push(Statement { kind: StmtKind::StorageDead(ret), span: call.span }),
+        _ => stmts.push(Statement {
+            kind: StmtKind::StorageDead(ret),
+            span: call.span,
+        }),
     }
     stmts.extend(tail);
-    body.blocks.push(BlockData { stmts, term: cont_term, term_span: cont_span });
+    body.blocks.push(BlockData {
+        stmts,
+        term: cont_term,
+        term_span: cont_span,
+    });
 }
 
 fn map_place(p: &mut Place, lmap: &impl Fn(Local) -> Local) {
@@ -295,6 +321,8 @@ fn map_stmt(k: &mut StmtKind, lmap: &impl Fn(Local) -> Local, s: &Substs) {
         StmtKind::Eval(rv) => map_rvalue(rv, lmap, s),
         StmtKind::Read(p) => map_place(p, lmap),
         StmtKind::StorageDead(l) => *l = lmap(*l),
-        StmtKind::DeferPush(..) | StmtKind::DeferLoad(_) | StmtKind::Spawn { .. } => unreachable!("not inlinable"),
+        StmtKind::DeferPush(..) | StmtKind::DeferLoad(_) | StmtKind::Spawn { .. } => {
+            unreachable!("not inlinable")
+        }
     }
 }
