@@ -130,7 +130,7 @@ pub fn output_path(m: &Manifest, release: bool) -> PathBuf {
 /// A fingerprint of the inputs of a build: every file's text, the build
 /// options, and the compiler itself. When it matches the one stored next to
 /// the executable, the build is skipped.
-pub fn fingerprint(p: &Program, release: bool) -> String {
+pub fn fingerprint(p: &Program, release: bool, llvm: bool) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     for (_, path, text) in &p.pkg.files {
@@ -138,6 +138,7 @@ pub fn fingerprint(p: &Program, release: bool) -> String {
         text.hash(&mut h);
     }
     release.hash(&mut h);
+    llvm.hash(&mut h);
     env!("CARGO_PKG_VERSION").hash(&mut h);
     if let Ok(exe) = std::env::current_exe() {
         if let Ok(meta) = std::fs::metadata(exe) {

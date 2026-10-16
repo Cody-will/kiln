@@ -103,6 +103,9 @@ pub struct Codegen<'r, 'a> {
     pub(crate) typed: Typed<'r, 'a>,
     pub(crate) r: &'r Resolved<'a>,
     pub(crate) module: ObjectModule,
+    /// LLVM backend: definitions are recorded here, not compiled.
+    pub(crate) capture: Option<Captured>,
+    pub(crate) freeze_cache: HashMap<String, bool>,
     pub(crate) bodies: HashMap<usize, Vec<Body>>,
     pub(crate) instances: HashMap<String, FuncId>,
     pub(crate) queue: VecDeque<Work>,
@@ -309,11 +312,48 @@ const RUNTIME: &[(&str, &[Type], Option<Type>)] = &[
     ("kn_fmod", &[types::F64, types::F64], Some(types::F64)),
 ];
 
+/// Which code generator turns the program into machine code.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Backend {
+    /// Cranelift: fast to compile; the default for debug builds.
+    #[default]
+    Cranelift,
+    /// LLVM (`O3`): slower to compile, faster code. Only in a `kiln` built
+    /// with the `llvm` feature; see [`llvm_available`].
+    Llvm,
+}
+
+/// Whether this build of the compiler includes the LLVM backend.
+pub fn llvm_available() -> bool {
+    cfg!(feature = "llvm")
+}
+
 /// Build settings.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Options {
     /// Release build: integer arithmetic wraps on overflow instead of panicking.
     pub release: bool,
+    /// The code generator.
+    pub backend: Backend,
+}
+
+/// Functions and data recorded for the LLVM backend instead of being
+/// compiled by Cranelift.
+#[derive(Default)]
+pub(crate) struct Captured {
+    pub(crate) funcs: Vec<(FuncId, cranelift_codegen::ir::Function, Hints)>,
+    pub(crate) data: Vec<(DataId, DataDescription)>,
+}
+
+/// Facts from the Kiln types about a function's parameters, for the LLVM
+/// backend (see `kiln_llvm::FnHints`).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Hints {
+    /// (index, fresh slot, size, align) of pointer parameters.
+    pub(crate) params: Vec<(usize, bool, u32, u32)>,
+    /// (slot parameter, mutable, size, align) of reference arguments.
+    pub(crate) refs: Vec<(usize, bool, u32, u32)>,
+    pub(crate) inline: bool,
 }
 
 /// Compiles a type-checked, borrow-checked program to an object file.
@@ -352,12 +392,20 @@ pub fn compile(typed: Typed<'_, '_>, opts: Options) -> Result<Vec<u8>, Vec<Diagn
             Span::new(0, 0),
         )]
     })?;
+    if opts.backend == Backend::Llvm && !llvm_available() {
+        return Err(vec![Diagnostic::error(
+            "this `kiln` was built without the LLVM backend (rebuild with `--features llvm`, see docs/LLVM.md)",
+            Span::new(0, 0),
+        )]);
+    }
     let r = typed.resolved();
     let mut cg = Codegen {
         checked: !opts.release,
         typed,
         r,
         module: ObjectModule::new(builder),
+        capture: (opts.backend == Backend::Llvm).then(Captured::default),
+        freeze_cache: HashMap::new(),
         bodies: HashMap::new(),
         instances: HashMap::new(),
         queue: VecDeque::new(),
@@ -425,6 +473,9 @@ pub fn compile(typed: Typed<'_, '_>, opts: Options) -> Result<Vec<u8>, Vec<Diagn
         errs.dedup_by(|a, b| a.message == b.message && a.span == b.span);
         return Err(errs);
     }
+    if let Some(cap) = cg.capture.take() {
+        return emit_llvm(&cg.module, cap);
+    }
     let product = cg.module.finish();
     product.emit().map_err(|e| {
         vec![Diagnostic::error(
@@ -434,7 +485,83 @@ pub fn compile(typed: Typed<'_, '_>, opts: Options) -> Result<Vec<u8>, Vec<Diagn
     })
 }
 
+#[cfg(feature = "llvm")]
+fn emit_llvm(module: &ObjectModule, cap: Captured) -> Result<Vec<u8>, Vec<Diagnostic>> {
+    let funcs: Vec<kiln_llvm::Func> = cap
+        .funcs
+        .into_iter()
+        .map(|(id, func, h)| kiln_llvm::Func {
+            id,
+            func,
+            hints: kiln_llvm::FnHints {
+                params: h
+                    .params
+                    .iter()
+                    .map(|&(index, noalias, size, align)| kiln_llvm::ParamHint {
+                        index,
+                        noalias,
+                        size,
+                        align,
+                    })
+                    .collect(),
+                refs: h
+                    .refs
+                    .iter()
+                    .map(|&(param, mutable, size, align)| kiln_llvm::RefHint {
+                        param,
+                        mutable,
+                        size,
+                        align,
+                    })
+                    .collect(),
+                inline: h.inline,
+            },
+        })
+        .collect();
+    let settings = kiln_llvm::Settings {
+        cpu: std::env::var("KILN_TARGET_CPU").ok(),
+        dump_ir: std::env::var_os("KILN_LLVM_DUMP").map(Into::into),
+    };
+    kiln_llvm::emit(module.declarations(), &funcs, &cap.data, &settings)
+        .map_err(|e| vec![Diagnostic::error(e, Span::new(0, 0))])
+}
+
+#[cfg(not(feature = "llvm"))]
+fn emit_llvm(_: &ObjectModule, _: Captured) -> Result<Vec<u8>, Vec<Diagnostic>> {
+    unreachable!("checked in `compile`")
+}
+
 impl Codegen<'_, '_> {
+    /// Defines a function: compiles it with Cranelift, or records it for LLVM.
+    pub(crate) fn def_func(
+        &mut self,
+        id: FuncId,
+        ctx: &mut cranelift_codegen::Context,
+        hints: Hints,
+    ) -> Result<(), String> {
+        match &mut self.capture {
+            Some(c) => {
+                c.funcs.push((id, ctx.func.clone(), hints));
+                Ok(())
+            }
+            None => self
+                .module
+                .define_function(id, ctx)
+                .map_err(|e| format!("{e:?}")),
+        }
+    }
+
+    /// Defines a data object (see [`Self::def_func`]).
+    pub(crate) fn def_data(&mut self, id: DataId, d: &DataDescription) -> Result<(), String> {
+        match &mut self.capture {
+            Some(c) => {
+                c.data.push((id, d.clone()));
+                Ok(())
+            }
+            None => self.module.define_data(id, d).map_err(|e| e.to_string()),
+        }
+    }
+
     /// Records an error at the current item.
     pub(crate) fn fatal(&mut self, msg: impl Into<String>) {
         let d = Diagnostic::error(msg, self.span);
@@ -567,7 +694,7 @@ impl Codegen<'_, '_> {
         let mut desc = DataDescription::new();
         desc.define_zeroinit(l.size.max(1) as usize);
         desc.set_align(l.align.max(1) as u64);
-        self.module.define_data(id, &desc).expect("define static");
+        self.def_data(id, &desc).expect("define static");
         self.statics.insert(d, (id, fi));
         id
     }
@@ -584,7 +711,7 @@ impl Codegen<'_, '_> {
         let mut bytes = b.to_vec();
         bytes.push(0);
         d.define(bytes.into_boxed_slice());
-        self.module.define_data(id, &d).expect("define data");
+        self.def_data(id, &d).expect("define data");
         id
     }
 
@@ -601,7 +728,7 @@ impl Codegen<'_, '_> {
         let mut bytes = s.as_bytes().to_vec();
         bytes.push(0);
         d.define(bytes.into_boxed_slice());
-        self.module.define_data(id, &d).expect("define data");
+        self.def_data(id, &d).expect("define data");
         self.strings.insert(s.to_string(), id);
         id
     }

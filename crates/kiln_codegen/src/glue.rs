@@ -90,8 +90,8 @@ impl<'r, 'a> Codegen<'r, 'a> {
             cx.b.seal_all_blocks();
             cx.b.finalize();
         }
-        if let Err(e) = self.module.define_function(id, &mut ctx) {
-            self.fatal(format!("internal code generation error in glue: {e:?}"));
+        if let Err(e) = self.def_func(id, &mut ctx, Default::default()) {
+            self.fatal(format!("internal code generation error in glue: {e}"));
         }
     }
 
@@ -207,7 +207,7 @@ impl<'r, 'a> Codegen<'r, 'a> {
                 }
             }
         }
-        if let Err(e) = self.module.define_data(id, &d) {
+        if let Err(e) = self.def_data(id, &d) {
             self.fatal(format!("internal error defining vtable: {e}"));
         }
         id

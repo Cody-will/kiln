@@ -22,5 +22,11 @@ kiln_codegen = { path = "../kiln_codegen" }
 kiln_fmt = { path = "../kiln_fmt" }
 kiln_lsp = { path = "../kiln_lsp" }
 
+[features]
+# Include the LLVM backend (used for --release); needs LLVM 18, see docs/LLVM.md.
+llvm = ["kiln_codegen/llvm"]
+# The same, linking libLLVM dynamically (faster builds).
+llvm-dynamic = ["kiln_codegen/llvm-dynamic"]
+
 [lints]
 workspace = true

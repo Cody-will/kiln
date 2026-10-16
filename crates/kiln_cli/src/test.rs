@@ -32,7 +32,7 @@ pub fn parse_args(rest: &[String]) -> Option<TestOpts> {
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--release" => o.codegen.release = true,
+            _ if crate::codegen_flag(&mut o.codegen, a) => {}
             "--ignored" => o.ignored = true,
             "--run" => o.filter = Some(it.next()?.clone()),
             "--timeout" => o.timeout = Duration::from_secs_f64(it.next()?.parse().ok()?),
@@ -40,6 +40,7 @@ pub fn parse_args(rest: &[String]) -> Option<TestOpts> {
             _ => o.paths.push(a.clone()),
         }
     }
+    o.codegen = crate::finish_codegen_flags(o.codegen, rest)?;
     Some(o)
 }
 

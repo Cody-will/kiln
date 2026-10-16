@@ -152,6 +152,11 @@ impl Codegen<'_, '_> {
             }
             return;
         }
+        let hints = if self.capture.is_some() {
+            self.fn_hints(&body, &substs, abi)
+        } else {
+            Default::default()
+        };
         // Release builds translate twice: once to find the stack slots that
         // can live in registers, then for real (see `promote`).
         let mut promoted = None;
@@ -186,9 +191,104 @@ impl Codegen<'_, '_> {
             self.errors.push(d);
             return;
         }
-        if let Err(e) = self.module.define_function(id, &mut ctx) {
-            self.fatal(format!("internal code generation error: {e:?}"));
+        if let Err(e) = self.def_func(id, &mut ctx, hints) {
+            self.fatal(format!("internal code generation error: {e}"));
         }
+    }
+
+    /// What the Kiln types say about a function's pointer parameters (for
+    /// the LLVM backend). Every argument is passed as a pointer to a slot the
+    /// caller made for this call (`arg_slots`), so argument slots never
+    /// alias; a reference argument's target is reached only through it
+    /// (`&mut T`) or not written at all (`&T` without interior mutability).
+    fn fn_hints(&mut self, body: &Body, substs: &HashMap<String, Ty>, abi: Abi) -> crate::Hints {
+        let extra = if abi == Abi::Closure { 2 } else { 1 };
+        let mut h = crate::Hints::default();
+        for (i, decl) in body.locals.iter().enumerate() {
+            let ty = decl.ty.subst(substs);
+            let l = self.layout(&ty);
+            match decl.kind {
+                LocalKind::Return => h.params.push((0, false, l.size, l.align)),
+                LocalKind::Arg => {
+                    let idx = extra + i - 1;
+                    h.params.push((idx, true, l.size, l.align));
+                    if let Ty::Ref(mutable, inner) = &ty {
+                        let inner = (**inner).clone();
+                        let elem = match &inner {
+                            Ty::Dyn(_) => continue,
+                            Ty::Slice(e) => Some((**e).clone()),
+                            Ty::Prim(PrimTy::Str) => Some(Ty::Prim(PrimTy::U8)),
+                            _ => None,
+                        };
+                        let target = elem.clone().unwrap_or_else(|| inner.clone());
+                        if !*mutable && !self.is_freeze(&target) {
+                            continue;
+                        }
+                        let (size, align) = match elem {
+                            Some(e) => (0, self.layout(&e).align),
+                            None => {
+                                let tl = self.layout(&inner);
+                                (tl.size, tl.align)
+                            }
+                        };
+                        h.refs.push((idx, *mutable, size, align));
+                    }
+                }
+                _ => {}
+            }
+        }
+        let stmts: usize = body.blocks.iter().map(|b| b.stmts.len() + 1).sum();
+        h.inline = stmts <= 12;
+        h
+    }
+
+    /// Whether a value of type `t` is never written through a shared
+    /// reference (no interior mutability in its own bytes). Atomics and
+    /// `Once` update their fields through `&self`; everything reached through
+    /// a pointer (heap data, other references) is outside the value itself.
+    pub(crate) fn is_freeze(&mut self, t: &Ty) -> bool {
+        let key = format!("{t:?}");
+        if let Some(b) = self.freeze_cache.get(&key) {
+            return *b;
+        }
+        self.freeze_cache.insert(key.clone(), false); // cycle guard
+        let b = match t {
+            Ty::Prim(_)
+            | Ty::Ref(..)
+            | Ty::Ptr(..)
+            | Ty::Fn(..)
+            | Ty::ChanSend(_)
+            | Ty::ChanRecv(_) => true,
+            Ty::Tuple(ts) => ts.iter().all(|x| self.is_freeze(x)),
+            Ty::Array(x, _) | Ty::Slice(x) => self.is_freeze(x),
+            Ty::Adt(..)
+                if ["string", "Vec", "Box", "Range"]
+                    .iter()
+                    .any(|n| self.is_lang(t, n)) =>
+            {
+                true
+            }
+            Ty::Adt(d, _) => {
+                let name = self.r.def(*d).name.clone();
+                if name.starts_with("Atomic") || name == "Once" {
+                    false
+                } else {
+                    let variants: Vec<Option<kiln_resolve::DefId>> = match self.r.def(*d).kind {
+                        kiln_resolve::DefKind::Enum => {
+                            self.r.variants(*d).into_iter().map(Some).collect()
+                        }
+                        _ => vec![None],
+                    };
+                    variants.into_iter().all(|v| {
+                        let fs = self.typed.adt_fields(t, v);
+                        fs.iter().all(|(_, ft)| self.is_freeze(ft))
+                    })
+                }
+            }
+            _ => false,
+        };
+        self.freeze_cache.insert(key, b);
+        b
     }
 
     pub(crate) fn define_shim(&mut self, id: FuncId, target: FuncId, nargs: usize) {
@@ -209,8 +309,8 @@ impl Codegen<'_, '_> {
             b.seal_all_blocks();
             b.finalize();
         }
-        if let Err(e) = self.module.define_function(id, &mut ctx) {
-            self.fatal(format!("internal code generation error: {e:?}"));
+        if let Err(e) = self.def_func(id, &mut ctx, Default::default()) {
+            self.fatal(format!("internal code generation error: {e}"));
         }
     }
 
@@ -359,8 +459,8 @@ impl Codegen<'_, '_> {
             b.seal_all_blocks();
             b.finalize();
         }
-        if let Err(e) = self.module.define_function(id, &mut ctx) {
-            self.fatal(format!("internal code generation error: {e:?}"));
+        if let Err(e) = self.def_func(id, &mut ctx, Default::default()) {
+            self.fatal(format!("internal code generation error: {e}"));
         }
     }
 }

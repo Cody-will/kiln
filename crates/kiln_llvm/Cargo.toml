@@ -1,0 +1,21 @@
+[package]
+name = "kiln_llvm"
+description = "Optional LLVM backend for Kiln release builds: translates the Cranelift IR built by kiln_codegen into LLVM IR and optimizes it."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cranelift-codegen = "0.116"
+cranelift-module = "0.116"
+inkwell = { version = "0.6", features = ["llvm18-1"], optional = true }
+
+[features]
+# The backend itself (needs LLVM 18). Without it this crate is a stub, so
+# `cargo build --workspace` works on machines without LLVM.
+llvm = ["dep:inkwell"]
+# Link libLLVM dynamically (faster to build; the default links statically).
+prefer-dynamic = ["llvm", "inkwell/llvm18-1-prefer-dynamic"]
+
+[lints]
+workspace = true

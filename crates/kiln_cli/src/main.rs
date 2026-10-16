@@ -31,7 +31,7 @@ kiln - the Kiln language toolchain
 USAGE:
     kiln new <name> [--lib] Create a package (kiln.toml, src/main.kn or src/lib.kn)
     kiln check [file.kn]    Resolve names, type-check, and borrow-check
-    kiln build [--release] [file.kn] [-o <output>]
+    kiln build [--release] [--backend=llvm|cranelift] [file.kn] [-o <output>]
                             Compile to a native executable (a package goes to
                             target/debug/<name> or target/release/<name>)
     kiln run [--release] [file.kn] [args...]
@@ -51,8 +51,49 @@ USAGE:
     kiln lsp                The language server (LSP over stdio), for editors
 
     Debug builds (the default) panic on integer overflow; --release builds wrap.
+    Release builds use LLVM when this kiln includes it (built with
+    --features llvm), Cranelift otherwise; --backend= overrides.
     kiln help               Show this message
     kiln --version          Show the version";
+
+/// Applies a code generation flag (`--release`, `--backend=<name>`);
+/// false if `a` is not one.
+pub(crate) fn codegen_flag(opts: &mut kiln_codegen::Options, a: &str) -> bool {
+    match a {
+        "--release" => opts.release = true,
+        "--backend=cranelift" => opts.backend = kiln_codegen::Backend::Cranelift,
+        "--backend=llvm" => opts.backend = kiln_codegen::Backend::Llvm,
+        _ => return false,
+    }
+    true
+}
+
+/// Picks the default backend: LLVM for `--release` when this `kiln` has it,
+/// Cranelift otherwise. `None` for a `--backend` this build lacks.
+pub(crate) fn finish_codegen_flags(
+    mut opts: kiln_codegen::Options,
+    flags: &[String],
+) -> Option<kiln_codegen::Options> {
+    let explicit = flags.iter().any(|a| a.starts_with("--backend="));
+    if flags
+        .iter()
+        .any(|a| a.starts_with("--backend=") && a != "--backend=llvm" && a != "--backend=cranelift")
+    {
+        return None;
+    }
+    if !explicit {
+        opts.backend = if opts.release && kiln_codegen::llvm_available() {
+            kiln_codegen::Backend::Llvm
+        } else {
+            kiln_codegen::Backend::Cranelift
+        };
+    }
+    if opts.backend == kiln_codegen::Backend::Llvm && !kiln_codegen::llvm_available() {
+        eprintln!("error: this `kiln` was built without the LLVM backend (see docs/LLVM.md)");
+        return None;
+    }
+    Some(opts)
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -73,12 +114,15 @@ fn main() -> ExitCode {
             let mut it = rest.iter();
             while let Some(a) = it.next() {
                 match a.as_str() {
-                    "--release" => opts.release = true,
+                    _ if codegen_flag(&mut opts, a) => {}
                     "-o" => out = it.next(),
                     _ if file.is_none() && !a.starts_with('-') => file = Some(a),
                     _ => return usage_error(),
                 }
             }
+            let Some(opts) = finish_codegen_flags(opts, rest) else {
+                return usage_error();
+            };
             match rest.iter().any(|a| a == "-o") == out.is_some() {
                 true => build(file.map(String::as_str), out, opts),
                 false => usage_error(),
@@ -88,10 +132,12 @@ fn main() -> ExitCode {
             // Options come before the file; everything after it goes to the program.
             let mut opts = kiln_codegen::Options::default();
             let mut i = 0;
-            while i < rest.len() && rest[i] == "--release" {
-                opts.release = true;
+            while i < rest.len() && codegen_flag(&mut opts, &rest[i]) {
                 i += 1;
             }
+            let Some(opts) = finish_codegen_flags(opts, &rest[..i]) else {
+                return usage_error();
+            };
             // `kiln run [file.kn | dir] [args]`; in a package, `kiln run [-- args]`.
             match rest.get(i) {
                 Some(f) if f == "--" => run_program(None, &rest[i + 1..], opts),
@@ -219,7 +265,7 @@ fn build_program(
         _ => default_output(&p.name()),
     };
     let stamp = out.with_extension("fingerprint");
-    let fp = package::fingerprint(p, opts.release);
+    let fp = package::fingerprint(p, opts.release, opts.backend == kiln_codegen::Backend::Llvm);
     let cached = p.manifest.is_some()
         && out.is_file()
         && std::fs::read_to_string(&stamp).is_ok_and(|s| s == fp);

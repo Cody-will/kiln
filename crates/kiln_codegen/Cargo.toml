@@ -18,9 +18,15 @@ cranelift-module = "0.116"
 cranelift-object = "0.116"
 cranelift-native = "0.116"
 kiln_runtime = { path = "../kiln_runtime" }
+kiln_llvm = { path = "../kiln_llvm", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 cc = "1"
+
+[features]
+# The optional LLVM backend for release builds (needs LLVM 18; see docs/LLVM.md).
+llvm = ["dep:kiln_llvm", "kiln_llvm/llvm"]
+llvm-dynamic = ["llvm", "kiln_llvm/prefer-dynamic"]
 
 [lints]
 workspace = true
