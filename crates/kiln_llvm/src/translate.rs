@@ -1557,8 +1557,7 @@ fn promoted_ret<'c>(cx: &Cx<'c>, f: &Func, eligible: bool) -> Option<BasicTypeEn
         return None;
     }
     let h = f.hints.params.iter().find(|h| h.index == 0 && !h.noalias)?;
-    matches!(h.size, 1 | 2 | 4 | 8 | 16)
-        .then(|| cx.c.custom_width_int_type((h.size * 8) as u32).into())
+    matches!(h.size, 1 | 2 | 4 | 8 | 16).then(|| cx.c.custom_width_int_type(h.size * 8).into())
 }
 
 /// Turns `fv` (the pointer-slot entry point every caller uses) into an
