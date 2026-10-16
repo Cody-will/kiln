@@ -136,7 +136,6 @@ fn object(var: &str, fields: &[(String, String)]) -> String {
     s
 }
 
-
 /// A Kiln string literal for `s` (braces doubled: Kiln strings interpolate).
 fn lit(s: &str) -> String {
     let mut o = String::from("\"");
@@ -171,7 +170,9 @@ fn emit(pieces: Vec<Piece>, indent: &str) -> String {
     let mut s = String::new();
     for p in merged {
         match p {
-            Piece::Text(t) if t.chars().count() == 1 && !matches!(t.as_str(), "{" | "}" | "'" | "\\") => {
+            Piece::Text(t)
+                if t.chars().count() == 1 && !matches!(t.as_str(), "{" | "}" | "'" | "\\") =>
+            {
                 let _ = writeln!(s, "{indent}out.push_char('{t}')");
             }
             Piece::Text(t) => {
@@ -251,7 +252,11 @@ fn struct_to(s: &StructDecl) -> String {
                 .collect::<Vec<_>>(),
         ),
         Fields::Tuple(ts) if ts.len() == 1 => vec![Piece::Value("&self.0".into())],
-        Fields::Tuple(ts) => arr_pieces(&(0..ts.len()).map(|i| format!("&self.{i}")).collect::<Vec<_>>()),
+        Fields::Tuple(ts) => arr_pieces(
+            &(0..ts.len())
+                .map(|i| format!("&self.{i}"))
+                .collect::<Vec<_>>(),
+        ),
         Fields::Unit => vec![Piece::Text("null".into())],
     };
     out.push_str(WRITE_HEAD);
@@ -300,7 +305,10 @@ fn struct_from(s: &StructDecl) -> String {
     out.push_str(&pre);
     out.push_str(&format!("\t\treturn Ok({ctor})\n\t}}\n"));
     if let Fields::Named(fs) = &s.fields {
-        out.push_str(&read_named(name, fs.iter().map(|f| f.name.name.as_str()).collect()));
+        out.push_str(&read_named(
+            name,
+            fs.iter().map(|f| f.name.name.as_str()).collect(),
+        ));
     }
     out.push_str("}\n\n");
     out
@@ -308,9 +316,8 @@ fn struct_from(s: &StructDecl) -> String {
 
 /// `read_json` decoding a struct with named fields straight from the text.
 fn read_named(name: &str, fields: Vec<&str>) -> String {
-    let mut o = format!(
-        "\n\tfun read_json<'p>(p &mut {J}::Parser<'p>) result<Self, {J}::Error> {{\n"
-    );
+    let mut o =
+        format!("\n\tfun read_json<'p>(p &mut {J}::Parser<'p>) result<Self, {J}::Error> {{\n");
     o.push_str("\t\tif !p.at_object() {\n\t\t\tv := p.read_value()?\n\t\t\treturn Self::from_json(&v)\n\t\t}\n");
     o.push_str("\t\tp.begin()?\n");
     for i in 0..fields.len() {
@@ -389,7 +396,10 @@ fn enum_to(e: &EnumDecl) -> String {
         let vn = &v.name.name;
         let head = format!("{{\"{vn}\":");
         let (pat, mut pieces) = match &v.fields {
-            Fields::Unit => (format!("{name}::{vn}"), vec![Piece::Text(format!("\"{vn}\""))]),
+            Fields::Unit => (
+                format!("{name}::{vn}"),
+                vec![Piece::Text(format!("\"{vn}\""))],
+            ),
             Fields::Tuple(ts) => {
                 let binds: Vec<_> = (0..ts.len()).map(|i| format!("x{i}")).collect();
                 let mut p = vec![Piece::Text(head.clone())];

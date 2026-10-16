@@ -84,7 +84,13 @@ fn run_programs() {
     let tmp = scratch("run");
     let bless = std::env::var_os("KILN_BLESS").is_some();
     let mut failures = Vec::new();
+    // Programs whose first line is `// debug-only` (overflow panics, which
+    // release builds wrap) are skipped when the flags include `--release`.
+    let release = std::env::var("KILN_RUN_FLAGS").is_ok_and(|f| f.contains("--release"));
     for f in &files {
+        if release && std::fs::read_to_string(f).is_ok_and(|s| s.starts_with("// debug-only")) {
+            continue;
+        }
         let expected_path = f.with_extension("out");
         match build_and_run(f, &tmp) {
             Err(e) => failures.push(e),

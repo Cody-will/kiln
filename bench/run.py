@@ -3,8 +3,11 @@
 
 Usage: python3 bench/run.py [--runs N] [names...]
 
-Needs: a release build of kiln (cargo build --release), go, cargo, hyperfine,
-and oha (for the HTTP benchmark), all on PATH.
+Needs: a release build of kiln with the LLVM backend
+(cargo build --release -p kiln_cli --features llvm-dynamic; see docs/LLVM.md),
+go, cargo, hyperfine, and oha (for the HTTP benchmark), all on PATH. Kiln
+programs are built twice: `kiln-cranelift` (--release --backend=cranelift)
+and `kiln-llvm` (--release --backend=llvm).
 """
 import json, os, subprocess, sys, time
 
@@ -13,7 +16,8 @@ ROOT = os.path.dirname(HERE)
 OUT = os.path.join(HERE, "out")
 KILN = os.environ.get("KILN", os.path.join(ROOT, "target", "release", "kiln"))
 BENCHES = ["fib", "nbody", "binarytrees", "spectralnorm", "fannkuch", "json", "hashmap", "pingpong", "workerpool"]
-LANGS = ["kiln", "go", "rust"]
+KILN_BACKENDS = ["cranelift", "llvm"]
+LANGS = ["kiln-" + b for b in KILN_BACKENDS] + ["go", "rust"]
 
 
 def sh(cmd, **kw):
@@ -25,7 +29,9 @@ def build():
     sh(["cc", "-O2", "-o", os.path.join(OUT, "maxrss"), os.path.join(HERE, "maxrss.c")])
     sh(["cargo", "build", "--release", "-q"], cwd=os.path.join(HERE, "rust"))
     for b in BENCHES + ["http"]:
-        sh([KILN, "build", "--release", os.path.join(HERE, b, "main.kn"), "-o", os.path.join(OUT, b + "-kiln")])
+        for be in KILN_BACKENDS:
+            sh([KILN, "build", "--release", f"--backend={be}", os.path.join(HERE, b, "main.kn"),
+                "-o", os.path.join(OUT, f"{b}-kiln-{be}")])
         sh(["go", "build", "-o", os.path.join(OUT, b + "-go"), os.path.join(HERE, b, "main.go")])
         os.replace(os.path.join(HERE, "rust", "target", "release", b), os.path.join(OUT, b + "-rust"))
 
