@@ -304,46 +304,98 @@ fn struct_from(s: &StructDecl) -> String {
     let (pre, ctor) = build(name, &s.fields, "v", name);
     out.push_str(&pre);
     out.push_str(&format!("\t\treturn Ok({ctor})\n\t}}\n"));
-    if let Fields::Named(fs) = &s.fields {
-        out.push_str(&read_named(
-            name,
-            fs.iter().map(|f| f.name.name.as_str()).collect(),
-        ));
-    }
-    out.push_str("}\n\n");
+    out.push_str(&read_head());
+    out.push_str(&read_body(name, &s.fields, 2, true));
+    out.push_str("\t}\n}\n\n");
     out
 }
 
-/// `read_json` decoding a struct with named fields straight from the text.
-fn read_named(name: &str, fields: Vec<&str>) -> String {
-    let mut o =
-        format!("\n\tfun read_json<'p>(p &mut {J}::Parser<'p>) result<Self, {J}::Error> {{\n");
-    o.push_str("\t\tif !p.at_object() {\n\t\t\tv := p.read_value()?\n\t\t\treturn Self::from_json(&v)\n\t\t}\n");
-    o.push_str("\t\tp.begin()?\n");
-    for i in 0..fields.len() {
-        let _ = writeln!(o, "\t\tf{i} mut := None");
+/// A conversion error for direct decoding: `from_str` then re-decodes
+/// through `Value` to report exactly what `from_json` would.
+const MISS: &str = "return Err(std::encoding::json::Error::new(\"mismatch\"))";
+
+/// Statements reading `fields` of `path` from the parser `p` at the cursor
+/// and returning it, at indent `ind` (tabs). `fallback`: when the value
+/// has the wrong shape, convert through a tree (structs) instead of
+/// failing (enum payloads).
+fn read_body(path: &str, fields: &Fields, ind: usize, fallback: bool) -> String {
+    let t = "\t".repeat(ind);
+    let mut o = String::new();
+    let shape = |o: &mut String, test: &str| {
+        if fallback {
+            let _ = writeln!(
+                o,
+                "{t}if !p.{test}() {{\n{t}\tv := p.read_value()?\n{t}\treturn Self::from_json(&v)\n{t}}}"
+            );
+        } else {
+            let _ = writeln!(o, "{t}if !p.{test}() {{\n{t}\t{MISS}\n{t}}}");
+        }
+    };
+    match fields {
+        Fields::Named(fs) => {
+            shape(&mut o, "at_object");
+            let _ = writeln!(o, "{t}p.begin()?");
+            for i in 0..fs.len() {
+                let _ = writeln!(o, "{t}f{i} mut := None");
+            }
+            let _ = writeln!(
+                o,
+                "{t}first mut := true\n{t}while p.next_key(first)? {{\n{t}\tfirst = false"
+            );
+            for (i, f) in fs.iter().enumerate() {
+                let kw = if i == 0 { "if" } else { "} else if" };
+                let _ = writeln!(
+                    o,
+                    "{t}\t{kw} p.is_key(\"{n}\") {{\n{t}\t\tf{i} = Some({J}::FromJson::read_json(p)?)",
+                    n = f.name.name
+                );
+            }
+            if fs.is_empty() {
+                let _ = writeln!(o, "{t}\tp.skip()?");
+            } else {
+                let _ = writeln!(o, "{t}\t}} else {{\n{t}\t\tp.skip()?\n{t}\t}}");
+            }
+            let _ = writeln!(o, "{t}}}");
+            let inits: Vec<_> = fs
+                .iter()
+                .enumerate()
+                .map(|(i, f)| format!("{n}: {J}::finish_field(f{i}, \"{n}\")?", n = f.name.name))
+                .collect();
+            let _ = writeln!(o, "{t}return Ok({path} {{ {} }})", inits.join(", "));
+        }
+        Fields::Tuple(ts) if ts.len() == 1 => {
+            let _ = writeln!(o, "{t}return Ok({path}({J}::FromJson::read_json(p)?))");
+        }
+        Fields::Tuple(ts) => {
+            shape(&mut o, "at_array");
+            let _ = writeln!(o, "{t}p.begin()?");
+            for i in 0..ts.len() {
+                let _ = writeln!(
+                    o,
+                    "{t}if !p.next_elem({first})? {{\n{t}\t{MISS}\n{t}}}\n{t}x{i} := {J}::FromJson::read_json(p)?",
+                    first = i == 0
+                );
+            }
+            let _ = writeln!(
+                o,
+                "{t}if p.next_elem({})? {{\n{t}\t{MISS}\n{t}}}",
+                ts.is_empty()
+            );
+            let xs: Vec<_> = (0..ts.len()).map(|i| format!("x{i}")).collect();
+            let _ = writeln!(o, "{t}return Ok({path}({}))", xs.join(", "));
+        }
+        Fields::Unit => {
+            let _ = writeln!(
+                o,
+                "{t}if !p.eat_null() {{\n{t}\t{MISS}\n{t}}}\n{t}return Ok({path})"
+            );
+        }
     }
-    o.push_str("\t\tfirst mut := true\n\t\twhile p.next_key(first)? {\n\t\t\tfirst = false\n");
-    for (i, f) in fields.iter().enumerate() {
-        let kw = if i == 0 { "if" } else { "} else if" };
-        let _ = writeln!(
-            o,
-            "\t\t\t{kw} p.is_key(\"{f}\") {{\n\t\t\t\tf{i} = Some({J}::FromJson::read_json(p)?)"
-        );
-    }
-    if fields.is_empty() {
-        o.push_str("\t\t\tp.skip()?\n");
-    } else {
-        o.push_str("\t\t\t} else {\n\t\t\t\tp.skip()?\n\t\t\t}\n");
-    }
-    o.push_str("\t\t}\n");
-    let inits: Vec<_> = fields
-        .iter()
-        .enumerate()
-        .map(|(i, f)| format!("{f}: {J}::finish_field(f{i}, \"{f}\")?"))
-        .collect();
-    let _ = writeln!(o, "\t\treturn Ok({name} {{ {} }})\n\t}}", inits.join(", "));
     o
+}
+
+fn read_head() -> String {
+    format!("\n\tfun read_json<'p>(p &mut {J}::Parser<'p>) result<Self, {J}::Error> {{\n")
 }
 
 fn enum_to(e: &EnumDecl) -> String {
@@ -455,7 +507,47 @@ fn enum_from(e: &EnumDecl) -> String {
     }
     let _ = writeln!(
         out,
-        "\t\treturn Err({J}::unknown_variant(name, \"{name}\"))\n\t}}\n}}\n"
+        "\t\treturn Err({J}::unknown_variant(name, \"{name}\"))\n\t}}"
     );
+    // Direct decoding: "Unit" or {"Variant": payload}.
+    out.push_str(&read_head());
+    out.push_str("\t\tif p.at_string() {\n\t\t\ts := p.read_string()?\n");
+    for v in &e.variants {
+        if matches!(v.fields, Fields::Unit) {
+            let vn = &v.name.name;
+            let _ = writeln!(
+                out,
+                "\t\t\tif s == \"{vn}\" {{\n\t\t\t\treturn Ok({name}::{vn})\n\t\t\t}}"
+            );
+        }
+    }
+    let _ = writeln!(out, "\t\t\t{MISS}\n\t\t}}");
+    let _ = writeln!(out, "\t\tif !p.at_object() {{\n\t\t\t{MISS}\n\t\t}}");
+    out.push_str("\t\tp.begin()?\n");
+    let _ = writeln!(out, "\t\tif !p.next_key(true)? {{\n\t\t\t{MISS}\n\t\t}}");
+    for v in &e.variants {
+        let vn = &v.name.name;
+        let _ = writeln!(out, "\t\tif p.is_key(\"{vn}\") {{");
+        let body = match &v.fields {
+            // {"Unit": anything} converts to the unit variant.
+            Fields::Unit => "\t\t\tp.skip()?\n".to_string(),
+            f => read_body("v", f, 3, false)
+                .replace("return Ok(v", &format!("x := Ok({name}::{vn}"))
+                .replace("return Ok(", "x := Ok("),
+        };
+        out.push_str(&body);
+        let _ = writeln!(
+            out,
+            "\t\t\tif p.next_key(false)? {{\n\t\t\t\t{MISS}\n\t\t\t}}"
+        );
+        match &v.fields {
+            Fields::Unit => {
+                let _ = writeln!(out, "\t\t\treturn Ok({name}::{vn})");
+            }
+            _ => out.push_str("\t\t\treturn x\n"),
+        }
+        out.push_str("\t\t}\n");
+    }
+    let _ = writeln!(out, "\t\t{MISS}\n\t}}\n}}\n");
     out
 }
