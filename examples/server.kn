@@ -35,7 +35,7 @@ fun main() result<void, io::Error> {
 	println("listening on {listener.local_addr()?}")
 	for conn in listener.incoming() {
 		conn := conn?
-		go move {
+		spawn move {
 			if let Err(e) = handle(conn) {
 				eprintln("conn error: {e}")
 			}

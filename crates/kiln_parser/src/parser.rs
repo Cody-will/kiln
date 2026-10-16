@@ -197,6 +197,20 @@ impl<'s> Parser<'s> {
         }
     }
 
+    /// A member name: an identifier, or any keyword, after `.` or `::` and as
+    /// a method name (`s.spawn(f)`, `Scope::spawn`, `pub fun spawn(&self, ..)`).
+    /// The position makes it unambiguous.
+    fn member_name(&mut self) -> PResult<Ident> {
+        if let T::Keyword(k) = self.peek().clone() {
+            let span = self.bump().span;
+            return Ok(Ident {
+                name: k.as_str().to_string(),
+                span,
+            });
+        }
+        self.expect_ident()
+    }
+
     fn expect_lifetime(&mut self) -> PResult<Ident> {
         match self.peek().clone() {
             T::Lifetime(name) => Ok(Ident {
@@ -648,11 +662,21 @@ impl<'s> Parser<'s> {
         } else {
             self.expect_kw(Kw::Fn)?;
         }
-        let name = self.expect_ident()?;
+        let name_is_kw = matches!(self.peek(), T::Keyword(_));
+        let name = self.member_name()?;
         let mut generics = self.parse_generics()?;
         self.expect(&T::LParen)?;
         self.skip_implicit_semis();
         let self_param = self.parse_self_param()?;
+        if name_is_kw && self_param.is_none() {
+            self.errors.push(Diagnostic::error(
+                format!(
+                    "`{}` is a keyword; only methods (functions taking `self`) may use a keyword as their name",
+                    name.name
+                ),
+                name.span,
+            ));
+        }
         let params = match self_param {
             Some(_) if self.eat(&T::RParen) => Vec::new(),
             Some(_) => {
@@ -1741,36 +1765,49 @@ impl<'s> Parser<'s> {
         }
     }
 
-    /// `go f(args)` / `go [move] { ... }` (after `go`).
-    fn parse_go(&mut self, start: Span) -> PResult<Expr> {
+    /// `spawn f(args)` / `spawn [move] { ... }` (after `spawn`).
+    fn parse_spawn(&mut self, start: Span) -> PResult<Expr> {
         let is_move = self.eat_kw(Kw::Move);
         let target = if self.at(&T::LBrace) {
-            GoTarget::Block {
+            SpawnTarget::Block {
                 is_move,
                 body: self.parse_block()?,
             }
         } else if is_move {
-            return self.unexpected("`{` after `go move`");
+            return self.unexpected("`{` after `spawn move`");
         } else {
             let e = self.parse_unary()?;
             if !matches!(e.kind, ExprKind::Call(..) | ExprKind::MethodCall { .. }) {
                 return self.error_at(
-                    "`go` requires a function call or a block (`go f(x)` or `go move { ... }`)",
+                    "`spawn` requires a function call or a block (`spawn f(x)` or `spawn move { ... }`)",
                     e.span,
                 );
             }
-            GoTarget::Call(e)
+            SpawnTarget::Call(e)
         };
         Ok(Expr {
             span: start.to(self.prev_span()),
-            kind: ExprKind::Go(Box::new(target)),
+            kind: ExprKind::Spawn(Box::new(target)),
         })
     }
 
     fn parse_unary(&mut self) -> PResult<Expr> {
         let start = self.span();
-        if self.eat_kw(Kw::Go) {
-            return self.parse_go(start);
+        if self.eat_kw(Kw::Spawn) {
+            return self.parse_spawn(start);
+        }
+        // Old syntax `go f(x)` / `go move { ... }`: `go` is an ordinary
+        // identifier now, and a name or `move` right after it is never valid.
+        if matches!(self.peek(), T::Ident(n) if n == "go")
+            && matches!(self.nth(1), T::Ident(_) | T::Keyword(Kw::Move))
+        {
+            let span = self.span();
+            self.errors.push(
+                Diagnostic::error("tasks are started with `spawn` in Kiln", span)
+                    .with_help("write `spawn f(x)` or `spawn move { ... }`"),
+            );
+            self.bump();
+            return self.parse_spawn(start);
         }
         let op = match self.peek() {
             T::Minus => UnOp::Neg,
@@ -1876,12 +1913,12 @@ impl<'s> Parser<'s> {
                         T::Keyword(Kw::Await) => {
                             let span = self.span();
                             return self.error_at(
-                                "`await` is reserved; Kiln uses `go` and channels for concurrency",
+                                "`await` is reserved; Kiln uses `spawn` and channels for concurrency",
                                 span,
                             );
                         }
                         _ => {
-                            let method = self.expect_ident()?;
+                            let method = self.member_name()?;
                             let mut generic_args = Vec::new();
                             if self.at(&T::ColonColon) && self.lt_at(1) {
                                 self.bump();
@@ -1923,8 +1960,13 @@ impl<'s> Parser<'s> {
                 let args = self.parse_generic_args()?;
                 segments.last_mut().unwrap().args = args;
             } else {
+                let ident = match self.peek() {
+                    T::Keyword(Kw::SelfValue | Kw::SelfType | Kw::Chan) => self.path_ident()?,
+                    T::Keyword(_) => self.member_name()?,
+                    _ => self.path_ident()?,
+                };
                 segments.push(PathSegment {
-                    ident: self.path_ident()?,
+                    ident,
                     args: vec![],
                 });
             }

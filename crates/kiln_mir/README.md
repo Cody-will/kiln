@@ -1,6 +1,6 @@
 # kiln_mir
 
-Kiln's mid-level IR: each function body (and each closure and `go` block)
+Kiln's mid-level IR: each function body (and each closure and `spawn` block)
 lowered from the typed AST into a control-flow graph of basic blocks.
 
 MIR makes explicit what the surface syntax leaves implicit:
@@ -17,7 +17,7 @@ MIR makes explicit what the surface syntax leaves implicit:
 - **`defer`**: lowered once into the function's exit block, before locals die.
 - **Borrow flow through calls**: each call records which arguments its result
   may borrow from, using the callee's signature and lifetime elision (`sig.rs`).
-- **Tasks**: `Spawn` statements for `go f(..)`, `go { }`, and `Scope::spawn`,
+- **Tasks**: `Spawn` statements for `spawn f(..)`, `spawn { }`, and `Scope::spawn`,
   with inferred captures.
 
 It is consumed by `kiln_borrowck` today and will feed code generation.

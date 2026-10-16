@@ -44,7 +44,7 @@ fun main() result<void, io::Error> {
 	srv := tls::ServerConfig::from_pem(CERT.as_bytes(), KEY.as_bytes())?
 	l := TcpListener::bind("127.0.0.1:0")?
 	port := l.port()?
-	go move {
+	spawn move {
 		for _ in 0..3 {
 			c := l.accept().unwrap()
 			match tls::TlsStream::server(c, &srv) {
@@ -86,7 +86,7 @@ fun main() result<void, io::Error> {
 	router.get("/hi", hello)
 	router.post("/hi", hello)
 	hcfg := tls::ServerConfig::from_pem(CERT.as_bytes(), KEY.as_bytes())?
-	go move {
+	spawn move {
 		http::Server::new(router).serve_tls(hl, hcfg).unwrap()
 	}
 	client := http::Client::new().with_tls_config(tls::ClientConfig::with_roots_pem(CA.as_bytes())?)

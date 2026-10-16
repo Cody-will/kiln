@@ -9,9 +9,9 @@
 //!   locals are dropped, so they see variables as they are at function exit.
 //! - Method call arguments are evaluated before the receiver is auto-borrowed
 //!   (two-phase borrows), so `v.push(v.len())` is accepted.
-//! - Closures and `go` blocks become separate [`Body`]s; their captures are
+//! - Closures and `spawn` blocks become separate [`Body`]s; their captures are
 //!   inferred (moved if the body moves the variable, `&mut` if it mutates it,
-//!   `&` otherwise; everything is moved for `move` closures and `go move`).
+//!   `&` otherwise; everything is moved for `move` closures and `spawn move`).
 //! - Calls record which arguments the result may borrow from, using the
 //!   callee's signature and the lifetime elision rules ([`sig`]).
 

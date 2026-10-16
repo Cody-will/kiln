@@ -16,10 +16,10 @@ fun main() result<void, io::Error> {
 	listener := TcpListener::bind("127.0.0.1:0")?
 	port := listener.port()?
 	log::debug("not shown")
-	go move {
+	spawn move {
 		for conn in listener.incoming() {
 			c := conn.unwrap()
-			go move {
+			spawn move {
 				echo(c).unwrap()
 			}
 		}
@@ -28,7 +28,7 @@ fun main() result<void, io::Error> {
 	(tx, rx) := results
 	for i in 0..3 {
 		t := tx.clone()
-		go move {
+		spawn move {
 			c := TcpStream::connect("127.0.0.1:{port}").unwrap()
 			c.write_str("hello {i}\nbye {i}\n").unwrap()
 			r mut := BufReader::new(&c)

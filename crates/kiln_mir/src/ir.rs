@@ -36,7 +36,7 @@ pub enum LocalKind {
     User,
     /// A compiler temporary.
     Temp,
-    /// A variable captured by a closure or `go` block (only in that body).
+    /// A variable captured by a closure or `spawn` block (only in that body).
     Upvar,
 }
 
@@ -341,9 +341,9 @@ impl PartialEq for Capture {
 /// Which kind of task a [`StmtKind::Spawn`] starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpawnKind {
-    /// `go f(args)`: the operands are the moved arguments.
+    /// `spawn f(args)`: the operands are the moved arguments.
     GoCall,
-    /// `go { ... }` / `go move { ... }`: the operands are the captures.
+    /// `spawn { ... }` / `spawn move { ... }`: the operands are the captures.
     GoBlock { is_move: bool },
     /// `s.spawn(closure)` inside `scope(...)`: may borrow locals.
     Scoped,
@@ -444,7 +444,7 @@ pub enum BodyKind {
     GoBlock,
 }
 
-/// A lowered function, closure, or `go` block.
+/// A lowered function, closure, or `spawn` block.
 #[derive(Debug, Clone)]
 pub struct Body {
     pub name: String,
@@ -462,7 +462,7 @@ pub struct Body {
     pub errors: Vec<(String, Span)>,
     /// Constructs the code generator does not support yet.
     pub unsupported: Vec<(String, Span)>,
-    /// For closures and `go` blocks: the upvar locals and how each is captured,
+    /// For closures and `spawn` blocks: the upvar locals and how each is captured,
     /// in the order of the capture operands.
     pub captures: Vec<(Local, CaptureMode)>,
 }

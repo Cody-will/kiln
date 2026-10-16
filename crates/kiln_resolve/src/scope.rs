@@ -23,7 +23,7 @@ enum Ns {
     Value,
 }
 
-/// Loop context: labels of enclosing loops, reset at closure/`go` boundaries.
+/// Loop context: labels of enclosing loops, reset at closure/`spawn` boundaries.
 type LoopStack = Vec<Option<String>>;
 
 pub(crate) struct Resolver<'a> {
@@ -1475,9 +1475,9 @@ impl<'a> Resolver<'a> {
             }
             ExprKind::Tuple(xs) | ExprKind::Array(xs) => xs.iter().for_each(|x| self.walk_expr(x)),
             ExprKind::Block(b) | ExprKind::Unsafe(b) => self.walk_block(b),
-            ExprKind::Go(g) => match &**g {
-                GoTarget::Call(e) => self.walk_expr(e),
-                GoTarget::Block { body, .. } => {
+            ExprKind::Spawn(g) => match &**g {
+                SpawnTarget::Call(e) => self.walk_expr(e),
+                SpawnTarget::Block { body, .. } => {
                     let saved = std::mem::take(&mut self.loops);
                     self.walk_block(body);
                     self.loops = saved;

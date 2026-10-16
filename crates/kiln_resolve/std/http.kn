@@ -459,7 +459,7 @@ impl Server {
 		loop {
 			conn := listener.accept()?
 			s := srv.clone()
-			go move {
+			spawn move {
 				serve_conn(Conn::Plain(conn), s)
 			}
 		}
@@ -479,7 +479,7 @@ impl Server {
 			conn := listener.accept()?
 			s := srv.clone()
 			t := tc.clone()
-			go move {
+			spawn move {
 				dl := Deadline::after(s.read_header_timeout)
 				if dl.arm(&conn, false).is_err() || dl.arm(&conn, true).is_err() {
 					return

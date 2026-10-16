@@ -3,7 +3,7 @@
 fun main() {
 	(ping_tx, ping_rx) := chan::<i64>(0)
 	(pong_tx, pong_rx) := chan::<i64>(0)
-	t := go move {
+	t := spawn move {
 		for v in ping_rx {
 			pong_tx <- v + 1
 		}

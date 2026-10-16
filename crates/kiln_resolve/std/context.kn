@@ -1,7 +1,7 @@
 // Cancellation and deadlines, like Go's `context`.
 //
 //	ctx := context::with_timeout(&context::background(), time::secs(2))
-//	go move { worker(&ctx) }
+//	spawn move { worker(&ctx) }
 //	select {
 //		_ := <-ctx.done() => println("stopped: {ctx.err().unwrap()}"),
 //		r := <-results => println("got {r}"),
@@ -113,7 +113,7 @@ fun make(parent option<&Context>, deadline option<Instant>) Context {
 		} else {
 			w := inner.clone()
 			done := Context { inner: inner.clone() }.done()
-			go move {
+			spawn move {
 				select {
 					_ := <-time::after(left) => cancel_inner(&w, Error::DeadlineExceeded),
 					_ := <-done => {},

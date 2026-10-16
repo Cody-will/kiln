@@ -33,7 +33,7 @@ fun main() {
 	(jobs_tx, jobs_rx) := chan::<Job>(100)
 	(res_tx, res_rx) := chan::<Output>(100)
 	for id in 0..4 {
-		go worker(id, jobs_rx.clone(), res_tx.clone())
+		spawn worker(id, jobs_rx.clone(), res_tx.clone())
 	}
 	for j in load_jobs() {
 		jobs_tx <- j

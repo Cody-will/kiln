@@ -455,7 +455,7 @@ fn closure_body_is_checked() {
 #[test]
 fn go_moves_arguments() {
     err1(
-        &main_with(" s := string::from(\"a\")\n go take(s)\n read(&s)"),
+        &main_with(" s := string::from(\"a\")\n spawn take(s)\n read(&s)"),
         "borrow of moved value: `s`",
     );
 }
@@ -463,27 +463,27 @@ fn go_moves_arguments() {
 #[test]
 fn go_rejects_borrowed_arguments() {
     err1(
-        &main_with(" s := string::from(\"a\")\n go read(&s)"),
-        "argument to `go` borrows `s`",
+        &main_with(" s := string::from(\"a\")\n spawn read(&s)"),
+        "argument to `spawn` borrows `s`",
     );
     err1(
-        "fun read(s &string) {}\nfun f(s &string) {\n go read(s)\n}\nfun main() {}",
+        "fun read(s &string) {}\nfun f(s &string) {\n spawn read(s)\n}\nfun main() {}",
         "borrows parameter `s`",
     );
-    ok("fun say(s &str) {}\nfun main() {\n go say(\"literal\")\n}");
+    ok("fun say(s &str) {}\nfun main() {\n spawn say(\"literal\")\n}");
 }
 
 #[test]
 fn go_block_needs_move() {
     err1(
-        &main_with(" s := string::from(\"a\")\n go {\n read(&s)\n }"),
-        "`go` block may outlive the current function, but it borrows `s`",
+        &main_with(" s := string::from(\"a\")\n spawn {\n read(&s)\n }"),
+        "`spawn` block may outlive the current function, but it borrows `s`",
     );
     ok(&main_with(
-        " s := string::from(\"a\")\n go move {\n read(&s)\n }",
+        " s := string::from(\"a\")\n spawn move {\n read(&s)\n }",
     ));
     err1(
-        &main_with(" s := string::from(\"a\")\n go move {\n read(&s)\n }\n read(&s)"),
+        &main_with(" s := string::from(\"a\")\n spawn move {\n read(&s)\n }\n read(&s)"),
         "borrow of moved value: `s`",
     );
 }
@@ -492,22 +492,22 @@ fn go_block_needs_move() {
 fn go_requires_send() {
     let s = "struct Handle {\n p *const u8,\n}\nfun use_it(h Handle) {}\n";
     err1(
-        &format!("{s}fun main() {{\n h := Handle {{ p: 0 as *const u8 }}\n go use_it(h)\n}}"),
+        &format!("{s}fun main() {{\n h := Handle {{ p: 0 as *const u8 }}\n spawn use_it(h)\n}}"),
         "`Handle` cannot be sent between tasks safely",
     );
-    err1(&format!("{s}fun main() {{\n h := Handle {{ p: 0 as *const u8 }}\n go move {{\n use_it(h)\n }}\n}}"), "cannot be sent between tasks safely");
-    ok(&format!("{s}unsafe impl Send for Handle {{}}\nfun main() {{\n h := Handle {{ p: 0 as *const u8 }}\n go use_it(h)\n}}"));
+    err1(&format!("{s}fun main() {{\n h := Handle {{ p: 0 as *const u8 }}\n spawn move {{\n use_it(h)\n }}\n}}"), "cannot be sent between tasks safely");
+    ok(&format!("{s}unsafe impl Send for Handle {{}}\nfun main() {{\n h := Handle {{ p: 0 as *const u8 }}\n spawn use_it(h)\n}}"));
 }
 
 #[test]
 fn send_is_structural() {
     let s = "struct Inner {\n p *const u8,\n}\nstruct Outer {\n name string,\n inner Inner,\n}\nfun use_it(o Outer) {}\n";
-    has(&format!("{s}fun main() {{\n o := Outer {{ name: string::from(\"a\"), inner: Inner {{ p: 0 as *const u8 }} }}\n go use_it(o)\n}}"), "`Outer` cannot be sent");
+    has(&format!("{s}fun main() {{\n o := Outer {{ name: string::from(\"a\"), inner: Inner {{ p: 0 as *const u8 }} }}\n spawn use_it(o)\n}}"), "`Outer` cannot be sent");
 }
 
 #[test]
 fn channels_of_owned_values_are_fine() {
-    ok("fun worker(rx <-chan string, tx chan<- usize) {\n for s in rx {\n tx <- s.len()\n }\n}\nfun main() {\n (tx, rx) := chan::<string>(1)\n (otx, orx) := chan::<usize>(1)\n go worker(rx, otx)\n tx <- string::from(\"a\")\n n := <-orx\n}");
+    ok("fun worker(rx <-chan string, tx chan<- usize) {\n for s in rx {\n tx <- s.len()\n }\n}\nfun main() {\n (tx, rx) := chan::<string>(1)\n (otx, orx) := chan::<usize>(1)\n spawn worker(rx, otx)\n tx <- string::from(\"a\")\n n := <-orx\n}");
 }
 
 #[test]

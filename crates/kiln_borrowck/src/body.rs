@@ -15,7 +15,7 @@
 //!    variable's storage while a loan on it is live.
 //!
 //! The return place is checked for references to locals and for borrows the
-//! signature does not allow; `go` and scoped spawns are checked for `'static`,
+//! signature does not allow; `spawn` and scoped spawns are checked for `'static`,
 //! `Send`, and `Sync`.
 
 use kiln_lexer::{Diagnostic, Span};
@@ -1172,7 +1172,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                     SpawnKind::GoCall => {
                         for o in operands {
                             let held = self.op_holds_in(&self.holds_before(bi, si), o);
-                            self.check_static(held, s.span, "argument to `go`");
+                            self.check_static(held, s.span, "argument to `spawn`");
                             if let Some(p) = o.place() {
                                 if p.proj.is_empty() {
                                     let t = self.ty_of(p.local).clone();
@@ -1185,15 +1185,15 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                         for (c, o) in captures.iter().zip(operands) {
                             if c.mode != CaptureMode::Move {
                                 self.report(
-                                    Diagnostic::error(format!("`go` block may outlive the current function, but it borrows `{}`", c.name), s.span)
+                                    Diagnostic::error(format!("`spawn` block may outlive the current function, but it borrows `{}`", c.name), s.span)
                                         .with_note(format!("`{}` is used here", c.name), c.span)
-                                        .with_help("use `go move { ... }` to move captured values into the task (clone them first if you still need them)"),
+                                        .with_help("use `spawn move { ... }` to move captured values into the task (clone them first if you still need them)"),
                                 );
                                 continue;
                             }
                             let _ = is_move;
                             let held = self.op_holds_in(&self.holds_before(bi, si), o);
-                            self.check_static(held, s.span, "`go` block capture");
+                            self.check_static(held, s.span, "`spawn` block capture");
                             self.check_send(&c.ty, s.span, Some(&c.name));
                         }
                     }
@@ -1234,7 +1234,7 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
                 _ => "a local".into(),
             };
             let mut d = Diagnostic::error(format!("{what} borrows {src}, which may not live as long as the task"), span)
-                .with_help("tasks started with `go` may outlive the current function: pass an owned value (e.g. `.clone()`), or use `scope(|s| { s.spawn(...) })` for tasks that borrow");
+                .with_help("tasks started with `spawn` may outlive the current function: pass an owned value (e.g. `.clone()`), or use `scope(|s| { s.spawn(...) })` for tasks that borrow");
             if loan.place.is_some() {
                 d = d.with_note("borrowed here", loan.span);
             }

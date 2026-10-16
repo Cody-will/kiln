@@ -16,7 +16,7 @@ What it checks:
 | Returning references to locals | ``cannot return reference to local variable `x` `` |
 | Lifetime elision and explicit `'a` | `missing lifetime specifier`, `lifetime may not live long enough` |
 | `defer` sees variables at function exit | ``borrow of moved value: `s` `` |
-| `go` needs `'static` + `Send`; `go` blocks need `move` | ``argument to `go` borrows `s` ...``, ``` `Handle` cannot be sent between tasks safely``` |
+| `spawn` needs `'static` + `Send`; `spawn` blocks need `move` | ``argument to `spawn` borrows `s` ...``, ``` `Handle` cannot be sent between tasks safely``` |
 | Scoped tasks may borrow; shared captures must be `Sync` | ``` `Handle` cannot be shared between tasks safely``` |
 
 How it works (details in `src/body.rs`): a forward dataflow analysis of

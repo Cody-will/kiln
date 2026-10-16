@@ -63,7 +63,7 @@ pub(crate) struct FnCx<'c, 'r, 'a, 'f> {
     pub locals: Vec<LocalInfo>,
     pub blocks: Vec<ir::Block>,
     pub defer_stack: Option<StackSlot>,
-    /// Handle of the task most recently started by a `go` in this function.
+    /// Handle of the task most recently started by a `spawn` in this function.
     pub last_task: Option<StackSlot>,
     pub span: kiln_lexer::Span,
     pub promo: crate::promote::Promo,
@@ -847,7 +847,7 @@ impl FnCx<'_, '_, '_, '_> {
         }
     }
 
-    /// `go`: moves the captures into a heap environment and starts the task
+    /// `spawn`: moves the captures into a heap environment and starts the task
     /// body (a closure-ABI instance) on the scheduler. The handle is read by
     /// the following `go_handle` intrinsic.
     fn spawn(&mut self, ops: &[Operand], body: kiln_lexer::Span) {

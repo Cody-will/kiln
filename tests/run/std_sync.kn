@@ -19,7 +19,7 @@ fun main() {
 		c := counter.clone()
 		w := wg.clone()
 		w.add(1)
-		go move {
+		spawn move {
 			// `work` takes `c`, so the clone is dropped before `done`.
 			work(c)
 			w.done()
@@ -49,7 +49,7 @@ fun main() {
 		h := hits.clone()
 		d := done.clone()
 		d.add(1)
-		go move {
+		spawn move {
 			for _ in 0..500 {
 				h.add(1)
 			}

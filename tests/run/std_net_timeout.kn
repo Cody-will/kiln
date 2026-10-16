@@ -39,7 +39,7 @@ fun main() result<void, io::Error> {
 	for i in 0..20 {
 		t := tx.clone()
 		a := addr.clone()
-		go move {
+		spawn move {
 			x := TcpStream::connect(&a).unwrap()
 			x.set_read_timeout(Some(time::millis(10 + i))).unwrap()
 			b mut := [0 as u8; 4]

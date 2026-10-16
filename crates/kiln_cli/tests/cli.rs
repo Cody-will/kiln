@@ -28,7 +28,7 @@ fn parse_prints_ast() {
     let (code, out, _) = kiln(&["parse", "examples/server.kn"]);
     assert_eq!(code, 0);
     assert!(out.contains("ShortDecl"));
-    assert!(out.contains("Go("));
+    assert!(out.contains("Spawn("));
 }
 
 #[test]

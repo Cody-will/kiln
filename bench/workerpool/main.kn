@@ -25,11 +25,11 @@ fun main() {
 	(res_tx, res_rx) := chan::<i64>(1024)
 	workers mut := Vec::new()
 	for _ in 0..8 {
-		workers.push(go worker(jobs_rx.clone(), res_tx.clone()))
+		workers.push(spawn worker(jobs_rx.clone(), res_tx.clone()))
 	}
 	drop(jobs_rx)
 	drop(res_tx)
-	go move {
+	spawn move {
 		for i in 1..200001 {
 			jobs_tx <- i as i64
 		}

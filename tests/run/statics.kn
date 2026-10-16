@@ -30,7 +30,7 @@ fun main() {
 	}
 	tasks mut := Vec::new()
 	for _ in 0..4 {
-		tasks.push(go move {
+		tasks.push(spawn move {
 			bump()
 		})
 	}

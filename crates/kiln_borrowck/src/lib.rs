@@ -5,7 +5,7 @@
 //! partial moves and moves in loops), initialization, shared vs mutable borrow
 //! conflicts with non-lexical lifetimes, borrows outliving their owners (and
 //! `Drop` order), returning references to locals, lifetime elision and explicit
-//! `'a` annotations, `defer`, closure captures, `'static` + `Send` for `go`,
+//! `'a` annotations, `defer`, closure captures, `'static` + `Send` for `spawn`,
 //! and `Sync`/`Send` for scoped tasks. See `body.rs` for the algorithm.
 
 mod body;

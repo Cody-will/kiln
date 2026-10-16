@@ -29,7 +29,7 @@ fun main() result<void, io::Error> {
 	srv := http::Server::new(router)
 		.with_read_header_timeout(Some(time::millis(300)))
 		.with_idle_timeout(Some(time::millis(300)))
-	go move {
+	spawn move {
 		srv.serve(listener).unwrap()
 	}
 	addr := "127.0.0.1:{port}"
@@ -52,7 +52,7 @@ fun main() result<void, io::Error> {
 	// A server that never answers: the client's timeout fires.
 	mute := TcpListener::bind("127.0.0.1:0")?
 	mport := mute.port()?
-	go move {
+	spawn move {
 		c := mute.accept().unwrap()
 		time::sleep(time::secs(5))
 		c.write_all(b"late").unwrap_or(())

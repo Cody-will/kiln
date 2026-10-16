@@ -35,7 +35,7 @@ fun main() {
 	ctx := context::with_timeout(&root, time::millis(40))
 	start := time::Instant::now()
 	w := ctx.clone()
-	go move {
+	spawn move {
 		worker(w, tx)
 	}
 	println(<-rx)

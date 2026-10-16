@@ -221,7 +221,7 @@ fn stack_overflow_is_reported_clearly() {
     let src = dir.join("rec.kn");
     std::fs::write(
         &src,
-        "fun rec(n i64) i64 {\n\tif n == 0 {\n\t\treturn 0\n\t}\n\treturn rec(n - 1) + 1\n}\n\nfun main() {\n\ta := [1 as u8; 1000000]\n\tprintln(\"{a[999999]}\")\n\t(ch, done) := chan::<i64>(0)\n\tgo move {\n\t\tch <- rec(1 << 40)\n\t}\n\tprintln(\"{<-done}\")\n}\n",
+        "fun rec(n i64) i64 {\n\tif n == 0 {\n\t\treturn 0\n\t}\n\treturn rec(n - 1) + 1\n}\n\nfun main() {\n\ta := [1 as u8; 1000000]\n\tprintln(\"{a[999999]}\")\n\t(ch, done) := chan::<i64>(0)\n\tspawn move {\n\t\tch <- rec(1 << 40)\n\t}\n\tprintln(\"{<-done}\")\n}\n",
     )
     .unwrap();
     let out = Command::new(kiln()).arg("run").arg(&src).output().unwrap();

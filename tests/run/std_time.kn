@@ -17,7 +17,7 @@ fun main() {
 	t0 := time::Instant::now()
 	for i in 0..100 {
 		t := tx.clone()
-		go move {
+		spawn move {
 			time::sleep(time::millis(50))
 			t <- i
 		}

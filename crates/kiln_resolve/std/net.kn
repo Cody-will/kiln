@@ -8,7 +8,7 @@
 //	listener := TcpListener::bind(":8080")?
 //	for conn in listener.incoming() {
 //		conn := conn?
-//		go move {
+//		spawn move {
 //			conn.write_str("hello\n")
 //		}
 //	}
@@ -129,7 +129,7 @@ impl TcpListener {
 	// A task accepts in the background; it stops after an accept error.
 	pub fun incoming(self) <-chan result<TcpStream, io::Error> {
 		(tx, rx) := chan::<result<TcpStream, io::Error>>(0)
-		go move {
+		spawn move {
 			loop {
 				r := self.accept()
 				failed := r.is_err()

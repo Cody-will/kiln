@@ -410,7 +410,7 @@ pub fun sleep(d Duration) {
 // A channel that receives the current instant once, after `d`.
 pub fun after(d Duration) <-chan Instant {
 	(tx, rx) := chan::<Instant>(1)
-	go move {
+	spawn move {
 		kn_time_sleep(d.nanos)
 		tx.try_send(Instant::now())
 	}
@@ -421,7 +421,7 @@ pub fun after(d Duration) <-chan Instant {
 // if the receiver falls behind; the ticker stops when the receiver is dropped.
 pub fun tick(d Duration) <-chan Instant {
 	(tx, rx) := chan::<Instant>(1)
-	go move {
+	spawn move {
 		next mut := kn_time_mono() + d.nanos
 		loop {
 			kn_time_sleep(next - kn_time_mono())

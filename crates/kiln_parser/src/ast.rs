@@ -555,14 +555,14 @@ pub struct ShortName {
     pub mutable: bool,
 }
 
-/// Target of a `go` expression.
+/// Target of a `spawn` expression.
 #[derive(Debug, Clone, PartialEq)]
-pub enum GoTarget {
-    /// `go f(args)` / `go obj.method(args)`.
+pub enum SpawnTarget {
+    /// `spawn f(args)` / `spawn obj.method(args)`.
     Call(Expr),
-    /// `go [move] { ... }`
+    /// `spawn [move] { ... }`
     Block {
-        /// `go move { ... }`.
+        /// `spawn move { ... }`.
         is_move: bool,
         /// Task body.
         body: Block,
@@ -962,8 +962,8 @@ pub enum ExprKind {
     Block(Block),
     /// `unsafe { ... }`
     Unsafe(Block),
-    /// `go f(args)` or `go [move] { ... }`: starts a task, giving a `Task<T>`.
-    Go(Box<GoTarget>),
+    /// `spawn f(args)` or `spawn [move] { ... }`: starts a task, giving a `Task<T>`.
+    Spawn(Box<SpawnTarget>),
     /// `if cond { } else ...`
     If {
         /// Condition.
@@ -1063,7 +1063,7 @@ impl Expr {
                 | ExprKind::While { .. }
                 | ExprKind::WhileLet { .. }
                 | ExprKind::Loop { .. }
-                | ExprKind::Go(_)
+                | ExprKind::Spawn(_)
         )
     }
 }

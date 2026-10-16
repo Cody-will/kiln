@@ -3,14 +3,14 @@ fun square(x i64) i64 {
 }
 
 fun main() {
-	t := go square(7)
+	t := spawn square(7)
 	r := t.join()
 	match r {
 		Ok(v) => println("square: {v}"),
 		Err(_) => println("panicked"),
 	}
 	(tx, rx) := chan::<i32>(0)
-	go move {
+	spawn move {
 		for i in 0..5 {
 			tx <- i
 		}

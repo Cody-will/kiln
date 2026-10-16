@@ -1,7 +1,7 @@
 fun main() {
 	(tx, rx) := chan::<i32>(0)
 	(qtx, qrx) := chan::<string>(1)
-	go move {
+	spawn move {
 		for i in 0..3 {
 			tx <- i
 		}

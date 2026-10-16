@@ -6,7 +6,7 @@
 //
 //	counter := Arc::new(Mutex::new(0))
 //	c := counter.clone()
-//	go move {
+//	spawn move {
 //		n mut := c.lock()
 //		*n += 1
 //	}

@@ -641,7 +641,7 @@ impl Analysis {
 }
 
 const KEYWORDS: &[&str] = &[
-    "break", "chan", "const", "continue", "defer", "else", "enum", "false", "for", "fun", "go",
+    "break", "chan", "const", "continue", "defer", "else", "enum", "false", "for", "fun", "spawn",
     "if", "impl", "import", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "return",
     "select", "self", "Self", "static", "struct", "trait", "true", "type", "unsafe", "where",
     "while",

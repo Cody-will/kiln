@@ -22,7 +22,7 @@ fun main() result<void, io::Error> {
 	router.get("/hello", hello)
 	router.post("/echo", echo)
 	router.get("/static/", files)
-	go move {
+	spawn move {
 		router.serve(listener).unwrap()
 	}
 	base := "http://127.0.0.1:{port}"

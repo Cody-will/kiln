@@ -176,7 +176,7 @@ pub trait Drop {
 	fun drop(&mut self)
 }
 
-// A handle to a task started with `go`. `join` waits for the task and gives
+// A handle to a task started with `spawn`. `join` waits for the task and gives
 // its result; dropping the handle detaches the task.
 pub struct Task<T>
 

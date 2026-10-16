@@ -3,7 +3,7 @@ fun boom(v Vec<i32>) i32 {
 }
 
 fun main() {
-	t := go boom(Vec::new())
+	t := spawn boom(Vec::new())
 	t.join()
 	println("unreachable")
 }

@@ -580,7 +580,7 @@ fn channel_direction_is_enforced() {
 
 #[test]
 fn channel_types_in_signatures() {
-    ok("fun worker(jobs <-chan u32, out chan<- string) {\n for j in jobs {\n out <- \"{j}\"\n }\n}\nfun main() {\n (jtx, jrx) := chan::<u32>(4)\n (otx, orx) := chan::<string>(4)\n go worker(jrx, otx)\n jtx <- 1\n}");
+    ok("fun worker(jobs <-chan u32, out chan<- string) {\n for j in jobs {\n out <- \"{j}\"\n }\n}\nfun main() {\n (jtx, jrx) := chan::<u32>(4)\n (otx, orx) := chan::<string>(4)\n spawn worker(jrx, otx)\n jtx <- 1\n}");
 }
 
 #[test]
@@ -599,7 +599,7 @@ fn chan_methods() {
 
 #[test]
 fn go_blocks_and_defer() {
-    ok("fun main() {\n (tx, rx) := chan::<i32>(1)\n go {\n tx <- 1\n }\n defer println(\"bye\")\n}");
+    ok("fun main() {\n (tx, rx) := chan::<i32>(1)\n spawn {\n tx <- 1\n }\n defer println(\"bye\")\n}");
 }
 
 // ----- whole examples ---------------------------------------------------------------------------

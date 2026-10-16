@@ -15,12 +15,12 @@ fun make(id i32) N {
 fun main() {
 	a := N { id: 1 }
 	b := N { id: 2 }
-	t := go move {
+	t := spawn move {
 		println("task sees {a.id}")
 	}
 	t.join()
 	println("after join")
-	t2 := go make(3)
+	t2 := spawn make(3)
 	match t2.join() {
 		Ok(n) => println("joined {n.id}"),
 		Err(_) => println("panic"),

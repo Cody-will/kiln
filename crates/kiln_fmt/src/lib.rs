@@ -509,7 +509,19 @@ impl Fmt<'_> {
     /// The spacing between token `i` and token `j` (the next one printed);
     /// `None` keeps the source's choice.
     fn space(&self, i: usize, j: usize) -> Option<bool> {
-        let p = self.k(i);
+        let member = T::Ident(String::new());
+        // A keyword used as a member or method name (`s.spawn(f)`,
+        // `Scope::spawn`, `fun spawn(&self)`) spaces like an identifier.
+        let p = match self.k(i) {
+            T::Keyword(k)
+                if !matches!(k, K::SelfValue | K::SelfType | K::Chan)
+                    && i > 0
+                    && matches!(self.k(i - 1), T::Dot | T::ColonColon | T::Keyword(K::Fn)) =>
+            {
+                &member
+            }
+            k => k,
+        };
         let nx = self.k(j);
         use T::*;
         // Tokens that never have a space before them.

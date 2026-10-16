@@ -4,7 +4,7 @@ use crate::ir::*;
 use crate::sig;
 use kiln_lexer::Span;
 use kiln_parser::ast::{
-    self, BinOp, Block, Expr, ExprKind, GoTarget, Lit, Pattern, PatternKind, SelectOp,
+    self, BinOp, Block, Expr, ExprKind, Lit, Pattern, PatternKind, SelectOp, SpawnTarget,
     StmtKind as AstStmt,
 };
 use kiln_resolve::{Builtin, DefId, DefKind, LocalId, PrimTy, Res, Resolved};
@@ -38,10 +38,10 @@ pub(crate) struct Lower<'t, 'r, 'a> {
     loops: Vec<LoopCx>,
     /// Deferred calls and whether each is inside a loop.
     defers: Vec<Deferred>,
-    /// For closures and `go` blocks: variables captured from the parent.
+    /// For closures and `spawn` blocks: variables captured from the parent.
     is_nested: bool,
     upvars: Vec<(LocalId, Local)>,
-    /// Bodies of closures and `go` blocks lowered while lowering this one.
+    /// Bodies of closures and `spawn` blocks lowered while lowering this one.
     pub(crate) extra: Vec<Body>,
     last_captures: Option<Vec<Capture>>,
     /// Locals holding closures that move a captured variable out (callable once).
@@ -1714,20 +1714,20 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         }
     }
 
-    /// `go f(args)` / `go [move] { ... }`: starts a task and returns its `Task<T>`.
+    /// `spawn f(args)` / `spawn [move] { ... }`: starts a task and returns its `Task<T>`.
     ///
     /// Both forms lower to a nested body (kind [`BodyKind::GoBlock`]) whose
-    /// captures move into the task. For `go f(args)` the body is synthesized:
+    /// captures move into the task. For `spawn f(args)` the body is synthesized:
     /// the callee and arguments are evaluated now and captured, and the body
     /// makes the call.
-    fn go(&mut self, e: &Expr, g: &GoTarget) -> Operand {
+    fn spawn_task(&mut self, e: &Expr, g: &SpawnTarget) -> Operand {
         let ty = self.ty(e);
         let ret = match &ty {
             Ty::Adt(_, a) if !a.is_empty() => a[0].clone(),
             _ => Ty::Unit,
         };
         let (kind, operands, captures) = match g {
-            GoTarget::Call(call) => {
+            SpawnTarget::Call(call) => {
                 let (callee, ops, flows) = match &call.kind {
                     ExprKind::Call(f, args) => self.call_operands(f, args),
                     ExprKind::MethodCall { receiver, args, .. } => {
@@ -1736,7 +1736,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     _ => (Callee::Intrinsic("unknown".into()), vec![], vec![]),
                 };
                 let tys: Vec<Ty> = ops.iter().map(|o| self.operand_ty(o)).collect();
-                let name = format!("{}::{{go}}", self.body.name);
+                let name = format!("{}::{{spawn}}", self.body.name);
                 let res = self.res.clone();
                 let mut inner = Lower::new(&mut *self.typed, res, name, BodyKind::GoBlock, e.span);
                 inner.new_local(ret.clone(), None, e.span, LocalKind::Return, true, None);
@@ -1767,7 +1767,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 self.extra.extend(extra);
                 (SpawnKind::GoCall, ops, vec![])
             }
-            GoTarget::Block { is_move, body } => {
+            SpawnTarget::Block { is_move, body } => {
                 let (ops, caps) = self.nested(
                     &[],
                     None,
@@ -2502,11 +2502,11 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 self.cur = self.new_block();
             }
             ExprKind::Select(arms) => self.select(arms, e.span),
-            ExprKind::Go(g) => {
-                let op = self.go(e, g);
+            ExprKind::Spawn(g) => {
+                let op = self.spawn_task(e, g);
                 match dest {
                     Some(d) => self.assign(d, Rvalue::Use(op), e.span),
-                    // A `go` statement detaches the task.
+                    // A `spawn` statement detaches the task.
                     None => self.push(StmtKind::Eval(Rvalue::Use(op)), e.span),
                 }
             }
@@ -2871,7 +2871,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
 
     // ----- closures and go blocks ---------------------------------------------------------
 
-    /// Lowers a closure or `go` block into its own body and returns the capture
+    /// Lowers a closure or `spawn` block into its own body and returns the capture
     /// operands (evaluated in this body) and capture descriptions.
     #[allow(clippy::too_many_arguments)]
     fn nested(
@@ -2888,7 +2888,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             "{}::{{{}}}",
             self.body.name,
             if kind == BodyKind::GoBlock {
-                "go"
+                "spawn"
             } else {
                 "closure"
             }
@@ -3049,7 +3049,7 @@ fn pattern_bindings(r: &Resolved<'_>, p: &Pattern) -> Vec<LocalId> {
 }
 
 /// Lowers function `i` (an index into `Resolved::fns`). Returns the function's
-/// body first, followed by the bodies of its closures and `go` blocks.
+/// body first, followed by the bodies of its closures and `spawn` blocks.
 pub fn lower_fn(typed: &mut Typed<'_, '_>, i: usize) -> Vec<Body> {
     let r = typed.resolved();
     let f = &r.fns[i];

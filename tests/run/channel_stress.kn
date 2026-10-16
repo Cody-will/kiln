@@ -8,14 +8,14 @@ fun main() {
 	(tx, rx) := chan::<i64>(0)
 	(dtx, drx) := chan::<i64>(3)
 	for p in 0..8 {
-		go producer(p, 2000, tx.clone())
+		spawn producer(p, 2000, tx.clone())
 	}
 	drop(tx)
 	// Several consumers sum what they receive and report through another channel.
 	for c in 0..3 {
 		r := rx.clone()
 		d := dtx.clone()
-		go move {
+		spawn move {
 			s mut := 0
 			n mut := 0
 			for v in r {
@@ -37,7 +37,7 @@ fun main() {
 	// Many short tasks joined in order.
 	tasks mut := Vec::new()
 	for i in 0..1000 {
-		tasks.push(go square(i))
+		tasks.push(spawn square(i))
 	}
 	acc mut := 0
 	for t in tasks {

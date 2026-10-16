@@ -1783,12 +1783,12 @@ impl Body<'_, '_, '_> {
                 let is_mut = if expected_given { is_mut } else { mutates };
                 Ty::Fn(pts, Box::new(rt), is_mut)
             }
-            ExprKind::Go(g) => {
-                // `go f(x)`: the task's result is the call's; a `go` block
+            ExprKind::Spawn(g) => {
+                // `spawn f(x)`: the task's result is the call's; a `spawn` block
                 // returns with `return v` (unit when it has none).
                 let t = match &**g {
-                    GoTarget::Call(call) => self.expr(call),
-                    GoTarget::Block { body, .. } => {
+                    SpawnTarget::Call(call) => self.expr(call),
+                    SpawnTarget::Block { body, .. } => {
                         let rt = self.fresh();
                         self.rets.push(rt.clone());
                         let saved = std::mem::take(&mut self.loops);
@@ -1801,7 +1801,7 @@ impl Body<'_, '_, '_> {
                             let r = self.fmt(&rt);
                             self.error_help(
                                 format!(
-                                    "`go` block must return a value of type `{r}` on every path"
+                                    "`spawn` block must return a value of type `{r}` on every path"
                                 ),
                                 body.span,
                                 "add a `return` statement",

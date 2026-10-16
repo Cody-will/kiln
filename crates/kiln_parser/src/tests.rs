@@ -443,7 +443,7 @@ fn reserved_keyword_rejected() {
     let (_, e) = parse_expr("x.await");
     assert_eq!(
         e[0].message,
-        "`await` is reserved; Kiln uses `go` and channels for concurrency"
+        "`await` is reserved; Kiln uses `spawn` and channels for concurrency"
     );
     let (_, e) = parse_expr("yield");
     assert_eq!(e[0].message, "`yield` is a reserved keyword");
@@ -569,11 +569,11 @@ fn channel_send() {
     }
 }
 
-/// The `go` target of an expression statement.
-fn go_target(src: &str) -> GoTarget {
+/// The `spawn` target of an expression statement.
+fn go_target(src: &str) -> SpawnTarget {
     match stmt(src) {
         StmtKind::Expr(Expr {
-            kind: ExprKind::Go(t),
+            kind: ExprKind::Spawn(t),
             ..
         }) => *t,
         s => panic!("{s:?}"),
@@ -582,23 +582,26 @@ fn go_target(src: &str) -> GoTarget {
 
 #[test]
 fn go_expressions() {
-    assert!(matches!(go_target("go worker(1, rx)"), GoTarget::Call(_)));
-    assert!(matches!(go_target("go srv.run()"), GoTarget::Call(_)));
     assert!(matches!(
-        go_target("go move {\n\thandle(conn)\n}"),
-        GoTarget::Block { is_move: true, .. }
+        go_target("spawn worker(1, rx)"),
+        SpawnTarget::Call(_)
+    ));
+    assert!(matches!(go_target("spawn srv.run()"), SpawnTarget::Call(_)));
+    assert!(matches!(
+        go_target("spawn move {\n\thandle(conn)\n}"),
+        SpawnTarget::Block { is_move: true, .. }
     ));
     assert!(matches!(
-        go_target("go {\n}"),
-        GoTarget::Block { is_move: false, .. }
+        go_target("spawn {\n}"),
+        SpawnTarget::Block { is_move: false, .. }
     ));
     assert_eq!(
-        errs("fun main() {\n\tgo x\n}"),
-        vec!["`go` requires a function call or a block (`go f(x)` or `go move { ... }`)"]
+        errs("fun main() {\n\tspawn x\n}"),
+        vec!["`spawn` requires a function call or a block (`spawn f(x)` or `spawn move { ... }`)"]
     );
-    // `go` is an expression producing a task handle.
-    match stmt("t := go f(1)") {
-        StmtKind::ShortDecl { init, .. } => assert!(matches!(init.kind, ExprKind::Go(_))),
+    // `spawn` is an expression producing a task handle.
+    match stmt("t := spawn f(1)") {
+        StmtKind::ShortDecl { init, .. } => assert!(matches!(init.kind, ExprKind::Spawn(_))),
         s => panic!("{s:?}"),
     }
 }
@@ -1113,4 +1116,21 @@ fn channel_types_inside_generic_arguments() {
     ok("struct S {\n w Vec<chan<- i32>,\n r Vec<<-chan i32>,\n m option<<-chan Vec<u8>>,\n}\nfun main() {\n v := Vec::<<-chan i32>::new()\n}\n");
     // A shift is still a shift.
     ok("fun main() {\n x := 1 << 2\n y := x<<-1\n}\n");
+}
+
+#[test]
+fn old_go_suggests_spawn_and_go_is_an_identifier() {
+    let e = errs("fun main() {\n\tgo worker(1)\n}");
+    assert_eq!(e, vec!["tasks are started with `spawn` in Kiln"]);
+    let e = errs("fun main() {\n\tgo move {\n\t}\n}");
+    assert_eq!(e, vec!["tasks are started with `spawn` in Kiln"]);
+    assert!(errs("fun main() {\n\tgo := true\n\tif go {\n\t}\n\tgo = !go\n}").is_empty());
+}
+
+#[test]
+fn keywords_as_member_names() {
+    assert!(errs("struct S {}\nimpl S {\n\tpub fun spawn(&self, n i32) {}\n}\nfun main() {\n\ts := S {}\n\ts.spawn(1)\n\tS::spawn(&s, 2)\n}").is_empty());
+    let e = errs("fun spawn() {}");
+    assert_eq!(e.len(), 1);
+    assert!(e[0].contains("only methods"), "{e:?}");
 }

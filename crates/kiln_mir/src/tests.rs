@@ -61,7 +61,7 @@ fn closures_get_their_own_body_and_captures() {
 
 #[test]
 fn go_block_spawn() {
-    let d = dump("fun main() {\n s := string::from(\"x\")\n go move {\n println(s)\n }\n}");
+    let d = dump("fun main() {\n s := string::from(\"x\")\n spawn move {\n println(s)\n }\n}");
     assert!(
         d.contains("spawn GoBlock { is_move: true } (move _1) captures [s:Move]"),
         "{d}"
