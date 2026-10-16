@@ -514,16 +514,28 @@ fun write_value(out &mut string, v &Value, depth usize, pretty bool) {
 
 const MAX_DEPTH usize = 512
 
-struct Parser<'a> {
+// The JSON reader. `@derive(Json)` code uses it to decode straight from the
+// text into a type, without building a `Value` tree first.
+pub struct Parser<'a> {
 	s &'a str,
 	b &'a [u8],
 	pos usize,
 	depth usize,
+	// The current object key: `s[key_start..key_end]`, or `key_buf` when
+	// it had escapes.
+	key_start usize,
+	key_end usize,
+	key_buf string,
+	key_owned bool,
+}
+
+fun new_parser<'a>(text &'a str) Parser<'a> {
+	return Parser { s: text, b: text.as_bytes(), pos: 0, depth: 0, key_start: 0, key_end: 0, key_buf: string::new(), key_owned: false }
 }
 
 // Parses JSON text into a Value.
 pub fun parse(text &str) result<Value, Error> {
-	p mut := Parser { s: text, b: text.as_bytes(), pos: 0, depth: 0 }
+	p mut := new_parser(text)
 	p.skip_ws()
 	v := p.value()?
 	p.skip_ws()
@@ -534,6 +546,148 @@ pub fun parse(text &str) result<Value, Error> {
 }
 
 impl<'a> Parser<'a> {
+	// ----- used by derived `read_json` -----
+
+	// Whether the next value is an object.
+	pub fun at_object(&mut self) bool {
+		self.skip_ws()
+		return self.peek() == 123
+	}
+
+	// Whether the next value is an array.
+	pub fun at_array(&mut self) bool {
+		self.skip_ws()
+		return self.peek() == 91
+	}
+
+	// Whether the next value is a string.
+	pub fun at_string(&mut self) bool {
+		self.skip_ws()
+		return self.peek() == 34
+	}
+
+	// Whether the next value is `null` (consuming it if so).
+	pub fun eat_null(&mut self) bool {
+		self.skip_ws()
+		if self.s[self.pos..].starts_with("null") {
+			self.pos += 4
+			return true
+		}
+		return false
+	}
+
+	// Enters the object or array at the cursor (after `at_object` / `at_array`).
+	pub fun begin(&mut self) result<void, Error> {
+		self.enter()?
+		self.pos += 1
+		return Ok()
+	}
+
+	// Moves to the next member of the current object: false at its end;
+	// otherwise the key is in `key()` and the cursor is at the value.
+	pub fun next_key(&mut self, first bool) result<bool, Error> {
+		self.skip_ws()
+		c := self.peek()
+		if c == 125 {
+			if first {
+				self.pos += 1
+				self.depth -= 1
+				return Ok(false)
+			}
+		}
+		if !first {
+			if c == 44 {
+				self.pos += 1
+				self.skip_ws()
+			} else if c == 125 {
+				self.pos += 1
+				self.depth -= 1
+				return Ok(false)
+			} else {
+				return Err(self.error("expected `,` or `}}`"))
+			}
+		}
+		if self.peek() != 34 {
+			return Err(self.error("expected a string key"))
+		}
+		// Fast path: a key without escapes is borrowed from the text.
+		i mut := self.pos + 1
+		while i < self.b.len() && self.b[i] != 34 && self.b[i] != 92 && self.b[i] >= 32 {
+			i += 1
+		}
+		if i < self.b.len() && self.b[i] == 34 {
+			self.key_start = self.pos + 1
+			self.key_end = i
+			self.key_owned = false
+			self.pos = i + 1
+		} else {
+			self.key_buf = self.string()?
+			self.key_owned = true
+		}
+		self.skip_ws()
+		if self.peek() != 58 {
+			return Err(self.error("expected `:`"))
+		}
+		self.pos += 1
+		self.skip_ws()
+		return Ok(true)
+	}
+
+	// The key of the current object member.
+	pub fun key(&self) &str {
+		if self.key_owned {
+			return &self.key_buf
+		}
+		return &self.s[self.key_start..self.key_end]
+	}
+
+	// Whether the current key is `k`.
+	pub fun is_key(&self, k &str) bool {
+		return self.key() == k
+	}
+
+	// Moves to the next element of the current array: false at its end.
+	pub fun next_elem(&mut self, first bool) result<bool, Error> {
+		self.skip_ws()
+		c := self.peek()
+		if first {
+			if c == 93 {
+				self.pos += 1
+				self.depth -= 1
+				return Ok(false)
+			}
+			return Ok(true)
+		}
+		if c == 44 {
+			self.pos += 1
+			self.skip_ws()
+			return Ok(true)
+		}
+		if c == 93 {
+			self.pos += 1
+			self.depth -= 1
+			return Ok(false)
+		}
+		return Err(self.error("expected `,` or `]`"))
+	}
+
+	// Skips the value at the cursor.
+	pub fun skip(&mut self) result<void, Error> {
+		self.value()?
+		return Ok()
+	}
+
+	// Reads the value at the cursor as a tree.
+	pub fun read_value(&mut self) result<Value, Error> {
+		self.skip_ws()
+		return self.value()
+	}
+
+	// Reads the string at the cursor (after `at_string`).
+	pub fun read_string(&mut self) result<string, Error> {
+		return self.string()
+	}
+
 	fun error(&self, msg &str) Error {
 		line mut := 1
 		col mut := 1
@@ -831,11 +985,25 @@ impl<'a> Parser<'a> {
 // Types that convert to JSON.
 pub trait ToJson {
 	fun to_json(&self) Value
+
+	// Appends compact JSON for `self` to `out`. Derived and standard impls
+	// write directly; the default goes through `to_json`.
+	fun write_json(&self, out &mut string) {
+		write_value(out, &self.to_json(), 0, false)
+	}
 }
 
 // Types that convert from JSON.
 pub trait FromJson {
 	fun from_json(v &Value) result<Self, Error>
+
+	// Reads `Self` from the JSON at the cursor. Derived structs and the
+	// standard containers read directly from the text; the default parses a
+	// `Value` and converts it.
+	fun read_json<'p>(p &mut Parser<'p>) result<Self, Error> {
+		v := p.read_value()?
+		return Self::from_json(&v)
+	}
 
 	// The value for a missing object member (`Option` gives `None`; other
 	// types make the member required).
@@ -846,7 +1014,9 @@ pub trait FromJson {
 
 // Compact JSON for `v`.
 pub fun to_string<T: ToJson>(v &T) string {
-	return v.to_json().encode()
+	out mut := string::new()
+	v.write_json(&mut out)
+	return out
 }
 
 // Indented JSON for `v`.
@@ -856,8 +1026,42 @@ pub fun to_string_pretty<T: ToJson>(v &T) string {
 
 // Parses `text` and converts it to `T`.
 pub fun from_str<T: FromJson>(text &str) result<T, Error> {
+	p mut := new_parser(text)
+	p.skip_ws()
+	match T::read_json(&mut p) {
+		Ok(x) => {
+			p.skip_ws()
+			if p.pos < p.b.len() {
+				return Err(p.error("trailing characters after the value"))
+			}
+			return Ok(x)
+		}
+		Err(e) => {
+			if e.line > 0 {
+				return Err(e)
+			}
+		}
+	}
+	// A conversion error: report exactly what converting the whole
+	// document reports (syntax errors first, fields in declaration order).
 	v := parse(text)?
 	return T::from_json(&v)
+}
+
+// The value of a member read by derived `read_json`, or its value when missing.
+pub fun finish_field<T: FromJson>(v option<T>, key &str) result<T, Error> {
+	match v {
+		Some(x) => return Ok(x),
+		None => match T::from_missing() {
+			Some(x) => return Ok(x),
+			None => return Err(Error::new("missing field \"{key}\"")),
+		},
+	}
+}
+
+// Writes a string as JSON (for derived `write_json`).
+pub fun write_string(out &mut string, s &str) {
+	write_str(out, s)
 }
 
 // Converts a parsed Value to `T`.
@@ -942,17 +1146,33 @@ impl ToJson for Value {
 	fun to_json(&self) Value {
 		return self.clone()
 	}
+
+	fun write_json(&self, out &mut string) {
+		write_value(out, self, 0, false)
+	}
 }
 
 impl FromJson for Value {
 	fun from_json(v &Value) result<Value, Error> {
 		return Ok(v.clone())
 	}
+
+	fun read_json<'p>(p &mut Parser<'p>) result<Self, Error> {
+		return p.read_value()
+	}
 }
 
 impl ToJson for bool {
 	fun to_json(&self) Value {
 		return Value::Bool(*self)
+	}
+
+	fun write_json(&self, out &mut string) {
+		if *self {
+			out.push("true")
+		} else {
+			out.push("false")
+		}
 	}
 }
 
@@ -969,6 +1189,15 @@ impl ToJson for f64 {
 	fun to_json(&self) Value {
 		return Value::Float(*self)
 	}
+
+	fun write_json(&self, out &mut string) {
+		f := *self as f64
+		if f.is_finite() {
+			out.push("{f:?}")
+		} else {
+			out.push("null")
+		}
+	}
 }
 
 impl FromJson for f64 {
@@ -983,6 +1212,15 @@ impl FromJson for f64 {
 impl ToJson for f32 {
 	fun to_json(&self) Value {
 		return Value::Float(*self as f64)
+	}
+
+	fun write_json(&self, out &mut string) {
+		f := *self as f64
+		if f.is_finite() {
+			out.push("{f:?}")
+		} else {
+			out.push("null")
+		}
 	}
 }
 
@@ -999,11 +1237,19 @@ impl ToJson for char {
 	fun to_json(&self) Value {
 		return Value::String(self.to_string())
 	}
+
+	fun write_json(&self, out &mut string) {
+		write_str(out, &self.to_string())
+	}
 }
 
 impl ToJson for string {
 	fun to_json(&self) Value {
 		return Value::String(self.clone())
+	}
+
+	fun write_json(&self, out &mut string) {
+		write_str(out, self)
 	}
 }
 
@@ -1014,11 +1260,23 @@ impl FromJson for string {
 			_ => return Err(Error::mismatch("string", v)),
 		}
 	}
+
+	fun read_json<'p>(p &mut Parser<'p>) result<Self, Error> {
+		if !p.at_string() {
+			v := p.read_value()?
+			return Self::from_json(&v)
+		}
+		return p.read_string()
+	}
 }
 
 impl ToJson for str {
 	fun to_json(&self) Value {
 		return Value::String(self.to_string())
+	}
+
+	fun write_json(&self, out &mut string) {
+		write_str(out, self)
 	}
 }
 
@@ -1030,6 +1288,19 @@ impl<T: ToJson> ToJson for Vec<T> {
 		}
 		return Value::Array(out)
 	}
+
+	fun write_json(&self, out &mut string) {
+		out.push_char('[')
+		first mut := true
+		for x in self.iter() {
+			if !first {
+				out.push_char(',')
+			}
+			x.write_json(out)
+			first = false
+		}
+		out.push_char(']')
+	}
 }
 
 impl<T: ToJson> ToJson for [T] {
@@ -1039,6 +1310,19 @@ impl<T: ToJson> ToJson for [T] {
 			out.push(x.to_json())
 		}
 		return Value::Array(out)
+	}
+
+	fun write_json(&self, out &mut string) {
+		out.push_char('[')
+		first mut := true
+		for x in self.iter() {
+			if !first {
+				out.push_char(',')
+			}
+			x.write_json(out)
+			first = false
+		}
+		out.push_char(']')
 	}
 }
 
@@ -1057,6 +1341,21 @@ impl<T: FromJson> FromJson for Vec<T> {
 			_ => return Err(Error::mismatch("array", v)),
 		}
 	}
+
+	fun read_json<'p>(p &mut Parser<'p>) result<Self, Error> {
+		if !p.at_array() {
+			v := p.read_value()?
+			return Self::from_json(&v)
+		}
+		p.begin()?
+		out mut := Vec::new()
+		first mut := true
+		while p.next_elem(first)? {
+			first = false
+			out.push(T::read_json(p)?)
+		}
+		return Ok(out)
+	}
 }
 
 impl<T: ToJson> ToJson for option<T> {
@@ -1064,6 +1363,13 @@ impl<T: ToJson> ToJson for option<T> {
 		match self {
 			Some(x) => return x.to_json(),
 			None => return Value::Null,
+		}
+	}
+
+	fun write_json(&self, out &mut string) {
+		match self {
+			Some(x) => x.write_json(out),
+			None => out.push("null"),
 		}
 	}
 }
@@ -1079,17 +1385,32 @@ impl<T: FromJson> FromJson for option<T> {
 	fun from_missing() option<option<T>> {
 		return Some(None)
 	}
+
+	fun read_json<'p>(p &mut Parser<'p>) result<Self, Error> {
+		if p.eat_null() {
+			return Ok(None)
+		}
+		return Ok(Some(T::read_json(p)?))
+	}
 }
 
 impl<T: ToJson> ToJson for Box<T> {
 	fun to_json(&self) Value {
 		return (**self).to_json()
 	}
+
+	fun write_json(&self, out &mut string) {
+		(**self).write_json(out)
+	}
 }
 
 impl<T: FromJson> FromJson for Box<T> {
 	fun from_json(v &Value) result<Box<T>, Error> {
 		return Ok(Box::new(T::from_json(v)?))
+	}
+
+	fun read_json<'p>(p &mut Parser<'p>) result<Self, Error> {
+		return Ok(Box::new(T::read_json(p)?))
 	}
 }
 
@@ -1139,6 +1460,10 @@ impl ToJson for i8 {
 	fun to_json(&self) Value {
 		return Value::Int(*self as i64)
 	}
+
+	fun write_json(&self, out &mut string) {
+		out.push("{*self}")
+	}
 }
 
 impl FromJson for i8 {
@@ -1158,6 +1483,10 @@ impl FromJson for i8 {
 impl ToJson for i16 {
 	fun to_json(&self) Value {
 		return Value::Int(*self as i64)
+	}
+
+	fun write_json(&self, out &mut string) {
+		out.push("{*self}")
 	}
 }
 
@@ -1179,6 +1508,10 @@ impl ToJson for i32 {
 	fun to_json(&self) Value {
 		return Value::Int(*self as i64)
 	}
+
+	fun write_json(&self, out &mut string) {
+		out.push("{*self}")
+	}
 }
 
 impl FromJson for i32 {
@@ -1199,6 +1532,10 @@ impl ToJson for i64 {
 	fun to_json(&self) Value {
 		return Value::Int(*self as i64)
 	}
+
+	fun write_json(&self, out &mut string) {
+		out.push("{*self}")
+	}
 }
 
 impl FromJson for i64 {
@@ -1215,6 +1552,10 @@ impl ToJson for isize {
 	fun to_json(&self) Value {
 		return Value::Int(*self as i64)
 	}
+
+	fun write_json(&self, out &mut string) {
+		out.push("{*self}")
+	}
 }
 
 impl FromJson for isize {
@@ -1230,6 +1571,10 @@ impl FromJson for isize {
 impl ToJson for u8 {
 	fun to_json(&self) Value {
 		return Value::Int(*self as i64)
+	}
+
+	fun write_json(&self, out &mut string) {
+		out.push("{*self}")
 	}
 }
 
@@ -1251,6 +1596,10 @@ impl ToJson for u16 {
 	fun to_json(&self) Value {
 		return Value::Int(*self as i64)
 	}
+
+	fun write_json(&self, out &mut string) {
+		out.push("{*self}")
+	}
 }
 
 impl FromJson for u16 {
@@ -1270,6 +1619,10 @@ impl FromJson for u16 {
 impl ToJson for u32 {
 	fun to_json(&self) Value {
 		return Value::Int(*self as i64)
+	}
+
+	fun write_json(&self, out &mut string) {
+		out.push("{*self}")
 	}
 }
 
