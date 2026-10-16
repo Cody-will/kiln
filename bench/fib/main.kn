@@ -6,5 +6,5 @@ fun fib(n i64) i64 {
 }
 
 fun main() {
-	println("{fib(35)}")
+	println("{fib(std::mem::black_box(35))}")
 }

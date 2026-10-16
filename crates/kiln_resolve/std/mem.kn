@@ -10,6 +10,10 @@ pub fun align_of<T>() usize
 // Takes ownership of `value` without running its destructor.
 pub fun forget<T>(value T)
 
+// Returns `value` unchanged, hiding it from the optimizer (for benchmarks:
+// the compiler can't constant-fold through it).
+pub fun black_box<T>(value T) T
+
 // Swaps two values.
 pub fun swap<T>(a &mut T, b &mut T)
 

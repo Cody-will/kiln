@@ -167,16 +167,24 @@ pub fn emit(
         cx.funcs.insert(id, fv);
     }
     define_data(&mut cx, decls, data)?;
+    let taken = address_taken(funcs, data);
     for f in funcs {
         let fv = cx.funcs[&f.id];
         let name = decls.get_function_decl(f.id).linkage_name(f.id).to_string();
+        let local = decls.get_function_decl(f.id).linkage == Linkage::Local;
+        let outer = match promoted_ret(&cx, f, local && !taken.contains(&f.id)) {
+            Some(rt) => {
+                ret_wrapper(&cx, fv, &name, f, rt).map_err(|x| format!("{x} (in `{name}`)"))?
+            }
+            None => fv,
+        };
         let refs = valid_refs(&f.func, &f.hints);
         let target = if refs.is_empty() || std::env::var_os("KILN_LLVM_NO_REFS").is_some() {
-            fv
+            outer
         } else {
-            thunk(&cx, fv, &name, f, &refs).map_err(|x| format!("{x} (in `{name}`)"))?
+            thunk(&cx, outer, &name, f, &refs).map_err(|x| format!("{x} (in `{name}`)"))?
         };
-        let refs = if target == fv { vec![] } else { refs };
+        let refs = if target == outer { vec![] } else { refs };
         Fx::new(&cx, f, target, refs)?
             .run()
             .map_err(|x| format!("{x} (in `{name}`)"))?;
@@ -324,6 +332,10 @@ struct Fx<'a, 'c> {
     /// Reference arguments passed separately to the body (see [`crate::RefHint`]): slot parameter → value.
     refvals: HashMap<usize, BasicValueEnum<'c>>,
     refs: Vec<crate::RefHint>,
+    /// Return-slot promotion: the result is built in this local and
+    /// returned by value (see [`promoted_ret`]).
+    ret_ty: Option<BasicTypeEnum<'c>>,
+    ret_slot: Option<PointerValue<'c>>,
 }
 
 impl<'a, 'c> Fx<'a, 'c> {
@@ -348,6 +360,11 @@ impl<'a, 'c> Fx<'a, 'c> {
             trap_bb: None,
             refvals: HashMap::new(),
             refs,
+            ret_ty: fv
+                .get_type()
+                .get_return_type()
+                .filter(|_| f.signature.returns.is_empty()),
+            ret_slot: None,
         })
     }
 
@@ -528,11 +545,19 @@ impl<'a, 'c> Fx<'a, 'c> {
             .entry_block()
             .ok_or("LLVM backend: empty function")?;
         let nparams = dfg.block_params(entry).len();
+        if let Some(rt) = self.ret_ty {
+            let a = self.b.build_alloca(rt, "ret").map_err(e)?;
+            let _ = a.as_instruction().unwrap().set_alignment(8);
+            self.ret_slot = Some(a);
+        }
         for (i, &v) in dfg.block_params(entry).iter().enumerate() {
-            let p = self
-                .fv
-                .get_nth_param(i as u32)
-                .ok_or("LLVM backend: parameter count")?;
+            let p = match (i, self.ret_slot) {
+                (0, Some(a)) => a.into(),
+                _ => self
+                    .fv
+                    .get_nth_param(i as u32)
+                    .ok_or("LLVM backend: parameter count")?,
+            };
             self.set(v, p)?;
         }
         for (j, r) in self.refs.iter().enumerate() {
@@ -970,6 +995,11 @@ impl<'a, 'c> Fx<'a, 'c> {
             D::MultiAry { .. } if op == O::Return => {
                 let rt = self.fv.get_type().get_return_type();
                 match args.len() {
+                    0 if self.ret_slot.is_some() => {
+                        let (a, t) = (self.ret_slot.unwrap(), self.ret_ty.unwrap());
+                        let x = self.b.build_load(t, a, "").map_err(e)?;
+                        self.b.build_return(Some(&x)).map_err(e)?;
+                    }
                     0 => {
                         self.b.build_return(None).map_err(e)?;
                     }
@@ -1481,4 +1511,89 @@ fn thunk<'c>(
     fv.add_attribute(AttributeLoc::Function, cx.enum_attr("nounwind"));
     param_attrs(cx, fv, &f.hints.params);
     Ok(body)
+}
+
+/// Functions whose address escapes (function pointers, vtables, data):
+/// their pointer-slot signature must stay as it is.
+fn address_taken(funcs: &[Func], data: &[(DataId, DataDescription)]) -> HashSet<FuncId> {
+    let mut out = HashSet::new();
+    let id_of = |f: &ir::Function, fr: ir::FuncRef| match &f.dfg.ext_funcs[fr].name {
+        ExternalName::User(r) => Some(FuncId::from_u32(f.params.user_named_funcs()[*r].index)),
+        _ => None,
+    };
+    for func in funcs {
+        let f = &func.func;
+        for blk in f.layout.blocks() {
+            for inst in f.layout.block_insts(blk) {
+                if let D::FuncAddr { func_ref, .. } = f.dfg.insts[inst] {
+                    out.extend(id_of(f, func_ref));
+                }
+            }
+        }
+    }
+    for (_, d) in data {
+        for (_, fr) in &d.function_relocs {
+            if let Ok((_, idx)) = reloc_target(&d.function_decls[*fr]) {
+                out.insert(FuncId::from_u32(idx));
+            }
+        }
+        for (_, gv, _) in &d.data_relocs {
+            if let Ok((0, idx)) = reloc_target(&d.data_decls[*gv]) {
+                out.insert(FuncId::from_u32(idx));
+            }
+        }
+    }
+    out
+}
+
+/// The register type a function's result can be returned in instead of
+/// through its return slot (parameter 0): only for internal functions that
+/// are called directly, with a 1/2/4/8/16-byte result.
+fn promoted_ret<'c>(cx: &Cx<'c>, f: &Func, eligible: bool) -> Option<BasicTypeEnum<'c>> {
+    if !eligible
+        || !f.func.signature.returns.is_empty()
+        || std::env::var_os("KILN_LLVM_NO_RETS").is_some()
+    {
+        return None;
+    }
+    let h = f.hints.params.iter().find(|h| h.index == 0 && !h.noalias)?;
+    matches!(h.size, 1 | 2 | 4 | 8 | 16)
+        .then(|| cx.c.custom_width_int_type((h.size * 8) as u32).into())
+}
+
+/// Turns `fv` (the pointer-slot entry point every caller uses) into an
+/// always-inlined wrapper that calls `{name}.v`, which returns the result by
+/// value, and stores it into the slot. After inlining, callers' slots
+/// become registers. Returns `{name}.v`, which gets the body.
+fn ret_wrapper<'c>(
+    cx: &Cx<'c>,
+    fv: FunctionValue<'c>,
+    name: &str,
+    f: &Func,
+    rt: BasicTypeEnum<'c>,
+) -> R<FunctionValue<'c>> {
+    let ps = fv.get_type().get_param_types();
+    let inner = cx.m.add_function(
+        &format!("{name}.v"),
+        rt.fn_type(&ps, false),
+        Some(L::Internal),
+    );
+    param_attrs(cx, inner, &f.hints.params);
+    let b = cx.c.create_builder();
+    let bb = cx.c.append_basic_block(fv, "entry");
+    b.position_at_end(bb);
+    let args: Vec<BasicMetadataValueEnum> = fv.get_param_iter().map(|p| p.into()).collect();
+    let cs = b.build_call(inner, &args, "").map_err(e)?;
+    let v = cs.try_as_basic_value().left().ok_or("return value")?;
+    let slot = fv
+        .get_nth_param(0)
+        .ok_or("return slot")?
+        .into_pointer_value();
+    let st = b.build_store(slot, v).map_err(e)?;
+    let _ = st.set_alignment(1);
+    b.build_return(None).map_err(e)?;
+    fv.add_attribute(AttributeLoc::Function, cx.enum_attr("alwaysinline"));
+    fv.add_attribute(AttributeLoc::Function, cx.enum_attr("nounwind"));
+    param_attrs(cx, fv, &f.hints.params);
+    Ok(inner)
 }

@@ -801,3 +801,12 @@ void kn_fmt_pad(KnVec *dst, const uint8_t *src, size_t n, int64_t width, uint32_
     kn_string_push(dst, src, n);
     for (int64_t i = 0; i < after; i++) kn_push_utf8(dst, fill);
 }
+
+/* `std::mem::black_box`: an opaque use of the value's memory. */
+void kn_black_box(void *p) {
+#ifndef _MSC_VER
+	__asm__ volatile("" : : "r"(p) : "memory");
+#else
+	(void)p;
+#endif
+}

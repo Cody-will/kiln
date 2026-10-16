@@ -206,6 +206,12 @@ impl FnCx<'_, '_, '_, '_> {
                     self.moved(p);
                 }
             }
+            // The value goes through memory an opaque runtime function may
+            // read or change, so the optimizer can't see through it.
+            "mem::black_box" => {
+                self.store_op(&args[0], dest);
+                self.call_rt("kn_black_box", &[dest]);
+            }
             "mem::swap" => {
                 let t = self.t_arg();
                 let size = self.cg.layout(&t).size;

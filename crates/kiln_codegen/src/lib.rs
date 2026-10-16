@@ -307,6 +307,7 @@ const RUNTIME: &[(&str, &[Type], Option<Type>)] = &[
     ),
     ("kn_memmove", &[types::I64, types::I64, types::I64], None),
     ("kn_maybe_yield", &[], None),
+    ("kn_black_box", &[types::I64], None),
     ("kn_round", &[types::F64], Some(types::F64)),
     ("kn_powi", &[types::F64, types::I32], Some(types::F64)),
     ("kn_fmod", &[types::F64, types::F64], Some(types::F64)),
