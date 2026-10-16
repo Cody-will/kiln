@@ -652,6 +652,12 @@ typedef struct KnSock {
 	int rexp, wexp;      /* the current wait's timer fired before it was armed */
 	int rhit, whit;      /* the current wait ended by timing out */
 	int refs;            /* the handle plus pending timeout timers */
+	/* Each direction has at most one pending timer. `rdl` / `wdl` is the
+	 * current wait's deadline (0: no wait with a timeout); a timer that
+	 * fires before it re-arms itself, so a busy keep-alive connection
+	 * keeps one heap entry instead of one per read. */
+	int64_t rdl, wdl;
+	int rpend, wpend;
 } KnSock;
 
 static lock_t plock = LOCK_INIT;
@@ -845,7 +851,20 @@ static void io_timeout(TimerEnt *e) {
 	KnSock *s = (KnSock *)e->sock;
 	void *t = NULL;
 	lk(&s->lock);
-	if (e->write ? s->wseq == e->seq : s->rseq == e->seq) {
+	int64_t dl = e->write ? s->wdl : s->rdl;
+	if (dl > e->when) {
+		/* A later (or extended) deadline: wait for that one. */
+		TimerEnt again = *e;
+		again.when = dl;
+		ulk(&s->lock);
+		heap_push(again);
+		return;
+	}
+	if (e->write)
+		s->wpend = 0;
+	else
+		s->rpend = 0;
+	if (dl != 0) {
 		void **slot = e->write ? &s->wtask : &s->rtask;
 		if (*slot) {
 			t = *slot;
@@ -939,11 +958,23 @@ static int wait_io(KnSock *s, int write) {
 		s->rexp = 0;
 		s->rhit = 0;
 	}
-	if (to > 0)
+	int push = 0;
+	int64_t dl = to > 0 ? kn_time_mono() + to : 0;
+	if (write)
+		s->wdl = dl;
+	else
+		s->rdl = dl;
+	if (to > 0 && !(write ? s->wpend : s->rpend)) {
+		push = 1;
 		s->refs++;
+		if (write)
+			s->wpend = 1;
+		else
+			s->rpend = 1;
+	}
 	ulk(&s->lock);
-	if (to > 0) {
-		TimerEnt e = {kn_time_mono() + to, NULL, s, write, seq};
+	if (push) {
+		TimerEnt e = {dl, NULL, s, write, seq};
 		lk(&tlock);
 		if (!tstarted) {
 			tstarted = 1;
@@ -959,6 +990,10 @@ static int wait_io(KnSock *s, int write) {
 	kn_sched_park(arm, &r);
 	lk(&s->lock);
 	int hit = write ? s->whit : s->rhit;
+	if (write)
+		s->wdl = 0;
+	else
+		s->rdl = 0;
 	ulk(&s->lock);
 	return hit;
 }

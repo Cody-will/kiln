@@ -332,7 +332,10 @@ static void *ctx_init(char *top, KnTask *t) {
 
 /* Stacks are mmap'd (committed lazily) with a guard page, and reused. */
 static kn_mutex stack_lock;
-static char *stack_pool[64];
+#define KN_STACK_POOL 256
+/* Pooled stacks keep at most this much committed at the top. */
+#define KN_STACK_KEEP ((size_t)16 << 10)
+static char *stack_pool[KN_STACK_POOL];
 static int stack_pool_len;
 static size_t page_size;
 
@@ -363,9 +366,26 @@ static int task_init_stack(KnTask *t) {
 	return 1;
 }
 
+/* A task that ran deep leaves pages committed; give them back before the
+ * stack is reused, so long-lived servers don't keep every task's peak.
+ * One mincore probe decides whether the madvise is worth it. */
+static void stack_trim(char *stack) {
+#if defined(MADV_DONTNEED)
+	char *top = stack + KN_STACK_SIZE;
+	char *probe = top - 4 * KN_STACK_KEEP;
+	unsigned char vec = 0;
+	if (mincore(probe, page_size, &vec) == 0 && !(vec & 1))
+		return;
+	madvise(stack + page_size, KN_STACK_SIZE - page_size - KN_STACK_KEEP, MADV_DONTNEED);
+#else
+	(void)stack;
+#endif
+}
+
 static void task_free_stack(KnTask *t) {
+	stack_trim(t->stack);
 	mutex_lock(&stack_lock);
-	if (stack_pool_len < 64) {
+	if (stack_pool_len < KN_STACK_POOL) {
 		stack_pool[stack_pool_len++] = t->stack;
 		mutex_unlock(&stack_lock);
 		return;
