@@ -11,7 +11,7 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 | VS Code (TextMate) and Tree-sitter grammars | ✅ Implemented |
 | Ownership and borrow checking: moves, borrows (non-lexical lifetimes), lifetimes and elision, `Drop` order, `defer`, closure captures | ✅ Implemented (`kiln check`) |
 | `Send`/`Sync` and `'static` checks for `spawn` and scoped tasks | ✅ Implemented (`kiln check`) |
-| Code generation (Cranelift): functions, structs/enums/`match`, generics (monomorphized), traits and `dyn`, closures, `result`/`?`, `defer`, `Drop`, `string`, `Vec`, `Box` | ✅ Implemented (`kiln build`, `kiln run`) |
+| Code generation (Cranelift): functions, structs/enums/`match`, generics (monomorphized), traits and `dyn`, closures, `result`/`?`, `defer`, `Drop`, `string`, `Vec`, `Box` | ✅ Implemented (`kiln build`, `kiln run`; optional LLVM backend for `--release`) |
 | Fixed-size arrays `[T; N]` | ✅ Implemented |
 | Integer overflow | ✅ Panics in debug builds, wraps with `--release` |
 | Slice patterns, `\|` patterns with bindings | 🚧 Not yet in codegen (reported as errors) |
