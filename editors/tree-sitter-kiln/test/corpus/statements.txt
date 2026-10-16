@@ -48,8 +48,8 @@ Concurrency
 ================================================================================
 
 fun worker(jobs <-chan Job, out chan<- u32) {
-	go run(1)
-	go move {
+	spawn run(1)
+	spawn move {
 		out <- 1
 	}
 	select {
@@ -74,16 +74,18 @@ fun worker(jobs <-chan Job, out chan<- u32) {
         (send_channel_type
           (primitive_type))))
     (block
-      (go_statement
-        (call_expression
-          (identifier)
-          (arguments
-            (integer_literal))))
-      (go_statement
-        (block
-          (send_statement
+      (expression_statement
+        (spawn_expression
+          (call_expression
             (identifier)
-            (integer_literal))))
+            (arguments
+              (integer_literal)))))
+      (expression_statement
+        (spawn_expression
+          (block
+            (send_statement
+              (identifier)
+              (integer_literal)))))
       (expression_statement
         (select_expression
           (select_arm

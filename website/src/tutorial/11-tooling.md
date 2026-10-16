@@ -1,6 +1,6 @@
 # Tooling
 
-Kiln ships one `kiln` command for everything, like `go` and `cargo`.
+Kiln ships one `kiln` command for everything, like `spawn` and `cargo`.
 
 ## Available today
 

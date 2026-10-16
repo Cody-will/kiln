@@ -10,13 +10,13 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 | Type checking: inference, structs/enums, traits/impls, generics, `?`, explicit returns, `:=`, mutability, channels | ✅ Implemented (`kiln check`) |
 | VS Code (TextMate) and Tree-sitter grammars | ✅ Implemented |
 | Ownership and borrow checking: moves, borrows (non-lexical lifetimes), lifetimes and elision, `Drop` order, `defer`, closure captures | ✅ Implemented (`kiln check`) |
-| `Send`/`Sync` and `'static` checks for `go` and scoped tasks | ✅ Implemented (`kiln check`) |
+| `Send`/`Sync` and `'static` checks for `spawn` and scoped tasks | ✅ Implemented (`kiln check`) |
 | Code generation (Cranelift): functions, structs/enums/`match`, generics (monomorphized), traits and `dyn`, closures, `result`/`?`, `defer`, `Drop`, `string`, `Vec`, `Box` | ✅ Implemented (`kiln build`, `kiln run`) |
 | Fixed-size arrays `[T; N]` | ✅ Implemented |
 | Integer overflow | ✅ Panics in debug builds, wraps with `--release` |
 | Slice patterns, `\|` patterns with bindings | 🚧 Not yet in codegen (reported as errors) |
 | Panics | ✅ Print a message and exit with status 101; 🚧 no unwinding (destructors and `defer` don't run on panic) |
-| Concurrency: `go` and `Task<T>`, channels, `select`, `scope`/`spawn`, M:N work-stealing scheduler, deadlock detection | ✅ Implemented on Linux, macOS, and Windows |
+| Concurrency: `spawn` and `Task<T>`, channels, `select`, `scope`/`spawn`, M:N work-stealing scheduler, deadlock detection | ✅ Implemented on Linux, macOS, and Windows |
 | A panic inside a task | 🚧 Ends the whole program (exit 101); `join` never returns `Err` yet |
 | Preemption | ✅ Loops yield after a task has run 10 ms while others wait; tasks also switch at channels, `select`, `join`, locks, timers, and I/O |
 | Standard library phase 1: `time`, `sync`, `io`, `fs`, `path`, `os`, `net` (TCP/UDP on the netpoller), `net::http` (server and client), `log`, `fmt`, `mem`, `ptr` | ✅ Implemented on Linux, macOS, and Windows; written in Kiln on the C runtime ([reference](stdlib.md)) |
@@ -44,4 +44,4 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 - Conflicting borrows: `&mut` while a `&` is still in use, two `&mut` at once, assigning to or moving a borrowed value
 - References that outlive what they point to, and returning references to locals
 - Missing or mismatched lifetimes in signatures (`fun f(a &str, b &str) &str`)
-- `go` tasks that borrow from the current function, or capture types that aren't `Send`
+- `spawn` tasks that borrow from the current function, or capture types that aren't `Send`

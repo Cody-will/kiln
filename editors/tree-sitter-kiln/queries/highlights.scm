@@ -64,7 +64,7 @@
 [ "if" "else" "match" "select" ] @keyword.conditional
 [ "for" "in" "while" "loop" "break" "continue" ] @keyword.repeat
 [ "return" ] @keyword.return
-[ "go" "defer" ] @keyword.coroutine
+[ "spawn" "defer" ] @keyword.coroutine
 (mutable_specifier) @keyword.modifier
 
 ; Operators

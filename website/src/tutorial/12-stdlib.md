@@ -210,7 +210,7 @@ fun main() result<void, io::Error> {
 	listener := TcpListener::bind("127.0.0.1:7000")?
 	for conn in listener.incoming() {
 		c := conn?
-		go move {
+		spawn move {
 			if let Err(e) = shout(c) {
 				eprintln("connection: {e}")
 			}

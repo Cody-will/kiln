@@ -1,10 +1,10 @@
-# Concurrency: `go`, channels, `select`
+# Concurrency: `spawn`, channels, `select`
 
 Kiln's concurrency model comes from Go: lightweight **tasks** that communicate over **channels**. Kiln adds compile-time safety from ownership: a value sent on a channel is *moved*, so two tasks can never race on the same data.
 
 Everything in this chapter compiles and runs. Tasks run on an M:N scheduler: many tasks share a few OS threads (one per CPU core by default; set `KILN_WORKERS` to change it), and idle threads steal work from busy ones.
 
-## Starting tasks with `go`
+## Starting tasks with `spawn`
 
 ```kiln
 fun say(msg &str) {
@@ -16,15 +16,15 @@ fun square(x i64) i64 {
 }
 
 fun main() {
-	a := go say("from a task")
-	b := go move {
+	a := spawn say("from a task")
+	b := spawn move {
 		println("from a block")
 	}
 	say("from main")
 	a.join()
 	b.join()
 
-	t := go square(7)
+	t := spawn square(7)
 	match t.join() {
 		Ok(v) => println("square: {v}"),
 		Err(_) => println("the task panicked"),
@@ -32,9 +32,9 @@ fun main() {
 }
 ```
 
-`go f(args)` runs a call in a new task, and `go move { ... }` runs a block. Tasks are cheap (each has its own small stack); you can start thousands.
+`spawn f(args)` runs a call in a new task, and `spawn move { ... }` runs a block. Tasks are cheap (each has its own small stack); you can start thousands.
 
-`go` is an expression: it returns a `Task<T>` handle, where `T` is what the call or block returns. `t.join()` waits for the task and gives back `result<T, Panic>`. Like Go, a program ends when `main` returns, even if other tasks are still running, so join the tasks you need to finish. Dropping a `Task` without joining detaches it.
+`spawn` is an expression: it returns a `Task<T>` handle, where `T` is what the call or block returns. `t.join()` waits for the task and gives back `result<T, Panic>`. Like Go, a program ends when `main` returns, even if other tasks are still running, so join the tasks you need to finish. Dropping a `Task` without joining detaches it.
 
 <div class="status">
 🚧 A panic in any task currently ends the whole program (exit status 101), so <code>join</code> never returns <code>Err</code> yet.
@@ -42,15 +42,15 @@ fun main() {
 
 A task may keep running after the function that started it returns, so it must **own** everything it uses:
 
-- `go f(args)` moves the arguments into the task. Passing a reference to a local (`go f(&data)`) is an error; string literals (`&'static str`) are fine.
-- A `go` block that uses local variables must be `go move { ... }`, which moves them in. Clone first if you still need a value afterwards.
+- `spawn f(args)` moves the arguments into the task. Passing a reference to a local (`spawn f(&data)`) is an error; string literals (`&'static str`) are fine.
+- A `spawn` block that uses local variables must be `spawn move { ... }`, which moves them in. Clone first if you still need a value afterwards.
 - Everything moved into a task must be `Send`. Structs and enums are `Send` automatically when all their fields are; raw pointers are not.
 
 ```text
 error: argument to `go` borrows `data`, which may not live as long as the task
  --> main.kn:4:2
   |
-4 | 	go report(&data)
+4 | 	spawn report(&data)
   | 	^^^^^^^^^^^^^^^^
   = help: tasks started with `go` may outlive the current function: pass an owned value (e.g. `.clone()`), or use `scope(|s| { s.spawn(...) })` for tasks that borrow
 ```
@@ -110,7 +110,7 @@ Both ends can be cloned, so many tasks can send to or receive from the same chan
 ```kiln
 fun main() {
 	(tx, rx) := chan::<i32>(0)
-	go move {
+	spawn move {
 		for i in 0..5 {
 			tx <- i
 		}
@@ -145,7 +145,7 @@ fun main() {
 	(res_tx, res_rx) := chan::<string>(100)
 
 	for id in 0..4 {
-		go worker(id, job_rx.clone(), res_tx.clone())
+		spawn worker(id, job_rx.clone(), res_tx.clone())
 	}
 	for i in 0..10 {
 		job_tx <- Job { id: i }
@@ -166,7 +166,7 @@ fun main() {
 fun main() {
 	(data_tx, data_rx) := chan::<string>(0)
 	(quit_tx, quit_rx) := chan::<bool>(1)
-	go move {
+	spawn move {
 		for i in 0..3 {
 			data_tx <- "message {i}"
 		}
@@ -227,7 +227,7 @@ fun main() {
 		c := counter.clone()
 		w := wg.clone()
 		w.add(1)
-		go move {
+		spawn move {
 			for _ in 0..1000 {
 				g mut := c.lock()
 				*g += 1

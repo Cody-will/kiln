@@ -88,8 +88,8 @@ Lowers each typed function body to a control-flow graph (`Body` of basic blocks)
 - Method calls apply the type checker's autoderef steps as deref projections, then autoref the receiver *after* evaluating arguments (two-phase borrows). `&mut` arguments are reborrowed.
 - Match ergonomics are reproduced: destructuring through `&T` adds a deref and binds by reference.
 - `defer`red calls are lowered once into the shared exit block, before locals die.
-- Closures and `go` blocks become separate bodies; captures are inferred from how the nested body uses each variable (moved → by value, assigned/`&mut` → `&mut`, otherwise `&`), or all by value for `move`.
-- `go f(x)`, `go { }`, and `Scope::spawn` produce `Spawn` statements carrying the moved operands or capture list.
+- Closures and `spawn` blocks become separate bodies; captures are inferred from how the nested body uses each variable (moved → by value, assigned/`&mut` → `&mut`, otherwise `&`), or all by value for `move`.
+- `spawn f(x)`, `spawn { }`, and `Scope::spawn` produce `Spawn` statements carrying the moved operands or capture list.
 
 `kiln mir <file>` prints the MIR.
 
@@ -101,7 +101,7 @@ Checks each MIR body (see the module docs in `body.rs`):
 2. **Liveness** — backward analysis of which locals are read later. A local whose type implements `Drop` is used by its own `StorageDead`, which is how destructor order is enforced.
 3. **Loans** — each `Ref` creates a loan; loans flow into the locals that hold them (copies, aggregates, call `flows`, reborrows through derefs). A loan is live while any holder is live (non-lexical lifetimes). Reads conflict with live mutable loans; writes, moves, and `&mut` conflict with any live loan of an overlapping place; `StorageDead` conflicts with live loans of that variable ("does not live long enough", with notes for where it was dropped and where the borrow is used later).
 4. **Return place** — loans of locals reaching the return value are errors; incoming parameter loans must be among those the signature allows.
-5. **Tasks** — `go` arguments and `go move` captures must not hold loans and must be `Send`; non-`move` `go` blocks may not borrow; scoped tasks require `Sync` for shared captures and `Send` otherwise.
+5. **Tasks** — `spawn` arguments and `spawn move` captures must not hold loans and must be `Send`; non-`move` `spawn` blocks may not borrow; scoped tasks require `Sync` for shared captures and `Send` otherwise.
 
 `sigcheck.rs` checks signatures and type definitions: undeclared lifetime names and elided lifetimes that elision cannot resolve.
 
@@ -115,7 +115,7 @@ Known gaps: the checker treats `std` types as opaque; lifetime variance and high
 
 A small C library (`runtime/kiln_rt.c`) compiled by `build.rs` with the `cc` crate. The static library's bytes are embedded in the compiler (`kiln_runtime::LIB`), so an installed `kiln` binary needs only a system linker. It provides allocation (`kn_alloc`/`kn_free`), panics (`kn_panic`: flush stdout, print `panic: ...` to stderr, exit 101), printing, `String` building and formatting of numbers, string comparison and the `str` methods, `Vec` growth, and the `defer` stack. `runtime/kiln_sched.c` is the concurrency runtime: an M:N work-stealing scheduler with assembly context switches (x86_64, AArch64) or fibers (Windows), guarded pooled task stacks, task handles, scopes, channels, `select`, and deadlock detection; it also owns the C `main`, which runs the program's `kn_main` as the first task. `runtime/kiln_std.c` backs the standard library: the error encoding (`-(kind << 32 | os_code)`) and OS error messages, clocks and a timer thread (sleeping tasks park), task-aware locks and atomics, the network poller (epoll, kqueue, WSAPoll) with non-blocking sockets, files, directories, environment, and processes. Loops call `kn_maybe_yield` every 1024 back-edges; it yields when the task has run 10 ms and other tasks are waiting. See `crates/kiln_runtime/README.md`.
 
-Concurrency in codegen: a `go` lowers to a `Spawn` statement plus a nested MIR body (`GoBlock`, whose upvars the task owns); codegen moves the captured values into a heap environment, and `kn_go` runs the body's closure-ABI instance on a new task, returning the `Task<T>` handle. Channel ends and task handles are one pointer to a runtime object; their drop glue releases a reference. `select` lowers to one `kn_select` call over a case array, then a branch on the chosen index.
+Concurrency in codegen: a `spawn` lowers to a `Spawn` statement plus a nested MIR body (`GoBlock`, whose upvars the task owns); codegen moves the captured values into a heap environment, and `kn_go` runs the body's closure-ABI instance on a new task, returning the `Task<T>` handle. Channel ends and task handles are one pointer to a runtime object; their drop glue releases a reference. `select` lowers to one `kn_select` call over a case array, then a branch on the chosen index.
 
 Data layout shared with codegen: `String` and `Vec<T>` are `{ ptr, cap, len }` (three words); `&str` and `&[T]` are `{ ptr, len }`; `Box<T>` is one pointer; `&dyn Trait` and `Box<dyn Trait>` are `{ data, vtable }`, where the vtable is `[drop_glue, size, align, methods...]` in trait declaration order.
 

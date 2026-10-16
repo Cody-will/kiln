@@ -99,7 +99,7 @@ fun main() {
 		t := totals.clone()
 		w := wg.clone()
 		w.add(1)
-		go move {
+		spawn move {
 			sum mut := 0
 			for i in 0..1000 {
 				sum += i * id
@@ -283,7 +283,7 @@ import std::time
 fun main() {
 	ctx := context::with_timeout(&context::background(), time::millis(50))
 	(tx, rx) := chan::<i32>(1)
-	go move {
+	spawn move {
 		time::sleep(time::secs(1))
 		tx <- 42
 	}
@@ -409,7 +409,7 @@ fun main() result<void, io::Error> {
 	listener := TcpListener::bind("127.0.0.1:7000")?
 	for conn in listener.incoming() {
 		c := conn?
-		go move {
+		spawn move {
 			if let Err(e) = echo(c) {
 				eprintln("echo: {e}")
 			}

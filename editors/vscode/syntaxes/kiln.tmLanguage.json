@@ -256,11 +256,11 @@
       "patterns": [
         {
           "name": "keyword.control.kiln",
-          "match": "\\b(if|else|match|select|for|in|while|loop|break|continue|return|go|defer)\\b"
+          "match": "(?<![.:])\\b(if|else|match|select|for|in|while|loop|break|continue|return|spawn|defer)\\b"
         },
         {
           "name": "keyword.other.kiln",
-          "match": "\\b(fun|struct|enum|trait|impl|type|mod|import|where|as|chan|dyn|extern|unsafe|move)\\b"
+          "match": "(?<![.:])\\b(fun|struct|enum|trait|impl|type|mod|import|where|as|chan|dyn|extern|unsafe|move)\\b"
         },
         {
           "name": "storage.modifier.kiln",

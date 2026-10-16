@@ -8,7 +8,7 @@ Kiln is a compiled programming language for **systems programming and backend se
 ```kiln
 fun main() {
 	(tx, rx) := chan::<string>(0)
-	go greet(tx)
+	spawn greet(tx)
 	msg := <-rx
 	println(msg)
 }
@@ -43,7 +43,7 @@ Newlines end statements, `x := v` declares a variable, there is one canonical fo
 
 ### Go-style concurrency
 
-`go f()` starts a lightweight task. Typed channels (`chan<- T`, `<-chan T`) and `select` coordinate them. The ownership rules mean data races are compile errors.
+`spawn f()` starts a lightweight task. Typed channels (`chan<- T`, `<-chan T`) and `select` coordinate them. The ownership rules mean data races are compile errors.
 
 </div>
 <div>

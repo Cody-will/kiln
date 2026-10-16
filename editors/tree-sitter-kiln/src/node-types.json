@@ -132,6 +132,10 @@
         "named": true
       },
       {
+        "type": "spawn_expression",
+        "named": true
+      },
+      {
         "type": "string_literal",
         "named": true
       },
@@ -668,10 +672,6 @@
         },
         {
           "type": "expression_statement",
-          "named": true
-        },
-        {
-          "type": "go_statement",
           "named": true
         },
         {
@@ -1341,25 +1341,6 @@
         },
         {
           "type": "type_identifier",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
-    "type": "go_statement",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": false,
-      "required": true,
-      "types": [
-        {
-          "type": "block",
-          "named": true
-        },
-        {
-          "type": "call_expression",
           "named": true
         }
       ]
@@ -2447,6 +2428,25 @@
     }
   },
   {
+    "type": "spawn_expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "block",
+          "named": true
+        },
+        {
+          "type": "call_expression",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "static_item",
     "named": true,
     "fields": {},
@@ -3307,10 +3307,6 @@
     "named": false
   },
   {
-    "type": "go",
-    "named": false
-  },
-  {
     "type": "i128",
     "named": false
   },
@@ -3408,6 +3404,10 @@
   },
   {
     "type": "self",
+    "named": false
+  },
+  {
+    "type": "spawn",
     "named": false
   },
   {

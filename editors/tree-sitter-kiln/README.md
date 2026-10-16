@@ -2,7 +2,7 @@
 
 This is a [Tree-sitter](https://tree-sitter.github.io/) grammar for Kiln. Editors such as Neovim, Helix, and Zed, as well as GitHub, use it for syntax highlighting, code folding, and structural navigation.
 
-- **`grammar.js`:** the grammar. It covers every item, statement, expression, pattern, and type form in `docs/SPEC.md`, including `:=` / `x mut :=`, `go`, `select`, `chan<- T` / `<-chan T`, and string interpolation.
+- **`grammar.js`:** the grammar. It covers every item, statement, expression, pattern, and type form in `docs/SPEC.md`, including `:=` / `x mut :=`, `spawn`, `select`, `chan<- T` / `<-chan T`, and string interpolation.
 - **`queries/highlights.scm`:** the highlight captures, using the standard capture names (`@keyword`, `@type`, `@function.call`, and so on).
 - **`test/corpus/`:** corpus tests.
 - **`src/`:** the generated parser. Regenerate it with `tree-sitter generate`. It is committed so the grammar can be used without the CLI.

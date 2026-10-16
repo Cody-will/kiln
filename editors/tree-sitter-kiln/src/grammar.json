@@ -296,8 +296,22 @@
             "type": "FIELD",
             "name": "name",
             "content": {
-              "type": "SYMBOL",
-              "name": "identifier"
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "SYMBOL",
+                  "name": "identifier"
+                },
+                {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "STRING",
+                    "value": "spawn"
+                  },
+                  "named": true,
+                  "value": "identifier"
+                }
+              ]
             }
           },
           {
@@ -2920,10 +2934,6 @@
         },
         {
           "type": "SYMBOL",
-          "name": "go_statement"
-        },
-        {
-          "type": "SYMBOL",
           "name": "defer_statement"
         },
         {
@@ -3223,7 +3233,7 @@
         ]
       }
     },
-    "go_statement": {
+    "spawn_expression": {
       "type": "PREC_RIGHT",
       "value": 0,
       "content": {
@@ -3231,7 +3241,7 @@
         "members": [
           {
             "type": "STRING",
-            "value": "go"
+            "value": "spawn"
           },
           {
             "type": "CHOICE",
@@ -3380,6 +3390,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "spawn_expression"
+        },
+        {
+          "type": "SYMBOL",
           "name": "block"
         },
         {
@@ -3476,8 +3490,22 @@
             "value": "::"
           },
           {
-            "type": "SYMBOL",
-            "name": "identifier"
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SYMBOL",
+                "name": "identifier"
+              },
+              {
+                "type": "ALIAS",
+                "content": {
+                  "type": "STRING",
+                  "value": "spawn"
+                },
+                "named": true,
+                "value": "identifier"
+              }
+            ]
           }
         ]
       }
@@ -6715,8 +6743,17 @@
     "_field_identifier": {
       "type": "ALIAS",
       "content": {
-        "type": "SYMBOL",
-        "name": "identifier"
+        "type": "CHOICE",
+        "members": [
+          {
+            "type": "SYMBOL",
+            "name": "identifier"
+          },
+          {
+            "type": "STRING",
+            "value": "spawn"
+          }
+        ]
       },
       "named": true,
       "value": "field_identifier"
@@ -6748,6 +6785,10 @@
     [
       "_pattern",
       "tuple_struct_pattern"
+    ],
+    [
+      "spawn_expression",
+      "_expression"
     ]
   ],
   "precedences": [],

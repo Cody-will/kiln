@@ -47,6 +47,7 @@ module.exports = grammar({
     [$.short_name, $._expression],
     [$._expression, $._type_identifier],
     [$._pattern, $.tuple_struct_pattern],
+    [$.spawn_expression, $._expression],
   ],
 
   supertypes: ($) => [$._expression, $._type, $._pattern, $._item],
@@ -85,7 +86,7 @@ module.exports = grammar({
         ...itemPrefix($),
         optional('unsafe'),
         'fun',
-        field('name', $.identifier),
+        field('name', choice($.identifier, alias('spawn', $.identifier))),
         optional(field('type_parameters', $.type_parameters)),
         field('parameters', $.parameters),
         optional(field('return_type', $._type)),
@@ -209,7 +210,6 @@ module.exports = grammar({
         $.short_var_declaration,
         $.assignment_statement,
         $.send_statement,
-        $.go_statement,
         $.defer_statement,
         $.expression_statement,
         $._item,
@@ -228,7 +228,7 @@ module.exports = grammar({
 
     send_statement: ($) => prec(1, seq(field('channel', $._expression), '<-', field('value', $._expression))),
 
-    go_statement: ($) => prec.right(seq('go', choice(seq(optional('move'), $.block), $.call_expression))),
+    spawn_expression: ($) => prec.right(seq('spawn', choice(seq(optional('move'), $.block), $.call_expression))),
 
     defer_statement: ($) => prec.right(seq('defer', $._expression)),
 
@@ -260,6 +260,7 @@ module.exports = grammar({
         $.array_expression,
         $.struct_expression,
         $.closure_expression,
+        $.spawn_expression,
         $.block,
         $.unsafe_block,
         $.if_expression,
@@ -276,7 +277,7 @@ module.exports = grammar({
     self: (_) => 'self',
 
     scoped_identifier: ($) =>
-      prec(PREC.path, seq(optional(choice($.identifier, $.scoped_identifier, $.generic_function, 'self', 'Self', 'chan')), '::', $.identifier)),
+      prec(PREC.path, seq(optional(choice($.identifier, $.scoped_identifier, $.generic_function, 'self', 'Self', 'chan')), '::', choice($.identifier, alias('spawn', $.identifier)))),
     generic_function: ($) =>
       prec(PREC.path, seq(choice($.identifier, $.scoped_identifier, 'chan'), '::', $.type_arguments)),
 
@@ -430,6 +431,6 @@ module.exports = grammar({
     _path_segment: ($) => choice($.identifier, 'self', 'Self'),
     identifier: (_) => /[\p{L}_][\p{L}\p{Nd}_]*/u,
     _type_identifier: ($) => alias($.identifier, $.type_identifier),
-    _field_identifier: ($) => alias($.identifier, $.field_identifier),
+    _field_identifier: ($) => alias(choice($.identifier, 'spawn'), $.field_identifier),
   },
 });

@@ -9,7 +9,7 @@ Kiln is a compiled, statically typed language for systems programming and backen
 1. **Memory safety without GC**: ownership plus borrow checking at compile time, with deterministic destruction (RAII).
 2. **Readable by default**: Go-like surface syntax, few sigils, explicit `return`, `:=` short declarations, and one canonical formatting style (`kiln fmt`, no options).
 3. **Expressive types**: generics, traits, sum types (enums), and pattern matching.
-4. **Cheap concurrency**: `go` spawns lightweight tasks; channels and `select` are part of the language. Data races are compile errors.
+4. **Cheap concurrency**: `spawn` spawns lightweight tasks; channels and `select` are part of the language. Data races are compile errors.
 5. **Explicit errors**: `result<T, E>` plus `?`. No exceptions and no `if err != nil`.
 6. **Predictable performance**: zero-cost abstractions, monomorphized generics, a native-code backend, and C ABI interop.
 7. **First-class tooling**: compiler, formatter, package manager, language server, and highlighting ship together.
@@ -38,6 +38,12 @@ Decisions:
 - Bounds keep their colon: `<T: Ord>`, `where T: Display`, `trait Error: Display`. Struct *literals* also keep it (`Point { x: 1, y: 2 }`), since they are values, not declarations.
 - In a parameter or `let`, a name followed by a space and then `(` or `[` is a binding followed by a tuple or array type (`p (i32, i32)`). Without the space, `Some(x)` is a pattern. `kiln fmt` always writes the space.
 
+### Task keyword: `spawn` (October 2026, approved)
+
+Tasks start with `spawn f(x)` or `spawn move { ... }`; `spawn` is an expression giving a `Task<T>`. The old keyword `go` is now an ordinary identifier, and `go f(x)` is rejected with a suggestion to write `spawn`.
+
+Any keyword may be used as a *member name*: after `.` (`s.spawn(f)`, the scoped-task method), after `::` in a path (`Scope::spawn`), and as the name of a method (a function taking `self`). The position always makes the meaning clear. A keyword cannot name a free function, a local, a type, or a struct field.
+
 ## 2. Lexical Structure
 
 - Source files are UTF-8 with the `.kn` extension (decided).
@@ -61,7 +67,7 @@ Decisions:
 ### Keywords
 
 ```
-as break chan const continue defer else enum false fn for go if impl
+as break chan const continue defer else enum false fn for spawn if impl
 import in let loop match mod move mut pub return select self Self
 static struct trait true type unsafe use where while
 ```
@@ -338,7 +344,7 @@ fun main() {
 
 `main` may return `result<void, E>` where `E: Error`. If it returns `Err`, the program prints the error and exits with code 1. `panic` exists only for unrecoverable bugs.
 
-### Concurrency: `go`, channels, `select`
+### Concurrency: `spawn`, channels, `select`
 
 ```kiln
 fun worker(id u32, jobs <-chan Job, results chan<- Output) {
@@ -351,7 +357,7 @@ fun main() {
 	(jobs_tx, jobs_rx) := chan::<Job>(100)
 	(res_tx, res_rx) := chan::<Output>(100)
 	for id in 0..4 {
-		go worker(id, jobs_rx.clone(), res_tx.clone())
+		spawn worker(id, jobs_rx.clone(), res_tx.clone())
 	}
 	for j in load_jobs() {
 		jobs_tx <- j
@@ -371,13 +377,13 @@ fun main() {
 }
 ```
 
-- `go f(args)` and `go move { ... }` spawn a task.
+- `spawn f(args)` and `spawn move { ... }` spawn a task.
   - Captured values must be `Send + 'static`.
   - The task gets a value either by moving it in or by sharing it through `Arc<T>`.
-- `go` is an expression that returns a `Task<T>` handle, where `T` is the result of the call or block. `task.join()` waits and returns `result<T, Panic>`, and dropping the handle detaches the task. The program ends when `main` returns, even if other tasks are still running (as in Go).
+- `spawn` is an expression that returns a `Task<T>` handle, where `T` is the result of the call or block. `task.join()` waits and returns `result<T, Panic>`, and dropping the handle detaches the task. The program ends when `main` returns, even if other tasks are still running (as in Go).
 - If every task is blocked and none can be woken, the program stops with `fatal error: all tasks are asleep - deadlock!` and exit status 2.
-- `scope(|s| { ... s.spawn(|| ...) ... })` creates **scoped tasks**. These may borrow non-`'static` data and are joined before `scope` returns. (`go` is a keyword, so the method is named `spawn`; `scope` is an ordinary library function.) Tasks that borrow need `T: Sync` for each shared borrow and `T: Send` for each `&mut` borrow or moved value.
-- `go f(args)` moves its arguments into the task; an argument that borrows from the current function is an error. A `go { ... }` block without `move` may not borrow locals: use `go move { ... }`.
+- `scope(|s| { ... s.spawn(|| ...) ... })` creates **scoped tasks**. These may borrow non-`'static` data and are joined before `scope` returns. (`spawn` is a keyword, so the method is named `spawn`; `scope` is an ordinary library function.) Tasks that borrow need `T: Sync` for each shared borrow and `T: Send` for each `&mut` borrow or moved value.
+- `spawn f(args)` moves its arguments into the task; an argument that borrows from the current function is an error. A `spawn { ... }` block without `move` may not borrow locals: use `spawn move { ... }`.
 - Types sent over a channel must be `Send`. Shared mutable state uses `Mutex<T>`, `RwLock<T>`, and atomics. `&T` crosses tasks only when `T: Sync`.
 - **Channel types (decided, Go's exact forms)**:
   - `chan<- T` is a send-only end, and `<-chan T` is a receive-only end.
@@ -447,7 +453,7 @@ fun main() result<void, io::Error> {
 	println("listening on :8080")
 	for conn in listener.incoming() {
 		conn := conn?
-		go move {
+		spawn move {
 			if let Err(e) = handle(conn) {
 				eprintln("conn error: {e}")
 			}
@@ -702,7 +708,7 @@ kiln/
 2. **Parser**:
    - Recursive descent with Pratt parsing for expressions.
    - Error-recovering, producing a lossless concrete syntax tree (CST) shared with the IDE in a rowan-style design.
-3. **AST**: a typed AST lowered from the CST, with desugaring of `for`, `?`, `go`, `select`, and interpolation.
+3. **AST**: a typed AST lowered from the CST, with desugaring of `for`, `?`, `spawn`, `select`, and interpolation.
 4. **Name resolution**: module tree, imports, and visibility, producing HIR.
 5. **Type checking**:
    - Trait solving and method resolution.
@@ -751,7 +757,7 @@ kiln/
 | M1 | Name resolution and type checking for functions, structs, enums, and match; native codegen; "hello world" and fib run |
 | M2 | Traits, generics (monomorphization), `result`, `?`, and `Drop` |
 | M3 | MIR and borrow checker (NLL), with lifetimes and elision |
-| M4 | Runtime: `go`, channels, `select`, scoped tasks, netpoller; `Send` and `Sync` enforcement |
+| M4 | Runtime: `spawn`, channels, `select`, scoped tasks, netpoller; `Send` and `Sync` enforcement |
 | M5 | Standard library core (io, fs, net, collections, sync, time); `kiln` build tool and package manager |
 | M6 | `kiln-ls` MVP (diagnostics, hover, go-to-definition, completion); `kiln fmt` |
 | M7 | `std::net::http`, JSON, testing framework; a real backend service written in Kiln as the dogfood test |

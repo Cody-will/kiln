@@ -172,7 +172,7 @@ fun main() {
 
 …but using `first` after `v.push(2)` would be an error, because `push` may reallocate the vector and leave `first` dangling.
 
-Closures borrow what they use: shared if they only read a variable, mutable if they change it, and by value if they move it (or if declared `move`). Tasks started with `go` can outlive the function, so they must own what they use; see [Concurrency](09-concurrency.md).
+Closures borrow what they use: shared if they only read a variable, mutable if they change it, and by value if they move it (or if declared `move`). Tasks started with `spawn` can outlive the function, so they must own what they use; see [Concurrency](09-concurrency.md).
 
 ## Drop and `defer`
 
