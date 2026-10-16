@@ -116,6 +116,11 @@ typedef struct KnWorker {
 	void (*after)(void *);
 	void *after_arg;
 	uint64_t rng;
+	/* A task woken by this worker's current task (channel handoff): it runs
+	 * next here, ahead of the queue, without waking an idle worker. Only
+	 * this worker touches it. */
+	KnTask *runnext;
+	int32_t streak; /* consecutive runnext switches */
 } KnWorker;
 
 static KnWorker *workers;
@@ -526,6 +531,11 @@ static KN_NORETURN void deadlock(void) {
 }
 
 static KnTask *find_work(KnWorker *w) {
+	if (w->runnext) {
+		KnTask *t = w->runnext;
+		w->runnext = NULL;
+		return t;
+	}
 	for (;;) {
 		KnTask *t = q_pop(w);
 		if (!t)
@@ -563,6 +573,24 @@ static void kn_ready(KnTask *t) {
 		cond_signal(&sched_cond);
 		mutex_unlock(&sched_lock);
 	}
+}
+
+/* Like kn_ready, for a task the current task just handed a value to: it
+ * runs next on this worker (Go's runnext). After a long run of handoffs the
+ * task goes through the queue instead, so a ping-pong pair can't starve it. */
+static void kn_ready_next(KnTask *t) {
+	KnWorker *w = current_worker();
+	if (!w || !w->cur || w->streak >= 64) {
+		if (w)
+			w->streak = 0;
+		kn_ready(t);
+		return;
+	}
+	KnTask *old = w->runnext;
+	w->runnext = t;
+	w->streak++;
+	if (old)
+		kn_ready(old);
 }
 
 /* Blocks the current task. `after(arg)` runs on the scheduler once the
@@ -604,7 +632,7 @@ void kn_maybe_yield(void) {
 		return;
 	if (kn_time_mono() - w->slice_start < 10000000)
 		return;
-	if (!any_work()) {
+	if (!w->runnext && !any_work()) {
 		w->slice_start = kn_time_mono();
 		return;
 	}
@@ -613,7 +641,10 @@ void kn_maybe_yield(void) {
 
 static void worker_loop(KnWorker *w) {
 	for (;;) {
+		int handoff = w->runnext != NULL;
 		KnTask *t = find_work(w);
+		if (!handoff)
+			w->streak = 0;
 		w->cur = t;
 		w->slice_start = kn_time_mono();
 		switch_to_task(w, t);
@@ -872,7 +903,7 @@ static KnWaiter *wq_take(KnWaitQ *q) {
 static void wake(KnWaiter *w, int32_t ok) {
 	w->ok = ok;
 	w->task->sel = w->index;
-	kn_ready(w->task);
+	kn_ready_next(w->task);
 }
 
 typedef struct KnChan {
