@@ -1,0 +1,42 @@
+// JSON number fast paths (integers, short decimals) agree with the general
+// float parser, and floats print in their shortest round-trip form.
+import std::encoding::json
+import std::strconv
+
+fun check(text &str) bool {
+	v := json::parse(text).unwrap()
+	want := strconv::parse_float(text).unwrap()
+	match v.as_f64() {
+		Some(f) => {
+			if f != want || f.is_sign_negative() != want.is_sign_negative() {
+				println("MISMATCH {text}: {f:?} vs {want:?}")
+				return false
+			}
+			return true
+		}
+		None => return false,
+	}
+}
+
+fun main() {
+	let mut x u64 = 88172645463325252
+	ok mut := 0
+	for i in 0..20000 {
+		x ^= x << 13
+		x ^= x >> 7
+		x ^= x << 17
+		m := x % 10000000000000000
+		e := (x >> 40) % 50
+		t := "{m}e-{e}"
+		u := "-{x % 100000}.{x % 1000}"
+		w := "{(x % 1000000000) as f64 / 7.0:?}"
+		if check(&t) && check(&u) && check(&w) {
+			ok += 1
+		}
+		let _ = i
+	}
+	println("{ok} of 20000")
+	for s in ["0", "-0", "0.1", "1e22", "1e23", "9007199254740993", "123456789012345678901234567890", "2.2250738585072014e-308", "1.7976931348623157e308", "5e-324", "-0.0", "99.0", "1.25"] {
+		println("{s} -> {json::parse(s).unwrap()}")
+	}
+}

@@ -174,16 +174,31 @@ void kn_string_from(KnVec *out, const uint8_t *p, size_t len) {
 
 /* ----- formatting -------------------------------------------------------- */
 
+/* Decimal digits of `v` at the end of buf[0..24); returns where they start. */
+static char *u64_digits(char *end, uint64_t v) {
+	char *p = end;
+	do {
+		*--p = (char)('0' + v % 10);
+		v /= 10;
+	} while (v);
+	return p;
+}
+
 void kn_fmt_i64(KnVec *s, int64_t v) {
-	char buf[32];
-	int n = snprintf(buf, sizeof buf, "%lld", (long long)v);
-	kn_string_push(s, (const uint8_t *)buf, (size_t)n);
+	char buf[24];
+	char *end = buf + sizeof buf;
+	uint64_t u = v < 0 ? 0 - (uint64_t)v : (uint64_t)v;
+	char *p = u64_digits(end, u);
+	if (v < 0)
+		*--p = '-';
+	kn_string_push(s, (const uint8_t *)p, (size_t)(end - p));
 }
 
 void kn_fmt_u64(KnVec *s, uint64_t v) {
-	char buf[32];
-	int n = snprintf(buf, sizeof buf, "%llu", (unsigned long long)v);
-	kn_string_push(s, (const uint8_t *)buf, (size_t)n);
+	char buf[24];
+	char *end = buf + sizeof buf;
+	char *p = u64_digits(end, v);
+	kn_string_push(s, (const uint8_t *)p, (size_t)(end - p));
 }
 
 void kn_fmt_bool(KnVec *s, int32_t b) {
@@ -220,6 +235,8 @@ void kn_fmt_char(KnVec *s, uint32_t c) {
 
 /* Like Rust's `Display` for floats: the shortest digits that round-trip,
  * written without an exponent (`1`, `0.1`, `2.5`, `100000`, `0.00001`). */
+void kn_ryu_digits(double f, uint64_t *mantissa, int32_t *exponent);
+
 void kn_fmt_f64(KnVec *s, double v) {
 	if (isnan(v)) {
 		kn_string_push(s, (const uint8_t *)"NaN", 3);
@@ -232,26 +249,26 @@ void kn_fmt_f64(KnVec *s, double v) {
 			kn_string_push(s, (const uint8_t *)"inf", 3);
 		return;
 	}
-	char buf[64];
-	int prec;
-	for (prec = 1; prec <= 17; prec++) {
-		snprintf(buf, sizeof buf, "%.*e", prec - 1, v);
-		if (strtod(buf, NULL) == v)
-			break;
-	}
-	/* buf = [-]d.ddde[+-]XX */
+	/* Shortest round-trip digits (Ryu): |v| = mant * 10^e10. */
 	char digits[32];
-	int nd = 0, neg = 0, i = 0;
-	if (buf[0] == '-') {
-		neg = 1;
-		i = 1;
+	int nd = 0, neg = signbit(v) != 0, exp;
+	if (v == 0) {
+		digits[nd++] = '0';
+		exp = 0;
+	} else {
+		uint64_t mant;
+		int32_t e10;
+		kn_ryu_digits(v, &mant, &e10);
+		char tmp[24];
+		int t = 0;
+		while (mant) {
+			tmp[t++] = (char)('0' + mant % 10);
+			mant /= 10;
+		}
+		while (t)
+			digits[nd++] = tmp[--t];
+		exp = e10 + nd - 1;
 	}
-	for (; buf[i] && buf[i] != 'e'; i++)
-		if (buf[i] >= '0' && buf[i] <= '9')
-			digits[nd++] = buf[i];
-	int exp = atoi(buf + i + 1);
-	while (nd > 1 && digits[nd - 1] == '0')
-		nd--;
 	char out[400];
 	int o = 0;
 	if (neg)

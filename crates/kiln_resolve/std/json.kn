@@ -448,11 +448,11 @@ fun write_value(out &mut string, v &Value, depth usize, pretty bool) {
 				out.push("false")
 			}
 		}
-		Value::Int(n) => out.push("{n}"),
+		Value::Int(n) => std::strconv::append_int(out, *n),
 		Value::Float(f) => {
 			// JSON has no NaN or infinity.
 			if f.is_finite() {
-				out.push("{f:?}")
+				std::strconv::append_float(out, *f)
 			} else {
 				out.push("null")
 			}
@@ -937,11 +937,24 @@ impl<'a> Parser<'a> {
 
 	fun number(&mut self) result<Value, Error> {
 		start := self.pos
-		if self.peek() == 45 {
+		neg := self.peek() == 45
+		if neg {
 			self.pos += 1
 		}
 		first := self.peek()
-		n := self.digits()
+		// Fast path: up to 19 significant digits accumulate in `m`, with
+		// the value m * 10^e10; anything else uses the general parsers.
+		let mut m u64 = 0
+		nd mut := 0
+		e10 mut := 0
+		while self.pos < self.b.len() && self.b[self.pos] >= 48 && self.b[self.pos] <= 57 {
+			if nd < 19 {
+				m = m * 10 + (self.b[self.pos] - 48) as u64
+			}
+			nd += 1
+			self.pos += 1
+		}
+		n := nd
 		if n == 0 {
 			return Err(self.error("expected digits"))
 		}
@@ -952,19 +965,72 @@ impl<'a> Parser<'a> {
 		if self.peek() == 46 {
 			self.pos += 1
 			is_float = true
-			if self.digits() == 0 {
+			fd mut := 0
+			while self.pos < self.b.len() && self.b[self.pos] >= 48 && self.b[self.pos] <= 57 {
+				if nd < 19 {
+					m = m * 10 + (self.b[self.pos] - 48) as u64
+					e10 -= 1
+				}
+				nd += 1
+				fd += 1
+				self.pos += 1
+			}
+			if fd == 0 {
 				return Err(self.error("expected digits after `.`"))
 			}
 		}
 		if self.peek() == 101 || self.peek() == 69 {
 			self.pos += 1
 			is_float = true
+			eneg mut := false
 			if self.peek() == 43 || self.peek() == 45 {
+				eneg = self.peek() == 45
 				self.pos += 1
 			}
-			if self.digits() == 0 {
+			ev mut := 0
+			ed mut := 0
+			while self.pos < self.b.len() && self.b[self.pos] >= 48 && self.b[self.pos] <= 57 {
+				if ev < 100000 {
+					ev = ev * 10 + (self.b[self.pos] - 48) as i64
+				}
+				ed += 1
+				self.pos += 1
+			}
+			if ed == 0 {
 				return Err(self.error("expected exponent digits"))
 			}
+			if eneg {
+				e10 -= ev
+			} else {
+				e10 += ev
+			}
+		}
+		if !is_float && nd <= 18 {
+			v := m as i64
+			if neg {
+				return Ok(Value::Int(-v))
+			}
+			return Ok(Value::Int(v))
+		}
+		if is_float && nd <= 19 && m <= 9007199254740992 && e10 >= -22 && e10 <= 22 {
+			// Both m and 10^|e10| are exact doubles, so one correctly
+			// rounded multiply or divide gives the exact result.
+			let mut p f64 = 1.0
+			k mut := if e10 < 0 { -e10 } else { e10 }
+			while k > 0 {
+				p *= 10.0
+				k -= 1
+			}
+			f mut := m as f64
+			if e10 < 0 {
+				f = f / p
+			} else {
+				f = f * p
+			}
+			if neg {
+				f = -f
+			}
+			return Ok(Value::Float(f))
 		}
 		text := &self.s[start..self.pos]
 		if !is_float {
@@ -1193,7 +1259,7 @@ impl ToJson for f64 {
 	fun write_json(&self, out &mut string) {
 		f := *self as f64
 		if f.is_finite() {
-			out.push("{f:?}")
+			std::strconv::append_float(out, f)
 		} else {
 			out.push("null")
 		}
@@ -1217,7 +1283,7 @@ impl ToJson for f32 {
 	fun write_json(&self, out &mut string) {
 		f := *self as f64
 		if f.is_finite() {
-			out.push("{f:?}")
+			std::strconv::append_float(out, f)
 		} else {
 			out.push("null")
 		}
@@ -1462,7 +1528,7 @@ impl ToJson for i8 {
 	}
 
 	fun write_json(&self, out &mut string) {
-		out.push("{*self}")
+		std::strconv::append_int(out, *self as i64)
 	}
 }
 
@@ -1486,7 +1552,7 @@ impl ToJson for i16 {
 	}
 
 	fun write_json(&self, out &mut string) {
-		out.push("{*self}")
+		std::strconv::append_int(out, *self as i64)
 	}
 }
 
@@ -1510,7 +1576,7 @@ impl ToJson for i32 {
 	}
 
 	fun write_json(&self, out &mut string) {
-		out.push("{*self}")
+		std::strconv::append_int(out, *self as i64)
 	}
 }
 
@@ -1534,7 +1600,7 @@ impl ToJson for i64 {
 	}
 
 	fun write_json(&self, out &mut string) {
-		out.push("{*self}")
+		std::strconv::append_int(out, *self as i64)
 	}
 }
 
@@ -1554,7 +1620,7 @@ impl ToJson for isize {
 	}
 
 	fun write_json(&self, out &mut string) {
-		out.push("{*self}")
+		std::strconv::append_int(out, *self as i64)
 	}
 }
 
@@ -1574,7 +1640,7 @@ impl ToJson for u8 {
 	}
 
 	fun write_json(&self, out &mut string) {
-		out.push("{*self}")
+		std::strconv::append_uint(out, *self as u64)
 	}
 }
 
@@ -1598,7 +1664,7 @@ impl ToJson for u16 {
 	}
 
 	fun write_json(&self, out &mut string) {
-		out.push("{*self}")
+		std::strconv::append_uint(out, *self as u64)
 	}
 }
 
@@ -1622,7 +1688,7 @@ impl ToJson for u32 {
 	}
 
 	fun write_json(&self, out &mut string) {
-		out.push("{*self}")
+		std::strconv::append_uint(out, *self as u64)
 	}
 }
 

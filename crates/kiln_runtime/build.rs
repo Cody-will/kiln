@@ -12,6 +12,7 @@ fn main() {
         "kiln_std.c",
         "kiln_unicode.c",
         "kiln_math.c",
+        "ryu/d2s.c",
     ] {
         println!("cargo:rerun-if-changed=runtime/{f}");
     }
@@ -21,6 +22,8 @@ fn main() {
         .file("runtime/kiln_std.c")
         .file("runtime/kiln_unicode.c")
         .file("runtime/kiln_math.c")
+        .file("runtime/ryu/d2s.c")
+        .include("runtime")
         .opt_level(2)
         .warnings(true)
         .cargo_metadata(false)

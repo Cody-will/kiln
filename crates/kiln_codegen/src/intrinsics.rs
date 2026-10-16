@@ -212,6 +212,17 @@ impl FnCx<'_, '_, '_, '_> {
                 self.store_op(&args[0], dest);
                 self.call_rt("kn_black_box", &[dest]);
             }
+            // Formatting straight into an existing string (no temporary).
+            "strconv::append_int" | "strconv::append_uint" | "strconv::append_float" => {
+                let s = self.op_scalar(&args[0]);
+                let v = self.op_scalar(&args[1]);
+                let f = match name {
+                    "strconv::append_int" => "kn_fmt_i64",
+                    "strconv::append_uint" => "kn_fmt_u64",
+                    _ => "kn_fmt_debug_f64",
+                };
+                self.call_rt(f, &[s, v]);
+            }
             "mem::swap" => {
                 let t = self.t_arg();
                 let size = self.cg.layout(&t).size;

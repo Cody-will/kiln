@@ -265,3 +265,14 @@ pub fun quote(s &str) string {
 	out.push_char('"')
 	return out
 }
+
+// Appends `v` in decimal to `out` (like `out.push("{v}")`, without a
+// temporary string).
+pub fun append_int(out &mut string, v i64)
+
+// Appends `v` in decimal to `out`.
+pub fun append_uint(out &mut string, v u64)
+
+// Appends `v` to `out` in its shortest round-trip form, keeping `.0` on
+// whole numbers (like `out.push("{v:?}")`).
+pub fun append_float(out &mut string, v f64)
