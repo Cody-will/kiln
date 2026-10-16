@@ -920,10 +920,16 @@ static KnWaiter *wq_take(KnWaitQ *q) {
 	return NULL;
 }
 
-static void wake(KnWaiter *w, int32_t ok) {
+/* `handoff`: an unbuffered rendezvous, where the woken task should run
+ * next on this worker. Buffered channels queue it normally, so it can be
+ * stolen by an idle worker instead of waiting behind the current task. */
+static void wake(KnWaiter *w, int32_t ok, int handoff) {
 	w->ok = ok;
 	w->task->sel = w->index;
-	kn_ready_next(w->task);
+	if (handoff)
+		kn_ready_next(w->task);
+	else
+		kn_ready(w->task);
 }
 
 typedef struct KnChan {
@@ -961,7 +967,7 @@ static int try_send_locked(KnChan *c, void *src) {
 	KnWaiter *r = wq_take(&c->recvq);
 	if (r) {
 		memcpy(r->elem, src, c->elem);
-		wake(r, 1);
+		wake(r, 1, c->cap == 0);
 		return 1;
 	}
 	if (c->count < c->cap) {
@@ -982,14 +988,14 @@ static int try_recv_locked(KnChan *c, void *dst) {
 		if (s) {
 			memcpy(slot(c, c->count), s->elem, c->elem);
 			c->count++;
-			wake(s, 1);
+			wake(s, 1, c->cap == 0);
 		}
 		return 1;
 	}
 	KnWaiter *s = wq_take(&c->sendq);
 	if (s) {
 		memcpy(dst, s->elem, c->elem);
-		wake(s, 1);
+		wake(s, 1, c->cap == 0);
 		return 1;
 	}
 	return c->closed ? -1 : 0;
@@ -999,9 +1005,9 @@ static void close_locked(KnChan *c) {
 	c->closed = 1;
 	KnWaiter *w;
 	while ((w = wq_take(&c->recvq)))
-		wake(w, 0);
+		wake(w, 0, 0);
 	while ((w = wq_take(&c->sendq)))
-		wake(w, 0);
+		wake(w, 0, 0);
 }
 
 /* `tx <- v`: moves the value at `src` into the channel, blocking until a
