@@ -8,3 +8,6 @@ g := "interp {unterminated
 "
 h := 'x
 i := r#"never closed
+e := "{"
+f := "x { y" + "z"
+g := "{f("q
