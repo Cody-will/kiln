@@ -6,6 +6,7 @@
 
 pub mod ast;
 mod derive;
+pub mod dump;
 mod parser;
 mod testgen;
 

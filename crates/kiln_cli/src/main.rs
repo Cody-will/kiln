@@ -37,6 +37,9 @@ USAGE:
                             target/debug/<name> or target/release/<name>)
     kiln run [--release] [file.kn] [args...]
                             Build and run (in a package: kiln run [-- args...])
+    kiln parse --dump <file.kn>
+                            Print the canonical AST dump (spans as a..b,
+                            then errors), used by the parser diff test
     kiln lex [--dump] <file.kn>
                             Print the token stream (--dump: the canonical
                             form the self-hosted lexer is tested against)
@@ -112,6 +115,14 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             };
             print!("{}", kiln_lexer::dump::dump(&kiln_lexer::lex(&src)));
+            ExitCode::SUCCESS
+        }
+        [cmd, flag, file] if cmd == "parse" && flag == "--dump" => {
+            let Ok(src) = std::fs::read_to_string(file) else {
+                eprintln!("error: cannot read {file}");
+                return ExitCode::from(1);
+            };
+            print!("{}", kiln_parser::dump::dump(&src));
             ExitCode::SUCCESS
         }
         [cmd, file]
