@@ -15,7 +15,62 @@ The same program in three languages, in `bench/<name>/main.{kn,go,rs}`. Run ever
 
 This is a shared cloud VM, so expect some noise (hyperfine reported outliers). Each time is the **median of 5 runs** after 1 warm-up run (`hyperfine -N`). Memory is **peak RSS**, the highest of repeated runs, measured with `maxrss.c` (wait4 rusage from a tiny parent process). All three versions print identical output for every benchmark. The one exception is JSON byte counts, because Go writes `99.0` as `99`; there only the decoded checksum is compared, and it matches.
 
-## Results (lower is better)
+## Speed-gap round (Oct 17, 2026; main after `25e5b93`)
+
+Median of 3 full `bench/run.py` runs, in seconds (lower is better). The
+three runs agreed within ±4%. "Before" is the last run at `155b3e8`.
+
+| Benchmark | Kiln LLVM before (`155b3e8`) | Kiln Cranelift | **Kiln LLVM** | Go | Rust | LLVM/Go | LLVM/Rust |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| fib(35), recursion | 0.003 | 0.064 | **0.003** | 0.041 | 0.020 | 0.07× | 0.15× |
+| nbody, 5M steps | 0.221 | 0.657 | **0.201** | 0.236 | 0.166 | 0.85× | 1.21× |
+| binary-trees, depth 18 | 1.260 | 2.222 | **1.169** | 1.479 | 0.940 | 0.79× | 1.24× |
+| spectral-norm, n=2000 | 0.205 | 0.338 | **0.170** | 0.169 | 0.168 | 1.01× | 1.01× |
+| fannkuch-redux, n=10 | 0.233 | 0.303 | **0.181** | 0.180 | 0.179 | 1.01× | 1.01× |
+| JSON encode+decode, 50k records ×4 | 0.353 | 0.546 | **0.194** | 0.503 | 0.136 | 0.39× | 1.43× |
+| HashMap ops (1M int, 200k string keys) | 0.275 | 0.287 | **0.194** | 0.227 | 0.201 | 0.85× | 0.97× |
+| channel ping-pong, 500k round trips | 0.111 | 0.104 | **0.102** | 0.143 | 3.624 | 0.71× | 0.03× |
+| worker pool, 8 workers, 200k jobs | 0.120 | 0.108 | **0.101** | 0.078 | 0.163 | 1.29× | 0.62× |
+
+HTTP (higher is better). The load generator shares the 8 vCPUs, so
+these numbers vary about ±5% from run to run:
+
+| | req/s (median of 3) |
+|---|---:|
+| Kiln LLVM before | 207,600 |
+| kiln-cranelift | 167,349 |
+| kiln-llvm | 201,263 |
+| go | 223,856 |
+| rust | 237,877 |
+
+What changed:
+- **Worker pool**: each idle worker now parks on its own condition
+  variable (from an idle list), and only one "searching" worker is woken
+  at a time. Linux uses a futex lock with a short spin. 120 → ~102 ms.
+  The rest of the gap to Go (~1.3×) is contention on the two shared
+  channels' mutex: ten tasks hit one lock. A lock-free channel buffer
+  would be the next step. Ping-pong did not regress (111 → ~102 ms).
+- **JSON**: escaping copies unescaped byte runs in one push, `push_char`
+  has an ASCII fast path, bool/f64/i64 are read without building a
+  `Value`, and floats that are exact short decimals skip Ryu. `Vec::push`
+  calls the runtime only when full, and big freed blocks stay in the heap
+  (`mallopt`). 2.5× → 1.43× Rust.
+- **Compute**: innermost loops nested in another loop skip the
+  preemption countdown, found by a natural-loop analysis. The countdown
+  blocked unrolling. Runtime Vec/string functions are declared to LLVM
+  with `ptr nocapture` parameters. Spectral-norm and fannkuch now match
+  Rust. nbody stays ~1.25× because Rust's `vec![...]` has a
+  compile-time length, so LLVM unrolls the 5-body loop fully with
+  `sqrtpd`. A Kiln `Vec` built by `push` has no such constant length.
+- **HashMap**: index slots carry 24 hash bits, so probes rarely load
+  non-matching entries. Now slightly faster than Rust's SipHash map.
+- **Cranelift**: direct calls pass scalar arguments and results in
+  registers (`Abi::Reg`). Gains: fib −11%, binary-trees −5%,
+  fannkuch −6%, json −3%. Spectral-norm got 8% slower.
+
+## Previous run (`7dea5d8`)
+
+ (lower is better)
 
 Kiln is built twice: **Cranelift** (`--release --backend=cranelift`) and **LLVM** (`--release --backend=llvm`, the `--release` default when the compiler is built with LLVM). **Original** is the first run (`results-before.json`, Cranelift only, before the inlining, bounds-check, LLVM, JSON and runtime work); **previous run** is the last published run (commit f6c6411). The current run adds no compute changes since then (patterns, `defer` on panic, the lockfile, and debug info are correctness and tooling work), so differences between the two are run-to-run noise on this shared VM. Ratios compare Kiln LLVM with Go and Rust.
 
