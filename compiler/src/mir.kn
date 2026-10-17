@@ -1,0 +1,626 @@
+// MIR data structures and the canonical dump: a port of
+// crates/kiln_mir/src/ir.rs and dump.rs. The lowering is in lower.kn;
+// tests/mir_diff.rs compares `dump` with `kiln mir --dump`.
+
+import super::ast::{BinOp, FmtSpec}
+import super::ast::Span
+import super::ty::Ty
+import super::typeck::prim_name
+
+@derive(Clone, Copy, Eq)
+pub enum LocalKind {
+	Return,
+	Arg,
+	User,
+	Temp,
+	Upvar,
+}
+
+@derive(Clone)
+pub struct LocalDecl {
+	pub ty Ty,
+	pub name option<string>,
+	pub span Span,
+	pub kind LocalKind,
+	pub mutable bool,
+	pub source option<u32>,
+}
+
+// Deref kinds: Shared, Mut, Ptr, Box (the Rust `DerefKindKey`).
+@derive(Clone, Copy, Eq)
+pub enum DerefKey {
+	Shared,
+	Mut,
+	Ptr,
+	Box,
+}
+
+@derive(Clone, Eq)
+pub enum Proj {
+	Deref(DerefKey),
+	Field(string),
+	Index(u32),
+}
+
+@derive(Clone, Eq)
+pub struct Place {
+	pub local u32,
+	pub proj Vec<Proj>,
+}
+
+impl Place {
+	pub fun local(l u32) Place {
+		return Place { local: l, proj: Vec::new() }
+	}
+
+	pub fun project(&self, p Proj) Place {
+		proj mut := self.proj.clone()
+		proj.push(p)
+		return Place { local: self.local, proj: proj }
+	}
+
+	pub fun field(&self, name &str) Place {
+		return self.project(Proj::Field(name.to_string()))
+	}
+
+	pub fun through_ref(&self) bool {
+		for p in &self.proj {
+			match p {
+				Proj::Deref(DerefKey::Shared) | Proj::Deref(DerefKey::Mut) | Proj::Deref(DerefKey::Ptr) => return true,
+				_ => {}
+			}
+		}
+		return false
+	}
+}
+
+@derive(Clone)
+pub enum ConstKind {
+	Int(i128),
+	Float(f64),
+	Bool(bool),
+	Char(char),
+	Str(string),
+	Bytes(Vec<u8>),
+	Unit,
+	Fn(usize, Vec<(string, Ty)>),
+}
+
+@derive(Clone)
+pub struct Constant {
+	pub kind ConstKind,
+	pub ty Ty,
+}
+
+@derive(Clone)
+pub enum Operand {
+	Copy(Place),
+	Move(Place),
+	Const(Box<Constant>),
+}
+
+impl Operand {
+	pub fun place(&self) option<Place> {
+		match self {
+			Operand::Copy(p) => return Some(p.clone()),
+			Operand::Move(p) => return Some(p.clone()),
+			Operand::Const(_) => return None,
+		}
+	}
+
+	pub fun unit() Operand {
+		return Operand::constant(ConstKind::Unit, Ty::Unit)
+	}
+
+	pub fun constant(kind ConstKind, ty Ty) Operand {
+		return Operand::Const(Box::new(Constant { kind: kind, ty: ty }))
+	}
+}
+
+@derive(Clone)
+pub enum InterpSeg {
+	Text(string),
+	Arg(usize, option<FmtSpec>),
+}
+
+@derive(Clone)
+pub enum Op {
+	Bin(BinOp),
+	Neg,
+	Not,
+	Cast(Ty),
+	Discriminant,
+	Print { newline bool, stderr bool },
+	Interp(Vec<InterpSeg>),
+	Touch,
+	Unsupported(string),
+}
+
+@derive(Clone)
+pub enum AggKind {
+	Tuple,
+	Array,
+	ArrayRepeat(u64),
+	Struct(u32, Vec<string>),
+	Variant { def u32, index usize, fields Vec<string> },
+	Range { has_start bool, has_end bool, inclusive bool },
+	Closure(Span),
+}
+
+@derive(Clone)
+pub enum Callee {
+	Fn(usize, Vec<(string, Ty)>),
+	Value,
+	Intrinsic(string),
+}
+
+pub const DEEP_FLOW usize = 2147483648
+
+@derive(Clone)
+pub enum Rvalue {
+	Use(Operand),
+	Ref { mutable bool, place Place },
+	Aggregate(AggKind, Vec<Operand>),
+	Call { callee Callee, args Vec<Operand>, flows Vec<usize> },
+	Pure(Op, Vec<Operand>),
+	Coerce(Operand, Ty),
+}
+
+impl Rvalue {
+	pub fun operands(&self) Vec<Operand> {
+		match self {
+			Rvalue::Use(o) => return one(o.clone()),
+			Rvalue::Coerce(o, _) => return one(o.clone()),
+			Rvalue::Ref { .. } => return Vec::new(),
+			Rvalue::Aggregate(_, os) => return os.clone(),
+			Rvalue::Call { args, .. } => return args.clone(),
+			Rvalue::Pure(_, os) => return os.clone(),
+		}
+	}
+}
+
+@derive(Clone, Copy, Eq)
+pub enum CaptureMode {
+	Ref,
+	MutRef,
+	Move,
+}
+
+@derive(Clone)
+pub struct Capture {
+	pub name string,
+	pub ty Ty,
+	pub mode CaptureMode,
+	pub span Span,
+}
+
+@derive(Clone, Copy, Eq)
+pub enum SpawnKind {
+	GoCall,
+	GoBlock { is_move bool },
+	Scoped,
+}
+
+@derive(Clone)
+pub enum StmtKind {
+	Assign(Place, Rvalue),
+	Read(Place),
+	Eval(Rvalue),
+	StorageDead(u32),
+	DeferPush(u32, option<u32>),
+	DeferLoad(u32),
+	Spawn { kind SpawnKind, operands Vec<Operand>, captures Vec<Capture>, body Span },
+}
+
+@derive(Clone)
+pub struct Statement {
+	pub kind StmtKind,
+	pub span Span,
+}
+
+@derive(Clone)
+pub enum Terminator {
+	Goto(u32),
+	SwitchBool { cond Operand, t u32, f u32 },
+	Branch(Vec<u32>),
+	Return,
+	Unreachable,
+	DeferDispatch { targets Vec<option<u32>>, done u32 },
+}
+
+@derive(Clone)
+pub struct BlockData {
+	pub stmts Vec<Statement>,
+	pub term Terminator,
+	pub term_span Span,
+}
+
+@derive(Clone, Copy, Eq)
+pub enum BodyKind {
+	Fn,
+	Closure,
+	GoBlock,
+}
+
+@derive(Clone)
+pub struct Body {
+	pub name string,
+	pub kind BodyKind,
+	pub locals Vec<LocalDecl>,
+	pub blocks Vec<BlockData>,
+	pub arg_count usize,
+	pub return_flows option<Vec<usize>>,
+	pub span Span,
+	pub errors Vec<(string, Span)>,
+	pub unsupported Vec<(string, Span)>,
+	pub captures Vec<(u32, CaptureMode)>,
+	pub bounded_loops Vec<u32>,
+}
+
+pub const BOUNDED_TRIPS i128 = 4096
+
+// ---- canonical dump (crates/kiln_mir/src/dump.rs) ----
+
+fun join(v &Vec<string>, sep &str) string {
+	o mut := string::new()
+	for (i, s) in v.iter().enumerate() {
+		if i > 0 {
+			o.push(sep)
+		}
+		o.push(s)
+	}
+	return o
+}
+
+pub fun ty(t &Ty) string {
+	match t {
+		Ty::Prim(p) => return prim_name(p),
+		Ty::Unit => return "()".to_string(),
+		Ty::Never => return "!".to_string(),
+		Ty::Tuple(ts) => return "({tys(ts)})",
+		Ty::Ref(m, x) => {
+			mm := if *m { "mut " } else { "" }
+			return "&{mm}{ty(x)}"
+		}
+		Ty::Ptr(m, x) => {
+			mm := if *m { "mut" } else { "const" }
+			return "*{mm} {ty(x)}"
+		}
+		Ty::Array(x, n) => return "[{ty(x)}; {n}]",
+		Ty::Slice(x) => return "[{ty(x)}]",
+		Ty::Adt(d, args) => return "d{d}<{tys(args)}>",
+		Ty::Fn(ps, r, m) => {
+			mm := if *m { " mut" } else { "" }
+			return "fun{mm}({tys(ps)}) {ty(r)}"
+		}
+		Ty::Param(n) => return "'{n}",
+		Ty::Dyn(ds) => {
+			v mut := Vec::new()
+			for d in ds {
+				v.push("d{d}")
+			}
+			return "dyn {join(&v, " + ")}"
+		}
+		Ty::ChanSend(x) => return "chan<- {ty(x)}",
+		Ty::ChanRecv(x) => return "<-chan {ty(x)}",
+		Ty::Var(_) => return "?".to_string(),
+		Ty::Unknown => return "{{unknown}}".to_string(),
+	}
+}
+
+fun tys(ts &Vec<Ty>) string {
+	v mut := Vec::new()
+	for t in ts {
+		v.push(ty(t))
+	}
+	return join(&v, ", ")
+}
+
+pub fun esc(b &[u8]) string {
+	o mut := string::new()
+	hex := "0123456789abcdef".as_bytes()
+	for c in b {
+		c := *c
+		if c >= 32 && c < 127 && c != 92 && c != 34 {
+			o.push_char(c as char)
+		} else {
+			o.push("\\x")
+			o.push_char(hex[(c >> 4) as usize] as char)
+			o.push_char(hex[(c & 15) as usize] as char)
+		}
+	}
+	return o
+}
+
+fun sp(s Span) string {
+	return "{s.start}..{s.end}"
+}
+
+pub fun place(p &Place) string {
+	s mut := "_{p.local}"
+	for x in &p.proj {
+		match x {
+			Proj::Deref(k) => {
+				kk := match k {
+					DerefKey::Shared => "&",
+					DerefKey::Mut => "&mut",
+					DerefKey::Ptr => "ptr",
+					DerefKey::Box => "box",
+				}
+				s = "(*{kk} {s})"
+			}
+			Proj::Field(n) => s = "{s}.{n}",
+			Proj::Index(l) => s = "{s}[_{l}]",
+		}
+	}
+	return s
+}
+
+fun substs(v &Vec<(string, Ty)>) string {
+	o mut := Vec::new()
+	for (n, t) in v {
+		o.push("{n}={ty(t)}")
+	}
+	return join(&o, " ")
+}
+
+fun operand(o &Operand) string {
+	match o {
+		Operand::Copy(p) => return "copy {place(p)}",
+		Operand::Move(p) => return "move {place(p)}",
+		Operand::Const(c) => {
+			k := match &c.kind {
+				ConstKind::Int(v) => "{v}",
+				ConstKind::Float(v) => "{v:?}",
+				ConstKind::Bool(v) => "{v}",
+				ConstKind::Char(v) => "c{*v as u32}",
+				ConstKind::Str(v) => "\"{esc(v.as_bytes())}\"",
+				ConstKind::Bytes(v) => "b\"{esc(v)}\"",
+				ConstKind::Unit => "()".to_string(),
+				ConstKind::Fn(i, s) => "fn#{i}[{substs(s)}]",
+			}
+			return "const {k}: {ty(&c.ty)}"
+		}
+	}
+}
+
+fun list(ops &Vec<Operand>) string {
+	v mut := Vec::new()
+	for o in ops {
+		v.push(operand(o))
+	}
+	return join(&v, ", ")
+}
+
+fun opt_us(x option<usize>) string {
+	match x {
+		Some(v) => return "{v}",
+		None => return "-".to_string(),
+	}
+}
+
+fun spec(s &option<FmtSpec>) string {
+	match s {
+		None => return "-".to_string(),
+		Some(s) => {
+			fill := match s.fill {
+				Some(c) => "c{c as u32}",
+				None => "-".to_string(),
+			}
+			align := match &s.align {
+				Some(a) => a.clone(),
+				None => "-".to_string(),
+			}
+			return "fill={fill} align={align} plus={s.plus} alt={s.alt} zero={s.zero} width={opt_us(s.width)} precision={opt_us(s.precision)} kind={s.kind}"
+		}
+	}
+}
+
+pub fun binop_name(b BinOp) string {
+	match b {
+		BinOp::Add => return "Add".to_string(),
+		BinOp::Sub => return "Sub".to_string(),
+		BinOp::Mul => return "Mul".to_string(),
+		BinOp::Div => return "Div".to_string(),
+		BinOp::Rem => return "Rem".to_string(),
+		BinOp::And => return "And".to_string(),
+		BinOp::Or => return "Or".to_string(),
+		BinOp::BitAnd => return "BitAnd".to_string(),
+		BinOp::BitOr => return "BitOr".to_string(),
+		BinOp::BitXor => return "BitXor".to_string(),
+		BinOp::Shl => return "Shl".to_string(),
+		BinOp::Shr => return "Shr".to_string(),
+		BinOp::Eq => return "Eq".to_string(),
+		BinOp::Ne => return "Ne".to_string(),
+		BinOp::Lt => return "Lt".to_string(),
+		BinOp::Le => return "Le".to_string(),
+		BinOp::Gt => return "Gt".to_string(),
+		BinOp::Ge => return "Ge".to_string(),
+	}
+}
+
+fun op(o &Op) string {
+	match o {
+		Op::Bin(b) => return binop_name(*b),
+		Op::Neg => return "Neg".to_string(),
+		Op::Not => return "Not".to_string(),
+		Op::Cast(t) => return "Cast {ty(t)}",
+		Op::Discriminant => return "Discriminant".to_string(),
+		Op::Print { newline, stderr } => return "Print newline={newline} stderr={stderr}",
+		Op::Interp(segs) => {
+			v mut := Vec::new()
+			for g in segs {
+				match g {
+					InterpSeg::Text(t) => v.push("text \"{esc(t.as_bytes())}\""),
+					InterpSeg::Arg(i, s) => v.push("arg {i} {spec(s)}"),
+				}
+			}
+			return "Interp [{join(&v, "; ")}]"
+		}
+		Op::Touch => return "Touch".to_string(),
+		Op::Unsupported(s) => return "Unsupported \"{esc(s.as_bytes())}\"",
+	}
+}
+
+fun flows_str(f &Vec<usize>) string {
+	v mut := Vec::new()
+	for x in f {
+		v.push("{x}")
+	}
+	return "[{join(&v, ", ")}]"
+}
+
+fun rvalue(r &Rvalue) string {
+	match r {
+		Rvalue::Use(o) => return "use {operand(o)}",
+		Rvalue::Ref { mutable, place: p } => {
+			m := if *mutable { "mut " } else { "" }
+			return "&{m}{place(p)}"
+		}
+		Rvalue::Aggregate(k, ops) => {
+			kk := match k {
+				AggKind::Tuple => "tuple".to_string(),
+				AggKind::Array => "array".to_string(),
+				AggKind::ArrayRepeat(n) => "array_repeat[{n}]",
+				AggKind::Struct(d, fs) => "struct d{d}{{{join(fs, ",")}}}",
+				AggKind::Variant { def, index, fields } => "variant d{def}#{index}{{{join(fields, ",")}}}",
+				AggKind::Range { has_start, has_end, inclusive } => "range[{has_start} {has_end} {inclusive}]",
+				AggKind::Closure(s) => "closure[{sp(*s)}]",
+			}
+			return "{kk}({list(ops)})"
+		}
+		Rvalue::Call { callee, args, flows } => {
+			c := match callee {
+				Callee::Fn(i, s) => "fn#{i}[{substs(s)}]",
+				Callee::Value => "value".to_string(),
+				Callee::Intrinsic(n) => "intrinsic \"{esc(n.as_bytes())}\"",
+			}
+			return "call {c}({list(args)}) flows {flows_str(flows)}"
+		}
+		Rvalue::Coerce(o, t) => return "coerce({operand(o)} to {ty(t)})",
+		Rvalue::Pure(o, ops) => return "op {op(o)}({list(ops)})",
+	}
+}
+
+fun mode(m CaptureMode) string {
+	match m {
+		CaptureMode::Ref => return "ref".to_string(),
+		CaptureMode::MutRef => return "mut".to_string(),
+		CaptureMode::Move => return "move".to_string(),
+	}
+}
+
+fun bb(b u32) string {
+	return "bb{b}"
+}
+
+pub fun body(b &Body) string {
+	o mut := string::new()
+	kind := match b.kind {
+		BodyKind::Fn => "fn",
+		BodyKind::Closure => "closure",
+		BodyKind::GoBlock => "spawn",
+	}
+	rf := match &b.return_flows {
+		Some(f) => flows_str(f),
+		None => "-".to_string(),
+	}
+	o.push("body {b.name} {kind} {sp(b.span)} args={b.arg_count} return_flows={rf}\n")
+	for (i, l) in b.locals.iter().enumerate() {
+		k := match l.kind {
+			LocalKind::Return => "return",
+			LocalKind::Arg => "arg",
+			LocalKind::User => "user",
+			LocalKind::Temp => "temp",
+			LocalKind::Upvar => "upvar",
+		}
+		name := match &l.name {
+			Some(n) => n.clone(),
+			None => "-".to_string(),
+		}
+		m := if l.mutable { "mut" } else { "imm" }
+		src := match l.source {
+			Some(s) => " l{s}",
+			None => string::new(),
+		}
+		o.push("  _{i} {k} {ty(&l.ty)} {name} {sp(l.span)} {m}{src}\n")
+	}
+	for (i, blk) in b.blocks.iter().enumerate() {
+		bounded mut := ""
+		for h in &b.bounded_loops {
+			if *h as usize == i {
+				bounded = " bounded"
+			}
+		}
+		o.push("  bb{i}{bounded}\n")
+		for s in &blk.stmts {
+			t := match &s.kind {
+				StmtKind::Assign(p, rv) => "{place(p)} = {rvalue(rv)}",
+				StmtKind::Read(p) => "read {place(p)}",
+				StmtKind::Eval(rv) => "eval {rvalue(rv)}",
+				StmtKind::StorageDead(l) => "dead _{l}",
+				StmtKind::DeferPush(n, r) => {
+					rr := match r {
+						Some(r) => "_{r}",
+						None => "-".to_string(),
+					}
+					"defer_push {n} {rr}"
+				}
+				StmtKind::DeferLoad(r) => "defer_load _{r}",
+				StmtKind::Spawn { kind, operands, captures, body } => {
+					k := match kind {
+						SpawnKind::GoCall => "call".to_string(),
+						SpawnKind::GoBlock { is_move } => "block move={is_move}",
+						SpawnKind::Scoped => "scoped".to_string(),
+					}
+					caps mut := Vec::new()
+					for c in captures {
+						caps.push("{c.name}:{ty(&c.ty)}:{mode(c.mode)}:{sp(c.span)}")
+					}
+					"spawn {k} ({list(operands)}) captures [{join(&caps, ", ")}] body {sp(*body)}"
+				}
+			}
+			o.push("    {t} @{sp(s.span)}\n")
+		}
+		t := match &blk.term {
+			Terminator::Goto(t) => "goto bb{t}",
+			Terminator::SwitchBool { cond, t, f } => "if {operand(cond)} bb{t} bb{f}",
+			Terminator::Branch(ts) => {
+				v mut := Vec::new()
+				for t in ts {
+					v.push(bb(*t))
+				}
+				"branch [{join(&v, ", ")}]"
+			}
+			Terminator::Return => "return".to_string(),
+			Terminator::Unreachable => "unreachable".to_string(),
+			Terminator::DeferDispatch { targets, done } => {
+				v mut := Vec::new()
+				for t in targets {
+					match t {
+						Some(t) => v.push(bb(*t)),
+						None => v.push("-".to_string()),
+					}
+				}
+				"defer_dispatch [{join(&v, ", ")}] bb{done}"
+			}
+		}
+		o.push("    {t} @{sp(blk.term_span)}\n")
+	}
+	for (l, m) in &b.captures {
+		o.push("  capture _{l} {mode(*m)}\n")
+	}
+	for (m, s) in &b.errors {
+		o.push("  error {sp(*s)}: {m}\n")
+	}
+	for (m, s) in &b.unsupported {
+		o.push("  unsupported {sp(*s)}: {m}\n")
+	}
+	return o
+}
+
+pub fun one<T>(x T) Vec<T> {
+	v mut := Vec::new()
+	v.push(x)
+	return v
+}

@@ -19,6 +19,8 @@ mod derive
 mod resolve
 mod ty
 mod typeck
+mod mir
+mod sig
 
 import std::fs
 import std::os

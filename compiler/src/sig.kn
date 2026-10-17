@@ -1,0 +1,494 @@
+// Lifetime information from function signatures: a port of
+// crates/kiln_mir/src/sig.rs. Sets are sorted vectors.
+
+import super::ast::*
+import super::resolve::{DefKind, Res, Resolved}
+import super::mir::{DEEP_FLOW, one}
+
+pub fun set_add(s &mut Vec<string>, x &str) {
+	i mut := 0
+	while i < s.len() {
+		if s[i] == x {
+			return
+		}
+		if s[i].as_str() > x {
+			break
+		}
+		i += 1
+	}
+	s.insert(i, x.to_string())
+}
+
+pub fun set_has(s &Vec<string>, x &str) bool {
+	for y in s {
+		if y == x {
+			return true
+		}
+	}
+	return false
+}
+
+fun uset_add(s &mut Vec<usize>, x usize) {
+	i mut := 0
+	while i < s.len() {
+		if s[i] == x {
+			return
+		}
+		if s[i] > x {
+			break
+		}
+		i += 1
+	}
+	s.insert(i, x)
+}
+
+fun uhas(s &Vec<usize>, x usize) bool {
+	for y in s {
+		if *y == x {
+			return true
+		}
+	}
+	return false
+}
+
+@derive(Clone)
+pub struct TyLifetimes {
+	pub named Vec<string>,
+	pub elided bool,
+	pub generic bool,
+	pub generic_value bool,
+	behind u32,
+	pub names Vec<string>,
+	pub opaque bool,
+}
+
+impl TyLifetimes {
+	pub fun empty() TyLifetimes {
+		return TyLifetimes { named: Vec::new(), elided: false, generic: false, generic_value: false, behind: 0, names: Vec::new(), opaque: false }
+	}
+
+	fun set_generic(&mut self) {
+		self.generic = true
+		if self.behind == 0 {
+			self.generic_value = true
+		}
+	}
+
+	pub fun has_refs(&self) bool {
+		return self.elided || self.generic || self.has_lifetimes()
+	}
+
+	pub fun has_lifetimes(&self) bool {
+		if self.elided {
+			return true
+		}
+		for n in &self.named {
+			if n != "static" {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+pub fun ty_lifetimes(t &Type, generics &Vec<string>, r &Resolved) TyLifetimes {
+	out mut := TyLifetimes::empty()
+	walk(t, generics, r, &mut out)
+	return out
+}
+
+fun walk(t &Type, generics &Vec<string>, r &Resolved, out &mut TyLifetimes) {
+	match &t.kind {
+		TypeKind::Ref { lifetime, inner, .. } => {
+			match lifetime {
+				Some(l) => set_add(&mut out.named, &l.name),
+				None => out.elided = true,
+			}
+			out.behind += 1
+			walk(inner, generics, r, out)
+			out.behind -= 1
+		}
+		TypeKind::Path(p) => {
+			if p.segments.len() == 1 {
+				n := &p.segments[0].ident.name
+				if set_has(generics, n) {
+					out.set_generic()
+					set_add(&mut out.names, n)
+				} else if n == "Self" {
+					out.set_generic()
+					out.opaque = true
+				}
+			}
+			last := &p.segments[p.segments.len() - 1]
+			has_lt_arg mut := false
+			for a in &last.args {
+				match a {
+					GenericArg::Lifetime(l) => {
+						has_lt_arg = true
+						set_add(&mut out.named, &l.name)
+					}
+					GenericArg::Type(t) => walk(t, generics, r, out),
+					GenericArg::Binding { ty, .. } => walk(ty, generics, r, out),
+				}
+			}
+			res := r.path(p.span)
+			if !has_lt_arg {
+				if let Res::Def(d) = res {
+					k := r.def(d).kind
+					if (k == DefKind::Struct || k == DefKind::Enum) && adt_lifetime_params(r, d) > 0 {
+						out.elided = true
+					}
+				}
+			}
+			is_param := match res {
+				Res::TyParam(_) => true,
+				Res::SelfTy => true,
+				_ => false,
+			}
+			if is_param {
+				out.set_generic()
+				named := p.segments.len() == 1 && set_has(generics, &p.segments[0].ident.name)
+				if !named {
+					out.opaque = true
+				}
+			}
+		}
+		TypeKind::Ptr { inner, .. } => {
+			out.behind += 1
+			walk(inner, generics, r, out)
+			out.behind -= 1
+		}
+		TypeKind::Slice(inner) => walk(inner, generics, r, out),
+		TypeKind::Array(inner, _) => walk(inner, generics, r, out),
+		TypeKind::ChanSend(inner) => walk(inner, generics, r, out),
+		TypeKind::ChanRecv(inner) => walk(inner, generics, r, out),
+		TypeKind::Tuple(ts) => {
+			for x in ts {
+				walk(x, generics, r, out)
+			}
+		}
+		TypeKind::Fn { params, ret, .. } => {
+			out.generic = true
+			out.opaque = true
+			for x in params {
+				walk(x, generics, r, out)
+			}
+			if let Some(x) = ret {
+				walk(x, generics, r, out)
+			}
+		}
+		TypeKind::Dyn(bounds) => {
+			for b in bounds {
+				if let Bound::Lifetime(l) = b {
+					set_add(&mut out.named, &l.name)
+				}
+			}
+		}
+		TypeKind::Impl(bounds) => {
+			out.set_generic()
+			out.opaque = true
+			for b in bounds {
+				if let Bound::Lifetime(l) = b {
+					set_add(&mut out.named, &l.name)
+				}
+			}
+		}
+		_ => {}
+	}
+}
+
+fun item_generics(item &option<Item>) option<Generics> {
+	match item {
+		Some(i) => {
+			match &i.kind {
+				ItemKind::Struct(s) => return Some(s.generics.clone()),
+				ItemKind::Enum(e) => return Some(e.generics.clone()),
+				_ => return None,
+			}
+		}
+		None => return None,
+	}
+}
+
+pub fun adt_lifetime_params(r &Resolved, d u32) usize {
+	match item_generics(&r.def(d).item) {
+		Some(g) => {
+			n mut := 0
+			for p in &g.params {
+				if let GenericParam::Lifetime { .. } = p {
+					n += 1
+				}
+			}
+			return n
+		}
+		None => return 0,
+	}
+}
+
+pub fun type_param_names(g &Generics) Vec<string> {
+	o mut := Vec::new()
+	for p in &g.params {
+		if let GenericParam::Type { name, .. } = p {
+			o.push(name.name.clone())
+		}
+	}
+	return o
+}
+
+pub fun fn_lifetimes(decl &FnDecl, outer &Vec<string>, r &Resolved) (Vec<TyLifetimes>, TyLifetimes) {
+	generics mut := outer.clone()
+	for n in type_param_names(&decl.generics) {
+		generics.push(n)
+	}
+	params mut := Vec::new()
+	if let Some(sp) = &decl.self_param {
+		l mut := TyLifetimes::empty()
+		l.generic = true
+		l.generic_value = match sp {
+			SelfParam::Value { .. } => true,
+			_ => false,
+		}
+		for o in outer {
+			set_add(&mut l.names, o)
+		}
+		l.opaque = outer.len() == 0
+		if let SelfParam::Ref { lifetime, .. } = sp {
+			match lifetime {
+				Some(n) => set_add(&mut l.named, &n.name),
+				None => l.elided = true,
+			}
+		}
+		params.push(l)
+	}
+	for p in &decl.params {
+		params.push(ty_lifetimes(&p.ty, &generics, r))
+	}
+	ret := match &decl.ret {
+		Some(t) => ty_lifetimes(t, &generics, r),
+		None => TyLifetimes::empty(),
+	}
+	return (params, ret)
+}
+
+pub fun outlives(gs &Vec<Generics>) Vec<(string, string)> {
+	out mut := Vec::new()
+	for g in gs {
+		for p in &g.params {
+			if let GenericParam::Lifetime { name, bounds } = p {
+				for b in bounds {
+					out.push((name.name.clone(), b.name.clone()))
+				}
+			}
+		}
+		for w in &g.where_clause {
+			if let Some(l) = &w.lifetime {
+				for b in &w.bounds {
+					if let Bound::Lifetime(x) = b {
+						out.push((l.name.clone(), x.name.clone()))
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+pub fun outlives_rel(rel &Vec<(string, string)>, a &str, b &str) bool {
+	seen mut := one(a.to_string())
+	i mut := 0
+	while i < seen.len() {
+		cur := seen[i].clone()
+		if cur == b || cur == "static" {
+			return true
+		}
+		for (x, y) in rel {
+			if *x == cur && !set_has(&seen, y) {
+				seen.push(y.clone())
+			}
+		}
+		i += 1
+	}
+	return false
+}
+
+fun intersects(a &Vec<string>, b &Vec<string>) bool {
+	for x in a {
+		if set_has(b, x) {
+			return true
+		}
+	}
+	return false
+}
+
+pub fun return_flows(params &Vec<TyLifetimes>, ret &TyLifetimes, has_ref_self bool, rel &Vec<(string, string)>) Vec<usize> {
+	out mut := Vec::new()
+	if ret.generic {
+		for (i, p) in params.iter().enumerate() {
+			linked := p.generic && (p.opaque || ret.opaque || intersects(&p.names, &ret.names))
+			if !linked {
+				continue
+			}
+			if !p.generic_value {
+				uset_add(&mut out, i | DEEP_FLOW)
+			} else {
+				uset_add(&mut out, i)
+			}
+		}
+	}
+	for (i, p) in params.iter().enumerate() {
+		hit mut := false
+		for rn in &ret.named {
+			if rn == "static" {
+				continue
+			}
+			for pl in &p.named {
+				if outlives_rel(rel, pl, rn) {
+					hit = true
+				}
+			}
+		}
+		if hit {
+			uset_add(&mut out, i)
+		}
+	}
+	if ret.elided {
+		if has_ref_self {
+			uset_add(&mut out, 0)
+		} else {
+			for (i, p) in params.iter().enumerate() {
+				if p.has_lifetimes() {
+					uset_add(&mut out, i)
+				}
+			}
+		}
+	}
+	return out
+}
+
+pub fun decl_flows(decl &FnDecl, outer &Vec<string>, outer_generics &option<Generics>, r &Resolved) Vec<usize> {
+	(params0, ret0) := fn_lifetimes(decl, outer, r)
+	params mut := params0
+	ret mut := ret0
+	ref_self := match &decl.self_param {
+		Some(SelfParam::Ref { .. }) => true,
+		_ => false,
+	}
+	gs mut := one(decl.generics.clone())
+	if let Some(g) = outer_generics {
+		gs.push(g.clone())
+	}
+	all mut := outer.clone()
+	for n in type_param_names(&decl.generics) {
+		all.push(n)
+	}
+	groups := linked_generics(&gs, &all, r)
+	for t in params.iter_mut() {
+		extend_names(t, &groups)
+	}
+	extend_names(&mut ret, &groups)
+	flows mut := return_flows(&params, &ret, ref_self, &outlives(&gs))
+	if ref_self {
+		impl_lts mut := Vec::new()
+		if let Some(g) = outer_generics {
+			for p in &g.params {
+				if let GenericParam::Lifetime { name, .. } = p {
+					impl_lts.push(name.name.clone())
+				}
+			}
+		}
+		hit mut := false
+		for n in &ret.named {
+			if set_has(&impl_lts, n) {
+				hit = true
+			}
+		}
+		if hit && !uhas(&flows, 0) && !uhas(&flows, DEEP_FLOW) {
+			uset_add(&mut flows, DEEP_FLOW)
+		}
+	}
+	return flows
+}
+
+fun extend_names(t &mut TyLifetimes, groups &Vec<Vec<string>>) {
+	extra mut := Vec::new()
+	for g in groups {
+		if intersects(g, &t.names) {
+			for n in g {
+				extra.push(n.clone())
+			}
+		}
+	}
+	for n in &extra {
+		set_add(&mut t.names, n)
+	}
+}
+
+fun link(groups &mut Vec<Vec<string>>, set Vec<string>) {
+	if set.len() < 2 {
+		return
+	}
+	merged mut := set
+	kept mut := Vec::new()
+	for g in groups.iter() {
+		if intersects(g, &merged) {
+			for n in g {
+				set_add(&mut merged, n)
+			}
+		} else {
+			kept.push(g.clone())
+		}
+	}
+	kept.push(merged)
+	*groups = kept
+}
+
+fun in_bounds(bounds &Vec<Bound>, set &mut Vec<string>, names &Vec<string>, r &Resolved) {
+	inert := ["Borrow", "Eq", "PartialEq", "Ord", "PartialOrd", "Hash", "Display", "Debug"]
+	for b in bounds {
+		if let Bound::Trait { path, .. } = b {
+			last := &path.segments[path.segments.len() - 1].ident.name
+			skip mut := false
+			for x in &inert {
+				if *x == last.as_str() {
+					skip = true
+				}
+			}
+			if skip {
+				continue
+			}
+			for seg in &path.segments {
+				for a in &seg.args {
+					tt := match a {
+						GenericArg::Type(t) => Some(t.clone()),
+						GenericArg::Binding { ty, .. } => Some(ty.clone()),
+						_ => None,
+					}
+					if let Some(t) = tt {
+						for n in &ty_lifetimes(&t, names, r).names {
+							set_add(set, n)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+fun linked_generics(gs &Vec<Generics>, names &Vec<string>, r &Resolved) Vec<Vec<string>> {
+	groups mut := Vec::new()
+	for g in gs {
+		for p in &g.params {
+			if let GenericParam::Type { name, bounds, .. } = p {
+				set mut := one(name.name.clone())
+				in_bounds(bounds, &mut set, names, r)
+				link(&mut groups, set)
+			}
+		}
+		for w in &g.where_clause {
+			set mut := ty_lifetimes(&w.ty, names, r).names
+			in_bounds(&w.bounds, &mut set, names, r)
+			link(&mut groups, set)
+		}
+	}
+	return groups
+}
