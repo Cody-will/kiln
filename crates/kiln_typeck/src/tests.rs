@@ -694,6 +694,21 @@ fn exhaustiveness_looks_inside_patterns() {
 }
 
 #[test]
+fn exhaustiveness_of_slice_patterns() {
+    ok("fun f(v &[i32]) i32 {\n return match v {\n [] => 0,\n [x] => *x,\n [x, .., y] => *x + *y,\n }\n}");
+    ok("fun f(v [bool; 2]) i32 {\n return match v {\n [true, _] => 1,\n [false, true] => 2,\n [false, false] => 3,\n }\n}");
+    ok("fun f(v Vec<option<i32>>) i32 {\n return match v {\n [Some(x), ..] => x,\n [None, ..] => 1,\n [] => 0,\n }\n}");
+    has(
+        "fun f(v &[i32]) i32 {\n return match v {\n [] => 0,\n [x, y] => *x + *y,\n [x, .., 9] => *x,\n }\n}",
+        "non-exhaustive match: not all values of `[i32]` are covered",
+    );
+    has(
+        "fun f(v [bool; 2]) i32 {\n return match v {\n [true, _] => 1,\n [_, true] => 2,\n }\n}",
+        "non-exhaustive match",
+    );
+}
+
+#[test]
 fn enum_associated_functions() {
     ok("enum E {\n\tA,\n\tB,\n}\nimpl E {\n\tfun first() E {\n\t\treturn E::A\n\t}\n}\nfun f() {\n\tx := E::first()\n}");
     assert_eq!(

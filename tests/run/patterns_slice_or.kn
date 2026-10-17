@@ -1,0 +1,54 @@
+enum Shape {
+	Circle(f64),
+	Square(f64),
+	Rect(f64, f64),
+}
+
+fun area(s &Shape) f64 {
+	match s {
+		Shape::Circle(r) | Shape::Square(r) => return *r * *r,
+		Shape::Rect(w, h) => return *w * *h,
+	}
+}
+
+fun describe(v &[i64]) string {
+	match v {
+		[] => return "empty".to_string(),
+		[x] => return "one {x}".to_string(),
+		[first, .., last] => return "many {first}..{last}".to_string(),
+	}
+}
+
+fun head2(v &Vec<string>) string {
+	match v {
+		[a, b, ..] => return "{a}+{b}".to_string(),
+		[a] => return a.clone(),
+		_ => return "-".to_string(),
+	}
+}
+
+fun arr(a [i64; 3]) i64 {
+	match a {
+		[0, y, _] => return y,
+		[x, _, z] => return x + z,
+	}
+}
+
+fun pick(p (i64, option<i64>)) i64 {
+	match p {
+		(n, Some(k)) | (k, Some(n)) if n > 0 => return n * 100 + k,
+		(n, _) => return n,
+	}
+}
+
+fun main() {
+	println("{area(&Shape::Circle(2.0))} {area(&Shape::Square(3.0))} {area(&Shape::Rect(2.0, 5.0))}")
+	e := Vec::<i64>::new()
+	println(describe(&e))
+	println(describe(&[7].to_vec()))
+	println(describe(&[1, 2, 3, 4].to_vec()))
+	v := ["a".to_string(), "b".to_string(), "c".to_string()].to_vec()
+	println(head2(&v))
+	println("{arr([0, 5, 9])} {arr([1, 5, 9])}")
+	println("{pick((3, Some(4)))} {pick((-1, None))}")
+}

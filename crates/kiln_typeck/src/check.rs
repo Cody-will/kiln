@@ -3439,6 +3439,9 @@ impl Body<'_, '_, '_> {
             ]),
             Ty::Unit => Some(vec![(XCtor::Single, vec![])]),
             Ty::Tuple(ts) => Some(vec![(XCtor::Single, ts.clone())]),
+            Ty::Array(e, n) => Some(vec![(XCtor::Len(*n as usize), vec![(**e).clone(); *n as usize])]),
+            Ty::Slice(e) => Some(slice_ctors(e)),
+            Ty::Adt(d, a) if self.c.is_lang(*d, "Vec") && !a.is_empty() => Some(slice_ctors(&a[0])),
             Ty::Adt(d, _) => {
                 let info = self.c.adts.get(d)?;
                 if info.is_enum {
@@ -3541,6 +3544,33 @@ impl Body<'_, '_, '_> {
             PatternKind::Ref { inner, .. } => self.x_lower(inner, t),
             PatternKind::Or(ps) => XPat::Or(ps.iter().map(|x| self.x_lower(x, t)).collect()),
             PatternKind::Lit(Lit::Bool(b)) => XPat::Ctor(XCtor::Bool(*b), vec![]),
+            PatternKind::Slice(ps) => {
+                let elem = match self.c.infer.zonk(&self.strip_refs(t)) {
+                    Ty::Array(e, _) | Ty::Slice(e) => *e,
+                    Ty::Adt(_, a) if !a.is_empty() => a[0].clone(),
+                    _ => Ty::Unknown,
+                };
+                let lower = |x: &Pattern| self.x_lower(x, &elem);
+                match ps.iter().position(|x| matches!(x.kind, PatternKind::Rest)) {
+                    None => XPat::Ctor(XCtor::Len(ps.len()), ps.iter().map(lower).collect()),
+                    Some(r) => {
+                        let pre: Vec<XPat> = ps[..r].iter().map(lower).collect();
+                        let suf: Vec<XPat> = ps[r + 1..].iter().map(lower).collect();
+                        let max = slice_max();
+                        let fill = |n: usize| {
+                            let mut v = pre.clone();
+                            v.extend(std::iter::repeat_n(XPat::Wild, n - pre.len() - suf.len()));
+                            v.extend(suf.iter().cloned());
+                            v
+                        };
+                        let mut alts: Vec<XPat> = (pre.len() + suf.len()..=max)
+                            .map(|n| XPat::Ctor(XCtor::Len(n), fill(n)))
+                            .collect();
+                        alts.push(XPat::Ctor(XCtor::Long, fill(max + 1)));
+                        XPat::Or(alts)
+                    }
+                }
+            }
             PatternKind::Tuple(ps) => {
                 let tys = match self.c.infer.zonk(&self.strip_refs(t)) {
                     Ty::Tuple(ts) => ts,
@@ -3659,6 +3689,11 @@ impl Body<'_, '_, '_> {
     }
 
     fn check_exhaustive(&mut self, st: &Ty, arms: &[MatchArm], span: Span) {
+        let mut max = arms.iter().map(|a| pattern_slice_len(&a.pat)).max().unwrap_or(0);
+        if let Ty::Array(_, n) = self.c.infer.zonk(&self.strip_refs(st)) {
+            max = max.max(n as usize);
+        }
+        SLICE_MAX.with(|c| c.set(max));
         let rows: Vec<Vec<XPat>> = arms
             .iter()
             .filter(|a| a.guard.is_none())
@@ -3713,6 +3748,15 @@ impl Body<'_, '_, '_> {
     }
 }
 
+/// The constructors of a slice (or `Vec`) of `e`: every length up to
+/// [`SLICE_MAX`], then all longer ones together.
+fn slice_ctors(e: &Ty) -> Vec<(XCtor, Vec<Ty>)> {
+    let max = slice_max();
+    let mut v: Vec<(XCtor, Vec<Ty>)> = (0..=max).map(|n| (XCtor::Len(n), vec![e.clone(); n])).collect();
+    v.push((XCtor::Long, vec![e.clone(); max + 1]));
+    v
+}
+
 /// A pattern simplified for exhaustiveness checking.
 #[derive(Clone, Debug)]
 enum XPat {
@@ -3730,6 +3774,47 @@ enum XCtor {
     Variant(usize),
     Bool(bool),
     Single,
+    /// A slice of exactly this length.
+    Len(usize),
+    /// A slice longer than every fixed length the match mentions
+    /// ([`SLICE_MAX`]); its arity is `SLICE_MAX + 1`, with prefixes at the
+    /// start and suffixes at the end.
+    Long,
+}
+
+thread_local! {
+    /// The longest length a slice pattern of the current match can
+    /// distinguish (fixed patterns' lengths, `[a, .., b]`'s prefix plus
+    /// suffix, and array lengths). Longer slices are all alike: [`XCtor::Long`].
+    static SLICE_MAX: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn slice_max() -> usize {
+    SLICE_MAX.with(|c| c.get())
+}
+
+/// The longest length `p` distinguishes (see [`SLICE_MAX`]).
+fn pattern_slice_len(p: &Pattern) -> usize {
+    match &p.kind {
+        PatternKind::Slice(ps) => {
+            let own = ps
+                .iter()
+                .filter(|x| !matches!(x.kind, PatternKind::Rest))
+                .count();
+            ps.iter().map(pattern_slice_len).fold(own, usize::max)
+        }
+        PatternKind::Tuple(ps) | PatternKind::TupleStruct(_, ps) | PatternKind::Or(ps) => {
+            ps.iter().map(pattern_slice_len).max().unwrap_or(0)
+        }
+        PatternKind::Struct { fields, .. } => fields
+            .iter()
+            .map(|f| pattern_slice_len(&f.pat))
+            .max()
+            .unwrap_or(0),
+        PatternKind::Ref { inner, .. } => pattern_slice_len(inner),
+        PatternKind::Ident { sub: Some(s), .. } => pattern_slice_len(s),
+        _ => 0,
+    }
 }
 
 fn op_symbol(op: BinOp) -> &'static str {

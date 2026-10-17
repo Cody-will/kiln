@@ -64,6 +64,8 @@ pub(crate) struct Lower<'t, 'r, 'a> {
     /// Set while lowering a place that will be written or mutably borrowed, so
     /// user `Deref` steps call `deref_mut` instead of `deref`.
     want_mut: bool,
+    /// Inside a binding `|` pattern: its locals are already declared.
+    or_bind: u32,
 }
 
 /// A `defer` statement.
@@ -142,6 +144,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             in_defer: false,
             last_consumes: false,
             want_mut: false,
+            or_bind: 0,
         };
         l.new_block(); // entry
         l.new_block(); // exit
@@ -631,7 +634,10 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         match &pat.kind {
             PatternKind::Ident { name, sub, .. } => {
                 if let Some(&id) = self.r.bindings.get(&name.span) {
-                    let l = self.declare(id);
+                    let l = match self.map.get(&id) {
+                        Some(&l) if self.or_bind > 0 => l,
+                        _ => self.declare(id),
+                    };
                     let rv = match mode {
                         Some(m) => Rvalue::Ref {
                             mutable: m,
@@ -679,14 +685,8 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 }
             }
             PatternKind::Slice(ps) => {
-                self.unsupported("slice patterns", pat.span);
-                let et = match ty {
-                    Ty::Array(t, _) | Ty::Slice(t) => (**t).clone(),
-                    Ty::Adt(_, args) if !args.is_empty() => args[0].clone(),
-                    _ => Ty::Unknown,
-                };
-                let i = self.temp(usize_ty(), pat.span);
-                for p in ps {
+                let et = slice_elem(ty);
+                for (p, i) in self.slice_elems(ps, &place, ty, pat.span) {
                     self.bind_pattern(p, place.project(Proj::Index(i)), &et, mode);
                 }
             }
@@ -704,9 +704,27 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             }
             PatternKind::Or(alts) => {
                 if alts.len() > 1 && !pattern_bindings(self.r, pat).is_empty() {
-                    self.unsupported("`|` patterns that bind variables", pat.span);
-                }
-                if let Some(first) = alts.first() {
+                    // Bind from the first alternative that matches (the
+                    // scrutinee is unchanged since the arm's test). Every
+                    // alternative binds the same locals.
+                    let join = self.new_block();
+                    self.declare_pattern(pat);
+                    self.or_bind += 1;
+                    for (k, alt) in alts.iter().enumerate() {
+                        if k + 1 == alts.len() {
+                            self.bind_pattern(alt, place.clone(), ty, mode);
+                            break;
+                        }
+                        let next = self.new_block();
+                        self.test_pattern(alt, place.clone(), ty, next);
+                        self.bind_pattern(alt, place.clone(), ty, mode);
+                        self.goto(join, pat.span);
+                        self.cur = next;
+                    }
+                    self.or_bind -= 1;
+                    self.goto(join, pat.span);
+                    self.cur = join;
+                } else if let Some(first) = alts.first() {
                     self.bind_pattern(first, place, ty, mode);
                 }
             }
@@ -716,6 +734,71 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             | PatternKind::Range { .. }
             | PatternKind::Path(_) => {}
         }
+    }
+
+    /// The length of the array, slice, or `Vec` at `place`.
+    fn slice_len(&mut self, place: &Place, ty: &Ty, span: Span) -> Operand {
+        if let Ty::Array(_, n) = ty {
+            return Operand::constant(ConstKind::Int(*n as i128), usize_ty());
+        }
+        let r = self.temp(Ty::Ref(false, Box::new(ty.clone())), span);
+        self.assign(
+            Place::local(r),
+            Rvalue::Ref {
+                mutable: false,
+                place: place.clone(),
+            },
+            span,
+        );
+        self.temp_of(
+            usize_ty(),
+            Rvalue::Call {
+                callee: Callee::Intrinsic("len".into()),
+                args: vec![Operand::Copy(Place::local(r))],
+                flows: vec![],
+            },
+            span,
+        )
+    }
+
+    /// The element sub-patterns of a slice pattern with a local holding each
+    /// one's index: prefix elements count from the start, those after `..`
+    /// from the end. The caller has checked the length.
+    fn slice_elems<'p>(
+        &mut self,
+        ps: &'p [Pattern],
+        place: &Place,
+        ty: &Ty,
+        span: Span,
+    ) -> Vec<(&'p Pattern, Local)> {
+        let rest = ps.iter().position(|p| matches!(p.kind, PatternKind::Rest));
+        let mut len = None;
+        let mut out = vec![];
+        for (k, p) in ps.iter().enumerate() {
+            if matches!(p.kind, PatternKind::Rest) {
+                continue;
+            }
+            let i = self.temp(usize_ty(), p.span);
+            let rv = match rest {
+                Some(r) if k > r => {
+                    if len.is_none() {
+                        len = Some(self.slice_len(place, ty, span));
+                    }
+                    let back = (ps.len() - k) as i128;
+                    Rvalue::Pure(
+                        Op::Bin(BinOp::Sub),
+                        vec![
+                            len.clone().unwrap(),
+                            Operand::constant(ConstKind::Int(back), usize_ty()),
+                        ],
+                    )
+                }
+                _ => Rvalue::Use(Operand::constant(ConstKind::Int(k as i128), usize_ty())),
+            };
+            self.assign(Place::local(i), rv, p.span);
+            out.push((p, i));
+        }
+        out
     }
 
     /// Sub-patterns of a tuple pattern with their element index and type (handling `..`).
@@ -906,7 +989,23 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                     fail,
                 );
             }
-            PatternKind::Slice(_) => self.unsupported("slice patterns", span),
+            PatternKind::Slice(ps) => {
+                let fixed = ps
+                    .iter()
+                    .filter(|p| !matches!(p.kind, PatternKind::Rest))
+                    .count();
+                let has_rest = fixed != ps.len();
+                if !matches!(ty, Ty::Array(..)) {
+                    let len = self.slice_len(&place, ty, span);
+                    let k = Operand::constant(ConstKind::Int(fixed as i128), usize_ty());
+                    let op = if has_rest { BinOp::Ge } else { BinOp::Eq };
+                    self.test_cond(op, len, k, fail, span);
+                }
+                let et = slice_elem(ty);
+                for (p, i) in self.slice_elems(ps, &place, ty, span) {
+                    self.test_pattern(p, place.project(Proj::Index(i)), &et, fail);
+                }
+            }
             PatternKind::Or(alts) => {
                 let ok = self.new_block();
                 for alt in alts {
@@ -3019,6 +3118,15 @@ fn capture_mode(b: &Body, u: Local) -> CaptureMode {
 }
 
 /// Resolver ids of the variables a pattern binds.
+/// The element type of an array, slice, or `Vec` type.
+fn slice_elem(ty: &Ty) -> Ty {
+    match ty {
+        Ty::Array(t, _) | Ty::Slice(t) => (**t).clone(),
+        Ty::Adt(_, args) if !args.is_empty() => args[0].clone(),
+        _ => Ty::Unknown,
+    }
+}
+
 fn pattern_bindings(r: &Resolved<'_>, p: &Pattern) -> Vec<LocalId> {
     let mut out = vec![];
     fn go(r: &Resolved<'_>, p: &Pattern, out: &mut Vec<LocalId>) {
