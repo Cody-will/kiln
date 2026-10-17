@@ -687,7 +687,11 @@ impl Fmt<'_> {
                         || (matches!(pk, T::Bang)
                             && pl > 0
                             && matches!(self.k(pl - 1), T::Arrow | T::RParen))
-                        || self.add_comma[pl];
+                        || self.add_comma[pl]
+                        // The `*` of a glob import (`import a::*`).
+                        || (matches!(pk, T::Star)
+                            && pl > 0
+                            && matches!(self.k(pl - 1), T::ColonColon));
                     let in_list_of_opener = stack.last().is_some_and(|(o, _)| *o == pl);
                     let after_attr = prev_first.is_some_and(|f| matches!(self.k(f), T::At));
                     if starts_chain

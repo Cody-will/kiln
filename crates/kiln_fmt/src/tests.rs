@@ -67,6 +67,11 @@ fn continuation_lines() {
 }
 
 #[test]
+fn glob_import_does_not_continue() {
+    same("import a::*\nimport b::c\n\nfun main() {}\n");
+}
+
+#[test]
 fn syntax_errors_are_reported() {
     assert!(format("fun main( {\n").is_err());
 }
