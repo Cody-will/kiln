@@ -434,3 +434,40 @@ fn packages_modules_and_dependencies() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("shapes.kn:2:"), "{err}");
 }
+
+/// FFI: `extern "C"` declarations, a `@repr(C)` struct shared with C, and
+/// `[link]` in kiln.toml compiling a C source and linking libm.
+#[cfg(unix)]
+#[test]
+fn ffi_links_c_sources_and_libraries() {
+    let dir = scratch("ffi");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("native")).unwrap();
+    std::fs::write(
+        dir.join("kiln.toml"),
+        "[package]\nname = \"ffi\"\nversion = \"0.1.0\"\n\n[link]\nlibs = [\"m\"]\nc-sources = [\"native/point.c\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("native/point.c"),
+        "#include <stdint.h>\ntypedef struct { double x, y; int32_t tag; } Point;\ndouble point_len2(const Point *p) { return p->x * p->x + p->y * p->y; }\nvoid point_scale(Point *p, double k) { p->x *= k; p->y *= k; p->tag += 1; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/main.kn"),
+        "@repr(C)\nstruct Point {\n\tx f64,\n\ty f64,\n\ttag i32,\n}\n\nextern \"C\" {\n\tfun point_len2(p *const Point) f64\n\tfun point_scale(p *mut Point, k f64)\n\tfun hypot(x f64, y f64) f64\n}\n\nfun main() {\n\tp mut := Point { x: 3.0, y: 4.0, tag: 7 }\n\tunsafe {\n\t\tprintln(\"{point_len2(&p as *const Point)}\")\n\t\tpoint_scale(&mut p as *mut Point, 2.0)\n\t\tprintln(\"{p.x} {p.y} {p.tag} {std::mem::size_of::<Point>()} {hypot(5.0, 12.0)}\")\n\t}\n}\n",
+    )
+    .unwrap();
+    let out = Command::new(kiln())
+        .arg("run")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "25\n6 8 8 24 13\n",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

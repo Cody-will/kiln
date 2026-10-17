@@ -19,6 +19,7 @@
 mod check;
 mod collect;
 mod display;
+mod ffi;
 #[cfg(test)]
 mod tests;
 pub mod ty;
@@ -40,6 +41,7 @@ pub fn check(resolved: &Resolved<'_>) -> Vec<Diagnostic> {
 pub fn typeck<'r, 'a>(resolved: &'r Resolved<'a>) -> Typed<'r, 'a> {
     let mut c = collect::Checker::new(resolved);
     c.collect();
+    c.check_ffi();
     c.check_bodies();
     Typed { c }
 }

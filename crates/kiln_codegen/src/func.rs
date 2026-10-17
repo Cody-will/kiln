@@ -1630,7 +1630,8 @@ impl FnCx<'_, '_, '_, '_> {
             };
         }
         if f.decl.body.is_none() {
-            if f.decl.name.name.starts_with("kn_") && f.impl_idx.is_none() {
+            let foreign = f.item.attrs.iter().any(|a| a.name.name == "extern");
+            if (foreign || f.decl.name.name.starts_with("kn_")) && f.impl_idx.is_none() {
                 return Target::Extern(f.decl.name.name.clone());
             }
             return Target::Intrinsic(crate::intrinsics::qualified_name(self.cg, idx));

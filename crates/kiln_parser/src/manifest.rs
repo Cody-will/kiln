@@ -14,6 +14,58 @@ pub struct Manifest {
     pub dir: PathBuf,
     /// Path dependencies: (name, directory).
     pub deps: Vec<(String, PathBuf)>,
+    /// `[link]`: native libraries and C sources for `extern "C"` code.
+    pub link: NativeLink,
+}
+
+/// The `[link]` section: what to give the system linker.
+///
+/// ```toml
+/// [link]
+/// libs = ["z", "m"]                # -lz -lm
+/// search = ["native/lib"]          # -L, relative to the package
+/// c-sources = ["native/shim.c"]    # compiled with the system C compiler
+/// ```
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NativeLink {
+    /// Library names (`-l`).
+    pub libs: Vec<String>,
+    /// Library search directories (`-L`), absolute.
+    pub search: Vec<PathBuf>,
+    /// C source files to compile and link, absolute.
+    pub c_sources: Vec<PathBuf>,
+}
+
+impl NativeLink {
+    /// Adds `other`'s entries that are not already present.
+    pub fn merge(&mut self, other: &NativeLink) {
+        for l in &other.libs {
+            if !self.libs.contains(l) {
+                self.libs.push(l.clone());
+            }
+        }
+        for p in &other.search {
+            if !self.search.contains(p) {
+                self.search.push(p.clone());
+            }
+        }
+        for p in &other.c_sources {
+            if !self.c_sources.contains(p) {
+                self.c_sources.push(p.clone());
+            }
+        }
+    }
+}
+
+/// A one-line TOML array of strings: `["a", "b"]`.
+fn string_array(v: &str) -> Option<Vec<String>> {
+    let inner = v.trim().strip_prefix('[')?.strip_suffix(']')?;
+    inner
+        .split(',')
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .map(unquote)
+        .collect()
 }
 
 /// Finds `kiln.toml` in `start` or a parent directory.
@@ -47,6 +99,7 @@ pub fn parse(path: &Path) -> Result<Manifest, String> {
         version: "0.0.0".into(),
         dir: dir.clone(),
         deps: vec![],
+        link: NativeLink::default(),
     };
     let mut section = String::new();
     for (n, raw) in text.lines().enumerate() {
@@ -65,7 +118,7 @@ pub fn parse(path: &Path) -> Result<Manifest, String> {
                 .ok_or_else(|| err("expected `]`"))?
                 .trim()
                 .to_string();
-            if section != "package" && section != "dependencies" {
+            if section != "package" && section != "dependencies" && section != "link" {
                 return Err(err(&format!("unknown section `[{section}]`")));
             }
             continue;
@@ -101,6 +154,23 @@ pub fn parse(path: &Path) -> Result<Manifest, String> {
                     return Err(err(&format!("dependency name `{k}` must be an identifier")));
                 }
                 m.deps.push((k.to_string(), dir.join(p)));
+            }
+            "link" => {
+                let xs = string_array(v).ok_or_else(|| {
+                    err(&format!(
+                        "`{k}` must be an array of strings, like `[\"z\"]`"
+                    ))
+                })?;
+                match k {
+                    "libs" => m.link.libs.extend(xs),
+                    "search" => m.link.search.extend(xs.iter().map(|x| dir.join(x))),
+                    "c-sources" => m.link.c_sources.extend(xs.iter().map(|x| dir.join(x))),
+                    _ => {
+                        return Err(err(&format!(
+                            "unknown key `{k}` in [link] (expected libs, search, or c-sources)"
+                        )))
+                    }
+                }
             }
             _ => return Err(err("key outside a section")),
         }
@@ -151,6 +221,21 @@ pub fn all_deps(m: &Manifest) -> Result<Vec<Dependency>, String> {
             });
             stack.push(dm);
         }
+    }
+    Ok(out)
+}
+
+/// The `[link]` settings of `m` and all its dependencies.
+pub fn all_link(m: &Manifest) -> Result<NativeLink, String> {
+    let mut out = m.link.clone();
+    for d in all_deps(m)? {
+        let dir = d
+            .root
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or(Path::new("."));
+        let dm = parse(&dir.join("kiln.toml"))?;
+        out.merge(&dm.link);
     }
     Ok(out)
 }

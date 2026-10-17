@@ -808,6 +808,16 @@ pub fn build_parsed(
     out: &std::path::Path,
     opts: Options,
 ) -> Result<(), BuildError> {
+    build_parsed_with(parsed, out, opts, &link::NativeLink::default())
+}
+
+/// [`build_parsed`], linking native libraries and C sources too.
+pub fn build_parsed_with(
+    parsed: kiln_parser::Parse,
+    out: &std::path::Path,
+    opts: Options,
+    native: &link::NativeLink,
+) -> Result<(), BuildError> {
     if !parsed.errors.is_empty() {
         return Err(BuildError::Diagnostics(parsed.errors));
     }
@@ -831,7 +841,7 @@ pub fn build_parsed(
     let obj_path = dir.join(if cfg!(windows) { "main.obj" } else { "main.o" });
     std::fs::write(&obj_path, obj)
         .map_err(|e| BuildError::Other(format!("cannot write object file: {e}")))?;
-    let res = link::link(&obj_path, out).map_err(BuildError::Other);
+    let res = link::link_with(&obj_path, out, native).map_err(BuildError::Other);
     let _ = std::fs::remove_dir_all(&dir);
     res
 }

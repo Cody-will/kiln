@@ -4,11 +4,17 @@
 //! * Windows (MSVC): `link.exe`, found with `vswhere` through the `cc` crate's
 //!   registry lookup (the same way `rustc` finds it).
 
+pub use kiln_parser::manifest::NativeLink;
 use std::path::Path;
 use std::process::Command;
 
 /// Links `object` with the runtime library into the executable `out`.
 pub fn link(object: &Path, out: &Path) -> Result<(), String> {
+    link_with(object, out, &NativeLink::default())
+}
+
+/// [`link`], adding native libraries and C sources (`[link]` in kiln.toml).
+pub fn link_with(object: &Path, out: &Path, native: &NativeLink) -> Result<(), String> {
     let dir = object.parent().unwrap_or(Path::new("."));
     let rt = dir.join(kiln_runtime::LIB_NAME);
     std::fs::write(&rt, kiln_runtime::LIB)
@@ -24,6 +30,7 @@ pub fn link(object: &Path, out: &Path) -> Result<(), String> {
             .map_err(|e| format!("could not write {}: {e}", tls.display()))?;
     }
     let mut cmd = linker_command(object, &rt, uses_tls.then_some(tls.as_path()), out)?;
+    add_native(&mut cmd, native)?;
     let output = cmd
         .output()
         .map_err(|e| format!("could not run the linker ({cmd:?}): {e}"))?;
@@ -65,6 +72,42 @@ fn linker_command(
     }
     cmd.arg("-o").arg(out).arg("-lm");
     Ok(cmd)
+}
+
+/// Native inputs go after Kiln's objects: C sources (the `cc` driver
+/// compiles them), then search paths and libraries.
+#[cfg(not(windows))]
+fn add_native(cmd: &mut Command, n: &NativeLink) -> Result<(), String> {
+    for c in &n.c_sources {
+        if !c.is_file() {
+            return Err(format!("[link] c-sources: {} not found", c.display()));
+        }
+        cmd.arg(c);
+    }
+    for d in &n.search {
+        cmd.arg(format!("-L{}", d.display()));
+    }
+    for l in &n.libs {
+        cmd.arg(format!("-l{l}"));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn add_native(cmd: &mut Command, n: &NativeLink) -> Result<(), String> {
+    if !n.c_sources.is_empty() {
+        return Err(
+            "[link] c-sources are not supported on Windows yet; build a .lib and list it in `libs`"
+                .into(),
+        );
+    }
+    for d in &n.search {
+        cmd.arg(format!("/LIBPATH:{}", d.display()));
+    }
+    for l in &n.libs {
+        cmd.arg(format!("{l}.lib"));
+    }
+    Ok(())
 }
 
 #[cfg(windows)]

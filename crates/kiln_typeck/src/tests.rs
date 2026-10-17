@@ -797,3 +797,41 @@ fn integer_literals_must_fit_their_type() {
     );
     ok("fun main() {\n let a i8 = -128\n let b u8 = 255\n c := 60000000000u64\n let d i64 = -9223372036854775808\n e := 0xFFFFFFFFu32\n let f u64 = 18446744073709551615\n}");
 }
+
+// ----- FFI ------------------------------------------------------------------------
+
+#[test]
+fn extern_functions_are_unsafe_and_checked() {
+    ok("extern \"C\" {\n fun abs(x i32) i32\n}\nfun main() {\n unsafe {\n  abs(-1)\n }\n}");
+    err1(
+        "extern \"C\" {\n fun abs(x i32) i32\n}\nfun main() {\n abs(-1)\n}",
+        "calling `unsafe fun abs` is unsafe",
+    );
+    err1(
+        "extern \"C\" {\n fun puts(s &str) i32\n}\nfun main() {}",
+        "parameter of foreign function `puts`: references are Kiln-only",
+    );
+    // Pointers to any type are fine (an opaque handle, as in C).
+    ok("struct P {\n x i32,\n}\nextern \"C\" {\n fun f(p *const P)\n}\nfun main() {}");
+    has(
+        "@repr(C)\nstruct P {\n x i32,\n}\nextern \"C\" {\n fun f(p P)\n}\nfun main() {}",
+        "structs are passed to C through pointers",
+    );
+}
+
+#[test]
+fn repr_c_fields_must_be_ffi_safe() {
+    ok("@repr(C)\nstruct P {\n x f64,\n y [i32; 4],\n p *mut u8,\n}\nfun main() {}");
+    err1(
+        "@repr(C)\nstruct P {\n s string,\n}\nfun main() {}",
+        "field `s` of `@repr(C)` struct `P`",
+    );
+    err1(
+        "@repr(C)\nstruct E {}\nfun main() {}",
+        "needs at least one field",
+    );
+    err1(
+        "@repr(C)\nenum E {\n A,\n}\nfun main() {}",
+        "`@repr(C)` applies to structs",
+    );
+}

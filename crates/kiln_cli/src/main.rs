@@ -229,7 +229,17 @@ fn build_to(
     out: &std::path::Path,
     opts: kiln_codegen::Options,
 ) -> Result<(), ExitCode> {
-    match kiln_codegen::build_parsed(p.pkg.parse.clone(), out, opts) {
+    let native = match &p.manifest {
+        Some(m) => match kiln_parser::manifest::all_link(m) {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return Err(ExitCode::from(2));
+            }
+        },
+        None => Default::default(),
+    };
+    match kiln_codegen::build_parsed_with(p.pkg.parse.clone(), out, opts, &native) {
         Ok(()) => Ok(()),
         Err(kiln_codegen::BuildError::Diagnostics(errs)) => Err(report(&p.name(), p.src(), &errs)),
         Err(kiln_codegen::BuildError::Other(msg)) => {

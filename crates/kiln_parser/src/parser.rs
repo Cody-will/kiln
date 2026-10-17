@@ -394,6 +394,18 @@ impl<'s> Parser<'s> {
                 return items;
             }
             let before = self.pos;
+            if self.at_kw(Kw::Extern) && matches!(self.nth(1), T::Str(_) | T::LBrace) {
+                match self.parse_extern_block() {
+                    Ok(fs) => items.extend(fs),
+                    Err(Reported) => {
+                        self.recover_item();
+                        if self.pos == before {
+                            self.bump();
+                        }
+                    }
+                }
+                continue;
+            }
             match self.parse_item() {
                 Ok(item) => items.push(item),
                 Err(Reported) => {
@@ -404,6 +416,78 @@ impl<'s> Parser<'s> {
                 }
             }
         }
+    }
+
+    /// `extern "C" { fun f(x i32) i32 ... }`: foreign function declarations.
+    /// Each becomes a body-less `unsafe` function item tagged `@extern("C")`;
+    /// calls go straight to the C symbol of the same name.
+    fn parse_extern_block(&mut self) -> PResult<Vec<Item>> {
+        let start = self.span();
+        self.expect_kw(Kw::Extern)?;
+        let abi = match self.peek().clone() {
+            T::Str(parts) => {
+                let span = self.span();
+                self.bump();
+                let text: String = parts
+                    .iter()
+                    .map(|p| match p {
+                        StrPart::Text(t) => t.clone(),
+                        _ => String::new(),
+                    })
+                    .collect();
+                if text != "C" {
+                    self.errors.push(
+                        Diagnostic::error(format!("unsupported ABI `\"{text}\"`"), span)
+                            .with_help("Kiln supports `extern \"C\"`"),
+                    );
+                }
+                text
+            }
+            _ => "C".to_string(),
+        };
+        self.expect(&T::LBrace)?;
+        let inner = self.parse_items(false);
+        self.expect(&T::RBrace)?;
+        let mut out = Vec::new();
+        for mut it in inner {
+            match &mut it.kind {
+                ItemKind::Fn(f) => {
+                    if let Some(b) = &f.body {
+                        self.errors.push(
+                            Diagnostic::error(
+                                "functions in an `extern` block have no body",
+                                b.span,
+                            )
+                            .with_help(
+                                "declare the C function's signature only: `fun name(x i32) i32`",
+                            ),
+                        );
+                        f.body = None;
+                    }
+                    if !f.generics.params.is_empty() {
+                        self.errors.push(Diagnostic::error(
+                            "foreign functions cannot be generic",
+                            f.name.span,
+                        ));
+                    }
+                    f.is_unsafe = true;
+                    it.attrs.push(Attribute {
+                        name: Ident {
+                            name: "extern".into(),
+                            span: start,
+                        },
+                        args: Some(abi.clone()),
+                        span: start,
+                    });
+                    out.push(it);
+                }
+                _ => self.errors.push(Diagnostic::error(
+                    "only function declarations may appear in an `extern` block",
+                    it.span,
+                )),
+            }
+        }
+        Ok(out)
     }
 
     /// Collects `///` doc comments located between `boundary` and `pos`.

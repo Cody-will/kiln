@@ -847,7 +847,11 @@ impl<'a> Resolver<'a> {
                 format!("function `{}` in an impl must have a body", f.name.name),
                 f.name.span,
             );
-        } else if impl_idx.is_none() && trait_def.is_none() && !self.in_prelude {
+        } else if impl_idx.is_none()
+            && trait_def.is_none()
+            && !self.in_prelude
+            && !item.attrs.iter().any(|a| a.name.name == "extern")
+        {
             self.error(
                 format!("function `{}` must have a body", f.name.name),
                 f.name.span,

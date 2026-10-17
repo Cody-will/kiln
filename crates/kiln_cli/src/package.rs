@@ -139,6 +139,17 @@ pub fn fingerprint(p: &Program, release: bool, llvm: bool) -> String {
     }
     release.hash(&mut h);
     llvm.hash(&mut h);
+    // Native inputs: the [link] settings and the C sources' contents.
+    if let Some(n) = p
+        .manifest
+        .as_ref()
+        .and_then(|m| kiln_parser::manifest::all_link(m).ok())
+    {
+        format!("{n:?}").hash(&mut h);
+        for c in &n.c_sources {
+            std::fs::read(c).unwrap_or_default().hash(&mut h);
+        }
+    }
     env!("CARGO_PKG_VERSION").hash(&mut h);
     if let Ok(exe) = std::env::current_exe() {
         if let Ok(meta) = std::fs::metadata(exe) {
