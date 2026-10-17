@@ -10,6 +10,7 @@ import super::lexer
 import super::lexer::LexError
 import super::parser
 import super::parser::Parser
+
 // (Last: see the note in parser.kn.)
 import super::ast::*
 
@@ -333,7 +334,7 @@ fun struct_to(s &StructDecl) string {
 			v mut := Vec::new()
 			v.push(Piece::Text("null".to_string()))
 			v
-		}
+		},
 	}
 	out.push(WRITE_HEAD)
 	out.push(&emit(pieces, "\t\t"))
@@ -521,7 +522,7 @@ fun enum_to(e &EnumDecl) string {
 				out.push(&object("inner", &same_pairs(&binds)))
 				out.push("\t\tp := {J}::Value::Object(inner)\n")
 				out.push(&tagged(vn))
-			}
+			},
 		}
 	}
 	out.push("\t\t}}\n\t}}\n")
@@ -558,7 +559,7 @@ fun enum_to(e &EnumDecl) string {
 				}
 				pieces.push(Piece::Text("}}".to_string()))
 				pat = "{name}::{vn} {{ {join(&binds, ", ")} }}"
-			}
+			},
 		}
 		body := emit(pieces, "\t\t\t\t")
 		out.push("\t\t\t{pat} => {{\n{body}\t\t\t}}\n")
