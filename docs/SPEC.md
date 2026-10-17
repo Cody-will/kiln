@@ -595,6 +595,59 @@ json = { git = "https://github.com/kiln-lang/json", tag = "v0.3" }
   - Each test file is compiled once into a test executable whose generated `main` replaces the file's own `main`. Every test runs in its own process, in parallel across CPUs, because panics exit the process instead of unwinding. One failing test therefore cannot corrupt another, and output is captured per test and shown only for failures. The default timeout is 10 minutes, as in Go.
   - `assert(cond)`, `assert_eq(left, right)`, and `assert_ne(left, right)` are in the prelude; the last two need `Eq + Debug` and print both values on failure.
 
+### 7.1 Calling C: `extern "C"`, `@repr(C)`, and `[link]` (implemented)
+
+Foreign functions are declared in an `extern "C"` block, with signatures only:
+
+```kiln
+@repr(C)
+struct Point {
+	x f64,
+	y f64,
+	tag i32,
+}
+
+extern "C" {
+	fun point_len2(p *const Point) f64
+	fun point_scale(p *mut Point, k f64)
+	fun hypot(x f64, y f64) f64
+}
+
+fun main() {
+	p mut := Point { x: 3.0, y: 4.0, tag: 7 }
+	unsafe {
+		println("{point_len2(&p as *const Point)}")
+		point_scale(&mut p as *mut Point, 2.0)
+		println("{hypot(5.0, 12.0)}")
+	}
+}
+```
+
+- Each declaration becomes an `unsafe` function, so calls must be in an `unsafe` block. A call goes straight to the C symbol of the same name, using the platform C calling convention.
+- Only `"C"` is supported as the ABI (`extern { ... }` means the same). Declarations in the block cannot have bodies or generic parameters, and the block may contain only functions.
+- Parameters and results must have a C equivalent. Allowed: integers and floats except `i128`/`u128`, `bool`, `void`, and raw pointers `*const T` / `*mut T`. Not allowed:
+  - `str`/`string`: pass `*const u8` plus a length;
+  - references: cast them with `r as *const T`;
+  - Kiln function values;
+  - non-`@repr(C)` types.
+
+  A struct crosses the boundary through a pointer, never by value.
+- `@repr(C)` lays a struct out exactly as C does: fields in declaration order with C alignment and padding. The struct must be non-generic and have at least one field, and every field must be FFI-safe: arrays of FFI-safe types are allowed, and nested structs must also be `@repr(C)`. The compiler reports each offending field.
+
+The **`[link]`** section of `kiln.toml` tells the linker what to add:
+
+```toml
+[link]
+libs = ["z", "m"]                # -lz -lm (on Windows: z.lib, m.lib)
+search = ["native/lib"]          # library search paths (-L), relative to the package
+c-sources = ["native/shim.c"]    # C files compiled with the system C compiler and linked in
+```
+
+- Every key takes a one-line array of strings; unknown keys are errors.
+- The `[link]` settings of all path dependencies are merged (duplicates removed), so a wrapper package carries its own native libraries.
+- `c-sources` uses the `cc` driver that Kiln already links with. Windows does not support it yet; build a `.lib` there and list it in `libs`.
+- Changing `[link]` invalidates the build cache.
+
 ## 8. Standard Library
 
 The standard library is modeled on Go's coverage, with Rust-style APIs: fallible operations return `result`, resources are owned values closed by `Drop`, and sharing across tasks goes through `Arc` and the `sync` types. Each module is documented in the standard library reference on the website (`website/src/stdlib.md`).

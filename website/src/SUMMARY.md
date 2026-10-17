@@ -15,10 +15,11 @@
 - [Traits and generics](tutorial/06-traits-generics.md)
 - [Ownership and borrowing](tutorial/07-ownership.md)
 - [Errors with Result and ?](tutorial/08-errors.md)
-- [Concurrency: go, channels, select](tutorial/09-concurrency.md)
+- [Concurrency: spawn, channels, select](tutorial/09-concurrency.md)
 - [Packages and modules](tutorial/10-packages.md)
 - [Tooling](tutorial/11-tooling.md)
 - [Files, processes, and the network](tutorial/12-stdlib.md)
+- [Calling C](tutorial/13-ffi.md)
 
 # Reference
 

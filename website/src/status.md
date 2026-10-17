@@ -24,6 +24,7 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 | HTTPS (TLS) | ✅ `std::net::tls` and `https://` in `std::net::http` (rustls) |
 | `static` items | 🚧 Type-checked but not yet compiled |
 | Multi-file packages, `kiln.toml` | ✅ `mod name` files, `kiln new`, path dependencies, build caching |
+| FFI: `extern "C"`, `@repr(C)`, `[link]` in `kiln.toml` | ✅ C functions, C-layout structs, system libraries and C sources (C sources not on Windows yet) |
 | Package registry, lockfile | 🚧 Not yet |
 | `kiln build`, `kiln run` | ✅ Implemented (single file) |
 | `kiln test` (`@test`, `@should_panic`, `@ignore`, process-per-test, parallel) | ✅ Implemented (single files and directories) |
