@@ -35,7 +35,7 @@ pub struct File {
 	pub items Vec<Item>,
 }
 
-@derive(Clone, Copy)
+@derive(Clone, Copy, Eq)
 pub enum Visibility {
 	Private,
 	Public,

@@ -1,0 +1,124 @@
+// Name-resolution corpus for the self-hosted resolver's differential test
+// (crates/kiln_cli/tests/resolve_diff.rs): scope errors and every kind of
+// path.
+
+import std::collections::HashMap
+import std::nope::Missing
+import core::ptr
+import inner::*
+import self::inner::{self, Pub as Renamed}
+import super::x
+
+mod inner {
+	pub struct Pub {}
+	struct Hidden {}
+	pub enum E {
+		A,
+		B(i32),
+		A,
+	}
+	import super::Point
+	pub const K i32 = 3
+	pub fun f() {}
+	mod deep
+}
+
+struct Point {
+	x i32,
+	x i32,
+}
+
+struct Unit
+
+enum Shape {
+	Circle(f64),
+	Square { side f64 },
+	Dot,
+}
+
+trait T<A, A> {
+	fun m(&self) A
+	struct NotAllowed {}
+}
+
+impl Point {
+	const ORIGIN Point = Point { x: 0 }
+	const BAD i32
+	fun new() Point {
+		return Self { x: 1 }
+	}
+	fun get(self) i32 {
+		return self.x
+	}
+	fun nobody(&self)
+	mod m {}
+}
+
+impl Point for Shape {}
+
+impl<U: Point> T<U> for Unit {
+	fun m(&self) U {
+		return missing_fn()
+	}
+}
+
+const C i32 = 1 + C2
+const NOVALUE i32
+static mut COUNT i32 = C
+fun no_body()
+
+fun f(a i32, a i32) Shape {
+	x := inner::Hidden {}
+	y := inner::nothing
+	z := inner::E::A::B
+	w := Shape::Circle(1.0)
+	v := Shape::new
+	u := i32::MAX
+	t := Point
+	s := HashMap::new()
+	r := Missing::thing()
+	q := Unit
+	p := inner::K
+	o := self
+	n := drop
+	ch := chan::<i32>(1)
+	match w {
+		Shape::Circle(r) | Shape::Square { side: r } => {},
+		Dot => {},
+		Unit => {},
+		C => {},
+		(a, a) => {},
+		Shape::Circle(q) | Shape::Dot => {},
+		_ => {},
+	}
+	break
+	'outer: for i in 0..3 {
+		while true {
+			continue 'outer
+			break 'nowhere
+		}
+		g := || {
+			break
+		}
+	}
+	spawn {
+		continue
+	}
+	(k, k) := (1, 2)
+	m := Renamed {}
+	var := T::m
+	pp := Shape::Dot::X
+	qq := Undefined::x
+	rr := f::g
+	ss := <-ch.1
+	unknown_value
+	let tt UnknownType = 3
+	let uu f = 4
+	fun nested() {
+		nested()
+	}
+	nested()
+	return Shape::Dot
+}
+
+fun main() {}

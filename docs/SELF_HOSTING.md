@@ -57,6 +57,23 @@ per-process counter starting at `1 << 42`). `tests/parser/derive.kn`
 covers every field shape, generics, nested modules, and the error for a
 non-type item.
 
+For name resolution, `kiln resolve --dump <file>`
+(`kiln_resolve::dump`) prints the whole `Resolved` table: every
+definition (`d<id> <kind> <name> <span> <vis> m<module>`), local,
+path resolution and binding (sorted by span), impl, function body,
+static and constant function, then each error with its help line.
+Entries inside the prelude and standard library are left out, but they
+are counted in every id, so the ids check the prelude too. Both sides
+parse the user file first and then the builtin source (assembled from
+`crates/kiln_resolve/src/prelude.kn` and `crates/kiln_resolve/std/` in
+`STD_MODULES` order; `kilnc` reads them from `$KILNC_RESOLVE_DIR`,
+default `crates/kiln_resolve`), so derive spans line up.
+`crates/kiln_cli/tests/resolve_diff.rs` runs `kilnc --resolve` on every
+`.kn` file (one process per file) plus `tests/resolve/errors.kn`, which
+covers the scope errors. The Kiln resolver keeps no references into the
+AST: where Rust compares `&Item` pointers it keys by the item's span, and
+a definition records the shape of its fields instead of the item.
+
 ## Stages
 
 | Stage | Rust crate | Kiln | Status |
@@ -64,7 +81,7 @@ non-type item.
 | 1. Lexer | `kiln_lexer` | `compiler/src/lexer.kn` | ✅ ported; identical on 156 files |
 | 2. Parser + AST | `kiln_parser` | `compiler/src/parser.kn`, `ast.kn` | ✅ ported; identical AST and diagnostics on 159 files |
 | 2b. Derive expansion | `kiln_parser::derive` | `compiler/src/derive.kn` | ✅ ported; identical generated source on 159 files and identical expanded ASTs on every file deriving `Json` |
-| 3. Name resolution | `kiln_resolve` | | ⬜ |
+| 3. Name resolution | `kiln_resolve` | `compiler/src/resolve.kn` | ✅ ported; identical tables and errors on 162 files |
 | 4. Type checking | `kiln_typeck` | | ⬜ |
 | 5. MIR + borrow checking | `kiln_mir`, `kiln_borrowck` | | ⬜ |
 | 6. Codegen | `kiln_codegen` | | ⬜. Emit C or LLVM IR text first (no Cranelift bindings from Kiln) |

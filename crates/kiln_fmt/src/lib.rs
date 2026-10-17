@@ -406,7 +406,8 @@ impl Fmt<'_> {
                             | K::While
                             | K::For
                             | K::Match
-                            | K::Loop,
+                            | K::Loop
+                            | K::Mod,
                         ) => break,
                         _ => {}
                     }

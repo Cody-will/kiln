@@ -82,3 +82,8 @@ fn relaxed_bounds_pkg_visibility_and_generic_line_ends() {
 fn syntax_errors_are_reported() {
     assert!(format("fun main( {\n").is_err());
 }
+
+#[test]
+fn mod_block_after_import_is_not_a_list() {
+    same("import a::x\n\nmod inner {\n\tstruct A {}\n}\n");
+}

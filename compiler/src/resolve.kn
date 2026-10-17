@@ -1,0 +1,1913 @@
+// The self-hosted name resolver: a port of crates/kiln_resolve/src/scope.rs.
+//
+// `resolve` walks a parsed file plus the prelude and standard library and
+// builds the same table as the Rust resolver (definitions, locals, the
+// resolution of every path, bindings, impls, function bodies, statics,
+// constant functions, and errors), with the same ids, in the same order.
+// `dump` prints it in the format of `kiln resolve --dump`
+// (crates/kiln_resolve/src/dump.rs); tests/resolve_diff.rs compares the two.
+//
+// Where the Rust resolver keeps references into the AST (`Def::item`, the
+// `impl` of a method), this one records what later lookups need: the shape
+// of a struct's fields or a variant, and the span that identifies an item.
+
+import std::collections::{HashMap, HashSet}
+import std::fs
+import super::ast::*
+import super::derive
+import super::lexer
+import super::lexer::LexError
+import super::parser
+import super::parser::Parser
+
+pub const BUILTIN_BASE usize = 1 << 40
+
+@derive(Clone, Copy, Eq)
+pub enum DefKind {
+	Mod,
+	Struct,
+	Enum,
+	Variant { parent u32, index usize },
+	Trait,
+	Fn,
+	Const,
+	Static,
+	TypeAlias,
+	External,
+}
+
+pub fun kind_name(k DefKind) string {
+	s := match k {
+		DefKind::Mod => "module",
+		DefKind::Struct => "struct",
+		DefKind::Enum => "enum",
+		DefKind::Variant { .. } => "variant",
+		DefKind::Trait => "trait",
+		DefKind::Fn => "function",
+		DefKind::Const => "constant",
+		DefKind::Static => "static",
+		DefKind::TypeAlias => "type alias",
+		DefKind::External => "external item",
+	}
+	return s.to_string()
+}
+
+// The shape of a struct's or variant's fields: 0 none, 1 unit, 2 tuple,
+// 3 named.
+fun shape(f &Fields) u8 {
+	match f {
+		Fields::Unit => return 1,
+		Fields::Tuple(_) => return 2,
+		Fields::Named(_) => return 3,
+	}
+}
+
+@derive(Clone)
+pub struct Def {
+	pub kind DefKind,
+	pub name string,
+	pub span Span,
+	pub vis Visibility,
+	pub module u32,
+	pub is_prelude bool,
+	// The field shape of a struct or variant (see `shape`).
+	pub fields u8,
+}
+
+@derive(Clone, Eq)
+pub enum Res {
+	Def(u32),
+	Local(u32),
+	Prim(string),
+	TyParam(string),
+	SelfTy,
+	Builtin(string),
+	Assoc(Box<Res>, string),
+	External,
+	Err,
+}
+
+pub struct Local {
+	pub name string,
+	pub mutable bool,
+	pub span Span,
+}
+
+pub struct FnRef {
+	pub name string,
+	pub span Span,
+	pub module u32,
+	pub impl_idx option<usize>,
+	pub trait_def option<u32>,
+	pub def option<u32>,
+	pub self_local option<u32>,
+	pub is_prelude bool,
+}
+
+pub struct ImplRef {
+	pub span Span,
+	pub module u32,
+	pub is_prelude bool,
+}
+
+@derive(Clone)
+pub struct ModuleScope {
+	pub types HashMap<string, u32>,
+	pub values HashMap<string, u32>,
+	pub parent option<u32>,
+	pub private_imports HashSet<(bool, string)>,
+}
+
+pub struct Diag {
+	pub message string,
+	pub span Span,
+	pub help option<string>,
+}
+
+pub struct Resolved {
+	pub defs Vec<Def>,
+	pub root u32,
+	pub prelude u32,
+	pub modules HashMap<u32, ModuleScope>,
+	pub paths HashMap<(usize, usize), Res>,
+	pub bindings HashMap<(usize, usize), u32>,
+	pub locals Vec<Local>,
+	pub impls Vec<ImplRef>,
+	pub fns Vec<FnRef>,
+	pub statics Vec<(u32, usize)>,
+	pub const_fns HashMap<u32, usize>,
+	pub const_fn_set HashSet<usize>,
+	pub errors Vec<Diag>,
+}
+
+impl Resolved {
+	pub fun def(&self, id u32) &Def {
+		return &self.defs[id as usize]
+	}
+
+	pub fun module(&self, id u32) &ModuleScope {
+		return self.modules.get(&id).unwrap()
+	}
+
+	// The variants of an enum, in order.
+	pub fun variants(&self, e u32) Vec<u32> {
+		v mut := Vec::new()
+		i mut := 0
+		while i < self.defs.len() {
+			match self.defs[i].kind {
+				DefKind::Variant { parent, index } => {
+					if parent == e {
+						v.push((index, i as u32))
+					}
+				}
+				_ => {},
+			}
+			i += 1
+		}
+		v.sort()
+		o mut := Vec::new()
+		for (_, d) in v {
+			o.push(d)
+		}
+		return o
+	}
+}
+
+fun key(s Span) (usize, usize) {
+	return (s.start, s.end)
+}
+
+fun prim_name(s &str) option<string> {
+	n := match s {
+		"i8" => "I8",
+		"i16" => "I16",
+		"i32" => "I32",
+		"i64" => "I64",
+		"i128" => "I128",
+		"isize" => "Isize",
+		"u8" => "U8",
+		"u16" => "U16",
+		"u32" => "U32",
+		"u64" => "U64",
+		"u128" => "U128",
+		"usize" => "Usize",
+		"f32" => "F32",
+		"f64" => "F64",
+		"bool" => "Bool",
+		"char" => "Char",
+		"str" => "Str",
+		_ => return None,
+	}
+	return Some(n.to_string())
+}
+
+// One entry in a block scope.
+@derive(Clone, Copy)
+enum Entry {
+	Local(u32),
+	Def(u32),
+}
+
+struct Scope {
+	values HashMap<string, Entry>,
+	types HashMap<string, u32>,
+}
+
+fun new_scope() Scope {
+	return Scope { values: HashMap::new(), types: HashMap::new() }
+}
+
+fun ns_name(is_type bool) string {
+	return if is_type { "type".to_string() } else { "value".to_string() }
+}
+
+fun join_path(p &Vec<Ident>) string {
+	o mut := string::new()
+	for s in p {
+		if !o.is_empty() {
+			o.push("::")
+		}
+		o.push(&s.name)
+	}
+	return o
+}
+
+fun from(p &Vec<Ident>, i usize) Vec<Ident> {
+	o mut := Vec::new()
+	j mut := i
+	while j < p.len() {
+		o.push(p[j].clone())
+		j += 1
+	}
+	return o
+}
+
+// A struct definition (one item) found in a block.
+struct Defined {
+	name Ident,
+	is_type bool,
+	id u32,
+}
+
+struct Resolver {
+	r Resolved,
+	module u32,
+	scopes Vec<Scope>,
+	ty_params Vec<Vec<string>>,
+	self_ty_allowed bool,
+	self_local option<u32>,
+	loops Vec<option<string>>,
+	in_prelude bool,
+	// Function definitions by name span (the Rust resolver matches the AST item).
+	fn_defs HashMap<(usize, usize), u32>,
+	// `impl` index by item span.
+	impl_idx HashMap<(usize, usize), usize>,
+}
+
+pub fun resolve(file &File, prelude &File) Resolved {
+	s mut := Resolver {
+		r: Resolved {
+			defs: Vec::new(),
+			root: 0,
+			prelude: 0,
+			modules: HashMap::new(),
+			paths: HashMap::new(),
+			bindings: HashMap::new(),
+			locals: Vec::new(),
+			impls: Vec::new(),
+			fns: Vec::new(),
+			statics: Vec::new(),
+			const_fns: HashMap::new(),
+			const_fn_set: HashSet::new(),
+			errors: Vec::new(),
+		},
+		module: 0,
+		scopes: Vec::new(),
+		ty_params: Vec::new(),
+		self_ty_allowed: false,
+		self_local: None,
+		loops: Vec::new(),
+		in_prelude: false,
+		fn_defs: HashMap::new(),
+		impl_idx: HashMap::new(),
+	}
+	pid := s.new_module("<prelude>", None, true)
+	s.r.prelude = pid
+	s.in_prelude = true
+	s.collect_items(&prelude.items, pid)
+	for name in ["option", "result"] {
+		id := *s.r.module(pid).types.get(name).unwrap()
+		for v in s.r.variants(id) {
+			vname := s.r.def(v).name.clone()
+			s.r.modules.get_mut(&pid).unwrap().values.insert(vname, v)
+		}
+	}
+	s.in_prelude = false
+	root := s.new_module("<root>", None, false)
+	s.r.root = root
+	s.collect_items(&file.items, root)
+	s.in_prelude = true
+	s.bind_imports(&prelude.items, pid)
+	s.in_prelude = false
+	s.bind_imports(&file.items, root)
+	s.in_prelude = true
+	s.walk_items(&prelude.items, pid)
+	s.in_prelude = false
+	s.walk_items(&file.items, root)
+	return s.r
+}
+
+impl Resolver {
+	fun error(&mut self, msg string, span Span) {
+		self.r.errors.push(Diag { message: msg, span: span, help: None })
+	}
+
+	fun error_help(&mut self, msg string, span Span, help string) {
+		self.r.errors.push(Diag { message: msg, span: span, help: Some(help) })
+	}
+
+	fun new_def(&mut self, kind DefKind, name &Ident, vis Visibility, module u32) u32 {
+		id := self.r.defs.len() as u32
+		self.r.defs.push(Def {
+			kind: kind,
+			name: name.name.clone(),
+			span: name.span,
+			vis: vis,
+			module: module,
+			is_prelude: self.in_prelude,
+			fields: 0,
+		})
+		return id
+	}
+
+	fun new_module(&mut self, name &str, parent option<u32>, prelude bool) u32 {
+		id := self.r.defs.len() as u32
+		m := match parent {
+			Some(p) => p,
+			None => id,
+		}
+		self.r.defs.push(Def {
+			kind: DefKind::Mod,
+			name: name.to_string(),
+			span: Span::new(0, 0),
+			vis: Visibility::Public,
+			module: m,
+			is_prelude: prelude,
+			fields: 0,
+		})
+		self.r.modules.insert(id, ModuleScope {
+			types: HashMap::new(),
+			values: HashMap::new(),
+			parent: parent,
+			private_imports: HashSet::new(),
+		})
+		return id
+	}
+
+	fun insert(&mut self, module u32, is_type bool, name &Ident, id u32) {
+		scope := self.r.modules.get_mut(&module).unwrap()
+		dup := if is_type { scope.types.contains_key(&name.name) } else { scope.values.contains_key(&name.name) }
+		if dup {
+			what := ns_name(is_type)
+			self.error("the name `{name.name}` is defined multiple times in this module ({what} namespace)", name.span)
+			return
+		}
+		if is_type {
+			scope.types.insert(name.name.clone(), id)
+		} else {
+			scope.values.insert(name.name.clone(), id)
+		}
+	}
+
+	// ----- phase 1: collect items -----
+
+	fun define_items(&mut self, items &Vec<Item>, module u32) Vec<Defined> {
+		out mut := Vec::new()
+		for item in items {
+			nk := match &item.kind {
+				ItemKind::Fn(f) => Some((DefKind::Fn, f.name.clone())),
+				ItemKind::Struct(s) => Some((DefKind::Struct, s.name.clone())),
+				ItemKind::Enum(e) => Some((DefKind::Enum, e.name.clone())),
+				ItemKind::Trait(t) => Some((DefKind::Trait, t.name.clone())),
+				ItemKind::Const { name, .. } => Some((DefKind::Const, name.clone())),
+				ItemKind::Static { name, .. } => Some((DefKind::Static, name.clone())),
+				ItemKind::TypeAlias { name, .. } => Some((DefKind::TypeAlias, name.clone())),
+				_ => None,
+			}
+			match &item.kind {
+				ItemKind::Mod { name, items: body } => {
+					id := self.new_module(&name.name, Some(module), self.in_prelude)
+					d := &mut self.r.defs[id as usize]
+					d.span = name.span
+					d.vis = item.vis
+					out.push(Defined { name: name.clone(), is_type: true, id: id })
+					match body {
+						Some(inner) => self.collect_items(inner, id),
+						None => self.error("module `{name.name}` is declared without a body, but no file was loaded for it (build the package, or write `mod {name.name} {{ ... }}`)", name.span),
+					}
+				}
+				ItemKind::Impl(_) => {
+					idx := self.r.impls.len()
+					if !self.impl_idx.contains_key(&key(item.span)) {
+						self.impl_idx.insert(key(item.span), idx)
+					}
+					self.r.impls.push(ImplRef { span: item.span, module: module, is_prelude: self.in_prelude })
+				}
+				_ => {},
+			}
+			(kind, name) := match nk {
+				Some(x) => x,
+				None => continue,
+			}
+			id := self.new_def(kind, &name, item.vis, module)
+			match &item.kind {
+				ItemKind::Fn(_) => {
+					if !self.fn_defs.contains_key(&key(name.span)) {
+						self.fn_defs.insert(key(name.span), id)
+					}
+					out.push(Defined { name: name, is_type: false, id: id })
+				}
+				ItemKind::Const { .. } | ItemKind::Static { .. } => out.push(Defined { name: name, is_type: false, id: id }),
+				ItemKind::Struct(s) => {
+					self.r.defs[id as usize].fields = shape(&s.fields)
+					out.push(Defined { name: name.clone(), is_type: true, id: id })
+					match &s.fields {
+						Fields::Named(_) => {},
+						_ => out.push(Defined { name: name, is_type: false, id: id }),
+					}
+				}
+				ItemKind::Enum(e) => {
+					out.push(Defined { name: name, is_type: true, id: id })
+					seen mut := HashSet::new()
+					index mut := 0
+					for v in &e.variants {
+						if !seen.insert(v.name.name.clone()) {
+							self.error("variant `{v.name.name}` is defined multiple times", v.name.span)
+						}
+						vid := self.new_def(DefKind::Variant { parent: id, index: index }, &v.name, Visibility::Public, module)
+						self.r.defs[vid as usize].fields = shape(&v.fields)
+						index += 1
+					}
+				}
+				_ => out.push(Defined { name: name, is_type: true, id: id }),
+			}
+		}
+		return out
+	}
+
+	fun collect_items(&mut self, items &Vec<Item>, module u32) {
+		for d in self.define_items(items, module) {
+			self.insert(module, d.is_type, &d.name, d.id)
+		}
+	}
+
+	// ----- phase 2: imports -----
+
+	fun bind_imports(&mut self, items &Vec<Item>, module u32) {
+		for item in items {
+			match &item.kind {
+				ItemKind::Import(tree) => {
+					public := match item.vis {
+						Visibility::Private => false,
+						_ => true,
+					}
+					self.bind_import(tree, &Vec::new(), module, public)
+				}
+				ItemKind::Mod { name, items: Some(body) } => {
+					id := *self.r.module(module).types.get(&name.name).unwrap()
+					self.bind_imports(body, id)
+				}
+				_ => {},
+			}
+		}
+	}
+
+	fun bind_imported(&mut self, module u32, is_type bool, name &Ident, id u32, public bool) {
+		self.insert(module, is_type, name, id)
+		if !public {
+			self.r.modules.get_mut(&module).unwrap().private_imports.insert((is_type, name.name.clone()))
+		}
+	}
+
+	fun sees(&self, from u32, target u32) bool {
+		m mut := Some(from)
+		while let Some(id) = m {
+			if id == target {
+				return true
+			}
+			m = self.r.module(id).parent
+		}
+		return false
+	}
+
+	fun hidden_import(&self, module u32, is_type bool, name &str, from u32) bool {
+		return self.r.module(module).private_imports.contains(&(is_type, name.to_string())) && !self.sees(from, module)
+	}
+
+	fun bind_import(&mut self, tree &ImportTree, prefix &Vec<Ident>, module u32, public bool) {
+		match tree {
+			ImportTree::Path { path: p, alias } => {
+				path mut := prefix.clone()
+				for x in p {
+					path.push(x.clone())
+				}
+				bind_name mut := path[path.len() - 1].clone()
+				if path.len() > 1 && path[path.len() - 1].name == "self" {
+					path.pop()
+					bind_name = path[path.len() - 1].clone()
+				}
+				if let Some(a) = alias {
+					bind_name = a.clone()
+				}
+				if path[0].name == "core" {
+					id := self.new_def(DefKind::External, &bind_name, Visibility::Private, module)
+					self.bind_imported(module, true, &bind_name, id, public)
+					self.bind_imported(module, false, &bind_name, id, public)
+					return
+				}
+				(types, values) := self.lookup_import_path(&path, module)
+				if types.is_none() && values.is_none() {
+					span := path[0].span.to(path[path.len() - 1].span)
+					self.error("unresolved import `{join_path(&path)}`", span)
+					return
+				}
+				if let Some(t) = types {
+					self.bind_imported(module, true, &bind_name, t, public)
+				}
+				if let Some(v) = values {
+					self.bind_imported(module, false, &bind_name, v, public)
+				}
+			}
+			ImportTree::Group { prefix: p, items } => {
+				np mut := prefix.clone()
+				for x in p {
+					np.push(x.clone())
+				}
+				for t in items {
+					self.bind_import(t, &np, module, public)
+				}
+			}
+			ImportTree::Glob { prefix: p } => {
+				path mut := prefix.clone()
+				for x in p {
+					path.push(x.clone())
+				}
+				if path[0].name == "core" {
+					return
+				}
+				(found, _) := self.lookup_import_path(&path, module)
+				ok := match found {
+					Some(m) => self.r.def(m).kind == DefKind::Mod,
+					None => false,
+				}
+				if !ok {
+					span := path[0].span.to(path[path.len() - 1].span)
+					self.error("glob imports require a module path".to_string(), span)
+					return
+				}
+				m := found.unwrap()
+				scope := self.r.module(m).clone()
+				for is_type in [true, false] {
+					table := if is_type { &scope.types } else { &scope.values }
+					for (n, id) in table.iter() {
+						if self.r.def(*id).vis == Visibility::Private || self.hidden_import(m, is_type, n, module) {
+							continue
+						}
+						dst := self.r.modules.get_mut(&module).unwrap()
+						has := if is_type { dst.types.contains_key(n) } else { dst.values.contains_key(n) }
+						if !has {
+							if is_type {
+								dst.types.insert(n.clone(), *id)
+							} else {
+								dst.values.insert(n.clone(), *id)
+							}
+							if !public {
+								dst.private_imports.insert((is_type, n.clone()))
+							}
+						}
+					}
+				}
+			},
+		}
+	}
+
+	fun has_name(&self, module u32, name &str) bool {
+		s := self.r.module(module)
+		return s.types.contains_key(name) || s.values.contains_key(name)
+	}
+
+	fun lookup_import_path(&self, path &Vec<Ident>, module u32) (option<u32>, option<u32>) {
+		if path[0].name == "self" {
+			return self.lookup_in_module_path(&from(path, 1), module, module)
+		}
+		if path[0].name == "super" {
+			m mut := module
+			i mut := 0
+			while i < path.len() && path[i].name == "super" {
+				match self.r.module(m).parent {
+					Some(p) => m = p,
+					None => return (None, None),
+				}
+				i += 1
+			}
+			return self.lookup_in_module_path(&from(path, i), m, module)
+		}
+		first := &path[0].name
+		start := if first == "std" {
+			self.r.prelude
+		} else if self.has_name(module, first) {
+			module
+		} else if !self.has_name(self.r.root, first) && self.has_name(self.r.prelude, first) {
+			self.r.prelude
+		} else {
+			self.r.root
+		}
+		return self.lookup_in_module_path(path, start, module)
+	}
+
+	fun lookup_in_module_path(&self, path &Vec<Ident>, start u32, from u32) (option<u32>, option<u32>) {
+		if path.is_empty() {
+			return (Some(start), None)
+		}
+		module mut := start
+		last := &path[path.len() - 1].name
+		i mut := 0
+		while i + 1 < path.len() {
+			seg := &path[i].name
+			if self.hidden_import(module, true, seg, from) {
+				return (None, None)
+			}
+			match self.r.module(module).types.get(seg) {
+				Some(id) => {
+					k := self.r.def(*id).kind
+					if k == DefKind::Mod {
+						module = *id
+					} else if k == DefKind::Enum {
+						for v in self.r.variants(*id) {
+							if &self.r.def(v).name == last {
+								return (Some(v), Some(v))
+							}
+						}
+						return (None, None)
+					} else {
+						return (None, None)
+					}
+				}
+				None => return (None, None),
+			}
+			i += 1
+		}
+		s := self.r.module(module)
+		t mut := None
+		if let Some(x) = s.types.get(last) {
+			if !self.hidden_import(module, true, last, from) {
+				t = Some(*x)
+			}
+		}
+		v mut := None
+		if let Some(x) = s.values.get(last) {
+			if !self.hidden_import(module, false, last, from) {
+				v = Some(*x)
+			}
+		}
+		return (t, v)
+	}
+
+	// ----- phase 3: walk items -----
+
+	fun walk_items(&mut self, items &Vec<Item>, module u32) {
+		saved := self.module
+		self.module = module
+		for item in items {
+			self.walk_item(item)
+		}
+		self.module = saved
+	}
+
+	fun walk_generics(&mut self, g &Generics) {
+		names mut := Vec::new()
+		seen mut := HashSet::new()
+		for p in &g.params {
+			match p {
+				GenericParam::Type { name, .. } | GenericParam::Const { name, .. } => {
+					names.push(name.name.clone())
+					if !seen.insert(name.name.clone()) {
+						self.error("generic parameter `{name.name}` is declared twice", name.span)
+					}
+				}
+				_ => {},
+			}
+		}
+		self.ty_params.push(names)
+		for p in &g.params {
+			match p {
+				GenericParam::Type { bounds, default, .. } => {
+					self.walk_bounds(bounds)
+					if let Some(t) = default {
+						self.walk_type(t)
+					}
+				}
+				GenericParam::Const { ty, .. } => self.walk_type(ty),
+				_ => {},
+			}
+		}
+		for w in &g.where_clause {
+			self.walk_type(&w.ty)
+			self.walk_bounds(&w.bounds)
+		}
+	}
+
+	fun expect_trait(&mut self, res &Res, span Span, external_ok bool) {
+		if let Res::Def(id) = res {
+			k := self.r.def(*id).kind
+			if k != DefKind::Trait && !(external_ok && k == DefKind::External) {
+				self.error("expected trait, found {kind_name(k)} `{self.r.def(*id).name}`", span)
+			}
+		}
+	}
+
+	fun walk_bounds(&mut self, bounds &Vec<Bound>) {
+		for b in bounds {
+			if let Bound::Trait { path, .. } = b {
+				res := self.resolve_path(path, true)
+				self.expect_trait(&res, path.span, true)
+				self.r.paths.insert(key(path.span), res)
+				for seg in &path.segments {
+					self.walk_generic_args(&seg.args)
+				}
+			}
+		}
+	}
+
+	fun walk_item(&mut self, item &Item) {
+		match &item.kind {
+			ItemKind::Fn(f) => {
+				def := match self.fn_defs.get(&key(f.name.span)) {
+					Some(d) => Some(*d),
+					None => None,
+				}
+				self.walk_fn(f, item, None, None, def)
+			}
+			ItemKind::Struct(s) => {
+				self.walk_generics(&s.generics)
+				self.walk_fields(&s.fields)
+				self.ty_params.pop()
+			}
+			ItemKind::Enum(e) => {
+				self.walk_generics(&e.generics)
+				for v in &e.variants {
+					self.walk_fields(&v.fields)
+					if let Some(d) = &v.discriminant {
+						self.walk_expr(d)
+					}
+				}
+				self.ty_params.pop()
+			}
+			ItemKind::Trait(t) => {
+				tid := match self.r.module(self.module).types.get(&t.name.name) {
+					Some(d) => Some(*d),
+					None => None,
+				}
+				self.walk_generics(&t.generics)
+				self.walk_bounds(&t.supertraits)
+				saved := self.self_ty_allowed
+				self.self_ty_allowed = true
+				for it in &t.items {
+					match &it.kind {
+						ItemKind::Fn(f) => self.walk_fn(f, it, None, tid, None),
+						ItemKind::Const { ty, value, .. } => {
+							self.walk_type(ty)
+							if let Some(v) = value {
+								self.walk_expr(v)
+							}
+						}
+						ItemKind::TypeAlias { ty, .. } => {
+							if let Some(t) = ty {
+								self.walk_type(t)
+							}
+						}
+						_ => self.error("only `fun`, `const`, and `type` items are allowed in a trait".to_string(), it.span),
+					}
+				}
+				self.self_ty_allowed = saved
+				self.ty_params.pop()
+			}
+			ItemKind::Impl(decl) => {
+				idx := *self.impl_idx.get(&key(item.span)).unwrap()
+				self.walk_generics(&decl.generics)
+				if let Some(tr) = &decl.trait_ref {
+					res := self.resolve_path(tr, true)
+					self.expect_trait(&res, tr.span, false)
+					self.r.paths.insert(key(tr.span), res)
+					for seg in &tr.segments {
+						self.walk_generic_args(&seg.args)
+					}
+				}
+				self.walk_type(&decl.self_ty)
+				saved := self.self_ty_allowed
+				self.self_ty_allowed = true
+				for it in &decl.items {
+					match &it.kind {
+						ItemKind::Fn(f) => self.walk_fn(f, it, Some(idx), None, None),
+						ItemKind::Const { name, ty, value: Some(v) } => {
+							self.walk_synth(name.name.clone(), name, ty, v, Some(idx), None)
+							self.r.const_fn_set.insert(self.r.fns.len() - 1)
+						}
+						ItemKind::Const { ty, .. } => {
+							self.walk_type(ty)
+							self.error("a constant in an `impl` needs a value".to_string(), it.span)
+						}
+						ItemKind::TypeAlias { ty, .. } => {
+							if let Some(t) = ty {
+								self.walk_type(t)
+							}
+						}
+						_ => self.error("only `fun`, `const`, and `type` items are allowed in an impl".to_string(), it.span),
+					}
+				}
+				self.self_ty_allowed = saved
+				self.ty_params.pop()
+			}
+			ItemKind::Const { name, ty, value: Some(v) } => {
+				def := match self.r.module(self.module).values.get(&name.name) {
+					Some(d) => Some(*d),
+					None => None,
+				}
+				self.walk_synth("<const {name.name}>", name, ty, v, None, def)
+				i := self.r.fns.len() - 1
+				self.r.const_fn_set.insert(i)
+				if let Some(d) = def {
+					self.r.const_fns.insert(d, i)
+				}
+			}
+			ItemKind::Const { ty, .. } => {
+				self.walk_type(ty)
+				self.error("a constant needs a value".to_string(), item.span)
+			}
+			ItemKind::Static { name, ty, value, .. } => {
+				def := match self.r.module(self.module).values.get(&name.name) {
+					Some(d) => Some(*d),
+					None => None,
+				}
+				self.walk_synth("<init {name.name}>", name, ty, value, None, def)
+				if let Some(d) = def {
+					self.r.statics.push((d, self.r.fns.len() - 1))
+				}
+			}
+			ItemKind::TypeAlias { generics, ty, .. } => {
+				self.walk_generics(generics)
+				if let Some(t) = ty {
+					self.walk_type(t)
+				}
+				self.ty_params.pop()
+			}
+			ItemKind::Mod { name, items: Some(items) } => {
+				id := *self.r.module(self.module).types.get(&name.name).unwrap()
+				self.walk_items(items, id)
+			}
+			_ => {},
+		}
+	}
+
+	fun walk_fields(&mut self, fields &Fields) {
+		match fields {
+			Fields::Unit => {},
+			Fields::Tuple(tys) => {
+				for t in tys {
+					self.walk_type(t)
+				}
+			}
+			Fields::Named(fs) => {
+				seen mut := HashSet::new()
+				for f in fs {
+					if !seen.insert(f.name.name.clone()) {
+						self.error("field `{f.name.name}` is already declared", f.name.span)
+					}
+					self.walk_type(&f.ty)
+				}
+			},
+		}
+	}
+
+	fun new_local(&mut self, name &Ident, mutable bool) u32 {
+		id := self.r.locals.len() as u32
+		self.r.locals.push(Local { name: name.name.clone(), mutable: mutable, span: name.span })
+		self.r.bindings.insert(key(name.span), id)
+		return id
+	}
+
+	fun declare(&mut self, name &Ident, mutable bool) u32 {
+		id := self.new_local(name, mutable)
+		n := self.scopes.len()
+		self.scopes[n - 1].values.insert(name.name.clone(), Entry::Local(id))
+		return id
+	}
+
+	// A hidden function `fun name() ty { return value }` for a constant or a
+	// static's initializer (the Rust resolver builds the declaration).
+	fun walk_synth(&mut self, fname string, name &Ident, ty &Type, value &Expr, impl_idx option<usize>, def option<u32>) {
+		self.ty_params.push(Vec::new())
+		saved_scopes := std::mem::replace(&mut self.scopes, Vec::new())
+		saved_loops := std::mem::replace(&mut self.loops, Vec::new())
+		saved_self := self.self_local
+		self.self_local = None
+		self.scopes.push(new_scope())
+		self.walk_type(ty)
+		self.scopes.push(new_scope())
+		self.walk_expr(value)
+		self.scopes.pop()
+		self.r.fns.push(FnRef {
+			name: fname,
+			span: name.span,
+			module: self.module,
+			impl_idx: impl_idx,
+			trait_def: None,
+			def: def,
+			self_local: None,
+			is_prelude: self.in_prelude,
+		})
+		self.scopes = saved_scopes
+		self.loops = saved_loops
+		self.self_local = saved_self
+		self.ty_params.pop()
+	}
+
+	fun walk_fn(&mut self, f &FnDecl, item &Item, impl_idx option<usize>, trait_def option<u32>, def option<u32>) {
+		self.walk_generics(&f.generics)
+		saved_scopes := std::mem::replace(&mut self.scopes, Vec::new())
+		saved_loops := std::mem::replace(&mut self.loops, Vec::new())
+		saved_self := self.self_local
+		self.self_local = None
+		self.scopes.push(new_scope())
+		in_assoc := impl_idx.is_some() || trait_def.is_some()
+		self_local mut := None
+		if let Some(sp) = &f.self_param {
+			if !in_assoc {
+				self.error("`self` parameter is only allowed in methods".to_string(), f.name.span)
+			}
+			mutable := match sp {
+				SelfParam::Value { mutable } => *mutable,
+				_ => false,
+			}
+			ident := Ident { name: "self".to_string(), span: f.name.span }
+			id := self.new_local(&ident, mutable)
+			self.r.bindings.remove(&key(f.name.span))
+			self_local = Some(id)
+		}
+		self.self_local = self_local
+		for p in &f.params {
+			self.walk_type(&p.ty)
+		}
+		if let Some(t) = &f.ret {
+			self.walk_type(t)
+		}
+		seen mut := HashSet::new()
+		for p in &f.params {
+			self.bind_pattern(&p.pat, &mut seen)
+		}
+		if let Some(body) = &f.body {
+			self.walk_block(body)
+		} else if impl_idx.is_some() && !self.in_prelude {
+			self.error("function `{f.name.name}` in an impl must have a body", f.name.span)
+		} else if impl_idx.is_none() && trait_def.is_none() && !self.in_prelude && !has_attr(item, "extern") {
+			self.error("function `{f.name.name}` must have a body", f.name.span)
+		}
+		self.r.fns.push(FnRef {
+			name: f.name.name.clone(),
+			span: f.name.span,
+			module: self.module,
+			impl_idx: impl_idx,
+			trait_def: trait_def,
+			def: def,
+			self_local: self_local,
+			is_prelude: self.in_prelude,
+		})
+		self.scopes = saved_scopes
+		self.loops = saved_loops
+		self.self_local = saved_self
+		self.ty_params.pop()
+	}
+
+	// ----- types -----
+
+	fun walk_generic_args(&mut self, args &Vec<GenericArg>) {
+		for a in args {
+			match a {
+				GenericArg::Type(t) => self.walk_type(t),
+				GenericArg::Binding { ty, .. } => self.walk_type(ty),
+				GenericArg::Lifetime(_) => {},
+			}
+		}
+	}
+
+	fun walk_type(&mut self, t &Type) {
+		match &t.kind {
+			TypeKind::Path(p) => {
+				res := self.resolve_path(p, true)
+				if let Res::Def(id) = &res {
+					k := self.r.def(*id).kind
+					bad := match k {
+						DefKind::Fn | DefKind::Const | DefKind::Static | DefKind::Variant { .. } | DefKind::Mod => true,
+						_ => false,
+					}
+					if bad {
+						self.error("expected type, found {kind_name(k)} `{self.r.def(*id).name}`", p.span)
+					}
+				}
+				self.r.paths.insert(key(p.span), res)
+				for seg in &p.segments {
+					self.walk_generic_args(&seg.args)
+				}
+			}
+			TypeKind::Ref { inner, .. } | TypeKind::Ptr { inner, .. } => self.walk_type(inner),
+			TypeKind::Slice(inner) | TypeKind::ChanSend(inner) | TypeKind::ChanRecv(inner) => self.walk_type(inner),
+			TypeKind::Array(inner, len) => {
+				self.walk_type(inner)
+				self.walk_expr(len)
+			}
+			TypeKind::Tuple(ts) => {
+				for x in ts {
+					self.walk_type(x)
+				}
+			}
+			TypeKind::Fn { params, ret, .. } => {
+				for x in params {
+					self.walk_type(x)
+				}
+				if let Some(r) = ret {
+					self.walk_type(r)
+				}
+			}
+			TypeKind::Dyn(b) | TypeKind::Impl(b) => self.walk_bounds(b),
+			TypeKind::Never | TypeKind::Infer => {},
+		}
+	}
+
+	// ----- path resolution -----
+
+	fun lookup_type_name(&self, name &str) option<Res> {
+		for ps in &self.ty_params {
+			for p in ps {
+				if p == name {
+					return Some(Res::TyParam(name.to_string()))
+				}
+			}
+		}
+		if name == "Self" && self.self_ty_allowed {
+			return Some(Res::SelfTy)
+		}
+		i mut := self.scopes.len()
+		while i > 0 {
+			i -= 1
+			if let Some(id) = self.scopes[i].types.get(name) {
+				return Some(Res::Def(*id))
+			}
+		}
+		if let Some(id) = self.r.module(self.module).types.get(name) {
+			return Some(Res::Def(*id))
+		}
+		if let Some(id) = self.r.module(self.r.prelude).types.get(name) {
+			return Some(Res::Def(*id))
+		}
+		match prim_name(name) {
+			Some(p) => return Some(Res::Prim(p)),
+			None => return None,
+		}
+	}
+
+	fun lookup_value_name(&self, name &str, include_locals bool) option<Res> {
+		i mut := self.scopes.len()
+		while i > 0 {
+			i -= 1
+			match self.scopes[i].values.get(name) {
+				Some(Entry::Local(id)) => {
+					if include_locals {
+						return Some(Res::Local(*id))
+					}
+				}
+				Some(Entry::Def(id)) => return Some(Res::Def(*id)),
+				None => {},
+			}
+		}
+		if let Some(id) = self.r.module(self.module).values.get(name) {
+			return Some(Res::Def(*id))
+		}
+		if let Some(id) = self.r.module(self.r.prelude).values.get(name) {
+			return Some(Res::Def(*id))
+		}
+		if name == "drop" {
+			return Some(Res::Builtin("Drop".to_string()))
+		}
+		return None
+	}
+
+	fun resolve_path(&mut self, p &Path, is_type bool) Res {
+		first := &p.segments[0].ident
+		if p.segments.len() == 1 {
+			found mut := None
+			if is_type {
+				found = self.lookup_type_name(&first.name)
+			} else if first.name == "self" {
+				match self.self_local {
+					Some(id) => found = Some(Res::Local(id)),
+					None => {
+						self.error("`self` is only available in methods".to_string(), first.span)
+						return Res::Err
+					},
+				}
+			} else if first.name == "Self" && self.self_ty_allowed {
+				found = Some(Res::SelfTy)
+			} else if first.name == "chan" {
+				found = Some(Res::Builtin("Chan".to_string()))
+			} else {
+				found = self.lookup_value_name(&first.name, true)
+			}
+			match found {
+				Some(r) => return r,
+				None => {
+					what := ns_name(is_type)
+					help mut := None
+					if !is_type && self.lookup_type_name(&first.name).is_some() {
+						help = Some("`{first.name}` is a type; use a struct literal or call a constructor")
+					} else if is_type && self.lookup_value_name(&first.name, false).is_some() {
+						help = Some("`{first.name}` is a value, not a type")
+					}
+					self.r.errors.push(Diag { message: "cannot find {what} `{first.name}` in this scope", span: first.span, help: help })
+					return Res::Err
+				},
+			}
+		}
+		cur mut := Res::Err
+		if first.name == "self" {
+			cur = Res::Def(self.module)
+		} else {
+			match self.lookup_type_name(&first.name) {
+				Some(r) => cur = r,
+				None => {
+					self.error("cannot find module or type `{first.name}` in this scope", first.span)
+					return Res::Err
+				},
+			}
+		}
+		n := p.segments.len()
+		i mut := 1
+		while i < n {
+			seg := &p.segments[i]
+			last := i == n - 1
+			name := &seg.ident.name
+			next mut := Res::Err
+			match &cur {
+				Res::Def(id) => {
+					id := *id
+					k := self.r.def(id).kind
+					match k {
+						DefKind::Mod => {
+							a := match self.r.module(id).types.get(name) {
+								Some(x) => Some(*x),
+								None => None,
+							}
+							b := match self.r.module(id).values.get(name) {
+								Some(x) => Some(*x),
+								None => None,
+							}
+							want_type := !last || is_type
+							found := if want_type { if a.is_some() { a } else { b } } else { if b.is_some() { b } else { a } }
+							found_is_type := if want_type { a.is_some() } else { b.is_none() }
+							if found.is_some() && self.hidden_import(id, found_is_type, name, self.module) {
+								mname := self.r.def(id).name.clone()
+								self.error_help("`{name}` is imported privately in module `{mname}`", seg.ident.span, "import it from where it is defined, or make it `pub import` in `{mname}`")
+								return Res::Err
+							}
+							match found {
+								Some(d) => {
+									if self.r.def(d).vis == Visibility::Private && !self.sees(self.module, id) {
+										self.error("`{name}` is private", seg.ident.span)
+									}
+									next = Res::Def(d)
+								}
+								None => {
+									self.error("cannot find `{name}` in module `{self.r.def(id).name}`", seg.ident.span)
+									return Res::Err
+								},
+							}
+						}
+						DefKind::Enum => {
+							v mut := None
+							for x in self.r.variants(id) {
+								if v.is_none() && &self.r.def(x).name == name {
+									v = Some(x)
+								}
+							}
+							match v {
+								Some(x) => {
+									if last {
+										next = Res::Def(x)
+									} else {
+										self.error("enum variants have no associated items".to_string(), seg.ident.span)
+										return Res::Err
+									}
+								}
+								None => {
+									if last {
+										next = Res::Assoc(Box::new(Res::Def(id)), name.clone())
+									} else {
+										self.error("no variant named `{name}` in enum `{self.r.def(id).name}`", seg.ident.span)
+										return Res::Err
+									}
+								},
+							}
+						}
+						DefKind::External => return Res::External,
+						_ => {
+							assoc_ok := match k {
+								DefKind::Struct | DefKind::TypeAlias | DefKind::Trait => last,
+								_ => false,
+							}
+							if assoc_ok {
+								next = Res::Assoc(Box::new(Res::Def(id)), name.clone())
+							} else {
+								self.error("expected module or type, found {kind_name(k)} `{self.r.def(id).name}`", seg.ident.span)
+								return Res::Err
+							}
+						},
+					}
+				}
+				Res::Prim(_) | Res::TyParam(_) | Res::SelfTy => {
+					if last {
+						next = Res::Assoc(Box::new(cur.clone()), name.clone())
+					} else {
+						self.error("cannot resolve `{name}` here", seg.ident.span)
+						return Res::Err
+					}
+				}
+				Res::External => return Res::External,
+				_ => {
+					self.error("cannot resolve `{name}` here", seg.ident.span)
+					return Res::Err
+				},
+			}
+			cur = next
+			i += 1
+		}
+		return cur
+	}
+
+	// ----- bodies -----
+
+	fun walk_block(&mut self, b &Block) {
+		self.scopes.push(new_scope())
+		for s in &b.stmts {
+			if let StmtKind::Item(item) = &s.kind {
+				one := vec_of(item)
+				for d in self.define_items(&one, self.module) {
+					n := self.scopes.len()
+					if d.is_type {
+						self.scopes[n - 1].types.insert(d.name.name.clone(), d.id)
+					} else {
+						self.scopes[n - 1].values.insert(d.name.name.clone(), Entry::Def(d.id))
+					}
+				}
+			}
+		}
+		for s in &b.stmts {
+			self.walk_stmt(s)
+		}
+		self.scopes.pop()
+	}
+
+	fun walk_stmt(&mut self, s &Stmt) {
+		match &s.kind {
+			StmtKind::Let { pat, ty, init } => {
+				if let Some(e) = init {
+					self.walk_expr(e)
+				}
+				if let Some(t) = ty {
+					self.walk_type(t)
+				}
+				self.bind_pattern(pat, &mut HashSet::new())
+			}
+			StmtKind::ShortDecl { names, init, .. } => {
+				self.walk_expr(init)
+				seen mut := HashSet::new()
+				for n in names {
+					if let Some(id) = &n.name {
+						if !seen.insert(id.name.clone()) {
+							self.error("identifier `{id.name}` is bound more than once in this declaration", id.span)
+						}
+						self.declare(id, n.mutable)
+					}
+				}
+			}
+			StmtKind::Assign { target, value, .. } => {
+				self.walk_expr(target)
+				self.walk_expr(value)
+			}
+			StmtKind::Send { ch, value } => {
+				self.walk_expr(ch)
+				self.walk_expr(value)
+			}
+			StmtKind::Defer(e) | StmtKind::Expr(e) => self.walk_expr(e),
+			StmtKind::Item(item) => self.walk_item(item),
+		}
+	}
+
+	fun bind_pattern(&mut self, p &Pattern, seen &mut HashSet<string>) {
+		match &p.kind {
+			PatternKind::Ident { name, mutable, sub } => {
+				if !*mutable && sub.is_none() {
+					if let Some(Res::Def(id)) = self.lookup_value_name(&name.name, false) {
+						def := self.r.def(id)
+						is_unit := match def.kind {
+							DefKind::Variant { .. } | DefKind::Struct => def.fields == 1,
+							DefKind::Const | DefKind::Static => true,
+							_ => false,
+						}
+						if is_unit {
+							self.r.paths.insert(key(name.span), Res::Def(id))
+							return
+						}
+					}
+				}
+				if !seen.insert(name.name.clone()) {
+					self.error("identifier `{name.name}` is bound more than once in the same pattern", name.span)
+				}
+				self.declare(name, *mutable)
+				if let Some(s) = sub {
+					self.bind_pattern(s, seen)
+				}
+			}
+			PatternKind::Tuple(ps) | PatternKind::Slice(ps) => {
+				for x in ps {
+					self.bind_pattern(x, seen)
+				}
+			}
+			PatternKind::Path(path) => {
+				r := self.resolve_path(path, false)
+				self.r.paths.insert(key(path.span), r)
+			}
+			PatternKind::TupleStruct(path, ps) => {
+				r := self.resolve_path(path, false)
+				self.r.paths.insert(key(path.span), r)
+				for x in ps {
+					self.bind_pattern(x, seen)
+				}
+			}
+			PatternKind::Struct { path, fields, .. } => {
+				r := self.resolve_path(path, true)
+				self.r.paths.insert(key(path.span), r)
+				for f in fields {
+					self.bind_pattern(&f.pat, seen)
+				}
+			}
+			PatternKind::Ref { inner, .. } => self.bind_pattern(inner, seen),
+			PatternKind::Or(alts) => {
+				self.bind_pattern(&alts[0], seen)
+				first_names := pattern_names(&alts[0])
+				a mut := HashSet::new()
+				for x in &first_names {
+					a.insert(x.name.clone())
+				}
+				k mut := 1
+				while k < alts.len() {
+					alt := &alts[k]
+					names := pattern_names(alt)
+					b mut := HashSet::new()
+					for x in &names {
+						b.insert(x.name.clone())
+					}
+					if a != b {
+						self.error("all alternatives of an `|` pattern must bind the same names".to_string(), alt.span)
+					}
+					for x in &names {
+						n := self.scopes.len()
+						if let Some(Entry::Local(id)) = self.scopes[n - 1].values.get(&x.name) {
+							id := *id
+							self.r.bindings.insert(key(x.span), id)
+						}
+					}
+					self.walk_pattern_paths(alt)
+					k += 1
+				}
+			}
+			_ => {},
+		}
+	}
+
+	fun walk_pattern_paths(&mut self, p &Pattern) {
+		match &p.kind {
+			PatternKind::Path(path) | PatternKind::TupleStruct(path, _) => {
+				r := self.resolve_path(path, false)
+				self.r.paths.insert(key(path.span), r)
+			}
+			PatternKind::Struct { path, .. } => {
+				r := self.resolve_path(path, true)
+				self.r.paths.insert(key(path.span), r)
+			}
+			_ => {},
+		}
+		match &p.kind {
+			PatternKind::Tuple(ps) | PatternKind::Slice(ps) | PatternKind::TupleStruct(_, ps) | PatternKind::Or(ps) => {
+				for x in ps {
+					self.walk_pattern_paths(x)
+				}
+			}
+			PatternKind::Struct { fields, .. } => {
+				for f in fields {
+					self.walk_pattern_paths(&f.pat)
+				}
+			}
+			PatternKind::Ref { inner, .. } => self.walk_pattern_paths(inner),
+			PatternKind::Ident { sub: Some(s), .. } => self.walk_pattern_paths(s),
+			_ => {},
+		}
+	}
+
+	fun check_label(&mut self, label &option<Ident>, what &str, span Span) {
+		if self.loops.is_empty() {
+			self.error("`{what}` outside of a loop", span)
+			return
+		}
+		if let Some(l) = label {
+			found mut := false
+			for x in &self.loops {
+				if let Some(n) = x {
+					if n == &l.name {
+						found = true
+					}
+				}
+			}
+			if !found {
+				self.error("use of undeclared label `'{l.name}`", l.span)
+			}
+		}
+	}
+
+	fun walk_loop_body(&mut self, label &option<Ident>, body &Block) {
+		l := match label {
+			Some(x) => Some(x.name.clone()),
+			None => None,
+		}
+		self.loops.push(l)
+		self.walk_block(body)
+		self.loops.pop()
+	}
+
+	fun walk_expr(&mut self, e &Expr) {
+		match &e.kind {
+			ExprKind::Lit(_) | ExprKind::Error => {},
+			ExprKind::Interp(parts) => {
+				for p in parts {
+					if let InterpPart::Expr(x, _) = p {
+						self.walk_expr(x)
+					}
+				}
+			}
+			ExprKind::Path(p) => {
+				r := self.resolve_path(p, false)
+				if let Res::Def(id) = &r {
+					d := self.r.def(*id)
+					k := d.kind
+					bad := match k {
+						DefKind::Trait | DefKind::Mod | DefKind::TypeAlias | DefKind::Enum => true,
+						DefKind::Struct => d.fields == 3,
+						_ => false,
+					}
+					if bad {
+						self.error("expected value, found {kind_name(k)} `{d.name}`", p.span)
+					}
+				}
+				self.r.paths.insert(key(p.span), r)
+				for seg in &p.segments {
+					self.walk_generic_args(&seg.args)
+				}
+			}
+			ExprKind::Unary(_, x) | ExprKind::Try(x) | ExprKind::Paren(x) | ExprKind::Field(x, _) | ExprKind::TupleIndex(x, _) => self.walk_expr(x),
+			ExprKind::Binary(_, a, b) | ExprKind::Index(a, b) | ExprKind::ArrayRepeat(a, b) => {
+				self.walk_expr(a)
+				self.walk_expr(b)
+			}
+			ExprKind::Cast(x, t) => {
+				self.walk_expr(x)
+				self.walk_type(t)
+			}
+			ExprKind::Call(f, args) => {
+				self.walk_expr(f)
+				for a in args {
+					self.walk_expr(a)
+				}
+			}
+			ExprKind::MethodCall { receiver, generic_args, args, .. } => {
+				self.walk_expr(receiver)
+				self.walk_generic_args(generic_args)
+				for a in args {
+					self.walk_expr(a)
+				}
+			}
+			ExprKind::Range { start, end, .. } => {
+				if let Some(s) = start {
+					self.walk_expr(s)
+				}
+				if let Some(s) = end {
+					self.walk_expr(s)
+				}
+			}
+			ExprKind::StructLit { path, fields, base } => {
+				r := self.resolve_path(path, true)
+				self.r.paths.insert(key(path.span), r)
+				for f in fields {
+					self.walk_expr(&f.value)
+				}
+				if let Some(b) = base {
+					self.walk_expr(b)
+				}
+			}
+			ExprKind::Tuple(xs) | ExprKind::Array(xs) => {
+				for x in xs {
+					self.walk_expr(x)
+				}
+			}
+			ExprKind::Block(b) | ExprKind::Unsafe(b) => self.walk_block(b),
+			ExprKind::Spawn(g) => {
+				match &**g {
+					SpawnTarget::Call(x) => self.walk_expr(x),
+					SpawnTarget::Block { body, .. } => {
+						saved := std::mem::replace(&mut self.loops, Vec::new())
+						self.walk_block(body)
+						self.loops = saved
+					},
+				}
+			}
+			ExprKind::If { cond, then, els } => {
+				self.walk_expr(cond)
+				self.walk_block(then)
+				if let Some(x) = els {
+					self.walk_expr(x)
+				}
+			}
+			ExprKind::IfLet { pat, expr, then, els } => {
+				self.walk_expr(expr)
+				self.scopes.push(new_scope())
+				self.bind_pattern(pat, &mut HashSet::new())
+				self.walk_block(then)
+				self.scopes.pop()
+				if let Some(x) = els {
+					self.walk_expr(x)
+				}
+			}
+			ExprKind::Match(scrut, arms) => {
+				self.walk_expr(scrut)
+				for arm in arms {
+					self.scopes.push(new_scope())
+					self.bind_pattern(&arm.pat, &mut HashSet::new())
+					if let Some(g) = &arm.guard {
+						self.walk_expr(g)
+					}
+					self.walk_expr(&arm.body)
+					self.scopes.pop()
+				}
+			}
+			ExprKind::Select(arms) => {
+				for arm in arms {
+					self.scopes.push(new_scope())
+					match &arm.op {
+						SelectOp::Recv { bind, ch } => {
+							self.walk_expr(ch)
+							if let Some(ShortName { name: Some(n), mutable }) = bind {
+								self.declare(n, *mutable)
+							}
+						}
+						SelectOp::Send { ch, value } => {
+							self.walk_expr(ch)
+							self.walk_expr(value)
+						}
+						SelectOp::Default => {},
+					}
+					self.walk_expr(&arm.body)
+					self.scopes.pop()
+				}
+			}
+			ExprKind::For { label, pat, iter, body } => {
+				self.walk_expr(iter)
+				self.scopes.push(new_scope())
+				self.bind_pattern(pat, &mut HashSet::new())
+				self.walk_loop_body(label, body)
+				self.scopes.pop()
+			}
+			ExprKind::While { label, cond, body } => {
+				self.walk_expr(cond)
+				self.walk_loop_body(label, body)
+			}
+			ExprKind::WhileLet { label, pat, expr, body } => {
+				self.walk_expr(expr)
+				self.scopes.push(new_scope())
+				self.bind_pattern(pat, &mut HashSet::new())
+				self.walk_loop_body(label, body)
+				self.scopes.pop()
+			}
+			ExprKind::Loop { label, body } => self.walk_loop_body(label, body),
+			ExprKind::Break(label, value) => {
+				self.check_label(label, "break", e.span)
+				if let Some(v) = value {
+					self.walk_expr(v)
+				}
+			}
+			ExprKind::Continue(label) => self.check_label(label, "continue", e.span),
+			ExprKind::Return(v) => {
+				if let Some(v) = v {
+					self.walk_expr(v)
+				}
+			}
+			ExprKind::Closure { params, ret, body, .. } => {
+				for p in params {
+					if let Some(t) = &p.ty {
+						self.walk_type(t)
+					}
+				}
+				if let Some(t) = ret {
+					self.walk_type(t)
+				}
+				saved := std::mem::replace(&mut self.loops, Vec::new())
+				self.scopes.push(new_scope())
+				seen mut := HashSet::new()
+				for p in params {
+					self.bind_pattern(&p.pat, &mut seen)
+				}
+				self.walk_expr(body)
+				self.scopes.pop()
+				self.loops = saved
+			},
+		}
+	}
+}
+
+fun has_attr(item &Item, name &str) bool {
+	for a in &item.attrs {
+		if a.name.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+fun vec_of(item &Item) Vec<Item> {
+	v mut := Vec::new()
+	v.push(item.clone())
+	return v
+}
+
+// All identifiers bound by a pattern.
+fun pattern_names(p &Pattern) Vec<Ident> {
+	out mut := Vec::new()
+	names_into(p, &mut out)
+	return out
+}
+
+fun names_into(p &Pattern, out &mut Vec<Ident>) {
+	match &p.kind {
+		PatternKind::Ident { name, sub, .. } => {
+			out.push(name.clone())
+			if let Some(s) = sub {
+				names_into(s, out)
+			}
+		}
+		PatternKind::Tuple(ps) | PatternKind::Slice(ps) | PatternKind::TupleStruct(_, ps) => {
+			for x in ps {
+				names_into(x, out)
+			}
+		}
+		PatternKind::Struct { fields, .. } => {
+			for f in fields {
+				names_into(&f.pat, out)
+			}
+		}
+		PatternKind::Ref { inner, .. } => names_into(inner, out),
+		PatternKind::Or(alts) => names_into(&alts[0], out),
+		_ => {},
+	}
+}
+
+// ----- the prelude and standard library -----
+
+// The modules of the standard library in the order of `STD_MODULES`
+// (crates/kiln_resolve/src/lib.rs), parents before children.
+fun std_modules() Vec<(string, string)> {
+	o mut := Vec::new()
+	for m in ["mem", "iter", "unicode", "utf8", "strings", "cmp", "slice", "num", "strconv", "errors", "flag", "encoding"] {
+		o.push((m.to_string(), "{m}.kn"))
+	}
+	for (m, f) in [("encoding::hex", "hex"), ("encoding::base64", "base64"), ("encoding::json", "json"), ("encoding::csv", "csv"), ("hash", "hash"), ("crypto", "crypto")] {
+		o.push((m.to_string(), "{f}.kn"))
+	}
+	for (m, f) in [("crypto::sha256", "sha256"), ("crypto::sha1", "sha1"), ("crypto::md5", "md5"), ("crypto::hmac", "hmac")] {
+		o.push((m.to_string(), "{f}.kn"))
+	}
+	for m in ["math", "collections", "regexp", "ptr", "time", "sync", "rand", "fmt", "io", "bytes", "path", "fs", "os", "context", "net"] {
+		o.push((m.to_string(), "{m}.kn"))
+	}
+	for (m, f) in [("net::http", "http"), ("net::tls", "tls"), ("log", "log")] {
+		o.push((m.to_string(), "{f}.kn"))
+	}
+	return o
+}
+
+// The combined builtin source, as `builtin()` in Rust, read from the
+// resolver crate at `dir` (crates/kiln_resolve).
+pub fun builtin_text(dir &str) string {
+	text mut := read(&"{dir}/src/prelude.kn")
+	text.push("\npub mod std {{\n")
+	open mut := Vec::new()
+	for (path, file) in std_modules() {
+		segs mut := Vec::new()
+		for s in path.split("::") {
+			segs.push(s.to_string())
+		}
+		common mut := 0
+		while common < open.len() && common < segs.len() && open[common] == segs[common] {
+			common += 1
+		}
+		while open.len() > common {
+			open.pop()
+			text.push("}}\n")
+		}
+		j mut := common
+		while j < segs.len() {
+			text.push("pub mod {segs[j]} {{\n")
+			open.push(segs[j].clone())
+			j += 1
+		}
+		text.push(&read(&"{dir}/std/{file}"))
+		text.push("\n")
+	}
+	for _ in &open {
+		text.push("}}\n")
+	}
+	text.push("}}\n")
+	return text
+}
+
+fun read(p &str) string {
+	match fs::read_to_string(p) {
+		Ok(s) => return s,
+		Err(e) => panic("cannot read {p}: {e}"),
+	}
+}
+
+// Parses `src` at span base `base` and expands its derives (counter `next`),
+// like `kiln_parser::parse_at`.
+pub fun parse_at(src &str, base usize, next &mut usize) parser::Parsed {
+	l := lexer::lex(src)
+	toks mut := l.tokens
+	errs mut := l.errors
+	parser::shift(&mut toks, &mut errs, base)
+	docs mut := Vec::new()
+	for (s, e, t) in l.docs {
+		docs.push((s + base, e + base, t))
+	}
+	p mut := Parser::new(src, toks, docs)
+	p.set_base(base)
+	file mut := p.parse_file()
+	for e in p.errors {
+		errs.push(e)
+	}
+	derive::expand(&mut file.items, next, &mut errs)
+	return parser::Parsed { file: file, errors: errs }
+}
+
+// ----- the dump -----
+
+fun builtin_span(s Span) bool {
+	return s.start >= BUILTIN_BASE && s.start < derive::DERIVE_BASE
+}
+
+pub fun res_str(r &Res) string {
+	match r {
+		Res::Def(d) => return "d{d}",
+		Res::Local(l) => return "l{l}",
+		Res::Prim(p) => return "prim {p}",
+		Res::TyParam(n) => return "typaram {n}",
+		Res::SelfTy => return "Self".to_string(),
+		Res::Builtin(b) => return "builtin {b}",
+		Res::Assoc(base, name) => return "assoc({res_str(base)}) {name}",
+		Res::External => return "external".to_string(),
+		Res::Err => return "err".to_string(),
+	}
+}
+
+fun vis_str(v Visibility) string {
+	match v {
+		Visibility::Private => return "Private".to_string(),
+		Visibility::Public => return "Public".to_string(),
+		Visibility::Package => return "Package".to_string(),
+	}
+}
+
+fun opt_n(o option<usize>, pre &str) string {
+	match o {
+		Some(x) => return "{pre}{x}",
+		None => return "-".to_string(),
+	}
+}
+
+fun opt_u(o option<u32>, pre &str) string {
+	match o {
+		Some(x) => return "{pre}{x}",
+		None => return "-".to_string(),
+	}
+}
+
+// The format of `kiln resolve --dump` (crates/kiln_resolve/src/dump.rs).
+pub fun dump(src &str, dir &str) string {
+	next mut := derive::DERIVE_BASE
+	user := parse_at(src, 0, &mut next)
+	pre := parse_at(&builtin_text(dir), BUILTIN_BASE, &mut next)
+	r := resolve(&user.file, &pre.file)
+	o mut := "defs {r.defs.len()} root d{r.root} prelude d{r.prelude}\n"
+	i mut := 0
+	while i < r.defs.len() {
+		d := &r.defs[i]
+		if !d.is_prelude && !builtin_span(d.span) {
+			kind := match d.kind {
+				DefKind::Variant { parent, index } => "variant(d{parent},{index})",
+				k => kind_name(k).replace(" ", "_"),
+			}
+			o.push("d{i} {kind} {d.name} {d.span.start}..{d.span.end} {vis_str(d.vis)} m{d.module}\n")
+		}
+		i += 1
+	}
+	o.push("locals {r.locals.len()}\n")
+	i = 0
+	while i < r.locals.len() {
+		l := &r.locals[i]
+		if !builtin_span(l.span) {
+			m := if l.mutable { " mut" } else { "" }
+			o.push("l{i} {l.name}{m} {l.span.start}..{l.span.end}\n")
+		}
+		i += 1
+	}
+	paths mut := Vec::new()
+	for (k, v) in r.paths.iter() {
+		if !builtin_span(Span::new(k.0, k.1)) {
+			paths.push((*k, res_str(v)))
+		}
+	}
+	paths.sort()
+	o.push("paths\n")
+	for (k, v) in &paths {
+		o.push("{k.0}..{k.1} {v}\n")
+	}
+	binds mut := Vec::new()
+	for (k, v) in r.bindings.iter() {
+		if !builtin_span(Span::new(k.0, k.1)) {
+			binds.push((*k, *v))
+		}
+	}
+	binds.sort()
+	o.push("bindings\n")
+	for (k, v) in &binds {
+		o.push("{k.0}..{k.1} l{v}\n")
+	}
+	o.push("impls {r.impls.len()}\n")
+	i = 0
+	while i < r.impls.len() {
+		im := &r.impls[i]
+		if !im.is_prelude {
+			o.push("i{i} {im.span.start}..{im.span.end} m{im.module}\n")
+		}
+		i += 1
+	}
+	o.push("fns {r.fns.len()}\n")
+	i = 0
+	while i < r.fns.len() {
+		f := &r.fns[i]
+		if !f.is_prelude {
+			o.push("f{i} {f.name} {f.span.start}..{f.span.end} m{f.module} impl={opt_n(f.impl_idx, "")} trait={opt_u(f.trait_def, "d")} def={opt_u(f.def, "d")} self={opt_u(f.self_local, "l")}\n")
+		}
+		i += 1
+	}
+	o.push("statics\n")
+	for (d, f) in &r.statics {
+		o.push("d{d} f{f}\n")
+	}
+	cf mut := Vec::new()
+	for (d, f) in r.const_fns.iter() {
+		cf.push((*d, *f))
+	}
+	cf.sort()
+	o.push("const_fns\n")
+	for (d, f) in &cf {
+		o.push("d{d} f{f}\n")
+	}
+	cs mut := Vec::new()
+	for x in r.const_fn_set.iter() {
+		cs.push(*x)
+	}
+	cs.sort()
+	o.push("const_fn_set {cs:?}\n")
+	for e in &r.errors {
+		o.push("error {e.span.start}..{e.span.end}: {e.message}\n")
+		if let Some(h) = &e.help {
+			o.push("  help: {h}\n")
+		}
+	}
+	return o
+}

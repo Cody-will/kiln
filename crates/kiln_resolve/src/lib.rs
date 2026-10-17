@@ -14,6 +14,7 @@
 //!
 //! Spans are unique per AST node within a file, so they are used as keys.
 
+pub mod dump;
 mod scope;
 pub use scope::{kind_name, static_lifetimes};
 #[cfg(test)]
