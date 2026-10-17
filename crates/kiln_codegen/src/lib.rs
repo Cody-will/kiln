@@ -49,6 +49,30 @@ pub(crate) enum Abi {
     Plain,
     /// `fn(ret, env, args...)` (closures and fn-value shims)
     Closure,
+    /// Direct calls under Cranelift: scalar arguments without drop glue
+    /// pass by value in registers and a scalar result is returned; other
+    /// arguments (and other results) still use slots (see [`RegSig`]).
+    /// Address-taken uses keep the `Plain` instance.
+    Reg,
+}
+
+/// How a result comes back under [`Abi::Reg`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetMode {
+    /// Through a pointer passed as the first parameter.
+    Dest,
+    /// As the function's return value.
+    Value(Type),
+    /// `()` or `!`: nothing.
+    Nothing,
+}
+
+/// The [`Abi::Reg`] signature of a function: per argument, `Some(t)` if it
+/// passes by value as a `t`, `None` for a pointer to a slot.
+#[derive(Debug, Clone)]
+pub(crate) struct RegSig {
+    pub args: Vec<Option<Type>>,
+    pub ret: RetMode,
 }
 
 /// Pending work: functions declared but not yet defined.
@@ -666,7 +690,18 @@ impl Codegen<'_, '_> {
             .map(|b| b.arg_count)
             .unwrap_or(0);
         let extra = if abi == Abi::Closure { 2 } else { 1 };
-        let sig = self.ptr_sig(nargs + extra);
+        let sig = if abi == Abi::Reg {
+            let b = self.bodies(fn_idx).get(body).cloned();
+            match b {
+                Some(b) => {
+                    let rs = self.body_reg_sig(&b, &substs);
+                    self.reg_signature(&rs)
+                }
+                None => self.ptr_sig(nargs + extra),
+            }
+        } else {
+            self.ptr_sig(nargs + extra)
+        };
         let base = self
             .bodies(fn_idx)
             .get(body)
@@ -686,6 +721,58 @@ impl Codegen<'_, '_> {
             abi,
         });
         id
+    }
+
+    /// Whether direct calls use [`Abi::Reg`] (Cranelift output; the LLVM
+    /// backend recovers the same from pointer arguments itself).
+    pub(crate) fn reg_abi(&self) -> bool {
+        self.capture.is_none() && std::env::var_os("KILN_NO_REG_ABI").is_none()
+    }
+
+    /// The [`Abi::Reg`] signature for arguments `args` and result `ret`.
+    pub(crate) fn reg_sig(&mut self, args: &[Ty], ret: &Ty) -> RegSig {
+        let args = args
+            .iter()
+            .map(|t| {
+                self.scalar(t)
+                    .filter(|_| !self.is_fat(t) && !self.needs_drop(t))
+            })
+            .collect();
+        let ret = match ret {
+            Ty::Unit | Ty::Never => RetMode::Nothing,
+            t => match self.scalar(t) {
+                Some(st) if !self.is_fat(t) => RetMode::Value(st),
+                _ => RetMode::Dest,
+            },
+        };
+        RegSig { args, ret }
+    }
+
+    /// The [`Abi::Reg`] signature of a MIR body under `substs`.
+    pub(crate) fn body_reg_sig(
+        &mut self,
+        body: &kiln_mir::Body,
+        substs: &HashMap<String, Ty>,
+    ) -> RegSig {
+        let ret = body.locals[0].ty.subst(substs);
+        let args: Vec<Ty> = (1..=body.arg_count)
+            .map(|i| body.locals[i].ty.subst(substs))
+            .collect();
+        self.reg_sig(&args, &ret)
+    }
+
+    pub(crate) fn reg_signature(&self, rs: &RegSig) -> Signature {
+        let mut sig = self.module.make_signature();
+        if rs.ret == RetMode::Dest {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        for a in &rs.args {
+            sig.params.push(AbiParam::new(a.unwrap_or(types::I64)));
+        }
+        if let RetMode::Value(t) = rs.ret {
+            sig.returns.push(AbiParam::new(t));
+        }
+        sig
     }
 
     /// A shim with the closure ABI around a plain function (for fn items used as values).

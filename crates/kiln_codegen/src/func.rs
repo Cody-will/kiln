@@ -40,6 +40,8 @@ fn field_path(p: &Place) -> Option<Vec<String>> {
 /// What a call resolves to after monomorphization.
 pub(crate) enum Target {
     Direct(FuncId),
+    /// An [`Abi::Reg`] instance (only when the caller asked, see `want_reg`).
+    Reg(FuncId, crate::RegSig),
     /// Method number `k` of the trait object's vtable.
     Virtual(usize),
     Intrinsic(String),
@@ -59,6 +61,10 @@ pub(crate) struct FnCx<'c, 'r, 'a, 'f> {
     pub cur_block: usize,
     /// Countdown to the next preemption check at loop back-edges.
     pub preempt: Option<StackSlot>,
+    /// `resolve` may return [`Target::Reg`] (set around direct calls).
+    pub want_reg: bool,
+    /// Under [`Abi::Reg`] with a scalar result: the slot of `_0` and its type.
+    pub ret_val: Option<(Value, ir::Type)>,
     /// Back-edge source blocks that skip the countdown: innermost loops
     /// nested in another loop, whose enclosing back-edge does the check.
     /// Keeping the hot inner loop free of the counter lets LLVM unroll and
@@ -97,7 +103,12 @@ impl Codegen<'_, '_> {
         promoted: Option<std::collections::HashSet<u32>>,
     ) -> crate::promote::Promo {
         let extra = if abi == Abi::Closure { 2 } else { 1 };
-        ctx.func.signature = self.ptr_sig(body.arg_count + extra);
+        ctx.func.signature = if abi == Abi::Reg {
+            let rs = self.body_reg_sig(&body, &substs);
+            self.reg_signature(&rs)
+        } else {
+            self.ptr_sig(body.arg_count + extra)
+        };
         let mut fbc = FunctionBuilderContext::new();
         let b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
         let span = body.span;
@@ -126,6 +137,8 @@ impl Codegen<'_, '_> {
             cur_block: 0,
             preempt: None,
             no_preempt: Vec::new(),
+            want_reg: false,
+            ret_val: None,
             span,
             promo,
             bce,
@@ -713,7 +726,16 @@ impl FnCx<'_, '_, '_, '_> {
         self.b.append_block_params_for_function_params(entry);
         self.b.switch_to_block(entry);
         let params = self.b.block_params(entry).to_vec();
-        let extra = if abi == Abi::Closure { 2 } else { 1 };
+        let reg = (abi == Abi::Reg).then(|| {
+            let body = self.body.clone();
+            let substs = self.substs.clone();
+            self.cg.body_reg_sig(&body, &substs)
+        });
+        let extra = match &reg {
+            Some(r) => usize::from(r.ret == crate::RetMode::Dest),
+            None if abi == Abi::Closure => 2,
+            None => 1,
+        };
         // Closure environments: captures laid out in order.
         let mut env_offsets = HashMap::new();
         if abi == Abi::Closure {
@@ -758,8 +780,27 @@ impl FnCx<'_, '_, '_, '_> {
         for i in 0..self.body.locals.len() {
             let decl = self.body.locals[i].clone();
             let ty = self.subst(&decl.ty);
+            let reg_arg = match (&reg, decl.kind) {
+                (Some(r), LocalKind::Arg) => r.args[i - 1],
+                _ => None,
+            };
             let addr = match decl.kind {
-                LocalKind::Return => params[0],
+                LocalKind::Return => match reg.as_ref().map(|r| r.ret) {
+                    Some(crate::RetMode::Value(t)) => {
+                        let s = self.slot_for(&ty);
+                        self.ret_val = Some((s, t));
+                        s
+                    }
+                    Some(crate::RetMode::Nothing) => self.slot_for(&ty),
+                    _ => params[0],
+                },
+                // A register argument gets a slot of its own (which
+                // `promote` keeps in a register).
+                LocalKind::Arg if reg_arg.is_some() => {
+                    let s = self.slot_for(&ty);
+                    self.store(params[extra + i - 1], s, 0);
+                    s
+                }
                 // Release: small arguments are copied into a slot of our own,
                 // which `promote` can keep in registers.
                 LocalKind::Arg if self.promo.enabled && self.cg.layout(&ty).size <= 16 => {
@@ -1134,9 +1175,15 @@ impl FnCx<'_, '_, '_, '_> {
                 let (tb, fb) = (self.blocks[t.0 as usize], self.blocks[f.0 as usize]);
                 self.b.ins().brif(c, tb, &[], fb, &[]);
             }
-            Terminator::Return => {
-                self.b.ins().return_(&[]);
-            }
+            Terminator::Return => match self.ret_val {
+                Some((s, t)) => {
+                    let v = self.load(t, s, 0);
+                    self.b.ins().return_(&[v]);
+                }
+                None => {
+                    self.b.ins().return_(&[]);
+                }
+            },
             Terminator::Unreachable => {
                 self.b.ins().trap(TrapCode::user(1).unwrap());
             }
@@ -1688,7 +1735,7 @@ impl FnCx<'_, '_, '_, '_> {
             return match self.cg.typed.resolve_trait_method(idx, &substs) {
                 Some((i2, s2)) if i2 != idx || r.fns[i2].decl.body.is_some() => {
                     if i2 == idx {
-                        Target::Direct(self.cg.instance(i2, 0, s2, Abi::Plain))
+                        self.direct_target(i2, s2)
                     } else {
                         let s2 = s2.into_iter().map(|(k, v)| (k, v.subst(&substs))).collect();
                         self.resolve(i2, s2)
@@ -1712,6 +1759,19 @@ impl FnCx<'_, '_, '_, '_> {
                 return Target::Extern(f.decl.name.name.clone());
             }
             return Target::Intrinsic(crate::intrinsics::qualified_name(self.cg, idx));
+        }
+        self.direct_target(idx, substs)
+    }
+
+    /// A direct call to body 0 of `idx`: the [`Abi::Reg`] instance when the
+    /// caller asked for it, the plain one otherwise.
+    fn direct_target(&mut self, idx: usize, substs: HashMap<String, Ty>) -> Target {
+        if self.want_reg {
+            let b = self.cg.bodies(idx).first().cloned();
+            if let Some(b) = b {
+                let rs = self.cg.body_reg_sig(&b, &substs);
+                return Target::Reg(self.cg.instance(idx, 0, substs, Abi::Reg), rs);
+            }
         }
         Target::Direct(self.cg.instance(idx, 0, substs, Abi::Plain))
     }
@@ -1753,11 +1813,36 @@ impl FnCx<'_, '_, '_, '_> {
                     .iter()
                     .map(|(k, v)| (k.clone(), self.subst(v)))
                     .collect();
-                match self.resolve(*i, s.clone()) {
+                self.want_reg = self.cg.reg_abi();
+                let target = self.resolve(*i, s.clone());
+                self.want_reg = false;
+                match target {
                     Target::Direct(id) => {
                         let mut vals = vec![dest];
                         vals.extend(self.arg_slots(args));
                         self.call_fn(id, &vals);
+                    }
+                    Target::Reg(id, rs) => {
+                        let mut vals = vec![];
+                        if rs.ret == crate::RetMode::Dest {
+                            vals.push(dest);
+                        }
+                        for (a, by_val) in args.iter().zip(&rs.args) {
+                            if by_val.is_some() {
+                                vals.push(self.op_scalar(a));
+                            } else {
+                                let t = self.op_ty(a);
+                                let sl = self.slot_for(&t);
+                                self.store_op(a, sl);
+                                vals.push(sl);
+                            }
+                        }
+                        let fr = self.cg.module.declare_func_in_func(id, self.b.func);
+                        let call = self.b.ins().call(fr, &vals);
+                        if let crate::RetMode::Value(_) = rs.ret {
+                            let v = self.b.inst_results(call)[0];
+                            self.store(v, dest, 0);
+                        }
                     }
                     Target::Virtual(k) => {
                         // `args[0]` is `&dyn Trait` / `&mut dyn Trait`: (data, vtable).

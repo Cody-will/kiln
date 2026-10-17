@@ -82,6 +82,8 @@ impl<'r, 'a> Codegen<'r, 'a> {
                 cur_block: 0,
                 preempt: None,
                 no_preempt: Vec::new(),
+                want_reg: false,
+                ret_val: None,
                 span,
                 promo: Default::default(),
                 bce: Default::default(),
