@@ -140,8 +140,11 @@ fn kiln_run_forwards_exit_status() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("Error: 50 is too big"));
 }
 
+/// Slice patterns used to be rejected by code generation ("does not
+/// support slice patterns"); they now compile. No surface feature reaches
+/// the unsupported path any more, so this checks the former case runs.
 #[test]
-fn unsupported_features_are_reported_not_miscompiled() {
+fn former_unsupported_slice_pattern_runs() {
     let dir = scratch("unsupported");
     let src = dir.join("slice.kn");
     std::fs::write(
@@ -149,21 +152,14 @@ fn unsupported_features_are_reported_not_miscompiled() {
         "fun main() {\n\tv := [1, 2, 3]\n\tmatch &v[..] {\n\t\t[a, ..] => println(\"{a}\"),\n\t\t_ => {},\n\t}\n}\n",
     )
     .unwrap();
-    let out = Command::new(kiln())
-        .arg("build")
-        .arg(&src)
-        .arg("-o")
-        .arg(dir.join("slice"))
-        .output()
-        .unwrap();
+    let out = Command::new(kiln()).arg("run").arg(&src).output().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
-    assert_eq!(out.status.code(), Some(1));
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        err.contains("code generation does not support slice patterns"),
-        "{err}"
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "1\n",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    assert!(err.contains("slice.kn:4:"), "{err}");
 }
 
 #[test]
