@@ -222,11 +222,16 @@ fn interpolation_errors() {
         errs(r#""a {} b""#),
         vec!["empty interpolation `{}` (use `{{}}` for literal braces)"]
     );
-    assert_eq!(errs(r#""a } b""#), vec!["unmatched `}` in string literal"]);
     assert_eq!(
-        errs("\"a {x\n\""),
-        vec!["unterminated interpolation in string literal"]
+        errs(r#""a } b""#),
+        vec!["unmatched `}` in string literal (write `}}` for a literal brace)"]
     );
+    let lone = "unmatched `{` in string literal (write `{{` for a literal brace)";
+    assert_eq!(errs("\"a {x\n\""), vec![lone]);
+    // A lone `{` is reported where it is, and the rest of the line still
+    // lexes (the closing quote is not swallowed into the interpolation).
+    assert_eq!(errs("a := \"{\"\nb := \"ok {a}\""), vec![lone]);
+    assert_eq!(errs("\"x { y\" + \"z\""), vec![lone]);
 }
 
 #[test]

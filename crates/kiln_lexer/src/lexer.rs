@@ -470,11 +470,18 @@ impl Lexer<'_> {
                     if !text.is_empty() {
                         parts.push(StrPart::Text(std::mem::take(&mut text)));
                     }
-                    self.interpolation(at, &mut parts);
+                    if !self.interpolation(at, &mut parts) {
+                        // A lone `{` (reported): keep it as text and go on.
+                        text.push('{');
+                    }
                 }
                 Some('}') => {
                     self.bump();
-                    self.error("unmatched `}` in string literal", at, self.pos);
+                    self.error(
+                        "unmatched `}` in string literal (write `}}` for a literal brace)",
+                        at,
+                        self.pos,
+                    );
                     let _ = &mut text;
                 }
                 Some(c) => {
@@ -489,8 +496,20 @@ impl Lexer<'_> {
         self.push(TokenKind::Str(parts), start);
     }
 
-    /// Scans an interpolation body after `{` up to the matching `}`.
-    fn interpolation(&mut self, open: usize, parts: &mut Vec<StrPart>) {
+    /// Scans an interpolation body after `{` up to the matching `}`. Returns
+    /// false for a `{` with no `}` before the end of the line: that is
+    /// almost always a literal brace (`"{"` should be `"{{"`), so it is
+    /// reported as such and scanning resumes right after it.
+    fn interpolation(&mut self, open: usize, parts: &mut Vec<StrPart>) -> bool {
+        let lone = |l: &mut Self| {
+            l.error(
+                "unmatched `{` in string literal (write `{{` for a literal brace)",
+                open,
+                open + 1,
+            );
+            l.pos = open + 1;
+            false
+        };
         let s = self.pos;
         let mut depth = 0usize;
         // Parentheses and brackets, so `{f(a: b)}`-like text is not split.
@@ -509,25 +528,21 @@ impl Lexer<'_> {
                         colon = Some(self.pos);
                     }
                 }
-                None | Some('\n') => {
-                    self.error(
-                        "unterminated interpolation in string literal",
-                        open,
-                        open + 1,
-                    );
-                    return;
-                }
+                None | Some('\n') => return lone(self),
                 Some('{') => depth += 1,
                 Some('}') if depth == 0 => break,
                 Some('}') => depth -= 1,
                 Some('"') => {
                     // Nested string inside the expression: skip it.
                     self.bump();
-                    while let Some(c) = self.peek() {
-                        if c == '\\' {
-                            self.bump();
-                        } else if c == '"' {
-                            break;
+                    loop {
+                        match self.peek() {
+                            None | Some('\n') => return lone(self),
+                            Some('\\') => {
+                                self.bump();
+                            }
+                            Some('"') => break,
+                            _ => {}
                         }
                         self.bump();
                     }
@@ -551,13 +566,14 @@ impl Lexer<'_> {
                 open,
                 self.pos,
             );
-            return;
+            return true;
         }
         parts.push(StrPart::Interp {
             src,
             offset: self.base + s,
             spec,
         });
+        true
     }
 
     /// Lexes `b"..."`, `br"..."`/`br#"..."#` (byte strings) and `b'x'` (a `u8`).

@@ -540,11 +540,14 @@ impl<'a> Lexer<'a> {
 							parts.push(StrPart::Text(text.clone()))
 							text = string::new()
 						}
-						self.interpolation(at, &mut parts)
+						if !self.interpolation(at, &mut parts) {
+							// A lone `{` (reported): keep it as text.
+							text.push_char('{')
+						}
 					} else if c == '}' {
 						self.bump()
 						p := self.pos
-						self.error("unmatched `}}` in string literal".to_string(), at, p)
+						self.error("unmatched `}}` in string literal (write `}}}}` for a literal brace)".to_string(), at, p)
 					} else {
 						self.bump()
 						text.push_char(c)
@@ -558,8 +561,17 @@ impl<'a> Lexer<'a> {
 		self.push(TokenKind::Str(parts), start)
 	}
 
-	// An interpolation body after `{`, up to the matching `}`.
-	fun interpolation(&mut self, open usize, parts &mut Vec<StrPart>) {
+	// A `{` with no `}` before the end of the line: reported as a literal
+	// brace, and scanning resumes right after it.
+	fun lone_brace(&mut self, open usize) bool {
+		self.error("unmatched `{{` in string literal (write `{{{{` for a literal brace)".to_string(), open, open + 1)
+		self.pos = open + 1
+		return false
+	}
+
+	// An interpolation body after `{`, up to the matching `}`; false for a
+	// lone `{`.
+	fun interpolation(&mut self, open usize, parts &mut Vec<StrPart>) bool {
 		s := self.pos
 		depth mut := 0
 		nest mut := 0
@@ -567,13 +579,11 @@ impl<'a> Lexer<'a> {
 		loop {
 			match self.peek() {
 				None => {
-					self.error("unterminated interpolation in string literal".to_string(), open, open + 1)
-					return
+					return self.lone_brace(open)
 				}
 				Some(c) => {
 					if c == '\n' {
-						self.error("unterminated interpolation in string literal".to_string(), open, open + 1)
-						return
+						return self.lone_brace(open)
 					}
 					if c == '(' || c == '[' {
 						nest += 1
@@ -595,11 +605,21 @@ impl<'a> Lexer<'a> {
 						depth -= 1
 					} else if c == '"' {
 						self.bump()
-						while let Some(d) = self.peek() {
-							if d == '\\' {
-								self.bump()
-							} else if d == '"' {
-								break
+						loop {
+							match self.peek() {
+								None => {
+									return self.lone_brace(open)
+								}
+								Some(d) => {
+									if d == '\n' {
+										return self.lone_brace(open)
+									}
+									if d == '\\' {
+										self.bump()
+									} else if d == '"' {
+										break
+									}
+								},
 							}
 							self.bump()
 						}
@@ -624,9 +644,10 @@ impl<'a> Lexer<'a> {
 		if src.trim().is_empty() {
 			p := self.pos
 			self.error("empty interpolation `{{}}` (use `{{{{}}}}` for literal braces)".to_string(), open, p)
-			return
+			return true
 		}
 		parts.push(StrPart::Interp(src, s, spec))
+		return true
 	}
 
 	// `b"..."`, `br"..."` / `br#"..."#`, and `b'x'`.
