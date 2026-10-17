@@ -15,7 +15,7 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 | Fixed-size arrays `[T; N]` | ✅ Implemented |
 | Integer overflow | ✅ Panics in debug builds, wraps with `--release` |
 | Slice patterns, `\|` patterns with bindings | 🚧 Not yet in codegen (reported as errors) |
-| Panics | ✅ Print a message and exit with status 101; 🚧 no unwinding (destructors and `defer` don't run on panic) |
+| Panics | ✅ Pending `defer` calls run (innermost first, as in Go), then the message is printed and the process exits with status 101; destructors don't run on panic (no unwinding, no `recover`). `defer` on panic is Unix-only so far |
 | Concurrency: `spawn` and `Task<T>`, channels, `select`, `scope`/`spawn`, M:N work-stealing scheduler, deadlock detection | ✅ Implemented on Linux, macOS, and Windows |
 | A panic inside a task | 🚧 Ends the whole program (exit 101); `join` never returns `Err` yet |
 | Preemption | ✅ Loops yield after a task has run 10 ms while others wait; tasks also switch at channels, `select`, `join`, locks, timers, and I/O |

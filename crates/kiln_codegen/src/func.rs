@@ -63,6 +63,8 @@ pub(crate) struct FnCx<'c, 'r, 'a, 'f> {
     pub locals: Vec<LocalInfo>,
     pub blocks: Vec<ir::Block>,
     pub defer_stack: Option<StackSlot>,
+    /// The panic frame of a function using `defer` (see kn_panic).
+    pub panic_frame: Option<StackSlot>,
     /// Handle of the task most recently started by a `spawn` in this function.
     pub last_task: Option<StackSlot>,
     pub span: kiln_lexer::Span,
@@ -113,6 +115,7 @@ impl Codegen<'_, '_> {
             locals: vec![],
             blocks: vec![],
             defer_stack: None,
+            panic_frame: None,
             last_task: None,
             intr_substs: HashMap::new(),
             cur_block: 0,
@@ -837,7 +840,42 @@ impl FnCx<'_, '_, '_, '_> {
             self.preempt = Some(s);
         }
         let first = self.blocks[0];
-        self.b.ins().jump(first, &[]);
+        // Functions with `defer` run them on panic too: register a frame and
+        // setjmp; a panic lands in the exit dispatch (all deferred calls).
+        let exit = self
+            .body
+            .blocks
+            .iter()
+            .enumerate()
+            .filter_map(|(i, b)| match &b.term {
+                Terminator::DeferDispatch { targets, .. }
+                    if !targets.is_empty() && targets.iter().all(Option::is_some) =>
+                {
+                    Some((targets.len(), i))
+                }
+                _ => None,
+            })
+            .max();
+        match exit {
+            Some((_, exit)) if self.defer_stack.is_some() && cfg!(unix) => {
+                // The frame header (two pointers) and a jmp_buf (at most
+                // 312 bytes on the supported targets).
+                let s = self.b.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    16 + 512,
+                    4,
+                ));
+                self.panic_frame = Some(s);
+                let fa = self.b.ins().stack_addr(types::I64, s, 0);
+                let jb = self.call_rt("kn_frame_enter", &[fa]).unwrap();
+                let r = self.call_rt("_setjmp", &[jb]).unwrap();
+                let land = self.blocks[exit];
+                self.b.ins().brif(r, land, &[], first, &[]);
+            }
+            _ => {
+                self.b.ins().jump(first, &[]);
+            }
+        }
         for bi in 0..self.body.blocks.len() {
             self.cur_block = bi;
             let blk = self.blocks[bi];
@@ -1095,7 +1133,18 @@ impl FnCx<'_, '_, '_, '_> {
                 }
                 let neg = self.b.ins().icmp_imm(IntCC::SignedLessThan, id, 0);
                 let dispatch = self.b.create_block();
-                self.b.ins().brif(neg, done, &[], dispatch, &[]);
+                if let Some(pf) = self.panic_frame {
+                    // All deferred calls ran: unlink the frame (or, on the
+                    // panic path, move on to the next one).
+                    let leave = self.b.create_block();
+                    self.b.ins().brif(neg, leave, &[], dispatch, &[]);
+                    self.b.switch_to_block(leave);
+                    let fa = self.b.ins().stack_addr(types::I64, pf, 0);
+                    self.call_rt("kn_frame_leave", &[fa]);
+                    self.b.ins().jump(done, &[]);
+                } else {
+                    self.b.ins().brif(neg, done, &[], dispatch, &[]);
+                }
                 self.b.switch_to_block(dispatch);
                 sw.emit(&mut self.b, id, bad);
                 self.b.switch_to_block(bad);

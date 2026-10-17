@@ -76,6 +76,7 @@ impl<'r, 'a> Codegen<'r, 'a> {
                 locals: vec![],
                 blocks: vec![],
                 defer_stack: None,
+                panic_frame: None,
                 last_task: None,
                 intr_substs: HashMap::new(),
                 cur_block: 0,

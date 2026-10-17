@@ -1,0 +1,6 @@
+start
+inner deferred
+outer deferred, count 0
+main deferred
+panic: index out of bounds: the length is 3 but the index is 5
+[exit 101]

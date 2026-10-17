@@ -103,6 +103,12 @@ typedef struct KnTask {
 	int64_t sel;    /* select: index of the case that completed */
 	struct KnTask *next;
 	char scratch[16];
+	/* Panic frames of functions using `defer` (see kn_panic). */
+	struct {
+		void *head, *landed, *msg;
+		size_t len;
+		int unwinding;
+	} panic;
 } KnTask;
 
 typedef struct KnWorker {
@@ -629,6 +635,19 @@ int64_t kn_time_mono(void);
 /* ----- internal API for the standard library (kiln_std.c) ---------------- */
 
 void *kn_sched_current(void) { return current_task(); }
+/* The panic state (kiln_rt.c) of the current task, or of the main thread
+ * outside tasks. */
+static struct {
+	void *head, *landed, *msg;
+	size_t len;
+	int unwinding;
+} main_panic;
+void *kn_sched_panic_state(void) {
+	KnWorker *w = current_worker();
+	if (w && w->cur)
+		return &w->cur->panic;
+	return &main_panic;
+}
 void kn_sched_park(void (*after)(void *), void *arg) { kn_park(after, arg); }
 void kn_sched_ready(void *t) { kn_ready((KnTask *)t); }
 void kn_sched_wait_begin(void) { at_add(&external, 1); }

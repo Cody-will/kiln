@@ -1,0 +1,19 @@
+fun inner(v &Vec<i64>) i64 {
+	defer println("inner deferred")
+	return v[5]
+}
+
+fun outer() i64 {
+	count mut := 0
+	defer println("outer deferred, count {count}")
+	count = 41
+	count += 1
+	v := [1, 2, 3].to_vec()
+	return inner(&v)
+}
+
+fun main() {
+	defer println("main deferred")
+	println("start")
+	println("{outer()}")
+}

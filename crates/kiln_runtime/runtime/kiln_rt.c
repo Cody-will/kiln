@@ -82,9 +82,9 @@ static int first_panic(void) { return __atomic_exchange_n(&panicking, 1, __ATOMI
 #define unlock_file(f) funlockfile(f)
 #endif
 
-/* Prints `panic: <msg>` and exits with status 101 (no unwinding). If several
- * tasks panic at once, the first one reports and the others wait to exit. */
-KN_NORETURN void kn_panic(const uint8_t *msg, size_t len) {
+/* Prints `panic: <msg>` and exits with status 101. If several tasks panic
+ * at once, the first one reports and the others wait to exit. */
+static KN_NORETURN void panic_die(const uint8_t *msg, size_t len) {
 	if (!first_panic())
 		for (;;) {
 #ifdef _MSC_VER
@@ -99,6 +99,85 @@ KN_NORETURN void kn_panic(const uint8_t *msg, size_t len) {
 	fputc('\n', stderr);
 	fflush(stderr);
 	exit(101);
+}
+
+/* ----- running `defer` on panic ---------------------------------------------
+ *
+ * There is no unwinding. A function that uses `defer` registers a frame
+ * (kn_frame_enter) and calls setjmp itself. A panic jumps to the innermost
+ * frame, whose code runs its pending deferred calls through the normal
+ * dispatch, and kn_frame_leave passes the panic on to the next frame. After
+ * the last frame, the message is printed and the process exits, as in Go
+ * (without `recover`). Locals are not dropped on this path. */
+
+typedef struct KnPanicFrame {
+	struct KnPanicFrame *prev;
+	void *pad;
+	/* jmp_buf follows (the generated code reserves room for it) */
+} KnPanicFrame;
+
+typedef struct {
+	KnPanicFrame *head;
+	KnPanicFrame *landed; /* the frame running its defers for a panic */
+	uint8_t *msg;
+	size_t len;
+	int unwinding;
+} KnPanicState;
+
+void *kn_sched_panic_state(void); /* kiln_sched.c: per task */
+
+static KnPanicState *panic_state(void) { return (KnPanicState *)kn_sched_panic_state(); }
+
+#if !defined(_WIN32)
+#include <setjmp.h>
+static KN_NORETURN void unwind_next(KnPanicState *ps) {
+	KnPanicFrame *f = ps->head;
+	if (f) {
+		ps->head = f->prev;
+		ps->landed = f;
+		_longjmp(*(jmp_buf *)((char *)f + sizeof(KnPanicFrame)), 1);
+	}
+	panic_die(ps->msg, ps->len);
+}
+#endif
+
+/* Links `f` (in the caller's frame) and returns its jmp_buf. */
+void *kn_frame_enter(KnPanicFrame *f) {
+	KnPanicState *ps = panic_state();
+	f->prev = ps->head;
+	ps->head = f;
+	return (char *)f + sizeof(KnPanicFrame);
+}
+
+/* The function's defers are done: unlink `f`, or keep panicking. */
+void kn_frame_leave(KnPanicFrame *f) {
+	KnPanicState *ps = panic_state();
+#if !defined(_WIN32)
+	if (ps->unwinding && ps->landed == f)
+		unwind_next(ps);
+#endif
+	ps->head = f->prev;
+}
+
+KN_NORETURN void kn_panic(const uint8_t *msg, size_t len) {
+#if !defined(_WIN32)
+	KnPanicState *ps = panic_state();
+	if (ps && ps->head) {
+		if (!ps->unwinding) {
+			/* Keep the first message; a panic inside a deferred call
+			 * just moves on to the next frame. */
+			ps->msg = (uint8_t *)malloc(len ? len : 1);
+			if (ps->msg)
+				memcpy(ps->msg, msg, len);
+			ps->len = ps->msg ? len : 0;
+			ps->unwinding = 1;
+		}
+		unwind_next(ps);
+	}
+	if (ps && ps->unwinding)
+		panic_die(ps->msg, ps->len);
+#endif
+	panic_die(msg, len);
 }
 
 KN_NORETURN void kn_panic_bounds(size_t idx, size_t len) {

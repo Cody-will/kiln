@@ -336,6 +336,10 @@ struct Fx<'a, 'c> {
     /// returned by value (see [`promoted_ret`]).
     ret_ty: Option<BasicTypeEnum<'c>>,
     ret_slot: Option<PointerValue<'c>>,
+    /// The function calls `_setjmp` (a `defer` frame, see kn_panic): its
+    /// memory accesses are volatile, so values written after the setjmp
+    /// are what the panic path reads.
+    volatile: bool,
 }
 
 impl<'a, 'c> Fx<'a, 'c> {
@@ -365,6 +369,11 @@ impl<'a, 'c> Fx<'a, 'c> {
                 .get_return_type()
                 .filter(|_| f.signature.returns.is_empty()),
             ret_slot: None,
+            volatile: f.params.user_named_funcs().values().any(|u| {
+                cx.funcs
+                    .get(&FuncId::from_u32(u.index))
+                    .is_some_and(|fv| fv.get_name().to_bytes() == b"_setjmp")
+            }),
         })
     }
 
@@ -486,12 +495,18 @@ impl<'a, 'c> Fx<'a, 'c> {
         let x = self.b.build_load(ty, p, "").map_err(e)?;
         let inst = x.as_instruction_value().unwrap();
         let _ = inst.set_alignment(if aligned { natural(ty) } else { 1 });
+        if self.volatile {
+            let _ = inst.set_volatile(true);
+        }
         Ok(x)
     }
 
     fn store(&self, x: BasicValueEnum<'c>, p: PointerValue<'c>, aligned: bool) -> R<()> {
         let inst = self.b.build_store(p, x).map_err(e)?;
         let _ = inst.set_alignment(if aligned { natural(x.get_type()) } else { 1 });
+        if self.volatile {
+            let _ = inst.set_volatile(true);
+        }
         Ok(())
     }
 
@@ -1313,6 +1328,11 @@ impl<'a, 'c> Fx<'a, 'c> {
         };
         let a = self.call_args(args, &fv.get_type().get_param_types())?;
         let cs = self.b.build_call(fv, &a, "").map_err(e)?;
+        if fv.get_name().to_bytes() == b"_setjmp" {
+            let rt = self.cx.enum_attr("returns_twice");
+            cs.add_attribute(AttributeLoc::Function, rt);
+            fv.add_attribute(AttributeLoc::Function, rt);
+        }
         self.results(inst, cs)
     }
 
