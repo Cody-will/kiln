@@ -1,0 +1,49 @@
+fun show(o option<u128>) string {
+	return match o {
+		Some(v) => "{v}",
+		None => "None".to_string(),
+	}
+}
+
+fun showi(o option<i128>) string {
+	return match o {
+		Some(v) => "{v}",
+		None => "None".to_string(),
+	}
+}
+
+fun main() {
+	let x u128 = 12345678901234567890123
+	let a u128 = u128::MAX
+	println("{u128::MAX} {u128::MIN} {i128::MIN} {i128::MAX} {u128::BITS}")
+	println("{show(x.checked_mul(x))} {show(a.checked_add(1))} {show(x.checked_add(x))} {show(x.checked_sub(x + 1))}")
+	println("{x.wrapping_mul(x)} {a.wrapping_add(2)} {x.saturating_mul(x)} {(x >> 40).pow(2)}")
+	println("{x.leading_zeros()} {x.trailing_zeros()} {x.count_ones()} {x.rotate_left(70)} {x.swap_bytes()} {x.reverse_bits()}")
+	let n i128 = 0 - 98765432109876543210987654321
+	println("{n.abs()} {n.signum()} {n.unsigned_abs()} {n / 7} {n % 7} {n.div_euclid(7)} {n.rem_euclid(7)}")
+	println("{showi(i128::MIN.checked_neg())} {showi(i128::MIN.checked_div(-1))} {showi(n.checked_mul(n))} {i128::MAX.saturating_add(1)} {i128::MIN.saturating_sub(1)}")
+	(w, o) := i128::MAX.overflowing_add(1)
+	println("{w} {o} {x.isqrt()} {x.ilog2()} {x.ilog10()} {x.is_power_of_two()} {x.next_power_of_two()}")
+	match u128::parse("340282366920938463463374607431768211455") {
+		Ok(v) => println("{v}"),
+		Err(e) => println("err {e}"),
+	}
+	match u128::parse("340282366920938463463374607431768211456") {
+		Ok(v) => println("{v}"),
+		Err(e) => println("err {e}"),
+	}
+	match i128::from_str_radix("-80000000000000000000000000000000", 16) {
+		Ok(v) => println("{v} {v.to_string().len()}"),
+		Err(e) => println("err {e}"),
+	}
+	let y u128 = (x as u128) << 20
+	println("{y >> 3} {(y as u64)} {(n as i64)} {(-1 as i64) as i128} {(u64::MAX as u128) + 1} {x as f64}")
+	let f f64 = 1.0e30
+	let a i128 = f as i128
+	let b u128 = (0.0 - 5.5) as u128
+	let c i128 = 1.0e300 as i128
+	let x f32 = (1 as u128 << 100) as f32
+	println("{a} {b} {c} {x}")
+	let n i128 = -7
+	println("{n as f64} {n / 2} {n % 2} {n >> 1}")
+}

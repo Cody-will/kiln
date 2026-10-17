@@ -280,6 +280,104 @@ void kn_fmt_u64(KnVec *s, uint64_t v) {
 	kn_string_push(s, (const uint8_t *)p, (size_t)(end - p));
 }
 
+/* 128-bit integers arrive as two 64-bit halves (the same in every backend). */
+static char *u128_digits(char *end, unsigned __int128 v) {
+	char *p = end;
+	/* Peel 19 digits at a time so most of the work is 64-bit division. */
+	while (v > UINT64_MAX) {
+		uint64_t chunk = (uint64_t)(v % 10000000000000000000ULL);
+		v /= 10000000000000000000ULL;
+		for (int i = 0; i < 19; i++) {
+			*--p = (char)('0' + chunk % 10);
+			chunk /= 10;
+		}
+	}
+	return u64_digits(p, (uint64_t)v);
+}
+
+void kn_fmt_u128(KnVec *s, uint64_t lo, uint64_t hi) {
+	char buf[48];
+	char *end = buf + sizeof buf;
+	char *p = u128_digits(end, ((unsigned __int128)hi << 64) | lo);
+	kn_string_push(s, (const uint8_t *)p, (size_t)(end - p));
+}
+
+void kn_fmt_i128(KnVec *s, uint64_t lo, uint64_t hi) {
+	char buf[48];
+	char *end = buf + sizeof buf;
+	unsigned __int128 u = ((unsigned __int128)hi << 64) | lo;
+	int neg = (int64_t)hi < 0;
+	char *p = u128_digits(end, neg ? 0 - u : u);
+	if (neg)
+		*--p = '-';
+	kn_string_push(s, (const uint8_t *)p, (size_t)(end - p));
+}
+
+/* 128-bit division for the Cranelift backend, which has no native
+ * i128 div/rem on x86-64. flags: bit 0 = remainder, bit 1 = signed.
+ * The divisor is already known to be nonzero. */
+void kn_divrem128(unsigned __int128 *out, uint64_t alo, uint64_t ahi, uint64_t blo, uint64_t bhi,
+		  uint64_t flags) {
+	unsigned __int128 a = ((unsigned __int128)ahi << 64) | alo;
+	unsigned __int128 b = ((unsigned __int128)bhi << 64) | blo;
+	int rem = flags & 1;
+	if (flags & 2) {
+		__int128 sa = (__int128)a, sb = (__int128)b;
+		if (sb == -1 && a == (unsigned __int128)1 << 127)
+			kn_panic_str(rem ? "attempt to calculate the remainder with overflow"
+					 : "attempt to divide with overflow");
+		*out = (unsigned __int128)(rem ? sa % sb : sa / sb);
+	} else {
+		*out = rem ? a % b : a / b;
+	}
+}
+
+/* 128-bit multiply with overflow (`overflowing_mul`): stores the wrapped
+ * product and returns 1 if it overflowed. */
+uint64_t kn_mulo128(unsigned __int128 *out, uint64_t alo, uint64_t ahi, uint64_t blo, uint64_t bhi,
+		    uint64_t is_signed) {
+	unsigned __int128 a = ((unsigned __int128)ahi << 64) | alo;
+	unsigned __int128 b = ((unsigned __int128)bhi << 64) | blo;
+	if (is_signed) {
+		__int128 r;
+		int o = __builtin_mul_overflow((__int128)a, (__int128)b, &r);
+		*out = (unsigned __int128)r;
+		return (uint64_t)o;
+	}
+	unsigned __int128 r;
+	int o = __builtin_mul_overflow(a, b, &r);
+	*out = r;
+	return (uint64_t)o;
+}
+
+/* i128 <-> f64 for the Cranelift backend. Float to int saturates (and NaN
+ * is 0), like `as`. */
+double kn_i128_to_f64(uint64_t lo, uint64_t hi, uint64_t is_signed) {
+	unsigned __int128 v = ((unsigned __int128)hi << 64) | lo;
+	return is_signed ? (double)(__int128)v : (double)v;
+}
+
+void kn_f64_to_i128(unsigned __int128 *out, double f, uint64_t is_signed) {
+	if (f != f) {
+		*out = 0;
+	} else if (is_signed) {
+		__int128 max = (__int128)(((unsigned __int128)1 << 127) - 1);
+		if (f >= 0x1p127)
+			*out = (unsigned __int128)max;
+		else if (f <= -0x1p127)
+			*out = (unsigned __int128)(-max - 1);
+		else
+			*out = (unsigned __int128)(__int128)f;
+	} else {
+		if (f >= 0x1p128)
+			*out = ~(unsigned __int128)0;
+		else if (f <= 0)
+			*out = 0;
+		else
+			*out = (unsigned __int128)f;
+	}
+}
+
 void kn_fmt_bool(KnVec *s, int32_t b) {
 	if (b)
 		kn_string_push(s, (const uint8_t *)"true", 4);

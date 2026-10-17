@@ -163,6 +163,102 @@ pub fun parse_digits(s &str, radix u32, signed bool, bits u32) result<u64, Parse
 	return Ok(v)
 }
 
+// `parse_digits` for 128-bit types: parses an integer of `bits` bits (signed or not) in base `radix`; returns
+// its two's-complement bits, which the caller casts to the target type.
+// (Used by `T::from_str_radix`.)
+pub fun parse_digits128(s &str, radix u32, signed bool, bits u32) result<u128, ParseError> {
+	if radix < 2 || radix > 36 {
+		panic("from_str_radix: radix must be in 2..=36, got {radix}")
+	}
+	b := s.as_bytes()
+	i mut := 0
+	neg mut := false
+	if b.len() > 0 && (b[0] == 43 || b[0] == 45) {
+		neg = b[0] == 45
+		i = 1
+		if neg && !signed {
+			if b.len() == 1 {
+				return err(ParseErrorKind::InvalidDigit, "integer")
+			}
+			// "-0" is fine for unsigned types; anything else is too small.
+			all_zero mut := true
+			for j in 1..b.len() {
+				if b[j] != 48 && b[j] != 95 {
+					all_zero = false
+				}
+			}
+			if all_zero {
+				return Ok(0)
+			}
+			return err(ParseErrorKind::NegOverflow, "integer")
+		}
+	}
+	if i == b.len() {
+		if i == 0 {
+			return err(ParseErrorKind::Empty, "integer")
+		}
+		return err(ParseErrorKind::InvalidDigit, "integer")
+	}
+	// The largest magnitude allowed.
+	let limit u128 = if signed {
+		if neg {
+			(1 as u128) << (bits - 1)
+		} else {
+			((1 as u128) << (bits - 1)) - 1
+		}
+	} else if bits == 128 {
+		u128::MAX
+	} else {
+		((1 as u128) << bits) - 1
+	}
+	let mut v u128 = 0
+	prev_digit mut := false
+	while i < b.len() {
+		c := b[i]
+		i += 1
+		if c == 95 {
+			// `_` only between digits.
+			if !prev_digit || i == b.len() {
+				return err(ParseErrorKind::InvalidDigit, "integer")
+			}
+			prev_digit = false
+			continue
+		}
+		d := digit_value(c)
+		if d >= radix {
+			return err(ParseErrorKind::InvalidDigit, "integer")
+		}
+		prev_digit = true
+		over := match v.checked_mul(radix as u128) {
+			Some(m) => match m.checked_add(d as u128) {
+				Some(n) => {
+					v = n
+					n > limit
+				}
+				None => true,
+			},
+			None => true,
+		}
+		if over {
+			// Keep scanning so bad digits are reported first.
+			while i < b.len() {
+				if b[i] != 95 && digit_value(b[i]) >= radix {
+					return err(ParseErrorKind::InvalidDigit, "integer")
+				}
+				i += 1
+			}
+			if neg {
+				return err(ParseErrorKind::NegOverflow, "integer")
+			}
+			return err(ParseErrorKind::PosOverflow, "integer")
+		}
+	}
+	if neg {
+		return Ok((0 as u128).wrapping_sub(v))
+	}
+	return Ok(v)
+}
+
 // Parses a decimal `i64`.
 pub fun parse_int(s &str) result<i64, ParseError> {
 	return i64::parse(s)

@@ -847,6 +847,20 @@ impl<'a, 'c> Fx<'a, 'c> {
                 }
             }
             D::Binary { .. } => match op {
+                O::Iconcat => {
+                    let (lo, hi) = (self.int(args[0])?, self.int(args[1])?);
+                    let r = self.res(inst);
+                    let t = self.int_ty(r)?;
+                    let w = lo.get_type().get_bit_width() as u64;
+                    let lo = self.b.build_int_z_extend(lo, t, "").map_err(e)?;
+                    let hi = self.b.build_int_z_extend(hi, t, "").map_err(e)?;
+                    let hi = self
+                        .b
+                        .build_left_shift(hi, t.const_int(w, false), "")
+                        .map_err(e)?;
+                    let x = self.b.build_or(lo, hi, "").map_err(e)?;
+                    self.set(r, x.into())?;
+                }
                 O::Fadd | O::Fsub | O::Fmul | O::Fdiv => {
                     let (a, b) = (self.flt(args[0])?, self.flt(args[1])?);
                     let x = match op {
@@ -932,6 +946,20 @@ impl<'a, 'c> Fx<'a, 'c> {
                     &[a.into(), b.into(), c.into()],
                 )?;
                 self.set(self.res(inst), x)?;
+            }
+            D::Unary { arg, .. } if op == O::Isplit => {
+                let x = self.int(*arg)?;
+                let rs = dfg.inst_results(inst).to_vec();
+                let t = self.int_ty(rs[0])?;
+                let w = t.get_bit_width() as u64;
+                let lo = self.b.build_int_truncate(x, t, "").map_err(e)?;
+                let sh = self
+                    .b
+                    .build_right_shift(x, x.get_type().const_int(w, false), false, "")
+                    .map_err(e)?;
+                let hi = self.b.build_int_truncate(sh, t, "").map_err(e)?;
+                self.set(rs[0], lo.into())?;
+                self.set(rs[1], hi.into())?;
             }
             D::Unary { arg, .. } => self.unary(inst, op, *arg)?,
             D::LoadNoOffset { arg, .. } if op == O::Bitcast => self.unary(inst, op, *arg)?,

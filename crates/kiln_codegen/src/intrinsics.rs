@@ -4,7 +4,7 @@
 
 use crate::func::FnCx;
 use crate::Codegen;
-use cranelift_codegen::ir::{condcodes::IntCC, types, InstBuilder, Value};
+use cranelift_codegen::ir::{condcodes::IntCC, types, InstBuilder, MemFlags, Value};
 use cranelift_module::Module;
 use kiln_mir::Operand;
 use kiln_parser::ast::TypeKind;
@@ -1033,8 +1033,8 @@ impl FnCx<'_, '_, '_, '_> {
         dest: Value,
         dt: &Ty,
     ) -> bool {
-        const INTS: [&str; 10] = [
-            "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64", "usize",
+        const INTS: [&str; 12] = [
+            "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64", "usize", "i128", "u128",
         ];
         if !INTS.contains(&ty) {
             return false;
@@ -1126,6 +1126,20 @@ impl FnCx<'_, '_, '_, '_> {
                         } else {
                             self.b.ins().icmp(IntCC::UnsignedLessThan, a, b)
                         };
+                        (r, o)
+                    }
+                    _ if it == types::I128 => {
+                        // No 128-bit mulhi in either backend: the runtime
+                        // multiplies with an overflow check.
+                        let out = self.slot(16, 16);
+                        let (alo, ahi) = self.b.ins().isplit(a);
+                        let (blo, bhi) = self.b.ins().isplit(b);
+                        let sg = self.iconst(signed as i64);
+                        let o = self
+                            .call_rt("kn_mulo128", &[out, alo, ahi, blo, bhi, sg])
+                            .unwrap();
+                        let r = self.b.ins().load(types::I128, MemFlags::trusted(), out, 0);
+                        let o = self.b.ins().ireduce(types::I8, o);
                         (r, o)
                     }
                     _ => {

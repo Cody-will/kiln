@@ -192,6 +192,42 @@ const RUNTIME: &[(&str, &[Type], Option<Type>)] = &[
     ),
     ("kn_fmt_i64", &[types::I64, types::I64], None),
     ("kn_fmt_u64", &[types::I64, types::I64], None),
+    ("kn_fmt_i128", &[types::I64, types::I64, types::I64], None),
+    ("kn_fmt_u128", &[types::I64, types::I64, types::I64], None),
+    (
+        "kn_i128_to_f64",
+        &[types::I64, types::I64, types::I64],
+        Some(types::F64),
+    ),
+    (
+        "kn_f64_to_i128",
+        &[types::I64, types::F64, types::I64],
+        None,
+    ),
+    (
+        "kn_mulo128",
+        &[
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+        ],
+        Some(types::I64),
+    ),
+    (
+        "kn_divrem128",
+        &[
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+        ],
+        None,
+    ),
     ("kn_fmt_bool", &[types::I64, types::I32], None),
     ("kn_fmt_char", &[types::I64, types::I32], None),
     ("kn_fmt_f64", &[types::I64, types::F64], None),
@@ -395,6 +431,10 @@ pub fn compile(typed: Typed<'_, '_>, opts: Options) -> Result<Vec<u8>, Vec<Diagn
     let mut flags = settings::builder();
     flags.set("is_pic", "true").expect("is_pic");
     flags.set("opt_level", "speed").expect("opt_level");
+    // `i128` arguments and return values (passed in two registers).
+    flags
+        .set("enable_llvm_abi_extensions", "true")
+        .expect("enable_llvm_abi_extensions");
     // Large stack frames must touch each guard page (required on Windows);
     // inline probes avoid needing a `__cranelift_probestack` symbol.
     flags

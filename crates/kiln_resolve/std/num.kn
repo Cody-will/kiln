@@ -2992,3 +2992,600 @@ impl usize {
 		return Ok(v as usize)
 	}
 }
+
+impl i128 {
+	// The smallest value: -2^127.
+	pub const MIN i128 = -170141183460469231731687303715884105727 - 1
+	// The largest value.
+	pub const MAX i128 = 170141183460469231731687303715884105727
+	// The size in bits.
+	pub const BITS u32 = 128
+
+	// Arithmetic that wraps around at the ends of the range instead of
+	// panicking on overflow.
+	pub fun wrapping_add(self, b i128) i128
+	pub fun wrapping_sub(self, b i128) i128
+	pub fun wrapping_mul(self, b i128) i128
+	pub fun wrapping_neg(self) i128
+	// Shifts by `n % BITS`.
+	pub fun wrapping_shl(self, n u32) i128
+	pub fun wrapping_shr(self, n u32) i128
+
+	// The wrapped result and whether it overflowed.
+	pub fun overflowing_add(self, b i128) (i128, bool)
+	pub fun overflowing_sub(self, b i128) (i128, bool)
+	pub fun overflowing_mul(self, b i128) (i128, bool)
+
+	// Bit operations.
+	pub fun count_ones(self) u32
+	pub fun leading_zeros(self) u32
+	pub fun trailing_zeros(self) u32
+	pub fun rotate_left(self, n u32) i128
+	pub fun rotate_right(self, n u32) i128
+	pub fun swap_bytes(self) i128
+	pub fun reverse_bits(self) i128
+
+	pub fun count_zeros(self) u32 {
+		return 128 - self.count_ones()
+	}
+
+	// `None` on overflow.
+	pub fun checked_add(self, b i128) option<i128> {
+		(r, o) := self.overflowing_add(b)
+		if o {
+			return None
+		}
+		return Some(r)
+	}
+
+	// `None` on overflow.
+	pub fun checked_sub(self, b i128) option<i128> {
+		(r, o) := self.overflowing_sub(b)
+		if o {
+			return None
+		}
+		return Some(r)
+	}
+
+	// `None` on overflow.
+	pub fun checked_mul(self, b i128) option<i128> {
+		(r, o) := self.overflowing_mul(b)
+		if o {
+			return None
+		}
+		return Some(r)
+	}
+
+	// `None` if `b` is zero or the result overflows.
+	pub fun checked_div(self, b i128) option<i128> {
+		if b == 0 || (self == i128::MIN && b == -1) {
+			return None
+		}
+		return Some(self / b)
+	}
+
+	// `None` if `b` is zero or the result overflows.
+	pub fun checked_rem(self, b i128) option<i128> {
+		if b == 0 || (self == i128::MIN && b == -1) {
+			return None
+		}
+		return Some(self % b)
+	}
+
+	pub fun checked_neg(self) option<i128> {
+		if self == i128::MIN {
+			return None
+		}
+		return Some(-self)
+	}
+
+	// Arithmetic that stops at MIN or MAX instead of overflowing.
+	pub fun saturating_add(self, b i128) i128 {
+		(r, o) := self.overflowing_add(b)
+		if !o {
+			return r
+		}
+		if b < 0 {
+			return i128::MIN
+		}
+		return i128::MAX
+	}
+
+	pub fun saturating_sub(self, b i128) i128 {
+		(r, o) := self.overflowing_sub(b)
+		if !o {
+			return r
+		}
+		if b < 0 {
+			return i128::MAX
+		}
+		return i128::MIN
+	}
+
+	pub fun saturating_mul(self, b i128) i128 {
+		(r, o) := self.overflowing_mul(b)
+		if !o {
+			return r
+		}
+		if (self < 0) != (b < 0) {
+			return i128::MIN
+		}
+		return i128::MAX
+	}
+
+	// `self` to the power `exp`. Panics on overflow (see `checked_pow`).
+	pub fun pow(self, exp u32) i128 {
+		match self.checked_pow(exp) {
+			Some(r) => return r,
+			None => panic("attempt to raise to a power with overflow"),
+		}
+	}
+
+	pub fun checked_pow(self, exp u32) option<i128> {
+		let mut r i128 = 1
+		base mut := self
+		e mut := exp
+		while e > 0 {
+			if e & 1 == 1 {
+				r = r.checked_mul(base)?
+			}
+			e >>= 1
+			if e > 0 {
+				base = base.checked_mul(base)?
+			}
+		}
+		return Some(r)
+	}
+
+	pub fun wrapping_pow(self, exp u32) i128 {
+		let mut r i128 = 1
+		base mut := self
+		e mut := exp
+		while e > 0 {
+			if e & 1 == 1 {
+				r = r.wrapping_mul(base)
+			}
+			e >>= 1
+			base = base.wrapping_mul(base)
+		}
+		return r
+	}
+
+	pub fun saturating_pow(self, exp u32) i128 {
+		match self.checked_pow(exp) {
+			Some(r) => return r,
+			None => {
+				if self < 0 && exp % 2 == 1 {
+					return i128::MIN
+				}
+				return i128::MAX
+			},
+		}
+	}
+
+	pub fun min(self, b i128) i128 {
+		if b < self {
+			return b
+		}
+		return self
+	}
+
+	pub fun max(self, b i128) i128 {
+		if b > self {
+			return b
+		}
+		return self
+	}
+
+	// `self` limited to `lo..=hi`.
+	pub fun clamp(self, lo i128, hi i128) i128 {
+		if self < lo {
+			return lo
+		}
+		if self > hi {
+			return hi
+		}
+		return self
+	}
+
+	// The distance between `self` and `b`, which never overflows.
+	pub fun abs_diff(self, b i128) u128 {
+		if self < b {
+			return (b as u128).wrapping_sub(self as u128)
+		}
+		return (self as u128).wrapping_sub(b as u128)
+	}
+
+	// The absolute value. Panics for MIN in debug builds.
+	pub fun abs(self) i128 {
+		if self < 0 {
+			return -self
+		}
+		return self
+	}
+
+	// The absolute value as an unsigned number (never overflows).
+	pub fun unsigned_abs(self) u128 {
+		if self < 0 {
+			return (0 as u128).wrapping_sub(self as u128)
+		}
+		return self as u128
+	}
+
+	// -1, 0, or 1.
+	pub fun signum(self) i128 {
+		if self < 0 {
+			return -1
+		}
+		if self > 0 {
+			return 1
+		}
+		return 0
+	}
+
+	pub fun is_negative(self) bool {
+		return self < 0
+	}
+
+	pub fun is_positive(self) bool {
+		return self > 0
+	}
+
+	// Euclidean division: the quotient for which the remainder is never
+	// negative (`-7.div_euclid(2)` is -4).
+	pub fun div_euclid(self, b i128) i128 {
+		q := self / b
+		if self % b < 0 {
+			if b > 0 {
+				return q - 1
+			}
+			return q + 1
+		}
+		return q
+	}
+
+	// The remainder of Euclidean division, in `0..b.abs()`.
+	pub fun rem_euclid(self, b i128) i128 {
+		r := self % b
+		if r < 0 {
+			return r + b.abs()
+		}
+		return r
+	}
+
+	// The base-2 logarithm, rounded down. Panics if `self <= 0`.
+	pub fun ilog2(self) u32 {
+		if self <= 0 {
+			panic("ilog2 of a non-positive number")
+		}
+		return 127 - self.leading_zeros()
+	}
+
+	// The base-10 logarithm, rounded down. Panics if `self <= 0`.
+	pub fun ilog10(self) u32 {
+		if self <= 0 {
+			panic("ilog10 of a non-positive number")
+		}
+		n mut := 0
+		v mut := self
+		while v >= 10 {
+			v /= 10
+			n += 1
+		}
+		return n
+	}
+
+	// The integer square root, rounded down. Panics if negative.
+	pub fun isqrt(self) i128 {
+		if self < 0 {
+			panic("isqrt of a negative number")
+		}
+		if self < 2 {
+			return self
+		}
+		// Newton's method from an overestimate.
+		x mut := (1 as i128) << ((self.ilog2() / 2) + 1)
+		while true {
+			y := (x + self / x) / 2
+			if y >= x {
+				return x
+			}
+			x = y
+		}
+		return x
+	}
+
+	// The decimal text of the number.
+	pub fun to_string(self) string {
+		return "{self}"
+	}
+
+	// Parses decimal text, like `strconv::parse_int`.
+	pub fun parse(s &str) result<i128, std::strconv::ParseError> {
+		return i128::from_str_radix(s, 10)
+	}
+
+	// Parses text in base `radix` (2 to 36), with an optional sign
+	// (and `_` separators between digits).
+	pub fun from_str_radix(s &str, radix u32) result<i128, std::strconv::ParseError> {
+		v := std::strconv::parse_digits128(s, radix, true, 128)?
+		return Ok(v as i128)
+	}
+}
+
+impl u128 {
+	// The smallest value.
+	pub const MIN u128 = 0
+	// The largest value.
+	pub const MAX u128 = 340282366920938463463374607431768211455
+	// The size in bits.
+	pub const BITS u32 = 128
+
+	// Arithmetic that wraps around at the ends of the range instead of
+	// panicking on overflow.
+	pub fun wrapping_add(self, b u128) u128
+	pub fun wrapping_sub(self, b u128) u128
+	pub fun wrapping_mul(self, b u128) u128
+	pub fun wrapping_neg(self) u128
+	// Shifts by `n % BITS`.
+	pub fun wrapping_shl(self, n u32) u128
+	pub fun wrapping_shr(self, n u32) u128
+
+	// The wrapped result and whether it overflowed.
+	pub fun overflowing_add(self, b u128) (u128, bool)
+	pub fun overflowing_sub(self, b u128) (u128, bool)
+	pub fun overflowing_mul(self, b u128) (u128, bool)
+
+	// Bit operations.
+	pub fun count_ones(self) u32
+	pub fun leading_zeros(self) u32
+	pub fun trailing_zeros(self) u32
+	pub fun rotate_left(self, n u32) u128
+	pub fun rotate_right(self, n u32) u128
+	pub fun swap_bytes(self) u128
+	pub fun reverse_bits(self) u128
+
+	pub fun count_zeros(self) u32 {
+		return 128 - self.count_ones()
+	}
+
+	// `None` on overflow.
+	pub fun checked_add(self, b u128) option<u128> {
+		(r, o) := self.overflowing_add(b)
+		if o {
+			return None
+		}
+		return Some(r)
+	}
+
+	// `None` on overflow.
+	pub fun checked_sub(self, b u128) option<u128> {
+		(r, o) := self.overflowing_sub(b)
+		if o {
+			return None
+		}
+		return Some(r)
+	}
+
+	// `None` on overflow.
+	pub fun checked_mul(self, b u128) option<u128> {
+		(r, o) := self.overflowing_mul(b)
+		if o {
+			return None
+		}
+		return Some(r)
+	}
+
+	// `None` if `b` is zero.
+	pub fun checked_div(self, b u128) option<u128> {
+		if b == 0 {
+			return None
+		}
+		return Some(self / b)
+	}
+
+	// `None` if `b` is zero.
+	pub fun checked_rem(self, b u128) option<u128> {
+		if b == 0 {
+			return None
+		}
+		return Some(self % b)
+	}
+
+	pub fun checked_neg(self) option<u128> {
+		if self != 0 {
+			return None
+		}
+		return Some(0)
+	}
+
+	// Arithmetic that stops at MIN or MAX instead of overflowing.
+	pub fun saturating_add(self, b u128) u128 {
+		(r, o) := self.overflowing_add(b)
+		if !o {
+			return r
+		}
+		return u128::MAX
+	}
+
+	pub fun saturating_sub(self, b u128) u128 {
+		(r, o) := self.overflowing_sub(b)
+		if !o {
+			return r
+		}
+		return u128::MIN
+	}
+
+	pub fun saturating_mul(self, b u128) u128 {
+		(r, o) := self.overflowing_mul(b)
+		if !o {
+			return r
+		}
+		return u128::MAX
+	}
+
+	// `self` to the power `exp`. Panics on overflow (see `checked_pow`).
+	pub fun pow(self, exp u32) u128 {
+		match self.checked_pow(exp) {
+			Some(r) => return r,
+			None => panic("attempt to raise to a power with overflow"),
+		}
+	}
+
+	pub fun checked_pow(self, exp u32) option<u128> {
+		let mut r u128 = 1
+		base mut := self
+		e mut := exp
+		while e > 0 {
+			if e & 1 == 1 {
+				r = r.checked_mul(base)?
+			}
+			e >>= 1
+			if e > 0 {
+				base = base.checked_mul(base)?
+			}
+		}
+		return Some(r)
+	}
+
+	pub fun wrapping_pow(self, exp u32) u128 {
+		let mut r u128 = 1
+		base mut := self
+		e mut := exp
+		while e > 0 {
+			if e & 1 == 1 {
+				r = r.wrapping_mul(base)
+			}
+			e >>= 1
+			base = base.wrapping_mul(base)
+		}
+		return r
+	}
+
+	pub fun saturating_pow(self, exp u32) u128 {
+		match self.checked_pow(exp) {
+			Some(r) => return r,
+			None => {
+				return u128::MAX
+			},
+		}
+	}
+
+	pub fun min(self, b u128) u128 {
+		if b < self {
+			return b
+		}
+		return self
+	}
+
+	pub fun max(self, b u128) u128 {
+		if b > self {
+			return b
+		}
+		return self
+	}
+
+	// `self` limited to `lo..=hi`.
+	pub fun clamp(self, lo u128, hi u128) u128 {
+		if self < lo {
+			return lo
+		}
+		if self > hi {
+			return hi
+		}
+		return self
+	}
+
+	// The distance between `self` and `b`, which never overflows.
+	pub fun abs_diff(self, b u128) u128 {
+		if self < b {
+			return (b as u128).wrapping_sub(self as u128)
+		}
+		return (self as u128).wrapping_sub(b as u128)
+	}
+
+	pub fun div_euclid(self, b u128) u128 {
+		return self / b
+	}
+
+	pub fun rem_euclid(self, b u128) u128 {
+		return self % b
+	}
+
+	// Whether the value is a power of two (0 is not).
+	pub fun is_power_of_two(self) bool {
+		return self != 0 && self & (self - 1) == 0
+	}
+
+	// The smallest power of two that is at least `self`. Panics on
+	// overflow in debug builds.
+	pub fun next_power_of_two(self) u128 {
+		if self <= 1 {
+			return 1
+		}
+		shift := 128 - (self - 1).leading_zeros()
+		if shift >= 128 {
+			panic("next_power_of_two overflowed")
+		}
+		return (1 as u128) << shift
+	}
+
+	// The base-2 logarithm, rounded down. Panics if `self <= 0`.
+	pub fun ilog2(self) u32 {
+		if self <= 0 {
+			panic("ilog2 of a non-positive number")
+		}
+		return 127 - self.leading_zeros()
+	}
+
+	// The base-10 logarithm, rounded down. Panics if `self <= 0`.
+	pub fun ilog10(self) u32 {
+		if self <= 0 {
+			panic("ilog10 of a non-positive number")
+		}
+		n mut := 0
+		v mut := self
+		while v >= 10 {
+			v /= 10
+			n += 1
+		}
+		return n
+	}
+
+	// The integer square root, rounded down. Panics if negative.
+	pub fun isqrt(self) u128 {
+		if self < 0 {
+			panic("isqrt of a negative number")
+		}
+		if self < 2 {
+			return self
+		}
+		// Newton's method from an overestimate.
+		x mut := (1 as u128) << ((self.ilog2() / 2) + 1)
+		while true {
+			y := (x + self / x) / 2
+			if y >= x {
+				return x
+			}
+			x = y
+		}
+		return x
+	}
+
+	// The decimal text of the number.
+	pub fun to_string(self) string {
+		return "{self}"
+	}
+
+	// Parses decimal text, like `strconv::parse_int`.
+	pub fun parse(s &str) result<u128, std::strconv::ParseError> {
+		return u128::from_str_radix(s, 10)
+	}
+
+	// Parses text in base `radix` (2 to 36), with an optional sign
+	// (and `_` separators between digits).
+	pub fun from_str_radix(s &str, radix u32) result<u128, std::strconv::ParseError> {
+		v := std::strconv::parse_digits128(s, radix, false, 128)?
+		return Ok(v as u128)
+	}
+}

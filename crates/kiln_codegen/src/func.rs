@@ -593,6 +593,25 @@ impl FnCx<'_, '_, '_, '_> {
         }
     }
 
+    /// `v as f64` for a 128-bit integer in the Cranelift backend, which
+    /// cannot convert i128 to float on x86-64.
+    fn i128_to_f64(&mut self, v: Value, signed: bool) -> Value {
+        let (lo, hi) = self.b.ins().isplit(v);
+        let sg = self.iconst(signed as i64);
+        self.call_rt("kn_i128_to_f64", &[lo, hi, sg]).unwrap()
+    }
+
+    /// An integer constant of any width (Cranelift immediates stop at 64 bits).
+    fn int_const(&mut self, it: ir::Type, v: i128) -> Value {
+        if it == types::I128 {
+            let lo = self.b.ins().iconst(types::I64, v as i64);
+            let hi = self.b.ins().iconst(types::I64, (v >> 64) as i64);
+            self.b.ins().iconcat(lo, hi)
+        } else {
+            self.b.ins().iconst(it, v as i64)
+        }
+    }
+
     pub(crate) fn call_rt(&mut self, name: &str, args: &[Value]) -> Option<Value> {
         let id = self.cg.rt[name];
         let f = self.cg.module.declare_func_in_func(id, self.b.func);
@@ -1471,6 +1490,7 @@ impl FnCx<'_, '_, '_, '_> {
             ConstKind::Int(v) if st.is_int() && st.bits() <= 64 => {
                 self.b.ins().iconst(st, *v as i64)
             }
+            ConstKind::Int(v) if st == types::I128 => self.int_const(st, *v),
             ConstKind::Int(v) if st == types::F64 => self.b.ins().f64const(*v as f64),
             ConstKind::Int(v) if st == types::F32 => self.b.ins().f32const(*v as f32),
             ConstKind::Float(v) if st == types::F64 => self.b.ins().f64const(*v),
@@ -1953,9 +1973,9 @@ impl FnCx<'_, '_, '_, '_> {
                 let (v, t) = self.scalar_through_refs(&ops[0]);
                 let r = if matches!(t, Ty::Prim(PrimTy::F32 | PrimTy::F64)) {
                     self.b.ins().fneg(v)
-                } else if self.cg.checked && Self::is_signed(&t) && t != Ty::Prim(PrimTy::I128) {
+                } else if self.cg.checked && Self::is_signed(&t) {
                     let it = self.cg.scalar(&t).unwrap();
-                    let z = self.b.ins().iconst(it, 0);
+                    let z = self.int_const(it, 0);
                     self.checked_arith(BinOpKind::Sub, z, v, it, true)
                 } else {
                     self.b.ins().ineg(v)
@@ -2130,6 +2150,15 @@ impl FnCx<'_, '_, '_, '_> {
                     PrimTy::F64 => {
                         self.call_rt("kn_fmt_f64", &[s, v]);
                     }
+                    _ if st == types::I128 => {
+                        let (lo, hi) = self.b.ins().isplit(v);
+                        let f = if Self::is_signed(t) {
+                            "kn_fmt_i128"
+                        } else {
+                            "kn_fmt_u128"
+                        };
+                        self.call_rt(f, &[s, lo, hi]);
+                    }
                     _ if Self::is_signed(t) => {
                         let w = if st.bits() < 64 {
                             self.b.ins().sextend(types::I64, v)
@@ -2206,6 +2235,25 @@ impl FnCx<'_, '_, '_, '_> {
                 } else {
                     self.b.ins().uextend(ts, v)
                 }
+            }
+            (false, true) if fs == types::I128 && self.cg.capture.is_none() => {
+                let f = self.i128_to_f64(v, Self::is_signed(from));
+                if ts == types::F32 {
+                    self.b.ins().fdemote(ts, f)
+                } else {
+                    f
+                }
+            }
+            (true, false) if ts == types::I128 && self.cg.capture.is_none() => {
+                let f = if fs == types::F32 {
+                    self.b.ins().fpromote(types::F64, v)
+                } else {
+                    v
+                };
+                let out = self.slot(16, 16);
+                let sg = self.iconst(Self::is_signed(to) as i64);
+                self.call_rt("kn_f64_to_i128", &[out, f, sg]);
+                self.b.ins().load(types::I128, MemFlags::trusted(), out, 0)
             }
             (false, true) if ts == types::F64 && fs.bits() <= 64 => {
                 self.int_to_f64(v, fs, Self::is_signed(from))
@@ -2292,6 +2340,17 @@ impl FnCx<'_, '_, '_, '_> {
                     let y = self.b.ins().bxor(a, r);
                     let m = self.b.ins().band(x, y);
                     (r, self.b.ins().icmp_imm(IntCC::SignedLessThan, m, 0))
+                }
+                _ if it == types::I128 => {
+                    let out = self.slot(16, 16);
+                    let (alo, ahi) = self.b.ins().isplit(a);
+                    let (blo, bhi) = self.b.ins().isplit(b);
+                    let sg = self.iconst(signed as i64);
+                    let o = self
+                        .call_rt("kn_mulo128", &[out, alo, ahi, blo, bhi, sg])
+                        .unwrap();
+                    let r = self.b.ins().load(types::I128, MemFlags::trusted(), out, 0);
+                    (r, self.b.ins().icmp_imm(IntCC::NotEqual, o, 0))
                 }
                 (_, false) => {
                     let r = self.b.ins().imul(a, b);
@@ -2447,9 +2506,7 @@ impl FnCx<'_, '_, '_, '_> {
         };
         let it = self.cg.scalar(&t).unwrap();
         match op {
-            Add | Sub | Mul if self.cg.checked && it != types::I128 => {
-                Some(self.checked_arith(op, a, b, it, signed))
-            }
+            Add | Sub | Mul if self.cg.checked => Some(self.checked_arith(op, a, b, it, signed)),
             Add => Some(self.b.ins().iadd(a, b)),
             Sub => Some(self.b.ins().isub(a, b)),
             Mul => Some(self.b.ins().imul(a, b)),
@@ -2503,14 +2560,20 @@ impl FnCx<'_, '_, '_, '_> {
                 if signed && known.is_none_or(|c| c == -1) {
                     // MIN / -1 overflows (and traps in hardware): panic in all builds.
                     let min = match it.bits() {
-                        8 => i8::MIN as i64,
-                        16 => i16::MIN as i64,
-                        32 => i32::MIN as i64,
-                        _ => i64::MIN,
+                        8 => i8::MIN as i128,
+                        16 => i16::MIN as i128,
+                        32 => i32::MIN as i128,
+                        64 => i64::MIN as i128,
+                        _ => i128::MIN,
                     };
-                    if it != types::I128 {
+                    {
                         let neg1 = self.b.ins().icmp_imm(IntCC::Equal, b, -1);
-                        let is_min = self.b.ins().icmp_imm(IntCC::Equal, a, min);
+                        let is_min = if it == types::I128 {
+                            let m = self.int_const(it, min);
+                            self.b.ins().icmp(IntCC::Equal, a, m)
+                        } else {
+                            self.b.ins().icmp_imm(IntCC::Equal, a, min as i64)
+                        };
                         let both = self.b.ins().band(neg1, is_min);
                         let msg = if op == Div {
                             "attempt to divide with overflow"
@@ -2519,6 +2582,15 @@ impl FnCx<'_, '_, '_, '_> {
                         };
                         self.fail_if(both, |cx| cx.panic_msg(msg));
                     }
+                }
+                if it == types::I128 && self.cg.capture.is_none() {
+                    // Cranelift cannot lower i128 division on x86-64.
+                    let out = self.slot(16, 16);
+                    let (alo, ahi) = self.b.ins().isplit(a);
+                    let (blo, bhi) = self.b.ins().isplit(b);
+                    let flags = self.iconst((op == Rem) as i64 | ((signed as i64) << 1));
+                    self.call_rt("kn_divrem128", &[out, alo, ahi, blo, bhi, flags]);
+                    return Some(self.b.ins().load(types::I128, MemFlags::trusted(), out, 0));
                 }
                 Some(match (op, signed) {
                     (Div, true) => self.b.ins().sdiv(a, b),
@@ -2575,6 +2647,8 @@ impl FnCx<'_, '_, '_, '_> {
                 v
             } else if st == types::F32 {
                 cx.b.ins().fpromote(types::F64, v)
+            } else if st == types::I128 && cx.cg.capture.is_none() {
+                cx.i128_to_f64(v, Self::is_signed(&base))
             } else if Self::is_signed(&base) {
                 cx.b.ins().fcvt_from_sint(types::F64, v)
             } else {
