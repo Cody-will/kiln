@@ -1286,9 +1286,10 @@ impl char {
 		return self
 	}
 
-	// A letter, in any script.
+	// The Unicode Alphabetic property (letters, plus marks and numbers
+	// that behave like letters), as in Rust.
 	pub fun is_alphabetic(self) bool {
-		return std::unicode::is_letter(self)
+		return std::unicode::is_alphabetic(self)
 	}
 
 	// A number, in any script (see `std::unicode::is_number`).

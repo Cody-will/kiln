@@ -1,0 +1,14 @@
+61 alpha=true letter=true alnum=true num=false
+e9 alpha=true letter=true alnum=true num=false
+436 alpha=true letter=true alnum=true num=false
+4e2d alpha=true letter=true alnum=true num=false
+345 alpha=true letter=false alnum=true num=false
+24b6 alpha=true letter=false alnum=true num=false
+216b alpha=true letter=true alnum=true num=true
+1f130 alpha=true letter=false alnum=true num=false
+31 alpha=false letter=false alnum=true num=true
+663 alpha=false letter=false alnum=true num=true
+bd alpha=false letter=false alnum=true num=true
+5f alpha=false letter=false alnum=false num=false
+20 alpha=false letter=false alnum=false num=false
+300 alpha=false letter=false alnum=false num=false

@@ -1,0 +1,8 @@
+// `is_alphabetic` is Unicode's Alphabetic property (as in Rust), which is
+// wider than "a letter": circled letters, Roman numerals and some combining
+// marks are alphabetic too.
+fun main() {
+	for c in ['a', 'é', 'ж', '中', '\u{345}', 'Ⓐ', 'Ⅻ', '\u{1F130}', '1', '٣', '½', '_', ' ', '\u{300}'] {
+		println("{c as u32:x} alpha={c.is_alphabetic()} letter={std::unicode::is_letter(c)} alnum={c.is_alphanumeric()} num={c.is_numeric()}")
+	}
+}

@@ -23,6 +23,15 @@ pub fun is_letter(c char) bool {
 	return class(c, 0)
 }
 
+// The Alphabetic property: letters plus letter-like marks and numbers
+// (what Rust's `char::is_alphabetic` tests).
+pub fun is_alphabetic(c char) bool {
+	if c.is_ascii() {
+		return c.is_ascii_alphabetic()
+	}
+	return class(c, 10)
+}
+
 // A decimal digit (category Nd), in any script.
 pub fun is_digit(c char) bool {
 	if c.is_ascii() {
