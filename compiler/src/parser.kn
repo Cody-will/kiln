@@ -154,7 +154,7 @@ fun is_lifetime(k &TokenKind) bool {
 }
 
 // Shifts every position in `l` (a lexed interpolation) by `off`.
-fun shift(toks &mut Vec<Token>, errs &mut Vec<LexError>, off usize) {
+pub fun shift(toks &mut Vec<Token>, errs &mut Vec<LexError>, off usize) {
 	i mut := 0
 	while i < toks.len() {
 		toks[i].start += off
@@ -305,6 +305,10 @@ pub struct Parser<'s> {
 impl<'s> Parser<'s> {
 	pub fun new(src &'s str, tokens Vec<Token>, docs Vec<(usize, usize, string)>) Parser<'s> {
 		return Parser { src: src, base: 0, tokens: tokens, pos: 0, docs: docs, doc_idx: 0, errors: Vec::new(), no_struct: false }
+	}
+
+	pub fun set_base(&mut self, base usize) {
+		self.base = base
 	}
 
 	// ----- token helpers -----

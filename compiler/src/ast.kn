@@ -6,7 +6,6 @@
 //
 // (`chan` is a keyword, so fields the Rust AST calls `chan` are `ch` here.)
 
-
 @derive(Clone, Copy)
 pub struct Span {
 	pub start usize,

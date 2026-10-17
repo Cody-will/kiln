@@ -1,0 +1,636 @@
+// Derive expansion: a port of crates/kiln_parser/src/derive.rs.
+//
+// `@derive(Json)` (or `ToJson` / `FromJson` alone) generates trait impls
+// as Kiln source; the text is parsed and appended next to the type.
+// `generate` returns the generated texts (one per item list, inner modules
+// first) and errors, which `tests/derive_diff.rs` compares against
+// `kiln parse --dump-derive`.
+
+import super::lexer
+import super::lexer::LexError
+import super::parser
+import super::parser::Parser
+// (Last: see the note in parser.kn.)
+import super::ast::*
+
+const J &'static str = "std::encoding::json"
+
+pub struct DeriveError {
+	pub span Span,
+	pub message string,
+}
+
+// Spans of generated code start here (above all built-in sources).
+pub const DERIVE_BASE usize = 1 << 42
+
+// Expands derives in `items` like `derive::expand` in Rust: the generated
+// text is parsed at span base `*next` (then advanced) and its items are
+// appended. Errors from the generated parse go to `errors`.
+pub fun expand(items &mut Vec<Item>, next &mut usize, errors &mut Vec<LexError>) {
+	i mut := 0
+	while i < items.len() {
+		match &mut items[i].kind {
+			ItemKind::Mod { items: Some(inner), .. } => expand(inner, next, errors),
+			_ => {},
+		}
+		i += 1
+	}
+	texts mut := Vec::new()
+	derrs mut := Vec::new()
+	generate_here(&*items, &mut texts, &mut derrs)
+	for e in derrs {
+		errors.push(LexError { start: e.span.start, end: e.span.end, message: e.message })
+	}
+	for text in &texts {
+		base := *next
+		*next += text.len() + 1
+		l := lexer::lex(text)
+		toks mut := l.tokens
+		lerrs mut := l.errors
+		parser::shift(&mut toks, &mut lerrs, base)
+		for e in lerrs {
+			errors.push(e)
+		}
+		p mut := Parser::new(text, toks, Vec::new())
+		p.set_base(base)
+		f := p.parse_file()
+		for e in p.errors {
+			errors.push(e)
+		}
+		for it in f.items {
+			items.push(it)
+		}
+	}
+}
+
+// Generated texts for `items` (recursively), in expansion order.
+pub fun generate(items &Vec<Item>, texts &mut Vec<string>, errors &mut Vec<DeriveError>) {
+	for it in items {
+		match &it.kind {
+			ItemKind::Mod { items: Some(inner), .. } => generate(inner, texts, errors),
+			_ => {},
+		}
+	}
+	generate_here(items, texts, errors)
+}
+
+// `generate` for `items` alone (not nested modules).
+fun generate_here(items &Vec<Item>, texts &mut Vec<string>, errors &mut Vec<DeriveError>) {
+	code mut := string::new()
+	for it in items {
+		names := derives(it)
+		to mut := false
+		from mut := false
+		for n in &names {
+			if n == "Json" || n == "ToJson" {
+				to = true
+			}
+			if n == "Json" || n == "FromJson" {
+				from = true
+			}
+		}
+		if !to && !from {
+			continue
+		}
+		match &it.kind {
+			ItemKind::Struct(s) => {
+				if to {
+					code.push(&struct_to(s))
+				}
+				if from {
+					code.push(&struct_from(s))
+				}
+			}
+			ItemKind::Enum(e) => {
+				if to {
+					code.push(&enum_to(e))
+				}
+				if from {
+					code.push(&enum_from(e))
+				}
+			}
+			_ => errors.push(DeriveError { span: it.span, message: "`derive(Json)` applies to structs and enums".to_string() }),
+		}
+	}
+	if !code.is_empty() {
+		texts.push(code)
+	}
+}
+
+fun derives(item &Item) Vec<string> {
+	out mut := Vec::new()
+	for a in &item.attrs {
+		if a.name.name != "derive" {
+			continue
+		}
+		args := match &a.args {
+			Some(s) => s.clone(),
+			None => string::new(),
+		}
+		for part in args.split(",") {
+			out.push(part.trim().to_string())
+		}
+	}
+	return out
+}
+
+fun join(v &Vec<string>, sep &str) string {
+	o mut := string::new()
+	i mut := 0
+	while i < v.len() {
+		if i > 0 {
+			o.push(sep)
+		}
+		o.push(&v[i])
+		i += 1
+	}
+	return o
+}
+
+fun tabs(n usize) string {
+	o mut := string::new()
+	i mut := 0
+	while i < n {
+		o.push("\t")
+		i += 1
+	}
+	return o
+}
+
+// `impl<'a, T: Bound> Trait for Name<'a, T>` header.
+fun header(name &str, g &Generics, tr &str) string {
+	params mut := Vec::new()
+	args mut := Vec::new()
+	for p in &g.params {
+		match p {
+			GenericParam::Lifetime { name: n, .. } => {
+				params.push("'{n.name}")
+				args.push("'{n.name}")
+			}
+			GenericParam::Type { name: n, .. } => {
+				params.push("{n.name}: {J}::{tr}")
+				args.push(n.name.clone())
+			}
+			GenericParam::Const { name: n, .. } => args.push(n.name.clone()),
+		}
+	}
+	ps := if params.is_empty() { string::new() } else { "<{join(&params, ", ")}>" }
+	a := if args.is_empty() { string::new() } else { "<{join(&args, ", ")}>" }
+	return "impl{ps} {J}::{tr} for {name}{a}"
+}
+
+// Statements building an object `var` from `(key, expr)` pairs.
+fun object(var &str, fields &Vec<(string, string)>) string {
+	s mut := "\t\t{var} mut := std::encoding::json::Map::new()\n"
+	for (k, e) in fields {
+		s.push("\t\t{var}.insert(\"{k}\".to_string(), {J}::ToJson::to_json({e}))\n")
+	}
+	return s
+}
+
+// A Kiln string literal for `s` (braces doubled).
+fun lit(s &str) string {
+	o mut := "\"".to_string()
+	for c in s.chars() {
+		match c {
+			'{' => o.push("{{{{"),
+			'}' => o.push("}}}}"),
+			'"' => o.push("\\\""),
+			'\\' => o.push("\\\\"),
+			_ => o.push_char(c),
+		}
+	}
+	o.push_char('"')
+	return o
+}
+
+enum Piece {
+	Text(string),
+	Value(string),
+}
+
+fun emit(pieces Vec<Piece>, indent &str) string {
+	merged mut := Vec::new()
+	for p in pieces {
+		match p {
+			Piece::Text(b) => {
+				n := merged.len()
+				joined := n > 0 && match &mut merged[n - 1] {
+					Piece::Text(a) => {
+						a.push(&b)
+						true
+					}
+					_ => false,
+				}
+				if !joined {
+					merged.push(Piece::Text(b))
+				}
+			}
+			v => merged.push(v),
+		}
+	}
+	s mut := string::new()
+	for p in &merged {
+		match p {
+			Piece::Text(t) => {
+				if t.chars().count() == 1 && t != "{{" && t != "}}" && t != "'" && t != "\\" {
+					s.push("{indent}out.push_char('{t}')\n")
+				} else {
+					s.push("{indent}out.push({lit(t)})\n")
+				}
+			}
+			Piece::Value(e) => s.push("{indent}{J}::ToJson::write_json({e}, out)\n"),
+		}
+	}
+	return s
+}
+
+fun obj_pieces(fields &Vec<(string, string)>) Vec<Piece> {
+	v mut := Vec::new()
+	if fields.is_empty() {
+		v.push(Piece::Text("{{}}".to_string()))
+		return v
+	}
+	i mut := 0
+	for (k, e) in fields {
+		sep := if i == 0 { "{{" } else { "," }
+		v.push(Piece::Text("{sep}\"{k}\":"))
+		v.push(Piece::Value(e.clone()))
+		i += 1
+	}
+	v.push(Piece::Text("}}".to_string()))
+	return v
+}
+
+fun arr_pieces(exprs &Vec<string>) Vec<Piece> {
+	v mut := Vec::new()
+	v.push(Piece::Text("[".to_string()))
+	i mut := 0
+	for e in exprs {
+		if i > 0 {
+			v.push(Piece::Text(",".to_string()))
+		}
+		v.push(Piece::Value(e.clone()))
+		i += 1
+	}
+	v.push(Piece::Text("]".to_string()))
+	return v
+}
+
+const WRITE_HEAD &'static str = "\n\tfun write_json(&self, out &mut string) {{\n"
+
+fun self_pairs(fs &Vec<FieldDecl>) Vec<(string, string)> {
+	out mut := Vec::new()
+	for f in fs {
+		out.push((f.name.name.clone(), "&self.{f.name.name}"))
+	}
+	return out
+}
+
+fun struct_to(s &StructDecl) string {
+	name := &s.name.name
+	out mut := header(name, &s.generics, "ToJson")
+	out.push(" {{\n\tfun to_json(&self) {J}::Value {{\n")
+	match &s.fields {
+		Fields::Named(fs) => {
+			out.push(&object("m", &self_pairs(fs)))
+			out.push("\t\treturn {J}::Value::Object(m)\n")
+		}
+		Fields::Tuple(ts) => {
+			if ts.len() == 1 {
+				out.push("\t\treturn {J}::ToJson::to_json(&self.0)\n")
+			} else {
+				items mut := Vec::new()
+				i mut := 0
+				while i < ts.len() {
+					items.push("{J}::ToJson::to_json(&self.{i})")
+					i += 1
+				}
+				out.push("\t\treturn {J}::Value::Array([{join(&items, ", ")}].to_vec())\n")
+			}
+		}
+		Fields::Unit => out.push("\t\treturn {J}::Value::Null\n"),
+	}
+	out.push("\t}}\n")
+	pieces := match &s.fields {
+		Fields::Named(fs) => obj_pieces(&self_pairs(fs)),
+		Fields::Tuple(ts) => {
+			if ts.len() == 1 {
+				v mut := Vec::new()
+				v.push(Piece::Value("&self.0".to_string()))
+				v
+			} else {
+				xs mut := Vec::new()
+				i mut := 0
+				while i < ts.len() {
+					xs.push("&self.{i}")
+					i += 1
+				}
+				arr_pieces(&xs)
+			}
+		}
+		Fields::Unit => {
+			v mut := Vec::new()
+			v.push(Piece::Text("null".to_string()))
+			v
+		}
+	}
+	out.push(WRITE_HEAD)
+	out.push(&emit(pieces, "\t\t"))
+	out.push("\t}}\n}}\n\n")
+	return out
+}
+
+// A constructor expression from object `m` (named) or array `a` (tuple).
+fun build(path &str, fields &Fields, src &str, what &str) (string, string) {
+	match fields {
+		Fields::Named(fs) => {
+			pre := "\t\tm := {J}::expect_object({src}, \"{what}\")?\n"
+			inits mut := Vec::new()
+			for f in fs {
+				n := &f.name.name
+				inits.push("{n}: {J}::field(m, \"{n}\")?")
+			}
+			return (pre, "{path} {{ {join(&inits, ", ")} }}")
+		}
+		Fields::Tuple(ts) => {
+			if ts.len() == 1 {
+				return (string::new(), "{path}({J}::from_value({src})?)")
+			}
+			n := ts.len()
+			pre := "\t\ta := {J}::expect_array({src}, {n}, \"{what}\")?\n"
+			items mut := Vec::new()
+			i mut := 0
+			while i < n {
+				items.push("{J}::elem(a, {i})?")
+				i += 1
+			}
+			return (pre, "{path}({join(&items, ", ")})")
+		}
+		Fields::Unit => return (string::new(), path.to_string()),
+	}
+}
+
+fun struct_from(s &StructDecl) string {
+	name := &s.name.name
+	out mut := header(name, &s.generics, "FromJson")
+	out.push(" {{\n\tfun from_json(v &{J}::Value) result<Self, {J}::Error> {{\n")
+	match &s.fields {
+		Fields::Unit => {
+			out.push("\t\tif !v.is_null() {{\n")
+			out.push("\t\t\treturn Err({J}::Error::mismatch(\"null for {name}\", v))\n\t\t}}\n")
+		}
+		_ => {},
+	}
+	(pre, ctor) := build(name, &s.fields, "v", name)
+	out.push(&pre)
+	out.push("\t\treturn Ok({ctor})\n\t}}\n")
+	out.push(&read_head())
+	out.push(&read_body(name, &s.fields, 2, true))
+	out.push("\t}}\n}}\n\n")
+	return out
+}
+
+const MISS &'static str = "return Err(std::encoding::json::Error::new(\"mismatch\"))"
+
+fun shape(o &mut string, t &str, test &str, fallback bool) {
+	if fallback {
+		o.push("{t}if !p.{test}() {{\n{t}\tv := p.read_value()?\n{t}\treturn Self::from_json(&v)\n{t}}}\n")
+	} else {
+		o.push("{t}if !p.{test}() {{\n{t}\t{MISS}\n{t}}}\n")
+	}
+}
+
+fun read_body(path &str, fields &Fields, ind usize, fallback bool) string {
+	t := tabs(ind)
+	o mut := string::new()
+	match fields {
+		Fields::Named(fs) => {
+			shape(&mut o, &t, "at_object", fallback)
+			o.push("{t}p.begin()?\n")
+			i mut := 0
+			while i < fs.len() {
+				o.push("{t}f{i} mut := None\n")
+				i += 1
+			}
+			o.push("{t}first mut := true\n{t}while p.next_key(first)? {{\n{t}\tfirst = false\n")
+			i = 0
+			for f in fs {
+				kw := if i == 0 { "if" } else { "}} else if" }
+				o.push("{t}\t{kw} p.is_key(\"{f.name.name}\") {{\n{t}\t\tf{i} = Some({J}::FromJson::read_json(p)?)\n")
+				i += 1
+			}
+			if fs.is_empty() {
+				o.push("{t}\tp.skip()?\n")
+			} else {
+				o.push("{t}\t}} else {{\n{t}\t\tp.skip()?\n{t}\t}}\n")
+			}
+			o.push("{t}}}\n")
+			inits mut := Vec::new()
+			i = 0
+			for f in fs {
+				n := &f.name.name
+				inits.push("{n}: {J}::finish_field(f{i}, \"{n}\")?")
+				i += 1
+			}
+			o.push("{t}return Ok({path} {{ {join(&inits, ", ")} }})\n")
+		}
+		Fields::Tuple(ts) => {
+			if ts.len() == 1 {
+				o.push("{t}return Ok({path}({J}::FromJson::read_json(p)?))\n")
+			} else {
+				shape(&mut o, &t, "at_array", fallback)
+				o.push("{t}p.begin()?\n")
+				i mut := 0
+				while i < ts.len() {
+					first := i == 0
+					o.push("{t}if !p.next_elem({first})? {{\n{t}\t{MISS}\n{t}}}\n{t}x{i} := {J}::FromJson::read_json(p)?\n")
+					i += 1
+				}
+				empty := ts.is_empty()
+				o.push("{t}if p.next_elem({empty})? {{\n{t}\t{MISS}\n{t}}}\n")
+				xs mut := Vec::new()
+				i = 0
+				while i < ts.len() {
+					xs.push("x{i}")
+					i += 1
+				}
+				o.push("{t}return Ok({path}({join(&xs, ", ")}))\n")
+			}
+		}
+		Fields::Unit => o.push("{t}if !p.eat_null() {{\n{t}\t{MISS}\n{t}}}\n{t}return Ok({path})\n"),
+	}
+	return o
+}
+
+fun read_head() string {
+	return "\n\tfun read_json<'p>(p &mut {J}::Parser<'p>) result<Self, {J}::Error> {{\n"
+}
+
+fun binds_n(n usize) Vec<string> {
+	v mut := Vec::new()
+	i mut := 0
+	while i < n {
+		v.push("x{i}")
+		i += 1
+	}
+	return v
+}
+
+fun same_pairs(binds &Vec<string>) Vec<(string, string)> {
+	v mut := Vec::new()
+	for b in binds {
+		v.push((b.clone(), b.clone()))
+	}
+	return v
+}
+
+fun field_names(fs &Vec<FieldDecl>) Vec<string> {
+	v mut := Vec::new()
+	for f in fs {
+		v.push(f.name.name.clone())
+	}
+	return v
+}
+
+fun enum_to(e &EnumDecl) string {
+	name := &e.name.name
+	out mut := header(name, &e.generics, "ToJson")
+	out.push(" {{\n\tfun to_json(&self) {J}::Value {{\n\t\tmatch self {{\n")
+	for v in &e.variants {
+		vn := &v.name.name
+		match &v.fields {
+			Fields::Unit => out.push("\t\t\t{name}::{vn} => return {J}::Value::String(\"{vn}\".to_string()),\n"),
+			Fields::Tuple(ts) => {
+				binds := binds_n(ts.len())
+				payload := if ts.len() == 1 {
+					"{J}::ToJson::to_json(x0)"
+				} else {
+					items mut := Vec::new()
+					for b in &binds {
+						items.push("{J}::ToJson::to_json({b})")
+					}
+					"{J}::Value::Array([{join(&items, ", ")}].to_vec())"
+				}
+				out.push("\t\t\t{name}::{vn}({join(&binds, ", ")}) => {{\n\t\tp := {payload}\n")
+				out.push(&tagged(vn))
+			}
+			Fields::Named(fs) => {
+				binds := field_names(fs)
+				out.push("\t\t\t{name}::{vn} {{ {join(&binds, ", ")} }} => {{\n")
+				out.push(&object("inner", &same_pairs(&binds)))
+				out.push("\t\tp := {J}::Value::Object(inner)\n")
+				out.push(&tagged(vn))
+			}
+		}
+	}
+	out.push("\t\t}}\n\t}}\n")
+	out.push(WRITE_HEAD)
+	out.push("\t\tmatch self {{\n")
+	for v in &e.variants {
+		vn := &v.name.name
+		head := "{{\"{vn}\":"
+		pat mut := string::new()
+		pieces mut := Vec::new()
+		match &v.fields {
+			Fields::Unit => {
+				pat = "{name}::{vn}"
+				pieces.push(Piece::Text("\"{vn}\""))
+			}
+			Fields::Tuple(ts) => {
+				binds := binds_n(ts.len())
+				pieces.push(Piece::Text(head.clone()))
+				if ts.len() == 1 {
+					pieces.push(Piece::Value("x0".to_string()))
+				} else {
+					for p in arr_pieces(&binds) {
+						pieces.push(p)
+					}
+				}
+				pieces.push(Piece::Text("}}".to_string()))
+				pat = "{name}::{vn}({join(&binds, ", ")})"
+			}
+			Fields::Named(fs) => {
+				binds := field_names(fs)
+				pieces.push(Piece::Text(head.clone()))
+				for p in obj_pieces(&same_pairs(&binds)) {
+					pieces.push(p)
+				}
+				pieces.push(Piece::Text("}}".to_string()))
+				pat = "{name}::{vn} {{ {join(&binds, ", ")} }}"
+			}
+		}
+		body := emit(pieces, "\t\t\t\t")
+		out.push("\t\t\t{pat} => {{\n{body}\t\t\t}}\n")
+	}
+	out.push("\t\t}}\n\t}}\n}}\n\n")
+	return out
+}
+
+fun tagged(vn &str) string {
+	s mut := object("o", &Vec::new())
+	s.push("\t\to.insert(\"{vn}\".to_string(), p)\n")
+	s.push("\t\treturn {J}::Value::Object(o)\n\t\t\t}}\n")
+	return s
+}
+
+fun enum_from(e &EnumDecl) string {
+	name := &e.name.name
+	out mut := header(name, &e.generics, "FromJson")
+	out.push(" {{\n\tfun from_json(v &{J}::Value) result<Self, {J}::Error> {{\n")
+	out.push("\t\t(name, p) := {J}::variant(v, \"{name}\")?\n")
+	for v in &e.variants {
+		vn := &v.name.name
+		path := "{name}::{vn}"
+		out.push("\t\tif name == \"{vn}\" {{\n")
+		unit := match &v.fields {
+			Fields::Unit => true,
+			_ => false,
+		}
+		if !unit {
+			out.push("\t\tx := {J}::payload(p, \"{vn}\")?\n")
+		}
+		(pre, ctor) := build(&path, &v.fields, "x", &path)
+		out.push(&pre)
+		out.push("\t\t\treturn Ok({ctor})\n\t\t}}\n")
+	}
+	out.push("\t\treturn Err({J}::unknown_variant(name, \"{name}\"))\n\t}}\n")
+	out.push(&read_head())
+	out.push("\t\tif p.at_string() {{\n\t\t\ts := p.read_string()?\n")
+	for v in &e.variants {
+		match &v.fields {
+			Fields::Unit => {
+				vn := &v.name.name
+				out.push("\t\t\tif s == \"{vn}\" {{\n\t\t\t\treturn Ok({name}::{vn})\n\t\t\t}}\n")
+			}
+			_ => {},
+		}
+	}
+	out.push("\t\t\t{MISS}\n\t\t}}\n")
+	out.push("\t\tif !p.at_object() {{\n\t\t\t{MISS}\n\t\t}}\n")
+	out.push("\t\tp.begin()?\n")
+	out.push("\t\tif !p.next_key(true)? {{\n\t\t\t{MISS}\n\t\t}}\n")
+	for v in &e.variants {
+		vn := &v.name.name
+		out.push("\t\tif p.is_key(\"{vn}\") {{\n")
+		unit := match &v.fields {
+			Fields::Unit => true,
+			_ => false,
+		}
+		body := if unit {
+			"\t\t\tp.skip()?\n".to_string()
+		} else {
+			read_body("v", &v.fields, 3, false).replace("return Ok(v", "x := Ok({name}::{vn}").replace("return Ok(", "x := Ok(")
+		}
+		out.push(&body)
+		out.push("\t\t\tif p.next_key(false)? {{\n\t\t\t\t{MISS}\n\t\t\t}}\n")
+		if unit {
+			out.push("\t\t\treturn Ok({name}::{vn})\n")
+		} else {
+			out.push("\t\t\treturn x\n")
+		}
+		out.push("\t\t}}\n")
+	}
+	out.push("\t\t{MISS}\n\t}}\n}}\n\n")
+	return out
+}

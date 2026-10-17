@@ -1,0 +1,41 @@
+// Derive corpus for the self-hosted derive expansion diff test.
+
+@derive(Json)
+struct Named<'a, T, const N usize> {
+	a i32,
+	b &'a T,
+}
+
+@derive(ToJson)
+struct One(i32)
+
+@derive(FromJson)
+struct Two(i32, string)
+
+@derive(Json)
+struct Zero()
+
+@derive(Json, Debug)
+struct Unit
+
+@derive(Json)
+struct Empty {}
+
+@derive(Json)
+enum E<T> {
+	A,
+	B(T),
+	C(i32, i32),
+	D { x i32, y string },
+	F {},
+}
+
+mod inner {
+	@derive(Json)
+	pub struct In {
+		v Vec<i32>,
+	}
+}
+
+@derive(Json)
+fun not_a_type() {}

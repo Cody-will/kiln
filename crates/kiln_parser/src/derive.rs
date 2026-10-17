@@ -24,17 +24,29 @@ const J: &str = "std::encoding::json";
 /// Expands derives in `file`, appending generated items and reporting
 /// errors in generated code.
 pub(crate) fn expand(file: &mut File, errors: &mut Vec<Diagnostic>) {
-    expand_items(&mut file.items, errors);
+    expand_items(&mut file.items, errors, &mut Vec::new());
 }
 
-fn expand_items(items: &mut Vec<Item>, errors: &mut Vec<Diagnostic>) {
+/// The generated source texts for `file` (one per item list that derives
+/// anything, inner modules first) and the derive errors, without parsing
+/// them. Used by the self-hosted derive diff test.
+pub fn generated(file: &File) -> (Vec<String>, Vec<Diagnostic>) {
+    let mut f = file.clone();
+    let mut errors = Vec::new();
+    let mut texts = Vec::new();
+    expand_items(&mut f.items, &mut errors, &mut texts);
+    errors.retain(|e| e.span.start < DERIVE_BASE);
+    (texts, errors)
+}
+
+fn expand_items(items: &mut Vec<Item>, errors: &mut Vec<Diagnostic>, texts: &mut Vec<String>) {
     let mut code = String::new();
     for it in items.iter_mut() {
         if let ItemKind::Mod {
             items: Some(inner), ..
         } = &mut it.kind
         {
-            expand_items(inner, errors);
+            expand_items(inner, errors, texts);
         }
         let names = derives(it);
         let to = names.iter().any(|n| n == "Json" || n == "ToJson");
@@ -68,6 +80,7 @@ fn expand_items(items: &mut Vec<Item>, errors: &mut Vec<Diagnostic>) {
     if code.is_empty() {
         return;
     }
+    texts.push(code.clone());
     let text: &'static str = Box::leak(code.into_boxed_str());
     let base = NEXT.fetch_add(text.len() + 1, Ordering::Relaxed);
     kiln_lexer::register_source(base, "<derive>", text);
