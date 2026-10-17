@@ -511,3 +511,40 @@ fn lockfile_records_dependencies() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("kiln.lock is out of date"));
 }
+
+/// Debug builds carry DWARF line tables naming the Kiln source file.
+#[cfg(target_os = "linux")]
+#[test]
+fn debug_builds_have_line_tables() {
+    let dir = scratch("dwarf");
+    let src = dir.join("lines.kn");
+    std::fs::write(&src, "fun main() {\n\tprintln(\"hi\")\n}\n").unwrap();
+    let exe = dir.join("lines");
+    let out = Command::new(kiln())
+        .arg("build")
+        .arg(&src)
+        .arg("-o")
+        .arg(&exe)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let bytes = std::fs::read(&exe).unwrap();
+    let has = |s: &[u8]| bytes.windows(s.len()).any(|w| w == s);
+    assert!(has(b".debug_line"));
+    assert!(has(b"lines.kn"));
+    let rel = Command::new(kiln())
+        .args(["build", "--release", "--backend=cranelift"])
+        .arg(&src)
+        .arg("-o")
+        .arg(&exe)
+        .output()
+        .unwrap();
+    assert!(rel.status.success());
+    let bytes = std::fs::read(&exe).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!bytes.windows(8).any(|w| w == b"lines.kn"));
+}

@@ -564,6 +564,16 @@ impl FnCx<'_, '_, '_, '_> {
         }
     }
 
+    /// Tags the instructions that follow with `span` (debug line tables).
+    fn set_loc(&mut self, span: kiln_lexer::Span) {
+        if let Some(d) = &mut self.cg.debug {
+            if span.start != 0 || span.end != 0 {
+                let l = d.loc(span.start);
+                self.b.set_srcloc(l);
+            }
+        }
+    }
+
     pub(crate) fn call_rt(&mut self, name: &str, args: &[Value]) -> Option<Value> {
         let id = self.cg.rt[name];
         let f = self.cg.module.declare_func_in_func(id, self.b.func);
@@ -883,12 +893,14 @@ impl FnCx<'_, '_, '_, '_> {
             let stmts = self.body.blocks[bi].stmts.clone();
             for (si, s) in stmts.iter().enumerate() {
                 self.span = s.span;
+                self.set_loc(s.span);
                 self.cur_stmt = si;
                 self.stmt(&s.kind);
             }
             self.cur_stmt = usize::MAX;
             let term = self.body.blocks[bi].term.clone();
             self.span = self.body.blocks[bi].term_span;
+            self.set_loc(self.span);
             self.terminator(&term);
         }
     }

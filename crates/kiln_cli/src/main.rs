@@ -242,6 +242,10 @@ fn build_to(
         },
         None => Default::default(),
     };
+    // Debug info names the root file (spans from 0) by its path.
+    let name: &'static str = Box::leak(p.name().into_boxed_str());
+    let text: &'static str = Box::leak(p.src().to_string().into_boxed_str());
+    kiln_lexer::set_root_source(name, text);
     match kiln_codegen::build_parsed_with(p.pkg.parse.clone(), out, opts, &native) {
         Ok(()) => Ok(()),
         Err(kiln_codegen::BuildError::Diagnostics(errs)) => Err(report(&p.name(), p.src(), &errs)),

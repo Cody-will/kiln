@@ -20,6 +20,7 @@
 //! per-local drop flags set on initialization and cleared on moves.
 
 mod bce;
+mod debuginfo;
 mod func;
 mod glue;
 mod inline;
@@ -105,6 +106,8 @@ pub struct Codegen<'r, 'a> {
     pub(crate) module: ObjectModule,
     /// LLVM backend: definitions are recorded here, not compiled.
     pub(crate) capture: Option<Captured>,
+    /// DWARF line tables (Cranelift debug builds on ELF targets).
+    pub(crate) debug: Option<debuginfo::DebugInfo>,
     pub(crate) freeze_cache: HashMap<String, bool>,
     pub(crate) bodies: HashMap<usize, Vec<Body>>,
     pub(crate) instances: HashMap<String, FuncId>,
@@ -409,6 +412,8 @@ pub fn compile(typed: Typed<'_, '_>, opts: Options) -> Result<Vec<u8>, Vec<Diagn
         r,
         module: ObjectModule::new(builder),
         capture: (opts.backend == Backend::Llvm).then(Captured::default),
+        debug: (!opts.release && opts.backend != Backend::Llvm && cfg!(target_os = "linux"))
+            .then(debuginfo::DebugInfo::default),
         freeze_cache: HashMap::new(),
         bodies: HashMap::new(),
         instances: HashMap::new(),
@@ -480,7 +485,19 @@ pub fn compile(typed: Typed<'_, '_>, opts: Options) -> Result<Vec<u8>, Vec<Diagn
     if let Some(cap) = cg.capture.take() {
         return emit_llvm(&cg.module, cap);
     }
-    let product = cg.module.finish();
+    let debug = cg.debug.take();
+    let mut product = cg.module.finish();
+    if let Some(d) = debug {
+        let syms: Vec<(FuncId, object::write::SymbolId)> = product
+            .functions
+            .iter()
+            .filter_map(|(id, s)| s.map(|(sym, _)| (id, sym)))
+            .collect();
+        d.emit(&mut product.object, |id| {
+            syms.iter().find(|(f, _)| *f == id).map(|x| x.1).unwrap()
+        })
+        .map_err(|e| vec![Diagnostic::error(e, Span::new(0, 0))])?;
+    }
     product.emit().map_err(|e| {
         vec![Diagnostic::error(
             format!("could not write object file: {e}"),
@@ -548,10 +565,21 @@ impl Codegen<'_, '_> {
                 c.funcs.push((id, ctx.func.clone(), hints));
                 Ok(())
             }
-            None => self
-                .module
-                .define_function(id, ctx)
-                .map_err(|e| format!("{e:?}")),
+            None => {
+                self.module
+                    .define_function(id, ctx)
+                    .map_err(|e| format!("{e:?}"))?;
+                if let Some(d) = &mut self.debug {
+                    let name = self
+                        .module
+                        .declarations()
+                        .get_function_decl(id)
+                        .linkage_name(id)
+                        .into_owned();
+                    d.add_function(id, &name, ctx);
+                }
+                Ok(())
+            }
         }
     }
 

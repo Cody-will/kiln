@@ -350,6 +350,7 @@ dependencies = [
  "cranelift-module",
  "cranelift-native",
  "cranelift-object",
+ "gimli",
  "kiln_borrowck",
  "kiln_lexer",
  "kiln_llvm",
@@ -358,6 +359,7 @@ dependencies = [
  "kiln_resolve",
  "kiln_runtime",
  "kiln_typeck",
+ "object",
 ]
 
 [[package]]

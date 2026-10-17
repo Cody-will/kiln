@@ -17,6 +17,8 @@ cranelift-frontend = "0.116"
 cranelift-module = "0.116"
 cranelift-object = "0.116"
 cranelift-native = "0.116"
+gimli = { version = "0.31", default-features = false, features = ["std", "write"] }
+object = { version = "0.36", default-features = false, features = ["write"] }
 kiln_runtime = { path = "../kiln_runtime" }
 kiln_llvm = { path = "../kiln_llvm", optional = true }
 

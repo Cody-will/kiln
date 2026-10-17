@@ -9,7 +9,9 @@ mod lexer;
 pub mod span;
 pub mod token;
 
-pub use diagnostic::{register_source, Diagnostic, Severity, BUILTIN_BASE};
+pub use diagnostic::{
+    register_source, set_root_source, source_at, Diagnostic, Severity, BUILTIN_BASE,
+};
 pub use lexer::{lex, lex_at, Lexed};
 pub use span::{LineIndex, Span};
 pub use token::{Keyword, StrPart, Token, TokenKind};

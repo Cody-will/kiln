@@ -25,6 +25,26 @@ pub fn register_source(base: usize, name: &'static str, text: &'static str) {
     }
 }
 
+/// The file whose spans start at 0 (the root file of a build), for
+/// [`source_at`]; diagnostics get it passed explicitly instead.
+static ROOT: Mutex<Option<(&'static str, &'static str)>> = Mutex::new(None);
+
+/// Records the root file of a build (spans from 0), for debug info.
+pub fn set_root_source(name: &'static str, text: &'static str) {
+    *ROOT.lock().unwrap_or_else(|e| e.into_inner()) = Some((name, text));
+}
+
+/// The source file containing global offset `offset`: `(base, name, text)`.
+/// The root file (see [`set_root_source`]) covers offsets below every
+/// registered base.
+pub fn source_at(offset: usize) -> Option<(usize, &'static str, &'static str)> {
+    if let Some(s) = builtin_source(Span::new(offset, offset)) {
+        return Some(s);
+    }
+    let r = *ROOT.lock().unwrap_or_else(|e| e.into_inner());
+    r.filter(|(_, t)| offset <= t.len()).map(|(n, t)| (0, n, t))
+}
+
 /// The registered source (built-in, or another file of a package)
 /// containing `span`, if any. Offsets below the first registered base belong
 /// to the file being rendered.

@@ -13,6 +13,8 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 | `Send`/`Sync` and `'static` checks for `spawn` and scoped tasks | ✅ Implemented (`kiln check`) |
 | Code generation (Cranelift): functions, structs/enums/`match`, generics (monomorphized), traits and `dyn`, closures, `result`/`?`, `defer`, `Drop`, `string`, `Vec`, `Box` | ✅ Implemented (`kiln build`, `kiln run`; optional LLVM backend for `--release`) |
 | Fixed-size arrays `[T; N]` | ✅ Implemented |
+| Patterns | ✅ Nested enum/struct/tuple patterns, slice patterns (`[a, .., b]` on arrays, slices, `Vec`), `|` patterns with bindings; exhaustiveness checks all of them |
+| Debug info | ✅ DWARF line tables in debug builds on Linux (`gdb`, `addr2line`, `perf` show `file.kn:line`); 🚧 no variable info, none for LLVM release builds yet |
 | Integer overflow | ✅ Panics in debug builds, wraps with `--release` |
 | Slice patterns, `\|` patterns with bindings | 🚧 Not yet in codegen (reported as errors) |
 | Panics | ✅ Pending `defer` calls run (innermost first, as in Go), then the message is printed and the process exits with status 101; destructors don't run on panic (no unwinding, no `recover`). `defer` on panic is Unix-only so far |
