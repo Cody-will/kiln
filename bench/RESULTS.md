@@ -15,6 +15,45 @@ The same program in three languages, in `bench/<name>/main.{kn,go,rs}`. Run ever
 
 This is a shared cloud VM, so expect some noise (hyperfine reported outliers). Each time is the **median of 5 runs** after 1 warm-up run (`hyperfine -N`). Memory is **peak RSS**, the highest of repeated runs, measured with `maxrss.c` (wait4 rusage from a tiny parent process). All three versions print identical output for every benchmark. The one exception is JSON byte counts, because Go writes `99.0` as `99`; there only the decoded checksum is compared, and it matches.
 
+## Gap-fix round (Oct 17, 2026; main at `6b07e5e`)
+
+One full `bench/run.py` run, in seconds (lower is better). The VM was noisy
+(hyperfine reported outliers). "Before" is the speed-gap round below.
+
+| Benchmark | Kiln LLVM before | Kiln Cranelift | **Kiln LLVM** | Go | Rust | LLVM/Go | LLVM/Rust |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| fib(35) | 0.003 | 0.058 | **0.003** | 0.041 | 0.021 | 0.07× | 0.14× |
+| nbody, 5M steps | 0.201 | 0.685 | **0.213** | 0.247 | 0.171 | 0.86× | 1.25× |
+| binary-trees, depth 18 | 1.169 | 2.362 | **1.248** | 1.214 | 1.034 | 1.03× | 1.21× |
+| spectral-norm, n=2000 | 0.170 | 0.364 | **0.177** | 0.182 | 0.180 | 0.97× | 0.98× |
+| fannkuch-redux, n=10 | 0.181 | 0.325 | **0.188** | 0.187 | 0.189 | 1.01× | 0.99× |
+| JSON encode+decode | 0.194 | 0.561 | **0.194** | 0.494 | 0.148 | 0.39× | 1.31× |
+| HashMap ops | 0.194 | 0.286 | **0.204** | 0.247 | 0.273 | 0.83× | 0.75× |
+| channel ping-pong | 0.102 | 0.109 | **0.128** | 0.164 | 3.890 | 0.78× | 0.03× |
+| worker pool | 0.101 | 0.116 | **0.123** | 0.107 | 0.236 | 1.15× | 0.52× |
+
+HTTP req/s: Cranelift 140,845, LLVM 180,112, Go 202,397, Rust 219,958 (the
+load generator shares the CPUs; numbers drifted down for every language).
+
+Most numbers are within the noise of the previous round. Notes:
+- **Worker pool**: buffered channels now use a lock-free Vyukov MPMC ring
+  (doubled stamps so capacity 1 works), with atomic waiter counts so a
+  sender or receiver only takes the park lock when someone is asleep. In a
+  quiet A/B run (`hyperfine -N -w2 -r15`) Kiln LLVM took 76.9 ± 2.5 ms
+  against Go's 83.3 ± 3.1 ms (0.92×); an earlier A/B gave 75.1 vs 76.9 ms.
+  The full-suite run above (1.15×) was taken while the box was loaded.
+  The cost is CPU: workers spin before parking, ~560 ms user time against
+  ~240 ms before.
+- **Ping-pong** uses unbuffered channels (unchanged rendezvous path); its
+  A/B time is unchanged (~102 ms). The 0.128 above is noise in that run.
+- **nbody**: `for` loops over a constant range with ≤4096 trips are now
+  marked bounded and skip the preemption check, and checks are emitted only
+  on real back-edges (dominator-based). LLVM now fully unrolls the inner
+  pair loop, but this gives no speedup: Rust vectorizes the pair math with
+  `sqrtpd`/`divpd`, while our unrolled scalar code spills registers. Closing
+  that needs SoA-friendly fixed-size arrays (`[f64; N]`) in the language,
+  which is not done yet.
+
 ## Speed-gap round (Oct 17, 2026; main after `25e5b93`)
 
 Median of 3 full `bench/run.py` runs, in seconds (lower is better). The
