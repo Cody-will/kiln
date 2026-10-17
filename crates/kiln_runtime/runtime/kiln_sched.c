@@ -1429,7 +1429,20 @@ static int64_t cpu_count(void) {
  * thread as worker 0. The program exits when `main` returns. */
 void kn_os_set_args(int argc, char **argv);
 
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
+
 int main(int argc, char **argv) {
+#if defined(__GLIBC__)
+	/* Keep large freed blocks in the heap instead of returning them to the
+	 * kernel: programs that build and drop big vectors in a loop otherwise
+	 * pay a page fault per page on every round (about 10% of the JSON
+	 * benchmark). */
+	mallopt(M_MMAP_THRESHOLD, 64 << 20);
+	mallopt(M_TRIM_THRESHOLD, 256 << 20);
+	mallopt(M_TOP_PAD, 16 << 20);
+#endif
 	g_argc = argc;
 	g_argv = argv;
 	kn_os_set_args(argc, argv);

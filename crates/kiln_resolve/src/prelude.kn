@@ -812,6 +812,12 @@ impl string {
 	// Appends one character.
 	pub fun push_char(&mut self, c char) {
 		v := c as u32
+		if v < 0x80 {
+			unsafe {
+				self.as_mut_vec().push(v as u8)
+			}
+			return
+		}
 		buf mut := [0 as u8; 4]
 		n mut := 0
 		if v < 0x80 {

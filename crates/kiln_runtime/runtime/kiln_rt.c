@@ -328,6 +328,37 @@ void kn_fmt_f64(KnVec *s, double v) {
 			kn_string_push(s, (const uint8_t *)"inf", 3);
 		return;
 	}
+	/* Fast path: a value that is exactly t / 10^k for an integer t below
+	 * 2^53 and k <= 3 (whole numbers, money-like decimals). At that
+	 * magnitude doubles are far denser than 10^-3, so the digits of t
+	 * (trailing zeros dropped) are the shortest round-trip form. */
+	{
+		double a = fabs(v), sc = 1;
+		for (int k = 0; k <= 3; k++, sc *= 10) {
+			double t = a * sc;
+			if (t >= 9007199254740992.0 || (k > 0 && a < 1e-3))
+				break;
+			if (t == (double)(uint64_t)t && (double)(uint64_t)t / sc == a) {
+				uint64_t m = (uint64_t)t;
+				char buf[32];
+				int i = sizeof buf;
+				for (int d = 0; d < k; d++) {
+					buf[--i] = (char)('0' + m % 10);
+					m /= 10;
+				}
+				if (k > 0)
+					buf[--i] = '.';
+				do {
+					buf[--i] = (char)('0' + m % 10);
+					m /= 10;
+				} while (m);
+				if (signbit(v))
+					buf[--i] = '-';
+				kn_string_push(s, (const uint8_t *)buf + i, sizeof buf - (size_t)i);
+				return;
+			}
+		}
+	}
 	/* Shortest round-trip digits (Ryu): |v| = mant * 10^e10. */
 	char digits[32];
 	int nd = 0, neg = signbit(v) != 0, exp;

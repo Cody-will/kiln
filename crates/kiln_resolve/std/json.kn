@@ -408,23 +408,41 @@ pub fun object() Value {
 // ----- writing ---------------------------------------------------------------------
 
 fun write_str(out &mut string, s &str) {
+	// Copies runs of bytes that need no escaping in one push; only the
+	// escaped bytes (all ASCII, so never inside a UTF-8 sequence) are
+	// handled one at a time.
 	out.push_char('"')
-	for c in s.chars() {
-		if c == '"' {
-			out.push("\\\"")
-		} else if c == '\\' {
-			out.push("\\\\")
-		} else if c == '\n' {
-			out.push("\\n")
-		} else if c == '\r' {
-			out.push("\\r")
-		} else if c == '\t' {
-			out.push("\\t")
-		} else if (c as u32) < 32 {
-			out.push("\\u{c as u32:04x}")
-		} else {
-			out.push_char(c)
+	b := s.as_bytes()
+	n := b.len()
+	start mut := 0
+	i mut := 0
+	while i < n {
+		c := b[i]
+		if c >= 32 && c != 34 && c != 92 {
+			i += 1
+			continue
 		}
+		if start < i {
+			out.push(&s[start..i])
+		}
+		if c == 34 {
+			out.push("\\\"")
+		} else if c == 92 {
+			out.push("\\\\")
+		} else if c == 10 {
+			out.push("\\n")
+		} else if c == 13 {
+			out.push("\\r")
+		} else if c == 9 {
+			out.push("\\t")
+		} else {
+			out.push("\\u{c as u32:04x}")
+		}
+		i += 1
+		start = i
+	}
+	if start < n {
+		out.push(&s[start..n])
 	}
 	out.push_char('"')
 }
@@ -681,6 +699,49 @@ impl<'a> Parser<'a> {
 	pub fun read_value(&mut self) result<Value, Error> {
 		self.skip_ws()
 		return self.value()
+	}
+
+	// Reads a bool without building a `Value`.
+	pub fun read_bool(&mut self) result<bool, Error> {
+		self.skip_ws()
+		if self.s[self.pos..].starts_with("true") {
+			self.pos += 4
+			return Ok(true)
+		}
+		if self.s[self.pos..].starts_with("false") {
+			self.pos += 5
+			return Ok(false)
+		}
+		v := self.value()?
+		return bool::from_json(&v)
+	}
+
+	// Reads a number as f64 without going through `value`.
+	pub fun read_f64(&mut self) result<f64, Error> {
+		self.skip_ws()
+		c := self.peek()
+		if c == 45 || (c >= 48 && c <= 57) {
+			match self.number()? {
+				Value::Float(f) => return Ok(f),
+				v => return f64::from_json(&v),
+			}
+		}
+		v := self.value()?
+		return f64::from_json(&v)
+	}
+
+	// Reads a number as i64 without going through `value`.
+	pub fun read_i64(&mut self) result<i64, Error> {
+		self.skip_ws()
+		c := self.peek()
+		if c == 45 || (c >= 48 && c <= 57) {
+			match self.number()? {
+				Value::Int(n) => return Ok(n),
+				v => return i64::from_json(&v),
+			}
+		}
+		v := self.value()?
+		return i64::from_json(&v)
 	}
 
 	// Reads the string at the cursor (after `at_string`).
@@ -1249,6 +1310,10 @@ impl FromJson for bool {
 			_ => return Err(Error::mismatch("bool", v)),
 		}
 	}
+
+	fun read_json<'p>(p &mut Parser<'p>) result<Self, Error> {
+		return p.read_bool()
+	}
 }
 
 impl ToJson for f64 {
@@ -1272,6 +1337,10 @@ impl FromJson for f64 {
 			Some(f) => return Ok(f),
 			None => return Err(Error::mismatch("a number", v)),
 		}
+	}
+
+	fun read_json<'p>(p &mut Parser<'p>) result<Self, Error> {
+		return p.read_f64()
 	}
 }
 
@@ -1611,6 +1680,10 @@ impl FromJson for i64 {
 			_ => {},
 		}
 		return Err(Error::mismatch("i64", v))
+	}
+
+	fun read_json<'p>(p &mut Parser<'p>) result<Self, Error> {
+		return p.read_i64()
 	}
 }
 

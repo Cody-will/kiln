@@ -670,7 +670,16 @@ impl FnCx<'_, '_, '_, '_> {
                     self.iconst(size as i64),
                     self.iconst(align as i64),
                 );
+                // Grow out of line only when full.
+                let cap = self.load(types::I64, v, 8);
+                let len0 = self.load(types::I64, v, 16);
+                let full = self.b.ins().icmp(IntCC::Equal, cap, len0);
+                let (grow, store) = (self.b.create_block(), self.b.create_block());
+                self.b.ins().brif(full, grow, &[], store, &[]);
+                self.b.switch_to_block(grow);
                 self.call_rt("kn_vec_reserve", &[v, one, s, a]);
+                self.b.ins().jump(store, &[]);
+                self.b.switch_to_block(store);
                 let data = self.load(types::I64, v, 0);
                 let len = self.load(types::I64, v, 16);
                 let off = self.b.ins().imul_imm(len, size as i64);
