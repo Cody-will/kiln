@@ -344,10 +344,13 @@ pub fn new(args: &[String]) -> ExitCode {
         (
             dir.join("README.md"),
             format!(
-                "# {pkg_name}\n\nA Kiln {}.\n\n```sh\nkiln {}     # {}\nkiln build    # writes target/debug/{pkg_name}\nkiln test     # runs @test functions\nkiln fmt      # formats the sources\n```\n",
+                "# {pkg_name}\n\nA Kiln {}.\n\n```sh\n{}kiln test     # runs @test functions\nkiln fmt      # formats the sources\n```\n",
                 if lib { "library" } else { "program" },
-                if lib { "test " } else { "run  " },
-                if lib { "runs @test functions" } else { "build and run" },
+                if lib {
+                    "kiln check    # type-checks the library\n".to_string()
+                } else {
+                    format!("kiln run      # build and run\nkiln build    # writes target/debug/{pkg_name}\n")
+                },
             ),
         ),
         if lib {
