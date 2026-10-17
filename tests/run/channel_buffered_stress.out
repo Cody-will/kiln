@@ -1,0 +1,5 @@
+cap=1 producers=8 consumers=8: true
+cap=3 producers=4 consumers=1: true
+cap=1 producers=1 consumers=6: true
+cap=3 producers=16 consumers=16: true
+select: 60000 true

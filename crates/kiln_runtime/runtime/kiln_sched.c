@@ -148,6 +148,31 @@ static int at_cas32(volatile int32_t *p, int32_t old, int32_t nw) {
 }
 #endif
 
+/* Atomics for the lock-free channel ring. */
+#ifdef _WIN32
+static uint64_t at_load_acq(volatile uint64_t *p) {
+	return (uint64_t)InterlockedCompareExchange64((volatile LONG64 *)p, 0, 0);
+}
+static uint64_t at_load_rlx(volatile uint64_t *p) { return *p; }
+static void at_store_rel(volatile uint64_t *p, uint64_t v) { InterlockedExchange64((volatile LONG64 *)p, (LONG64)v); }
+static int at_cas64(volatile uint64_t *p, uint64_t old, uint64_t nw) {
+	return (uint64_t)InterlockedCompareExchange64((volatile LONG64 *)p, (LONG64)nw, (LONG64)old) == old;
+}
+static void at_fence(void) { MemoryBarrier(); }
+static int32_t at_load32(volatile int32_t *p) { return InterlockedCompareExchange((volatile LONG *)p, 0, 0); }
+static void at_store32(volatile int32_t *p, int32_t v) { InterlockedExchange((volatile LONG *)p, v); }
+#else
+static uint64_t at_load_acq(volatile uint64_t *p) { return __atomic_load_n(p, __ATOMIC_ACQUIRE); }
+static uint64_t at_load_rlx(volatile uint64_t *p) { return __atomic_load_n(p, __ATOMIC_RELAXED); }
+static void at_store_rel(volatile uint64_t *p, uint64_t v) { __atomic_store_n(p, v, __ATOMIC_RELEASE); }
+static int at_cas64(volatile uint64_t *p, uint64_t old, uint64_t nw) {
+	return __atomic_compare_exchange_n(p, &old, nw, 1, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+}
+static void at_fence(void) { __atomic_thread_fence(__ATOMIC_SEQ_CST); }
+static int32_t at_load32(volatile int32_t *p) { return __atomic_load_n(p, __ATOMIC_ACQUIRE); }
+static void at_store32(volatile int32_t *p, int32_t v) { __atomic_store_n(p, v, __ATOMIC_SEQ_CST); }
+#endif
+
 static void unlock_cb(void *m) { mutex_unlock((kn_mutex *)m); }
 
 /* ----- tasks and workers ------------------------------------------------- */
@@ -1083,17 +1108,36 @@ static void wake(KnWaiter *w, int32_t ok, int handoff) {
 		kn_ready(w->task);
 }
 
+/* A channel. Unbuffered channels (cap 0) are a rendezvous under `lock`.
+ * Buffered channels keep their elements in a lock-free ring (Vyukov's
+ * bounded MPMC queue: each slot's stamp is 2*pos when it is ready to be
+ * written at position pos and 2*pos+1 when it holds the value written there;
+ * doubling keeps the two apart even when cap is 1), so senders and receivers
+ * never take the lock while the buffer is neither full nor empty. The lock
+ * and wait queues are only for tasks that have to park. `rwait`/`swait`
+ * count the tasks registered to wait for data/space; after a push or pop
+ * the other side is woken only if its count is nonzero. The count is raised
+ * (and fenced) before the waiter re-checks the ring, and the pusher fences
+ * between writing a slot and reading the count, so one of them always sees
+ * the other: no wakeup is lost. A woken waiter retries from the start. */
 typedef struct KnChan {
 	kn_mutex lock;
-	size_t elem, cap, count, head;
-	char *buf;
-	int32_t closed;
+	size_t elem, cap;
+	volatile int32_t closed;
 	KnWaitQ sendq, recvq;
 	int64_t senders, receivers;
 	void (*drop)(void *);
+	char *buf;
+	volatile uint64_t *seq;
+	char pad0[64];
+	volatile uint64_t tail; /* next position to write */
+	char pad1[64 - sizeof(uint64_t)];
+	volatile uint64_t head; /* next position to read */
+	char pad2[64 - sizeof(uint64_t)];
+	volatile int64_t rwait, swait;
 } KnChan;
 
-static char *slot(KnChan *c, size_t i) { return c->buf + ((c->head + i) % c->cap) * c->elem; }
+static char *ring_slot(KnChan *c, uint64_t pos) { return c->buf + (size_t)(pos % c->cap) * c->elem; }
 
 /* `chan::<T>(cap)`: one sender and one receiver. */
 void *kn_chan_new(size_t elem, size_t cap, void (*drop)(void *)) {
@@ -1107,53 +1151,110 @@ void *kn_chan_new(size_t elem, size_t cap, void (*drop)(void *)) {
 	c->senders = c->receivers = 1;
 	if (cap) {
 		c->buf = (char *)malloc(cap * (elem ? elem : 1));
-		if (!c->buf)
+		c->seq = (volatile uint64_t *)malloc(cap * sizeof(uint64_t));
+		if (!c->buf || !c->seq)
 			kn_panic_str("out of memory");
+		for (size_t i = 0; i < cap; i++)
+			c->seq[i] = 2 * (uint64_t)i;
 	}
 	return c;
 }
 
-/* With the lock held: sends `src` if a receiver or buffer space is ready. */
+/* Lock-free: 1 pushed, 0 full. */
+static int ring_push(KnChan *c, const void *src) {
+	uint64_t pos = at_load_rlx(&c->tail);
+	for (;;) {
+		volatile uint64_t *sq = &c->seq[pos % c->cap];
+		uint64_t s = at_load_acq(sq);
+		int64_t d = (int64_t)(s - 2 * pos);
+		if (d == 0) {
+			if (at_cas64(&c->tail, pos, pos + 1)) {
+				memcpy(ring_slot(c, pos), src, c->elem);
+				at_store_rel(sq, 2 * pos + 1);
+				return 1;
+			}
+			pos = at_load_rlx(&c->tail);
+		} else if (d < 0) {
+			return 0;
+		} else {
+			pos = at_load_rlx(&c->tail);
+		}
+	}
+}
+
+/* Lock-free: 1 popped into `dst`, 0 empty. */
+static int ring_pop(KnChan *c, void *dst) {
+	uint64_t pos = at_load_rlx(&c->head);
+	for (;;) {
+		volatile uint64_t *sq = &c->seq[pos % c->cap];
+		uint64_t s = at_load_acq(sq);
+		int64_t d = (int64_t)(s - (2 * pos + 1));
+		if (d == 0) {
+			if (at_cas64(&c->head, pos, pos + 1)) {
+				memcpy(dst, ring_slot(c, pos), c->elem);
+				at_store_rel(sq, 2 * (pos + c->cap));
+				return 1;
+			}
+			pos = at_load_rlx(&c->head);
+		} else if (d < 0) {
+			return 0;
+		} else {
+			pos = at_load_rlx(&c->head);
+		}
+	}
+}
+
+/* After a push (pop): wakes one task waiting for data (space), if any. */
+static void notify(KnChan *c, volatile int64_t *count, KnWaitQ *q) {
+	at_fence();
+	if (at_load(count) == 0)
+		return;
+	mutex_lock(&c->lock);
+	KnWaiter *w = wq_take(q);
+	mutex_unlock(&c->lock);
+	if (w)
+		wake(w, 1, 0);
+}
+
+static int buf_try_send(KnChan *c, const void *src) {
+	if (!ring_push(c, src))
+		return 0;
+	notify(c, &c->rwait, &c->recvq);
+	return 1;
+}
+
+static int buf_try_recv(KnChan *c, void *dst) {
+	if (!ring_pop(c, dst))
+		return 0;
+	notify(c, &c->swait, &c->sendq);
+	return 1;
+}
+
+/* With the lock held (unbuffered): sends `src` if a receiver is waiting. */
 static int try_send_locked(KnChan *c, void *src) {
 	KnWaiter *r = wq_take(&c->recvq);
 	if (r) {
 		memcpy(r->elem, src, c->elem);
-		wake(r, 1, c->cap == 0);
-		return 1;
-	}
-	if (c->count < c->cap) {
-		memcpy(slot(c, c->count), src, c->elem);
-		c->count++;
+		wake(r, 1, 1);
 		return 1;
 	}
 	return 0;
 }
 
-/* With the lock held: 1 received into `dst`, 0 would block, -1 closed and empty. */
+/* With the lock held (unbuffered): 1 received into `dst`, 0 would block,
+ * -1 closed. */
 static int try_recv_locked(KnChan *c, void *dst) {
-	if (c->count > 0) {
-		memcpy(dst, slot(c, 0), c->elem);
-		c->head = (c->head + 1) % c->cap;
-		c->count--;
-		KnWaiter *s = wq_take(&c->sendq);
-		if (s) {
-			memcpy(slot(c, c->count), s->elem, c->elem);
-			c->count++;
-			wake(s, 1, c->cap == 0);
-		}
-		return 1;
-	}
 	KnWaiter *s = wq_take(&c->sendq);
 	if (s) {
 		memcpy(dst, s->elem, c->elem);
-		wake(s, 1, c->cap == 0);
+		wake(s, 1, 1);
 		return 1;
 	}
 	return c->closed ? -1 : 0;
 }
 
 static void close_locked(KnChan *c) {
-	c->closed = 1;
+	at_store32(&c->closed, 1);
 	KnWaiter *w;
 	while ((w = wq_take(&c->recvq)))
 		wake(w, 0, 0);
@@ -1161,10 +1262,76 @@ static void close_locked(KnChan *c) {
 		wake(w, 0, 0);
 }
 
+static void buf_send(KnChan *c, void *src) {
+	for (;;) {
+		if (at_load32(&c->closed))
+			kn_panic_str("send on a closed channel");
+		if (buf_try_send(c, src))
+			return;
+		mutex_lock(&c->lock);
+		at_add(&c->swait, 1);
+		at_fence();
+		if (c->closed) {
+			at_add(&c->swait, -1);
+			mutex_unlock(&c->lock);
+			kn_panic_str("send on a closed channel");
+		}
+		if (ring_push(c, src)) {
+			at_add(&c->swait, -1);
+			mutex_unlock(&c->lock);
+			notify(c, &c->rwait, &c->recvq);
+			return;
+		}
+		KnWaiter w;
+		memset(&w, 0, sizeof w);
+		w.task = current_task();
+		wq_push(&c->sendq, &w);
+		kn_park(unlock_cb, &c->lock);
+		at_add(&c->swait, -1);
+	}
+}
+
+static int buf_recv(KnChan *c, void *dst) {
+	for (;;) {
+		if (buf_try_recv(c, dst))
+			return 1;
+		mutex_lock(&c->lock);
+		at_add(&c->rwait, 1);
+		at_fence();
+		if (ring_pop(c, dst)) {
+			at_add(&c->rwait, -1);
+			mutex_unlock(&c->lock);
+			notify(c, &c->swait, &c->sendq);
+			return 1;
+		}
+		if (c->closed) {
+			at_add(&c->rwait, -1);
+			mutex_unlock(&c->lock);
+			/* A send that claimed a slot before the close is still being
+			 * written: wait for it. Otherwise nothing more can arrive. */
+			if (at_load_acq(&c->tail) != at_load_acq(&c->head)) {
+				kn_yield();
+				continue;
+			}
+			return 0;
+		}
+		KnWaiter w;
+		memset(&w, 0, sizeof w);
+		w.task = current_task();
+		wq_push(&c->recvq, &w);
+		kn_park(unlock_cb, &c->lock);
+		at_add(&c->rwait, -1);
+	}
+}
+
 /* `tx <- v`: moves the value at `src` into the channel, blocking until a
  * receiver or buffer space is available. Panics if the channel is closed. */
 void kn_chan_send(void *ch, void *src) {
 	KnChan *c = (KnChan *)ch;
+	if (c->cap) {
+		buf_send(c, src);
+		return;
+	}
 	mutex_lock(&c->lock);
 	if (c->closed) {
 		mutex_unlock(&c->lock);
@@ -1187,6 +1354,8 @@ void kn_chan_send(void *ch, void *src) {
 /* Receives into `dst`, blocking; returns 0 if the channel is closed and empty. */
 int32_t kn_chan_recv(void *ch, void *dst) {
 	KnChan *c = (KnChan *)ch;
+	if (c->cap)
+		return buf_recv(c, dst);
 	mutex_lock(&c->lock);
 	int r = try_recv_locked(c, dst);
 	if (r != 0) {
@@ -1205,6 +1374,11 @@ int32_t kn_chan_recv(void *ch, void *dst) {
 /* `tx.try_send(v)`: 0 sent, 1 full (or no receiver waiting), 2 closed. */
 int32_t kn_chan_try_send(void *ch, void *src) {
 	KnChan *c = (KnChan *)ch;
+	if (c->cap) {
+		if (at_load32(&c->closed))
+			return 2;
+		return buf_try_send(c, src) ? 0 : 1;
+	}
 	mutex_lock(&c->lock);
 	int32_t r = c->closed ? 2 : try_send_locked(c, src) ? 0 : 1;
 	mutex_unlock(&c->lock);
@@ -1214,6 +1388,19 @@ int32_t kn_chan_try_send(void *ch, void *src) {
 /* `rx.try_recv()`: 0 received, 1 empty, 2 closed. */
 int32_t kn_chan_try_recv(void *ch, void *dst) {
 	KnChan *c = (KnChan *)ch;
+	if (c->cap) {
+		if (buf_try_recv(c, dst))
+			return 0;
+		if (!at_load32(&c->closed))
+			return 1;
+		/* Closed: anything sent before the close is still delivered. */
+		while (at_load_acq(&c->tail) != at_load_acq(&c->head)) {
+			if (buf_try_recv(c, dst))
+				return 0;
+			kn_yield();
+		}
+		return 2;
+	}
 	mutex_lock(&c->lock);
 	int r = try_recv_locked(c, dst);
 	mutex_unlock(&c->lock);
@@ -1231,19 +1418,23 @@ void kn_chan_close(void *ch) {
 
 int64_t kn_chan_len(void *ch) {
 	KnChan *c = (KnChan *)ch;
-	mutex_lock(&c->lock);
-	int64_t n = (int64_t)c->count;
-	mutex_unlock(&c->lock);
-	return n;
+	if (!c->cap)
+		return 0;
+	uint64_t h = at_load_acq(&c->head), t = at_load_acq(&c->tail);
+	int64_t n = (int64_t)(t - h);
+	return n < 0 ? 0 : n > (int64_t)c->cap ? (int64_t)c->cap : n;
 }
 
 int64_t kn_chan_cap(void *ch) { return (int64_t)((KnChan *)ch)->cap; }
 
 static void chan_free(KnChan *c) {
-	if (c->drop)
-		for (size_t i = 0; i < c->count; i++)
-			c->drop(slot(c, i));
-	free(c->buf);
+	if (c->cap) {
+		if (c->drop)
+			for (uint64_t p = c->head; p != c->tail; p++)
+				c->drop(ring_slot(c, p));
+		free(c->buf);
+		free((void *)c->seq);
+	}
 	free(c);
 }
 
@@ -1304,6 +1495,17 @@ static int chan_cmp(const void *a, const void *b) {
 
 static void select_park_forever(void *unused) { (void)unused; }
 
+/* Undoes the waiting counts a blocking select registers on buffered cases. */
+static void select_unwait(KnSelCase *cs, int64_t n, int64_t has_default) {
+	if (has_default)
+		return;
+	for (int64_t i = 0; i < n; i++) {
+		KnChan *c = (KnChan *)cs[i].chan;
+		if (c->cap)
+			at_add(cs[i].is_send ? &c->swait : &c->rwait, -1);
+	}
+}
+
 /* `select`: performs one ready case, chosen at random, and returns its index;
  * returns n (the `_` arm) when none is ready and `has_default`; otherwise
  * blocks. Receives on closed channels are skipped. */
@@ -1331,6 +1533,16 @@ int64_t kn_select(KnSelCase *cs, int64_t n, int64_t has_default) {
 	int64_t result = -1;
 	for (;;) {
 		lock_all(&ls);
+		/* Buffered cases count as waiting before they are tried, so a push
+		 * or pop between the try and the park wakes this select. */
+		if (!has_default) {
+			for (int64_t i = 0; i < n; i++) {
+				KnChan *c = (KnChan *)cs[i].chan;
+				if (c->cap)
+					at_add(cs[i].is_send ? &c->swait : &c->rwait, 1);
+			}
+			at_fence();
+		}
 		int64_t start = (int64_t)(next_rand() % (uint64_t)n);
 		int all_closed = 1;
 		for (int64_t k = 0; k < n && result < 0; k++) {
@@ -1338,12 +1550,18 @@ int64_t kn_select(KnSelCase *cs, int64_t n, int64_t has_default) {
 			KnChan *c = (KnChan *)cs[i].chan;
 			if (cs[i].is_send) {
 				if (c->closed) {
+					select_unwait(cs, n, has_default);
 					unlock_all(&ls);
 					kn_panic_str("send on a closed channel");
 				}
 				all_closed = 0;
-				if (try_send_locked(c, cs[i].elem))
+				if (c->cap ? ring_push(c, cs[i].elem) : try_send_locked(c, cs[i].elem))
 					result = i;
+			} else if (c->cap) {
+				if (ring_pop(c, cs[i].elem))
+					result = i;
+				else if (!c->closed)
+					all_closed = 0;
 			} else {
 				int r = try_recv_locked(c, cs[i].elem);
 				if (r > 0)
@@ -1353,12 +1571,21 @@ int64_t kn_select(KnSelCase *cs, int64_t n, int64_t has_default) {
 			}
 		}
 		if (result >= 0 || has_default) {
+			select_unwait(cs, n, has_default);
 			unlock_all(&ls);
+			if (result >= 0) {
+				/* A buffered push/pop wakes the other side, outside the locks. */
+				KnChan *c = (KnChan *)cs[result].chan;
+				if (c->cap)
+					notify(c, cs[result].is_send ? &c->rwait : &c->swait,
+					       cs[result].is_send ? &c->recvq : &c->sendq);
+			}
 			if (result < 0)
 				result = n;
 			break;
 		}
 		if (all_closed) {
+			select_unwait(cs, n, has_default);
 			unlock_all(&ls);
 			kn_panic_str("select: all channels are closed and there is no `_` arm");
 		}
@@ -1381,9 +1608,12 @@ int64_t kn_select(KnSelCase *cs, int64_t n, int64_t has_default) {
 			KnChan *c = (KnChan *)cs[i].chan;
 			wq_remove(cs[i].is_send ? &c->sendq : &c->recvq, &ws[i]);
 		}
+		select_unwait(cs, n, has_default);
 		unlock_all(&ls);
 		int64_t win = self->sel;
 		if (win >= 0 && ws[win].ok) {
+			if (((KnChan *)cs[win].chan)->cap)
+				continue; /* buffered: woken to retry */
 			result = win;
 			break;
 		}

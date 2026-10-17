@@ -1,0 +1,81 @@
+// Many producers and consumers on small buffered channels (cap 1 and 3),
+// plus blocking selects over two buffered channels: every value arrives
+// exactly once.
+fun produce(tx chan<- i64, from i64, n i64) {
+	for i in from..from + n {
+		tx <- i
+	}
+}
+
+fun consume(rx <-chan i64, out chan<- i64) {
+	sum mut := 0
+	for v in rx {
+		sum += v
+	}
+	out <- sum
+}
+
+fun run(cap i64, producers i64, consumers i64, per i64) i64 {
+	(tx, rx) := chan::<i64>(cap as usize)
+	(out_tx, out_rx) := chan::<i64>(consumers as usize)
+	for p in 0..producers {
+		t := tx.clone()
+		spawn move {
+			produce(t, p * per, per)
+		}
+	}
+	drop(tx)
+	for _ in 0..consumers {
+		r := rx.clone()
+		o := out_tx.clone()
+		spawn move {
+			consume(r, o)
+		}
+	}
+	drop(rx)
+	drop(out_tx)
+	total mut := 0
+	for s in out_rx {
+		total += s
+	}
+	return total
+}
+
+fun main() {
+	for (cap, p, c) in [(1, 8, 8), (3, 4, 1), (1, 1, 6), (3, 16, 16)] {
+		n := 20000
+		got := run(cap, p, c, n)
+		all := p * n
+		println("cap={cap} producers={p} consumers={c}: {got == all * (all - 1) / 2}")
+	}
+	// Blocking select over two buffered channels fed by two producers.
+	(a_tx, a_rx) := chan::<i64>(2)
+	(b_tx, b_rx) := chan::<i64>(1)
+	spawn move {
+		produce(a_tx, 0, 30000)
+	}
+	spawn move {
+		produce(b_tx, 30000, 30000)
+	}
+	sum mut := 0
+	seen mut := 0
+	a_open mut := true
+	b_open mut := true
+	while a_open || b_open {
+		select {
+			v := <-a_rx => {
+				sum += v
+				seen += 1
+			},
+			v := <-b_rx => {
+				sum += v
+				seen += 1
+			},
+		}
+		if seen == 60000 {
+			a_open = false
+			b_open = false
+		}
+	}
+	println("select: {seen} {sum == 60000 * 59999 / 2}")
+}
