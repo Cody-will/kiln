@@ -21,8 +21,20 @@ struct Bucket<K, V> {
 }
 
 // Index slot markers: 0 is empty; TOMB is a removed entry; anything else is
-// an index into `entries` plus one.
+// an index into `entries` plus one in the low IDX_BITS bits, with the top
+// bits of the entry's hash above them. Probes compare those bits first, so
+// they rarely touch an entry that does not match.
 const TOMB usize = usize::MAX
+const IDX_BITS usize = 40
+const IDX_MASK usize = (1 << 40) - 1
+
+fun slot_of(idx usize, h u64) usize {
+	return (((h >> 40) << 40) as usize) | (idx + 1)
+}
+
+fun slot_idx(s usize) usize {
+	return (s & IDX_MASK) - 1
+}
 
 // A hash table mapping keys to values.
 pub struct HashMap<K, V> {
@@ -159,7 +171,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 			while slots[k] != 0 {
 				k = (k + 1) & mask
 			}
-			slots[k] = j + 1
+			slots[k] = slot_of(j, self.entries[j].hash)
 			j += 1
 		}
 		self.slots = slots
@@ -178,8 +190,8 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 			if s == 0 {
 				return None
 			}
-			if s != TOMB {
-				e := &self.entries[s - 1]
+			if s != TOMB && (s >> IDX_BITS) == ((h >> 40) as usize) {
+				e := &self.entries[(s & IDX_MASK) - 1]
 				if e.hash == h && Borrow::borrow(&e.key) == key {
 					return Some(i)
 				}
@@ -200,7 +212,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 			self.used += 1
 		}
 		self.entries.push(Bucket { hash: h, key: key, value: value })
-		self.slots[i] = self.entries.len()
+		self.slots[i] = slot_of(self.entries.len() - 1, h)
 		return self.entries.len() - 1
 	}
 
@@ -208,7 +220,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 	pub fun insert(&mut self, key K, value V) option<V> {
 		h := std::hash::hash(&key)
 		if let Some(i) = self.find(h, &key) {
-			idx := self.slots[i] - 1
+			idx := slot_idx(self.slots[i])
 			return Some(std::mem::replace(&mut self.entries[idx].value, value))
 		}
 		self.push_new(h, key, value)
@@ -218,7 +230,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 	// The value for `key`.
 	pub fun get<Q: Hash + Eq>(&self, key &Q) option<&V> where K: Borrow<Q> {
 		match self.find(std::hash::hash(key), key) {
-			Some(i) => return Some(&self.entries[self.slots[i] - 1].value),
+			Some(i) => return Some(&self.entries[slot_idx(self.slots[i])].value),
 			None => return None,
 		}
 	}
@@ -227,7 +239,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 	pub fun get_mut<Q: Hash + Eq>(&mut self, key &Q) option<&mut V> where K: Borrow<Q> {
 		match self.find(std::hash::hash(key), key) {
 			Some(i) => {
-				idx := self.slots[i] - 1
+				idx := slot_idx(self.slots[i])
 				return Some(&mut self.entries[idx].value)
 			}
 			None => return None,
@@ -238,7 +250,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 	pub fun get_key_value<Q: Hash + Eq>(&self, key &Q) option<(&K, &V)> where K: Borrow<Q> {
 		match self.find(std::hash::hash(key), key) {
 			Some(i) => {
-				e := &self.entries[self.slots[i] - 1]
+				e := &self.entries[slot_idx(self.slots[i])]
 				return Some((&e.key, &e.value))
 			}
 			None => return None,
@@ -269,16 +281,16 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 	// Removes the entry in slot `i`. The last entry moves into its place in
 	// `entries`, so its slot is updated.
 	fun take_slot(&mut self, i usize) (K, V) {
-		idx := self.slots[i] - 1
+		idx := slot_idx(self.slots[i])
 		self.slots[i] = TOMB
 		last := self.entries.len() - 1
 		if idx != last {
 			mask := self.slots.len() - 1
 			j mut := (self.entries[last].hash as usize) & mask
-			while self.slots[j] != last + 1 {
+			while self.slots[j] == TOMB || (self.slots[j] & IDX_MASK) != last + 1 {
 				j = (j + 1) & mask
 			}
-			self.slots[j] = idx + 1
+			self.slots[j] = slot_of(idx, self.entries[last].hash)
 		}
 		b := self.entries.swap_remove(idx)
 		return (b.key, b.value)
@@ -289,7 +301,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 	pub fun entry<'a>(&'a mut self, key K) Entry<'a, K, V> {
 		h := std::hash::hash(&key)
 		idx := match self.find(h, &key) {
-			Some(i) => Some(self.slots[i] - 1),
+			Some(i) => Some(slot_idx(self.slots[i])),
 			None => None,
 		}
 		return Entry { map: self, key: key, hash: h, idx: idx }
