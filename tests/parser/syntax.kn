@@ -1,0 +1,124 @@
+// Parser corpus: every syntactic form, for the self-hosted parser diff test
+// (crates/kiln_cli/tests/parser_diff.rs). It is parsed, never compiled.
+
+/// Doc comment
+/// on two lines.
+@derive(Debug, Clone)
+@test
+pub struct Point<T: Ord + ?Sized, 'a: 'b, const N usize, U = i32> where T: Clone, 'a: 'b {
+	pub x T,
+	pub(pkg) y &'a mut [T; N],
+}
+
+struct Unit
+struct Pair(pub i32, string) where i32: Copy
+
+enum Shape<T> {
+	Dot,
+	Circle(f64),
+	Rect { w f64, h f64 },
+	Num = 3,
+}
+
+unsafe trait Tr<T>: Send + 'static {
+	type Item
+	const N usize
+	fun f(&self) Self::Item
+	fun g(&'a mut self, x i32)
+	fun h(mut self)
+}
+
+unsafe impl<T> Tr<T> for Point<T> where T: Clone,
+{
+	type Item = T
+	fun spawn(&self) {}
+}
+
+impl dyn Tr<i32, Item = u8> {}
+
+import std::io::{self, Read as R, fs::*}
+import a::b as c
+const C i32 = 1 + 2 * 3
+static mut S [u8; 4] = [0; 4]
+type F<T> = fun mut(T, &&T) option<T>
+type G = (i32,)
+type H = (i32)
+type V = void
+type P = *const *mut u8
+type Ch = (chan<- i32, <-chan i32, Vec<<-chan i32>, !, _, impl Fn + Send)
+mod inner {
+	pub fun x() {}
+}
+mod outer
+
+extern "C" {
+	fun puts(s *const u8) i32
+}
+
+fun main() {
+	let (a, mut b) (i32, i32) = (1, 2)
+	let c | c = 3
+	let d i32
+	x := 1
+	y mut := x
+	(p, _, q mut) := (1, 2, 3)
+	x += 1; x -= 1; x *= 2; x /= 2; x %= 3; x ^= 1; x &= 1; x |= 1; x <<= 1; x >>= 1
+	tx <- 5
+	defer close(tx)
+	z := -a + !b * *c & &d | &mut e ^ &&f << 1 >> 2 == 3 != 4 < 5 <= 6 > 7 >= 8 && true || false
+	w := x as u8 as i64 + 1
+	r := (.., a.., ..b, a..b, a..=b, ..=b)
+	t := t.0.1 + t.2 + v[i][j] + s.field + s.method::<i32>(1, 2) + f()? + Ok()
+	g := Vec::<i32>::new() + chan::<Job>(4) + Self::X + self.y
+	lit := (1u8, 0x_ff, 1_000i64, 1.5e3, 2.0f32, 'a', '\n', "s", r"raw\n", r#"x"#, b"by\x00", b'c', true, false, 340282366920938463463374607431768211455u128)
+	s := "a {x} b {y:>8.2} {z:?} {w:#x} {q:_^+#010.3e} {{lit}}"
+	arr := [1, 2, 3,]
+	e := []
+	one := [x]
+	u := ()
+	pr := (x)
+	tup := (x,)
+	sl := Point { x: 1, y, ..base }
+	blk := { 1 }
+	un := unsafe { 2 }
+	h := spawn f(x)
+	h2 := spawn move { work() }
+	h3 := spawn obj.run()
+	if a { b } else if c { d } else { e }
+	if let Some(x) = opt { x } else { 0 }
+	match v {
+		0 | 1 => a,
+		-1..=-5 => b,
+		1.5 => c,
+		'a'..'z' => d,
+		"s" => e,
+		r"t" => f,
+		true => g,
+		Some(x) if x > 0 => x = 1,
+		Shape::Rect { w, h: height, mut q, .. } => w,
+		Shape::Dot => 0,
+		Ok() => 1,
+		&(a, ..) | &&mut [b, c, ..] => 2,
+		n @ 1..=9 => n,
+		_ => {},
+	}
+	select {
+		v := <-rx => v,
+		v mut := <-rx => v,
+		<-done => 0,
+		tx <- 1 => 1,
+		_ => 2,
+	}
+	'outer: for (i, x) in xs.iter() {
+		while i < 10 { continue 'outer }
+		while let Some(y) = it.next() { break }
+		loop { break 'outer 5 }
+	}
+	f := |x, y i32, (a, b) (i32, i32)| x + y
+	g := move || { 1 }
+	h := || Point { x: 1 }
+	return
+}
+
+fun ret() i32 { return 1 }
+fun gen<T>(x T) T where T: Clone { x }

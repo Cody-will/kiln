@@ -1,0 +1,57 @@
+// Parser corpus: error paths and recovery (diagnostics are part of the dump).
+
+#[test]
+fn old(x: i32) -> i32 { x }
+use std::io
+fun f() {
+	let x: i32 = 1
+	go f(x)
+	go move { 1 }
+	y: i32 = 2
+	(a, 1) := 3
+	f(x)) g()
+	z := |x| -> i32 { x }
+	w := x.await
+	v := async
+	s := spawn x
+	m := spawn move x
+	q := "{x:q} {y:.} {z:<<<} {1 +} {}"
+	p := Vec::<i32>
+	k := [1 2]
+	c := chan i32
+	t := fn(i32)
+}
+fun self_kw() {}
+fun bad_fields() { s := S { a: 1 b: 2 } }
+fun bad_types(x fn(i32), y chan i32, z &) {}
+fun bad_pat() {
+	match x {
+		"a{b}" => 1,
+		b"x" => 2,
+		-x => 3,
+		1..x => 4,
+		=> 5,
+	}
+}
+extern "Rust" {
+	fun ok() { body }
+	fun gen<T>()
+	struct NotFn
+}
+extern {
+	fun f()
+}
+impl (i32, i32) for X {}
+struct Bad { a i32 b i32 }
+enum E { A B }
+select { x => 1 }
+fun sel() {
+	select { x => 1 }
+	select { y := z => 1 }
+}
+fun unclosed() {
+	if x {
+		1
+}
+@attr(unclosed
+fun after() {}
