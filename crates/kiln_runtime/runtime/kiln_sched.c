@@ -64,6 +64,74 @@ static int64_t at_load(volatile int64_t *p) { return InterlockedCompareExchange6
 static int at_cas32(volatile int32_t *p, int32_t old, int32_t nw) {
 	return InterlockedCompareExchange((volatile LONG *)p, nw, old) == old;
 }
+#elif defined(__linux__)
+/* Linux: a futex mutex that spins briefly first (Drepper's three-state
+ * lock). Scheduler and channel critical sections are a few instructions;
+ * sleeping in the kernel on every contended acquire (as pthread mutexes do
+ * here) cost more than the work itself in the worker-pool benchmark. */
+#ifndef KN_SPIN
+#define KN_SPIN 4
+#endif
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+typedef struct {
+	volatile int32_t v; /* 0 free, 1 locked, 2 locked with sleepers */
+} kn_mutex;
+typedef struct {
+	volatile int32_t seq;
+} kn_cond;
+static void kn_futex_wait(volatile int32_t *a, int32_t v) {
+	syscall(SYS_futex, a, FUTEX_WAIT_PRIVATE, v, NULL, NULL, 0);
+}
+static void kn_futex_wake(volatile int32_t *a, int32_t n) {
+	syscall(SYS_futex, a, FUTEX_WAKE_PRIVATE, n, NULL, NULL, 0);
+}
+static inline void kn_pause(void) {
+#if defined(__x86_64__)
+	__asm__ volatile("pause");
+#elif defined(__aarch64__)
+	__asm__ volatile("yield");
+#endif
+}
+static void mutex_init(kn_mutex *m) { m->v = 0; }
+static void mutex_lock(kn_mutex *m) {
+	int32_t c = 0;
+	if (__atomic_compare_exchange_n(&m->v, &c, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+		return;
+	for (int i = 0; i < KN_SPIN; i++) {
+		kn_pause();
+		c = 0;
+		if (__atomic_load_n(&m->v, __ATOMIC_RELAXED) == 0 &&
+		    __atomic_compare_exchange_n(&m->v, &c, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+			return;
+	}
+	c = __atomic_exchange_n(&m->v, 2, __ATOMIC_ACQUIRE);
+	while (c != 0) {
+		kn_futex_wait(&m->v, 2);
+		c = __atomic_exchange_n(&m->v, 2, __ATOMIC_ACQUIRE);
+	}
+}
+static void mutex_unlock(kn_mutex *m) {
+	if (__atomic_exchange_n(&m->v, 0, __ATOMIC_RELEASE) == 2)
+		kn_futex_wake(&m->v, 1);
+}
+static void cond_init(kn_cond *c) { c->seq = 0; }
+static void cond_wait(kn_cond *c, kn_mutex *m) {
+	int32_t seq = __atomic_load_n(&c->seq, __ATOMIC_ACQUIRE);
+	mutex_unlock(m);
+	kn_futex_wait(&c->seq, seq);
+	mutex_lock(m);
+}
+static void cond_signal(kn_cond *c) {
+	__atomic_add_fetch(&c->seq, 1, __ATOMIC_RELEASE);
+	kn_futex_wake(&c->seq, 1);
+}
+static int64_t at_add(volatile int64_t *p, int64_t v) { return __atomic_add_fetch(p, v, __ATOMIC_SEQ_CST); }
+static int64_t at_load(volatile int64_t *p) { return __atomic_load_n(p, __ATOMIC_SEQ_CST); }
+static int at_cas32(volatile int32_t *p, int32_t old, int32_t nw) {
+	return __atomic_compare_exchange_n(p, &old, nw, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
 #else
 typedef pthread_mutex_t kn_mutex;
 typedef pthread_cond_t kn_cond;
@@ -127,6 +195,13 @@ typedef struct KnWorker {
 	 * this worker touches it. */
 	KnTask *runnext;
 	int32_t streak; /* consecutive runnext switches */
+	/* Parking (see find_work): each worker sleeps on its own condition
+	 * variable, so a wake-up touches one worker, not a shared futex. */
+	kn_mutex park_lock;
+	kn_cond park_cond;
+	int32_t wake;          /* set by the waker, under park_lock */
+	int32_t searching;     /* this worker holds a `nsearching` count */
+	struct KnWorker *idle_next;
 } KnWorker;
 
 static KnWorker *workers;
@@ -136,8 +211,14 @@ static volatile int32_t started_all;
 static kn_mutex global_lock;
 static KnTask *ghead, *gtail;
 static volatile int64_t gcount;
+/* Idle (parked) workers, a stack under sched_lock. */
 static kn_mutex sched_lock;
-static kn_cond sched_cond;
+static KnWorker *idle_head;
+/* Workers looking for work (woken, or just out of work) before they park:
+ * while one searches, a new task needs no wake-up; a searcher that finds a
+ * task passes the role on (wakes another) if more work is queued. This is
+ * Go's spinning-M handshake, without the busy spinning. */
+static volatile int64_t nsearching;
 static volatile int64_t idle;
 /* Tasks parked on something outside the scheduler (a timer, the network
  * poller): while any exist, all-workers-idle is not a deadlock. */
@@ -556,6 +637,34 @@ static KN_NORETURN void deadlock(void) {
 	exit(2);
 }
 
+/* Wakes one parked worker, as a searcher, unless one is searching already. */
+static void wake_one(void) {
+	if (at_load(&nsearching) > 0 || at_load(&idle) == 0)
+		return;
+	mutex_lock(&sched_lock);
+	KnWorker *v = idle_head;
+	if (v) {
+		idle_head = v->idle_next;
+		v->idle_next = NULL;
+		at_add(&idle, -1);
+		at_add(&nsearching, 1);
+	}
+	mutex_unlock(&sched_lock);
+	if (!v)
+		return;
+	mutex_lock(&v->park_lock);
+	v->wake = 1;
+	cond_signal(&v->park_cond);
+	mutex_unlock(&v->park_lock);
+}
+
+static void stop_searching(KnWorker *w) {
+	if (w->searching) {
+		w->searching = 0;
+		at_add(&nsearching, -1);
+	}
+}
+
 static KnTask *find_work(KnWorker *w) {
 	if (w->runnext) {
 		KnTask *t = w->runnext;
@@ -568,22 +677,49 @@ static KnTask *find_work(KnWorker *w) {
 			t = g_pop();
 		if (!t)
 			t = steal(w);
-		if (t)
+		if (t) {
+			if (w->searching) {
+				stop_searching(w);
+				/* We were the searcher: if more work is waiting, hand the
+				 * role to a sleeping worker. */
+				if (any_work())
+					wake_one();
+			}
 			return t;
-		mutex_lock(&sched_lock);
-		/* Counted as idle before re-checking, so a concurrent kn_ready either
-		 * is seen here or sees us idle and signals. */
-		int64_t now_idle = at_add(&idle, 1);
-		if (any_work()) {
-			at_add(&idle, -1);
-			mutex_unlock(&sched_lock);
-			continue;
 		}
-		if (now_idle == at_load(&nstarted) && at_load(&external) == 0)
-			deadlock();
-		cond_wait(&sched_cond, &sched_lock);
-		at_add(&idle, -1);
+		stop_searching(w);
+		mutex_lock(&sched_lock);
+		w->idle_next = idle_head;
+		idle_head = w;
+		int64_t now_idle = at_add(&idle, 1);
 		mutex_unlock(&sched_lock);
+		/* Published as idle before re-checking: a concurrent kn_ready either
+		 * left work we see here, or sees us idle and wakes us. */
+		if (any_work()) {
+			mutex_lock(&sched_lock);
+			KnWorker **pp = &idle_head;
+			while (*pp && *pp != w)
+				pp = &(*pp)->idle_next;
+			int still = *pp == w;
+			if (still) {
+				*pp = w->idle_next;
+				w->idle_next = NULL;
+				at_add(&idle, -1);
+			}
+			mutex_unlock(&sched_lock);
+			if (still)
+				continue;
+			/* Someone popped us and counted us as a searcher: take the
+			 * wake-up (below) and search. */
+		} else if (now_idle == at_load(&nstarted) && at_load(&external) == 0) {
+			deadlock();
+		}
+		mutex_lock(&w->park_lock);
+		while (!w->wake)
+			cond_wait(&w->park_cond, &w->park_lock);
+		w->wake = 0;
+		mutex_unlock(&w->park_lock);
+		w->searching = 1;
 	}
 }
 
@@ -594,11 +730,7 @@ static void kn_ready(KnTask *t) {
 		q_push(w, t);
 	else
 		g_push(t);
-	if (at_load(&idle) > 0) {
-		mutex_lock(&sched_lock);
-		cond_signal(&sched_cond);
-		mutex_unlock(&sched_lock);
-	}
+	wake_one();
 }
 
 /* Like kn_ready, for a task the current task just handed a value to: it
@@ -1316,7 +1448,10 @@ int main(int argc, char **argv) {
 	}
 	mutex_init(&global_lock);
 	mutex_init(&sched_lock);
-	cond_init(&sched_cond);
+	for (int64_t i = 0; i < nworkers; i++) {
+		mutex_init(&workers[i].park_lock);
+		cond_init(&workers[i].park_cond);
+	}
 #ifndef _WIN32
 	mutex_init(&stack_lock);
 	page_size = (size_t)sysconf(_SC_PAGESIZE);
