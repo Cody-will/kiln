@@ -183,7 +183,7 @@ fun proj_cmp(a &Proj, b &Proj) i32 {
 				}
 				_ => return 1,
 			}
-		}
+		},
 	}
 }
 
@@ -234,7 +234,7 @@ fun ms_find(st &MoveState, l u32, path &Vec<Proj>) (bool, usize) {
 
 // Inserts unless present; returns whether it inserted.
 fun ms_insert(st &mut MoveState, l u32, path &Vec<Proj>, site option<(usize, usize)>) bool {
-	(found, at) := ms_find(st, l, path)
+	(found, at) := ms_find(&*st, l, path)
 	if found {
 		return false
 	}
@@ -292,7 +292,7 @@ pub fun describe(b &mir::Body, p &Place) string {
 		match pr {
 			Proj::Deref(_) => s = "*{s}",
 			Proj::Field(f) => {
-				f2 := match f.rfind(".") {
+				f2 := match f.find(".") {
 					Some(k) => f[k + 1..].to_string(),
 					None => f.clone(),
 				}
@@ -325,7 +325,7 @@ fun successors(t &Terminator) Vec<usize> {
 				}
 			}
 			o.push(*done as usize)
-		}
+		},
 	}
 	return o
 }
@@ -700,8 +700,8 @@ impl<'a> Ck<'a> {
 				deep mut := Vec::new()
 				match rv {
 					Rvalue::Use(o) | Rvalue::Coerce(o, _) => {
-						add = self.op_holds_in(st, o)
-						deep = self.deep_of(st, o)
+						add = self.op_holds_in(&*st, o)
+						deep = self.deep_of(&*st, o)
 					}
 					Rvalue::Ref { place, .. } => {
 						base := place.local as usize
@@ -735,8 +735,8 @@ impl<'a> Ck<'a> {
 					}
 					Rvalue::Aggregate(_, ops) => {
 						for o in ops {
-							sunion(&mut add, &self.op_holds_in(st, o))
-							sunion(&mut deep, &self.deep_of(st, o))
+							sunion(&mut add, &self.op_holds_in(&*st, o))
+							sunion(&mut deep, &self.deep_of(&*st, o))
 						}
 					}
 					Rvalue::Call { args, flows, .. } => {
@@ -746,16 +746,16 @@ impl<'a> Ck<'a> {
 								continue
 							}
 							o := &args[k]
-							inner := self.deep_of(st, o)
+							inner := self.deep_of(&*st, o)
 							if *f & DEEP_FLOW == 0 {
-								sunion(&mut add, &self.op_holds_in(st, o))
+								sunion(&mut add, &self.op_holds_in(&*st, o))
 							} else {
 								sunion(&mut add, &inner)
 							}
 							sunion(&mut deep, &inner)
 						}
 					}
-					Rvalue::Pure(_, _) => {}
+					Rvalue::Pure(_, _) => {},
 				}
 				if dest.proj.len() == 0 {
 					st[root] = add
@@ -771,7 +771,7 @@ impl<'a> Ck<'a> {
 					st[n + *l as usize] = Vec::new()
 				}
 			}
-			_ => {}
+			_ => {},
 		}
 	}
 
@@ -834,7 +834,7 @@ impl<'a> Ck<'a> {
 						uses.push(p.local as usize)
 					}
 				}
-			}
+			},
 		}
 		return (uses, def)
 	}
@@ -955,7 +955,7 @@ impl<'a> Ck<'a> {
 				LocalKind::User | LocalKind::Temp | LocalKind::Return => {
 					ms_insert(&mut st, i as u32, &Vec::new(), None)
 				}
-				_ => {}
+				_ => {},
 			}
 		}
 		return st
@@ -1024,7 +1024,7 @@ impl<'a> Ck<'a> {
 			}
 			MStmt::Read(p) => {
 				if report {
-					self.check_init(st, p, false, s.span, loc)
+					self.check_init(&*st, p, false, s.span, loc)
 				}
 			}
 			MStmt::StorageDead(_) | MStmt::DeferPush(_, _) => {}
@@ -1036,27 +1036,27 @@ impl<'a> Ck<'a> {
 					}
 				}
 				*st = kept
-			}
+			},
 		}
 		if report {
 			for o in &uses {
 				if let Some(p) = o.place() {
-					self.check_init(st, &p, false, s.span, loc)
+					self.check_init(&*st, &p, false, s.span, loc)
 				}
 			}
 			if let Some(p) = &borrow {
-				self.check_init(st, p, true, s.span, loc)
+				self.check_init(&*st, p, true, s.span, loc)
 			}
 		}
 		for o in &uses {
 			if let Operand::Move(p) = o {
-				self.apply_move(st, p, s.span, report)
+				self.apply_move(&mut *st, p, s.span, report)
 			}
 		}
 		if let MStmt::Assign(dest, _) = &s.kind {
 			decl := self.b.locals[dest.local as usize].clone()
 			if report && dest.proj.len() == 0 && decl.kind == LocalKind::User && !decl.mutable {
-				(found, _) := ms_find(st, dest.local, &Vec::new())
+				(found, _) := ms_find(&*st, dest.local, &Vec::new())
 				if !found {
 					name := match &decl.name {
 						Some(n) => n.clone(),
@@ -1131,7 +1131,7 @@ impl<'a> Ck<'a> {
 						"value moved here".to_string()
 					}
 					diag("{what}: `{name}`", span).note(&note, move_span).plain("move occurs because `{moved_name}` has type `{ty}`, which does not implement the `Copy` trait").help("borrow it with `&{moved_name}` or call `.clone()` before moving it")
-				}
+				},
 			}
 			self.report(d)
 			return
@@ -1178,7 +1178,7 @@ impl<'a> Ck<'a> {
 			match o {
 				Operand::Copy(p) => out.push((p, Access::Read)),
 				Operand::Move(p) => out.push((p, Access::Move)),
-				Operand::Const(_) => {}
+				Operand::Const(_) => {},
 			}
 		}
 		if let Rvalue::Ref { mutable, place } = rv {
@@ -1202,10 +1202,10 @@ impl<'a> Ck<'a> {
 					match o {
 						Operand::Copy(p) => out.push((p.clone(), Access::Read)),
 						Operand::Move(p) => out.push((p.clone(), Access::Move)),
-						Operand::Const(_) => {}
+						Operand::Const(_) => {},
 					}
 				}
-			}
+			},
 		}
 		return out
 	}
@@ -1424,7 +1424,7 @@ impl<'a> Ck<'a> {
 										break
 									}
 									if c.mode != CaptureMode::Move {
-										self.report(diag("`spawn` block may outlive the current function, but it borrows `{c.name}`", s.span).note("`{c.name}` is used here", c.span).help("use `spawn move { ... }` to move captured values into the task (clone them first if you still need them)"))
+										self.report(diag("`spawn` block may outlive the current function, but it borrows `{c.name}`", s.span).note("`{c.name}` is used here", c.span).help("use `spawn move {{ ... }}` to move captured values into the task (clone them first if you still need them)"))
 										continue
 									}
 									held := self.op_holds_in(&self.holds_before(bi, si), &operands[k])
@@ -1444,10 +1444,10 @@ impl<'a> Ck<'a> {
 										_ => self.check_send(&c.ty, s.span, Some(c.name.clone())),
 									}
 								}
-							}
+							},
 						}
 					}
-					_ => {}
+					_ => {},
 				}
 			}
 		}
@@ -1465,7 +1465,7 @@ impl<'a> Ck<'a> {
 				None => "a local".to_string(),
 			},
 		}
-		d mut := diag("{what} borrows {src}, which may not live as long as the task", span).help("tasks started with `spawn` may outlive the current function: pass an owned value (e.g. `.clone()`), or use `scope(|s| { s.spawn(...) })` for tasks that borrow")
+		d mut := diag("{what} borrows {src}, which may not live as long as the task", span).help("tasks started with `spawn` may outlive the current function: pass an owned value (e.g. `.clone()`), or use `scope(|s| {{ s.spawn(...) }})` for tasks that borrow")
 		if loan.place.is_some() {
 			d = d.note("borrowed here", loan.span)
 		}
@@ -1544,7 +1544,7 @@ fun used_lifetimes(t &Type, out &mut Vec<(string, Span)>) {
 				}
 			}
 		}
-		_ => {}
+		_ => {},
 	}
 }
 
@@ -1674,7 +1674,7 @@ fun field_types(f &Fields, out &mut Vec<Type>) {
 			for fd in fs {
 				out.push(fd.ty.clone())
 			}
-		}
+		},
 	}
 }
 
@@ -1684,7 +1684,7 @@ fun check_fields(tys &Vec<Type>, generics &Generics, r &Resolved, errors &mut Ve
 	types := sig::type_param_names(generics)
 	for t in tys {
 		if sig::ty_lifetimes(t, &types, r).elided {
-			errors.push(diag("missing lifetime specifier", t.span).help("a struct that holds a reference needs a lifetime parameter: `struct S<'a> { field: &'a T }`"))
+			errors.push(diag("missing lifetime specifier", t.span).help("a struct that holds a reference needs a lifetime parameter: `struct S<'a> {{ field: &'a T }}`"))
 		}
 	}
 }
@@ -1708,7 +1708,7 @@ fun check_items(r &Resolved, errors &mut Vec<BDiag>) {
 					}
 					check_fields(&ts, &e.generics, r, errors)
 				}
-				_ => {}
+				_ => {},
 			}
 		}
 	}

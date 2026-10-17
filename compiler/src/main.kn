@@ -21,6 +21,7 @@ mod ty
 mod typeck
 mod mir
 mod sig
+mod borrowck
 mod lower
 
 import std::fs
@@ -138,10 +139,11 @@ fun main() {
 	res := args.len() > 1 && args[1] == "--resolve"
 	tck := args.len() > 1 && args[1] == "--typeck"
 	mir := args.len() > 1 && args[1] == "--mir"
-	first := if ast || der || exp || res || tck || mir { 2 } else { 1 }
+	bck := args.len() > 1 && args[1] == "--borrowck"
+	first := if ast || der || exp || res || tck || mir || bck { 2 } else { 1 }
 	n := args.len() - first
 	if n == 0 {
-		eprintln("usage: kilnc [--ast | --ast-expanded | --derive | --resolve | --typeck | --mir] <file.kn>...")
+		eprintln("usage: kilnc [--ast | --ast-expanded | --derive | --resolve | --typeck | --mir | --borrowck] <file.kn>...")
 		os::exit(2)
 	}
 	i mut := first
@@ -151,12 +153,14 @@ fun main() {
 				if n > 1 {
 					println("== {args[i]}")
 				}
-				if res || tck || mir {
+				if res || tck || mir || bck {
 					dir := match os::getenv("KILNC_RESOLVE_DIR") {
 						Some(d) => d,
 						None => "crates/kiln_resolve".to_string(),
 					}
-					if mir {
+					if bck {
+						print("{borrowck::dump(&src, &dir)}")
+					} else if mir {
 						print("{lower::dump(&src, &dir)}")
 					} else if tck {
 						print("{typeck::dump(&src, &dir)}")

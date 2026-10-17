@@ -39,6 +39,9 @@ USAGE:
                             Build and run (in a package: kiln run [-- args...])
     kiln parse --dump-expanded <file.kn>
                             The AST dump after derive expansion
+    kiln borrowck --dump <file.kn>
+                            The borrow checker's diagnostics (for the
+                            self-hosted borrow checker's differential test)
     kiln mir --dump <file.kn>
                             Every field of the lowered MIR (for the
                             self-hosted MIR lowering's differential test)
@@ -144,6 +147,14 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             };
             print!("{}", kiln_parser::dump::dump_expanded(&src));
+            ExitCode::SUCCESS
+        }
+        [cmd, flag, file] if cmd == "borrowck" && flag == "--dump" => {
+            let Ok(src) = std::fs::read_to_string(file) else {
+                eprintln!("error: cannot read {file}");
+                return ExitCode::from(1);
+            };
+            print!("{}", kiln_borrowck::dump::dump(&src));
             ExitCode::SUCCESS
         }
         [cmd, flag, file] if cmd == "mir" && flag == "--dump" => {

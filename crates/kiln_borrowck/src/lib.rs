@@ -9,6 +9,7 @@
 //! and `Sync`/`Send` for scoped tasks. See `body.rs` for the algorithm.
 
 mod body;
+pub mod dump;
 mod sigcheck;
 #[cfg(test)]
 mod tests;

@@ -5547,6 +5547,58 @@ impl Checker {
 		return None
 	}
 
+	pub fun has_drop_impl(&mut self, t &Ty) bool {
+		tr := match self.r.prelude_type("Drop") {
+			Some(x) => x,
+			None => return false,
+		}
+		if let Ty::Adt(_, _) = t {
+			saved := self.detach(Vec::new())
+			ok := self.has_impl_pub(t, tr)
+			self.reattach(saved)
+			return ok
+		}
+		return false
+	}
+
+	pub fun field_ty(&self, t &Ty, f &str) Ty {
+		match t {
+			Ty::Tuple(ts) => {
+				match field_index(f) {
+					Some(i) => {
+						if i < ts.len() {
+							return ts[i].clone()
+						}
+						return Ty::Unknown
+					}
+					None => return Ty::Unknown,
+				}
+			}
+			Ty::Adt(d, _) => {
+				(variant, name) := match f.find(".") {
+					Some(k) => (Some(f[..k].to_string()), f[k + 1..].to_string()),
+					None => (None, f.to_string()),
+				}
+				vdef mut := None
+				if let Some(v) = &variant {
+					for x in self.r.variants(*d) {
+						if self.r.defs[x as usize].name == *v {
+							vdef = Some(x)
+							break
+						}
+					}
+				}
+				for (n, ft) in self.adt_fields(t, vdef) {
+					if n == name {
+						return ft
+					}
+				}
+				return Ty::Unknown
+			}
+			_ => return Ty::Unknown,
+		}
+	}
+
 	pub fun adt_fields(&self, t &Ty, variant option<u32>) Vec<(string, Ty)> {
 		(d, args) := match t {
 			Ty::Adt(d, args) => (*d, args.clone()),
@@ -5748,4 +5800,18 @@ pub fun dump(src &str, dir &str) string {
 		i += 1
 	}
 	return o
+}
+
+fun field_index(s &str) option<usize> {
+	if s.len() == 0 {
+		return None
+	}
+	n mut := 0usize
+	for ch in s.chars() {
+		if ch < '0' || ch > '9' {
+			return None
+		}
+		n = n * 10 + (ch as usize - '0' as usize)
+	}
+	return Some(n)
 }
