@@ -1,0 +1,370 @@
+// Types and the unification table: a port of crates/kiln_typeck/src/ty.rs.
+//
+// Primitive types are kept by their `PrimTy` variant name (`I32`, `Str`,
+// ...), as in `resolve::Res::Prim`.
+
+import std::collections::HashMap
+
+@derive(Clone, Eq, Debug)
+pub enum Ty {
+	Prim(string),
+	Unit,
+	Never,
+	Tuple(Vec<Ty>),
+	Ref(bool, Box<Ty>),
+	Ptr(bool, Box<Ty>),
+	Array(Box<Ty>, u64),
+	Slice(Box<Ty>),
+	Adt(u32, Vec<Ty>),
+	Fn(Vec<Ty>, Box<Ty>, bool),
+	Param(string),
+	Dyn(Vec<u32>),
+	ChanSend(Box<Ty>),
+	ChanRecv(Box<Ty>),
+	Var(u32),
+	Unknown,
+}
+
+pub fun prim(n &str) Ty {
+	return Ty::Prim(n.to_string())
+}
+
+pub fun is_int_name(n &str) bool {
+	match n {
+		"I8" | "I16" | "I32" | "I64" | "I128" | "Isize" => return true,
+		"U8" | "U16" | "U32" | "U64" | "U128" | "Usize" => return true,
+		_ => return false,
+	}
+}
+
+impl Ty {
+	pub fun mk_ref(t Ty) Ty {
+		return Ty::Ref(false, Box::new(t))
+	}
+
+	pub fun is_int_prim(&self) bool {
+		match self {
+			Ty::Prim(n) => return is_int_name(n),
+			_ => return false,
+		}
+	}
+
+	pub fun is_float_prim(&self) bool {
+		match self {
+			Ty::Prim(n) => return n == "F32" || n == "F64",
+			_ => return false,
+		}
+	}
+
+	pub fun is_prim(&self, name &str) bool {
+		match self {
+			Ty::Prim(n) => return n == name,
+			_ => return false,
+		}
+	}
+
+	// Replaces generic parameters according to `map`.
+	pub fun subst(&self, map &HashMap<string, Ty>) Ty {
+		if map.is_empty() {
+			return self.clone()
+		}
+		match self {
+			Ty::Param(n) => {
+				match map.get(n) {
+					Some(t) => return t.clone(),
+					None => return self.clone(),
+				}
+			}
+			Ty::Tuple(ts) => return Ty::Tuple(subst_all(ts, map)),
+			Ty::Ref(m, t) => return Ty::Ref(*m, Box::new(t.subst(map))),
+			Ty::Ptr(m, t) => return Ty::Ptr(*m, Box::new(t.subst(map))),
+			Ty::Array(t, n) => return Ty::Array(Box::new(t.subst(map)), *n),
+			Ty::Slice(t) => return Ty::Slice(Box::new(t.subst(map))),
+			Ty::Adt(d, args) => return Ty::Adt(*d, subst_all(args, map)),
+			Ty::Fn(ps, r, m) => return Ty::Fn(subst_all(ps, map), Box::new(r.subst(map)), *m),
+			Ty::ChanSend(t) => return Ty::ChanSend(Box::new(t.subst(map))),
+			Ty::ChanRecv(t) => return Ty::ChanRecv(Box::new(t.subst(map))),
+			_ => return self.clone(),
+		}
+	}
+}
+
+pub fun subst_all(ts &Vec<Ty>, map &HashMap<string, Ty>) Vec<Ty> {
+	o mut := Vec::new()
+	for t in ts {
+		o.push(t.subst(map))
+	}
+	return o
+}
+
+@derive(Clone, Copy, Eq, Debug)
+pub enum VarKind {
+	General,
+	Int,
+	Float,
+}
+
+@derive(Clone)
+pub struct Entry {
+	pub ty option<Ty>,
+	pub kind VarKind,
+}
+
+@derive(Clone)
+pub struct InferTable {
+	vars Vec<Entry>,
+	trail Vec<(u32, Entry)>,
+	open usize,
+	defaulted usize,
+}
+
+@derive(Clone, Copy)
+pub struct Snapshot {
+	trail usize,
+	vars usize,
+}
+
+impl InferTable {
+	pub fun new() InferTable {
+		return InferTable { vars: Vec::new(), trail: Vec::new(), open: 0, defaulted: 0 }
+	}
+
+	pub fun fresh(&mut self, kind VarKind) Ty {
+		self.vars.push(Entry { ty: None, kind: kind })
+		return Ty::Var(self.vars.len() as u32 - 1)
+	}
+
+	pub fun kind(&self, v u32) VarKind {
+		return self.vars[v as usize].kind
+	}
+
+	pub fun shallow(&self, t &Ty) Ty {
+		t mut := t.clone()
+		while let Ty::Var(v) = &t {
+			match &self.vars[*v as usize].ty {
+				Some(b) => t = b.clone(),
+				None => return t,
+			}
+		}
+		return t
+	}
+
+	pub fun zonk(&self, t &Ty) Ty {
+		t := self.shallow(t)
+		match &t {
+			Ty::Tuple(ts) => return Ty::Tuple(self.zonk_all(ts)),
+			Ty::Ref(m, x) => return Ty::Ref(*m, Box::new(self.zonk(x))),
+			Ty::Ptr(m, x) => return Ty::Ptr(*m, Box::new(self.zonk(x))),
+			Ty::Array(x, n) => return Ty::Array(Box::new(self.zonk(x)), *n),
+			Ty::Slice(x) => return Ty::Slice(Box::new(self.zonk(x))),
+			Ty::Adt(d, args) => return Ty::Adt(*d, self.zonk_all(args)),
+			Ty::Fn(ps, r, m) => return Ty::Fn(self.zonk_all(ps), Box::new(self.zonk(r)), *m),
+			Ty::ChanSend(x) => return Ty::ChanSend(Box::new(self.zonk(x))),
+			Ty::ChanRecv(x) => return Ty::ChanRecv(Box::new(self.zonk(x))),
+			_ => return t,
+		}
+	}
+
+	pub fun zonk_all(&self, ts &Vec<Ty>) Vec<Ty> {
+		o mut := Vec::new()
+		for t in ts {
+			o.push(self.zonk(t))
+		}
+		return o
+	}
+
+	fun occurs(&self, v u32, t &Ty) bool {
+		match self.shallow(t) {
+			Ty::Var(w) => return w == v,
+			Ty::Tuple(ts) | Ty::Adt(_, ts) => {
+				for x in &ts {
+					if self.occurs(v, x) {
+						return true
+					}
+				}
+				return false
+			}
+			Ty::Fn(ps, r, _) => {
+				for x in &ps {
+					if self.occurs(v, x) {
+						return true
+					}
+				}
+				return self.occurs(v, &r)
+			}
+			Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) | Ty::ChanSend(x) | Ty::ChanRecv(x) => return self.occurs(v, &x),
+			_ => return false,
+		}
+	}
+
+	fun bind(&mut self, v u32, t Ty) bool {
+		ok := match self.kind(v) {
+			VarKind::General => true,
+			VarKind::Int => match &t {
+				Ty::Var(w) => self.kind(*w) != VarKind::Float,
+				other => other.is_int_prim(),
+			},
+			VarKind::Float => match &t {
+				Ty::Var(w) => self.kind(*w) != VarKind::Int,
+				other => other.is_float_prim(),
+			},
+		}
+		if !ok || self.occurs(v, &t) {
+			return false
+		}
+		if let Ty::Var(w) = &t {
+			w := *w
+			if self.kind(w) == VarKind::General && self.kind(v) != VarKind::General {
+				k := self.kind(v)
+				old := self.vars[w as usize].ty.clone()
+				self.set(w, Entry { ty: old, kind: k })
+			}
+		}
+		k := self.vars[v as usize].kind
+		self.set(v, Entry { ty: Some(t), kind: k })
+		return true
+	}
+
+	fun unify_all(&mut self, xs &Vec<Ty>, ys &Vec<Ty>) bool {
+		if xs.len() != ys.len() {
+			return false
+		}
+		i mut := 0
+		while i < xs.len() {
+			if !self.unify(&xs[i], &ys[i]) {
+				return false
+			}
+			i += 1
+		}
+		return true
+	}
+
+	pub fun unify(&mut self, a &Ty, b &Ty) bool {
+		a := self.shallow(a)
+		b := self.shallow(b)
+		match (&a, &b) {
+			(Ty::Unknown, _) | (_, Ty::Unknown) => return true,
+			_ => {},
+		}
+		match (&a, &b) {
+			(Ty::Var(x), Ty::Var(y)) => {
+				if x == y {
+					return true
+				}
+			}
+			_ => {},
+		}
+		if let Ty::Var(v) = &a {
+			return self.bind(*v, b.clone())
+		}
+		if let Ty::Var(v) = &b {
+			return self.bind(*v, a.clone())
+		}
+		match (&a, &b) {
+			(Ty::Never, Ty::Never) => return true,
+			(Ty::Prim(x), Ty::Prim(y)) => return x == y,
+			(Ty::Unit, Ty::Unit) => return true,
+			(Ty::Tuple(xs), Ty::Tuple(ys)) => return self.unify_all(xs, ys),
+			(Ty::Ref(m1, x), Ty::Ref(m2, y)) | (Ty::Ptr(m1, x), Ty::Ptr(m2, y)) => return m1 == m2 && self.unify(x, y),
+			(Ty::Array(x, n), Ty::Array(y, m)) => return n == m && self.unify(x, y),
+			(Ty::Slice(x), Ty::Slice(y)) | (Ty::ChanSend(x), Ty::ChanSend(y)) | (Ty::ChanRecv(x), Ty::ChanRecv(y)) => return self.unify(x, y),
+			(Ty::Adt(d1, xs), Ty::Adt(d2, ys)) => return d1 == d2 && self.unify_all(xs, ys),
+			(Ty::Fn(p1, r1, m1), Ty::Fn(p2, r2, m2)) => return m1 == m2 && self.unify_all(p1, p2) && self.unify(r1, r2),
+			(Ty::Param(x), Ty::Param(y)) => return x == y,
+			(Ty::Dyn(x), Ty::Dyn(y)) => return x == y,
+			_ => return false,
+		}
+	}
+
+	fun set(&mut self, v u32, e Entry) {
+		if self.open > 0 {
+			old := std::mem::replace(&mut self.vars[v as usize], e)
+			self.trail.push((v, old))
+		} else {
+			self.vars[v as usize] = e
+		}
+	}
+
+	pub fun snapshot(&mut self) Snapshot {
+		self.open += 1
+		return Snapshot { trail: self.trail.len(), vars: self.vars.len() }
+	}
+
+	pub fun restore(&mut self, s Snapshot) {
+		while self.trail.len() > s.trail {
+			(v, old) := self.trail.pop().unwrap()
+			self.vars[v as usize] = old
+		}
+		self.vars.truncate(s.vars)
+		self.end_snapshot()
+	}
+
+	pub fun commit(&mut self, s Snapshot) {
+		self.end_snapshot()
+	}
+
+	fun end_snapshot(&mut self) {
+		self.open -= 1
+		if self.open == 0 {
+			self.trail.clear()
+		}
+	}
+
+	pub fun try_unify(&mut self, a &Ty, b &Ty) bool {
+		s := self.snapshot()
+		ok := self.unify(a, b)
+		if ok {
+			self.commit(s)
+		} else {
+			self.restore(s)
+		}
+		return ok
+	}
+
+	pub fun can_unify(&mut self, a &Ty, b &Ty) bool {
+		s := self.snapshot()
+		ok := self.unify(a, b)
+		self.restore(s)
+		return ok
+	}
+
+	pub fun apply_literal_defaults(&mut self) {
+		i mut := if self.defaulted < self.vars.len() { self.defaulted } else { self.vars.len() }
+		while i < self.vars.len() {
+			if self.vars[i].ty.is_none() {
+				k := self.vars[i].kind
+				match k {
+					VarKind::Int => self.set(i as u32, Entry { ty: Some(prim("I32")), kind: k }),
+					VarKind::Float => self.set(i as u32, Entry { ty: Some(prim("F64")), kind: k }),
+					VarKind::General => {},
+				}
+			}
+			i += 1
+		}
+		self.defaulted = self.vars.len()
+	}
+
+	pub fun has_unbound(&self, t &Ty) bool {
+		match self.zonk(t) {
+			Ty::Var(_) => return true,
+			Ty::Tuple(ts) | Ty::Adt(_, ts) => {
+				for x in &ts {
+					if self.has_unbound(x) {
+						return true
+					}
+				}
+				return false
+			}
+			Ty::Fn(ps, r, _) => {
+				for x in &ps {
+					if self.has_unbound(x) {
+						return true
+					}
+				}
+				return self.has_unbound(&r)
+			}
+			Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) | Ty::ChanSend(x) | Ty::ChanRecv(x) => return self.has_unbound(&x),
+			_ => return false,
+		}
+	}
+}

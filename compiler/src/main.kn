@@ -17,6 +17,7 @@ mod parser
 mod escape
 mod derive
 mod resolve
+mod ty
 
 import std::fs
 import std::os

@@ -72,6 +72,10 @@ pub struct Def {
 	pub is_prelude bool,
 	// The field shape of a struct or variant (see `shape`).
 	pub fields u8,
+	// The item (a function's without its body, a module's without its
+	// items), for item definitions; the variant, for variants.
+	pub item option<Item>,
+	pub variant option<Variant>,
 }
 
 @derive(Clone, Eq)
@@ -94,6 +98,8 @@ pub struct Local {
 }
 
 pub struct FnRef {
+	pub decl FnDecl,
+	pub attrs Vec<Attribute>,
 	pub name string,
 	pub span Span,
 	pub module u32,
@@ -105,6 +111,8 @@ pub struct FnRef {
 }
 
 pub struct ImplRef {
+	// The declaration without its items.
+	pub decl ImplDecl,
 	pub span Span,
 	pub module u32,
 	pub is_prelude bool,
@@ -149,6 +157,45 @@ impl Resolved {
 		return self.modules.get(&id).unwrap()
 	}
 
+	pub fun local(&self, id u32) &Local {
+		return &self.locals[id as usize]
+	}
+
+	// Resolution of a path, or `Res::Err` if it was not recorded.
+	pub fun path(&self, s Span) Res {
+		match self.paths.get(&key(s)) {
+			Some(r) => return r.clone(),
+			None => return Res::Err,
+		}
+	}
+
+	pub fun binding(&self, s Span) option<u32> {
+		match self.bindings.get(&key(s)) {
+			Some(l) => return Some(*l),
+			None => return None,
+		}
+	}
+
+	// Whether `d` is declared directly in the core prelude.
+	pub fun is_core(&self, d u32) bool {
+		def := self.def(d)
+		return def.is_prelude && def.module == self.prelude
+	}
+
+	pub fun prelude_type(&self, name &str) option<u32> {
+		match self.module(self.prelude).types.get(name) {
+			Some(d) => return Some(*d),
+			None => return None,
+		}
+	}
+
+	pub fun prelude_value(&self, name &str) option<u32> {
+		match self.module(self.prelude).values.get(name) {
+			Some(d) => return Some(*d),
+			None => return None,
+		}
+	}
+
 	// The variants of an enum, in order.
 	pub fun variants(&self, e u32) Vec<u32> {
 		v mut := Vec::new()
@@ -173,7 +220,7 @@ impl Resolved {
 	}
 }
 
-fun key(s Span) (usize, usize) {
+pub fun key(s Span) (usize, usize) {
 	return (s.start, s.end)
 }
 
@@ -336,6 +383,8 @@ impl Resolver {
 			module: module,
 			is_prelude: self.in_prelude,
 			fields: 0,
+			item: None,
+			variant: None,
 		})
 		return id
 	}
@@ -354,6 +403,8 @@ impl Resolver {
 			module: m,
 			is_prelude: prelude,
 			fields: 0,
+			item: None,
+			variant: None,
 		})
 		self.r.modules.insert(id, ModuleScope {
 			types: HashMap::new(),
@@ -400,18 +451,32 @@ impl Resolver {
 					d := &mut self.r.defs[id as usize]
 					d.span = name.span
 					d.vis = item.vis
+					d.item = Some(Item {
+						kind: ItemKind::Mod { name: name.clone(), items: None },
+						vis: item.vis,
+						attrs: item.attrs.clone(),
+						doc: None,
+						span: item.span,
+					})
 					out.push(Defined { name: name.clone(), is_type: true, id: id })
 					match body {
 						Some(inner) => self.collect_items(inner, id),
 						None => self.error("module `{name.name}` is declared without a body, but no file was loaded for it (build the package, or write `mod {name.name} {{ ... }}`)", name.span),
 					}
 				}
-				ItemKind::Impl(_) => {
+				ItemKind::Impl(decl) => {
 					idx := self.r.impls.len()
 					if !self.impl_idx.contains_key(&key(item.span)) {
 						self.impl_idx.insert(key(item.span), idx)
 					}
-					self.r.impls.push(ImplRef { span: item.span, module: module, is_prelude: self.in_prelude })
+					head := ImplDecl {
+						is_unsafe: decl.is_unsafe,
+						generics: decl.generics.clone(),
+						trait_ref: decl.trait_ref.clone(),
+						self_ty: decl.self_ty.clone(),
+						items: Vec::new(),
+					}
+					self.r.impls.push(ImplRef { decl: head, span: item.span, module: module, is_prelude: self.in_prelude })
 				}
 				_ => {},
 			}
@@ -420,6 +485,7 @@ impl Resolver {
 				None => continue,
 			}
 			id := self.new_def(kind, &name, item.vis, module)
+			self.r.defs[id as usize].item = Some(item_head(item))
 			match &item.kind {
 				ItemKind::Fn(_) => {
 					if !self.fn_defs.contains_key(&key(name.span)) {
@@ -446,6 +512,7 @@ impl Resolver {
 						}
 						vid := self.new_def(DefKind::Variant { parent: id, index: index }, &v.name, Visibility::Public, module)
 						self.r.defs[vid as usize].fields = shape(&v.fields)
+						self.r.defs[vid as usize].variant = Some(v.clone())
 						index += 1
 					}
 				}
@@ -810,7 +877,7 @@ impl Resolver {
 					match &it.kind {
 						ItemKind::Fn(f) => self.walk_fn(f, it, Some(idx), None, None),
 						ItemKind::Const { name, ty, value: Some(v) } => {
-							self.walk_synth(name.name.clone(), name, ty, v, Some(idx), None)
+							self.walk_synth(name.name.clone(), name, ty, v, Some(idx), None, &it.attrs)
 							self.r.const_fn_set.insert(self.r.fns.len() - 1)
 						}
 						ItemKind::Const { ty, .. } => {
@@ -833,7 +900,7 @@ impl Resolver {
 					Some(d) => Some(*d),
 					None => None,
 				}
-				self.walk_synth("<const {name.name}>", name, ty, v, None, def)
+				self.walk_synth("<const {name.name}>", name, ty, v, None, def, &item.attrs)
 				i := self.r.fns.len() - 1
 				self.r.const_fn_set.insert(i)
 				if let Some(d) = def {
@@ -849,7 +916,7 @@ impl Resolver {
 					Some(d) => Some(*d),
 					None => None,
 				}
-				self.walk_synth("<init {name.name}>", name, ty, value, None, def)
+				self.walk_synth("<init {name.name}>", name, ty, value, None, def, &item.attrs)
 				if let Some(d) = def {
 					self.r.statics.push((d, self.r.fns.len() - 1))
 				}
@@ -905,7 +972,7 @@ impl Resolver {
 
 	// A hidden function `fun name() ty { return value }` for a constant or a
 	// static's initializer (the Rust resolver builds the declaration).
-	fun walk_synth(&mut self, fname string, name &Ident, ty &Type, value &Expr, impl_idx option<usize>, def option<u32>) {
+	fun walk_synth(&mut self, fname string, name &Ident, ty &Type, value &Expr, impl_idx option<usize>, def option<u32>, attrs &Vec<Attribute>) {
 		self.ty_params.push(Vec::new())
 		saved_scopes := std::mem::replace(&mut self.scopes, Vec::new())
 		saved_loops := std::mem::replace(&mut self.loops, Vec::new())
@@ -916,7 +983,21 @@ impl Resolver {
 		self.scopes.push(new_scope())
 		self.walk_expr(value)
 		self.scopes.pop()
+		ret := Expr { kind: ExprKind::Return(Some(Box::new(value.clone()))), span: name.span }
+		stmts mut := Vec::new()
+		stmts.push(Stmt { kind: StmtKind::Expr(ret), span: name.span })
+		decl := FnDecl {
+			name: Ident { name: fname.clone(), span: name.span },
+			is_unsafe: false,
+			generics: Generics::empty(),
+			self_param: None,
+			params: Vec::new(),
+			ret: Some(static_lifetimes(ty)),
+			body: Some(Block { stmts: stmts, span: value.span }),
+		}
 		self.r.fns.push(FnRef {
+			decl: decl,
+			attrs: attrs.clone(),
 			name: fname,
 			span: name.span,
 			module: self.module,
@@ -973,6 +1054,8 @@ impl Resolver {
 			self.error("function `{f.name.name}` must have a body", f.name.span)
 		}
 		self.r.fns.push(FnRef {
+			decl: f.clone(),
+			attrs: item.attrs.clone(),
 			name: f.name.name.clone(),
 			span: f.name.span,
 			module: self.module,
@@ -1637,6 +1720,68 @@ impl Resolver {
 				self.loops = saved
 			},
 		}
+	}
+}
+
+// A copy of `item` for `Def::item`: a function without its body (the body
+// is in `FnRef::decl`).
+fun item_head(item &Item) Item {
+	match &item.kind {
+		ItemKind::Fn(f) => {
+			head := FnDecl {
+				name: f.name.clone(),
+				is_unsafe: f.is_unsafe,
+				generics: f.generics.clone(),
+				self_param: f.self_param.clone(),
+				params: f.params.clone(),
+				ret: f.ret.clone(),
+				body: None,
+			}
+			return Item { kind: ItemKind::Fn(head), vis: item.vis, attrs: item.attrs.clone(), doc: None, span: item.span }
+		}
+		_ => return item.clone(),
+	}
+}
+
+// `ty` with every elided reference lifetime made `'static`.
+pub fun static_lifetimes(ty &Type) Type {
+	t mut := ty.clone()
+	fix_static(&mut t)
+	return t
+}
+
+fun fix_static(t &mut Type) {
+	span := t.span
+	match &mut t.kind {
+		TypeKind::Ref { lifetime, inner, .. } => {
+			if lifetime.is_none() {
+				*lifetime = Some(Ident { name: "static".to_string(), span: span })
+			}
+			fix_static(inner)
+		}
+		TypeKind::Ptr { inner, .. } | TypeKind::Slice(inner) | TypeKind::Array(inner, _) => fix_static(inner),
+		TypeKind::Tuple(ts) => {
+			i mut := 0
+			while i < ts.len() {
+				fix_static(&mut ts[i])
+				i += 1
+			}
+		}
+		TypeKind::Path(p) => {
+			i mut := 0
+			while i < p.segments.len() {
+				j mut := 0
+				while j < p.segments[i].args.len() {
+					match &mut p.segments[i].args[j] {
+						GenericArg::Type(x) => fix_static(x),
+						_ => {},
+					}
+					j += 1
+				}
+				i += 1
+			}
+		}
+		_ => {},
 	}
 }
 

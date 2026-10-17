@@ -19,6 +19,7 @@
 mod check;
 mod collect;
 mod display;
+pub mod dump;
 mod ffi;
 #[cfg(test)]
 mod tests;

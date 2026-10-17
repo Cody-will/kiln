@@ -39,6 +39,9 @@ USAGE:
                             Build and run (in a package: kiln run [-- args...])
     kiln parse --dump-expanded <file.kn>
                             The AST dump after derive expansion
+    kiln typeck --dump <file.kn>
+                            The type-checking results (for the self-hosted
+                            type checker's differential test)
     kiln resolve --dump <file.kn>
                             The name-resolution table (for the self-hosted
                             resolver's differential test)
@@ -138,6 +141,14 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             };
             print!("{}", kiln_parser::dump::dump_expanded(&src));
+            ExitCode::SUCCESS
+        }
+        [cmd, flag, file] if cmd == "typeck" && flag == "--dump" => {
+            let Ok(src) = std::fs::read_to_string(file) else {
+                eprintln!("error: cannot read {file}");
+                return ExitCode::from(1);
+            };
+            print!("{}", kiln_typeck::dump::dump(&src));
             ExitCode::SUCCESS
         }
         [cmd, flag, file] if cmd == "resolve" && flag == "--dump" => {
