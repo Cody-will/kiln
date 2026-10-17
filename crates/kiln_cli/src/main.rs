@@ -39,6 +39,9 @@ USAGE:
                             Build and run (in a package: kiln run [-- args...])
     kiln parse --dump-expanded <file.kn>
                             The AST dump after derive expansion
+    kiln mir --dump <file.kn>
+                            Every field of the lowered MIR (for the
+                            self-hosted MIR lowering's differential test)
     kiln typeck --dump <file.kn>
                             The type-checking results (for the self-hosted
                             type checker's differential test)
@@ -141,6 +144,14 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             };
             print!("{}", kiln_parser::dump::dump_expanded(&src));
+            ExitCode::SUCCESS
+        }
+        [cmd, flag, file] if cmd == "mir" && flag == "--dump" => {
+            let Ok(src) = std::fs::read_to_string(file) else {
+                eprintln!("error: cannot read {file}");
+                return ExitCode::from(1);
+            };
+            print!("{}", kiln_mir::dump::dump(&src));
             ExitCode::SUCCESS
         }
         [cmd, flag, file] if cmd == "typeck" && flag == "--dump" => {

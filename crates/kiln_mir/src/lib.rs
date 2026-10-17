@@ -15,6 +15,7 @@
 //! - Calls record which arguments the result may borrow from, using the
 //!   callee's signature and the lifetime elision rules ([`sig`]).
 
+pub mod dump;
 pub mod ir;
 mod lower;
 pub mod pretty;
