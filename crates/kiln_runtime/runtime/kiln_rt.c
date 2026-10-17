@@ -859,8 +859,17 @@ void kn_fmt_debug_char(KnVec *s, uint32_t c) {
     kn_push_cstr(s, "'");
 }
 
-/* Debug form of a float: like Display, but whole numbers keep ".0". */
+void kn_fmt_f64_exp(KnVec *s, double v, int64_t prec, int32_t upper);
+
+/* Debug form of a float, like Rust: shortest exponent form outside
+ * 1e-4 <= |v| < 1e16 (`1e16`, `6.9e-5`), otherwise like Display but whole
+ * numbers keep ".0". */
 void kn_fmt_debug_f64(KnVec *s, double v) {
+    double a = fabs(v);
+    if (!isnan(v) && !isinf(v) && a != 0 && (a < 1e-4 || a >= 1e16)) {
+        kn_fmt_f64_exp(s, v, -1, 0);
+        return;
+    }
     size_t start = s->len;
     kn_fmt_f64(s, v);
     if (isnan(v) || isinf(v)) return;

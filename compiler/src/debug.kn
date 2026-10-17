@@ -162,16 +162,6 @@ impl W {
 	}
 }
 
-// Rust's `{:?}` for f64: plain decimal for 1e-4 <= |v| < 1e16 (and 0),
-// otherwise the shortest exponential form.
-fun float_debug(v f64) string {
-	a := if v < 0.0 { -v } else { v }
-	if a != 0.0 && (a < 0.0001 || a >= 10000000000000000.0) {
-		return "{v:e}"
-	}
-	return "{v:?}"
-}
-
 fun hex(c u32) string {
 	return "{c:x}"
 }
@@ -1038,7 +1028,8 @@ fun lit(w &mut W, l &Lit) {
 		Lit::Float { value, suffix } => {
 			w.sopen("Float")
 			w.f("value")
-			w.raw(&float_debug(*value))
+			v := *value
+			w.raw("{v:?}")
 			w.e()
 			w.f("suffix")
 			w.opt_str(suffix)

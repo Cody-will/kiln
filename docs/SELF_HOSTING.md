@@ -69,15 +69,15 @@ compiler through dumps only. Nothing in the Rust build depends on
 - **The formatter continued the line after `import a::*`**, indenting the
   next item, because it read the trailing `*` as a binary operator.
   *Fixed* in `kiln_fmt` (test `glob_import_does_not_continue`).
-- **Other formatter bugs, still open:** `?Sized` in a bound list is printed
-  `+?Sized`, `pub(pkg)` becomes `pub (pkg)`, and a line after a type alias
-  ending in `>` (`type F = fun(T) option<T>`) is indented as a
-  continuation. `tests/parser/` is excluded from the formatter corpus
-  test, since it keeps such spellings on purpose.
-- **`{:?}` on f64 differs from Rust:** Kiln prints `1e16` as
-  `10000000000000000.0` and `1e-5` as `0.00001`, while Rust switches to
-  exponent form outside `1e-4 <= |x| < 1e16`. `debug.kn` does the switch
-  itself with `{x:e}`. *Open* (it is a choice, but it differs from Rust).
+- **Other formatter bugs:** `?Sized` printed as `+?Sized`, `pub(pkg)` as
+  `pub (pkg)`, and a line after a type ending in a generic `>` was
+  indented as a continuation (this had mis-indented parts of std).
+  *Fixed*; `tests/parser/` is in the formatter corpus test again.
+- **`{:?}` on f64 differed from Rust** (`1e16` printed as
+  `10000000000000000.0`). *Fixed:* Debug switches to the shortest
+  exponent form outside `1e-4 <= |x| < 1e16`, as Rust does
+  (`tests/run/float_debug.kn`). Display never uses an exponent, also as in
+  Rust.
 - **`chan` is a keyword**, so it can't be a field name. The Rust AST's
   `chan` fields are `ch` in `ast.kn` (the dump still prints `chan`).
 - **u128 now works**, but the lexer still uses the four-limb `U128`; the
