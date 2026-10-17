@@ -59,6 +59,11 @@ pub(crate) struct FnCx<'c, 'r, 'a, 'f> {
     pub cur_block: usize,
     /// Countdown to the next preemption check at loop back-edges.
     pub preempt: Option<StackSlot>,
+    /// Back-edge source blocks that skip the countdown: innermost loops
+    /// nested in another loop, whose enclosing back-edge does the check.
+    /// Keeping the hot inner loop free of the counter lets LLVM unroll and
+    /// vectorize it; a yield waits at most one inner loop run longer.
+    pub no_preempt: Vec<usize>,
     pub fn_idx: usize,
     pub locals: Vec<LocalInfo>,
     pub blocks: Vec<ir::Block>,
@@ -120,6 +125,7 @@ impl Codegen<'_, '_> {
             intr_substs: HashMap::new(),
             cur_block: 0,
             preempt: None,
+            no_preempt: Vec::new(),
             span,
             promo,
             bce,
@@ -848,6 +854,13 @@ impl FnCx<'_, '_, '_, '_> {
             let n = self.iconst(1024);
             self.b.ins().stack_store(n, s, 0);
             self.preempt = Some(s);
+            let succs: Vec<Vec<usize>> = self
+                .body
+                .blocks
+                .iter()
+                .map(|b| b.term.successors().iter().map(|t| t.0 as usize).collect())
+                .collect();
+            self.no_preempt = nested_inner_latches(&succs);
         }
         let first = self.blocks[0];
         // Functions with `defer` run them on panic too: register a frame and
@@ -1096,7 +1109,10 @@ impl FnCx<'_, '_, '_, '_> {
             Terminator::Goto(b) => {
                 let blk = self.blocks[b.0 as usize];
                 match self.preempt {
-                    Some(s) if (b.0 as usize) <= self.cur_block => {
+                    Some(s)
+                        if (b.0 as usize) <= self.cur_block
+                            && !self.no_preempt.contains(&self.cur_block) =>
+                    {
                         let c = self.b.ins().stack_load(types::I64, s, 0);
                         let c = self.b.ins().iadd_imm(c, -1);
                         self.b.ins().stack_store(c, s, 0);
@@ -2575,4 +2591,121 @@ impl FnCx<'_, '_, '_, '_> {
         self.call_rt("kn_fmt_pad", &[s, p, n, width, fill, align, flags, prec]);
         self.free_string(tmp);
     }
+}
+
+/// Latch blocks (sources of back-edges) of innermost natural loops that sit
+/// inside another loop. Block 0 is the entry.
+pub(crate) fn nested_inner_latches(succs: &[Vec<usize>]) -> Vec<usize> {
+    let n = succs.len();
+    // Reverse postorder from the entry.
+    let mut order = Vec::with_capacity(n);
+    let mut seen = vec![false; n];
+    let mut stack = vec![(0usize, 0usize)];
+    if n == 0 {
+        return vec![];
+    }
+    seen[0] = true;
+    while let Some(&mut (b, ref mut k)) = stack.last_mut() {
+        if *k < succs[b].len() {
+            let t = succs[b][*k];
+            *k += 1;
+            if !seen[t] {
+                seen[t] = true;
+                stack.push((t, 0));
+            }
+        } else {
+            order.push(b);
+            stack.pop();
+        }
+    }
+    order.reverse();
+    let mut rpo = vec![usize::MAX; n];
+    for (i, &b) in order.iter().enumerate() {
+        rpo[b] = i;
+    }
+    let mut preds = vec![Vec::new(); n];
+    for (b, ss) in succs.iter().enumerate() {
+        if rpo[b] != usize::MAX {
+            for &t in ss {
+                preds[t].push(b);
+            }
+        }
+    }
+    // Immediate dominators (Cooper, Harvey and Kennedy).
+    let mut idom = vec![usize::MAX; n];
+    idom[0] = 0;
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &b in order.iter().skip(1) {
+            let mut new = usize::MAX;
+            for &p in &preds[b] {
+                if idom[p] == usize::MAX {
+                    continue;
+                }
+                new = if new == usize::MAX {
+                    p
+                } else {
+                    let (mut x, mut y) = (p, new);
+                    while x != y {
+                        while rpo[x] > rpo[y] {
+                            x = idom[x];
+                        }
+                        while rpo[y] > rpo[x] {
+                            y = idom[y];
+                        }
+                    }
+                    x
+                };
+            }
+            if new != usize::MAX && idom[b] != new {
+                idom[b] = new;
+                changed = true;
+            }
+        }
+    }
+    let dominates = |h: usize, mut b: usize| loop {
+        if b == h {
+            return true;
+        }
+        if b == 0 || idom[b] == usize::MAX {
+            return false;
+        }
+        b = idom[b];
+    };
+    // Natural loops, merged by header: (header, body, latches).
+    let mut loops: Vec<(usize, Vec<bool>, Vec<usize>)> = Vec::new();
+    for &u in &order {
+        for &h in &succs[u] {
+            if !dominates(h, u) {
+                continue;
+            }
+            let li = match loops.iter().position(|l| l.0 == h) {
+                Some(i) => i,
+                None => {
+                    let mut body = vec![false; n];
+                    body[h] = true;
+                    loops.push((h, body, Vec::new()));
+                    loops.len() - 1
+                }
+            };
+            loops[li].2.push(u);
+            let mut work = vec![u];
+            while let Some(b) = work.pop() {
+                if !loops[li].1[b] {
+                    loops[li].1[b] = true;
+                    work.extend(preds[b].iter().copied());
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (i, l) in loops.iter().enumerate() {
+        let innermost = !loops.iter().enumerate().any(|(j, o)| j != i && l.1[o.0]);
+        let nested = loops.iter().enumerate().any(|(j, o)| j != i && o.1[l.0]);
+        if innermost && nested {
+            out.extend(l.2.iter().copied());
+        }
+    }
+    out
 }

@@ -681,7 +681,9 @@ impl FnCx<'_, '_, '_, '_> {
                 self.b.ins().jump(store, &[]);
                 self.b.switch_to_block(store);
                 let data = self.load(types::I64, v, 0);
-                let len = self.load(types::I64, v, 16);
+                // kn_vec_reserve never changes `len`; reusing the earlier
+                // load lets LLVM track the length of a vector built by pushes.
+                let len = len0;
                 let off = self.b.ins().imul_imm(len, size as i64);
                 let at = self.b.ins().iadd(data, off);
                 self.store_op(&args[1], at);

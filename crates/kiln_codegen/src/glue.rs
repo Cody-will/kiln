@@ -81,6 +81,7 @@ impl<'r, 'a> Codegen<'r, 'a> {
                 intr_substs: HashMap::new(),
                 cur_block: 0,
                 preempt: None,
+                no_preempt: Vec::new(),
                 span,
                 promo: Default::default(),
                 bce: Default::default(),

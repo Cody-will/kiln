@@ -61,9 +61,18 @@ impl<'c> Cx<'c> {
     /// calls, which always reach Kiln functions or shims) take their `i64`
     /// parameters as `ptr`: every one of them is an address.
     fn fn_type(&self, sig: &ir::Signature, ptr_params: bool) -> R<FunctionType<'c>> {
+        self.fn_type_ptrs(sig, |_| ptr_params)
+    }
+
+    /// Like [`Self::fn_type`], choosing per `i64` parameter index.
+    fn fn_type_ptrs(
+        &self,
+        sig: &ir::Signature,
+        is_ptr: impl Fn(usize) -> bool,
+    ) -> R<FunctionType<'c>> {
         let mut ps: Vec<BasicMetadataTypeEnum> = Vec::new();
-        for p in &sig.params {
-            if ptr_params && p.value_type == types::I64 {
+        for (i, p) in sig.params.iter().enumerate() {
+            if is_ptr(i) && p.value_type == types::I64 {
                 ps.push(self.ptr_t().into());
             } else {
                 ps.push(self.ty(p.value_type)?.into());
@@ -92,6 +101,18 @@ impl<'c> Cx<'c> {
         Intrinsic::find(name)
             .and_then(|i| i.get_declaration(&self.m, tys))
             .ok_or_else(|| format!("LLVM backend: missing intrinsic {name}"))
+    }
+}
+
+/// Runtime functions whose listed parameters are pointers the callee does
+/// not keep. Declaring them `ptr nocapture` (instead of `i64`) keeps the
+/// caller's objects (a local `Vec` growing through `kn_vec_reserve`) from
+/// escaping, so LLVM can keep their fields in registers.
+fn runtime_nocapture(name: &str) -> &'static [usize] {
+    match name {
+        "kn_vec_reserve" | "kn_vec_free" => &[0],
+        "kn_string_push" | "kn_string_from" => &[0, 1],
+        _ => &[],
     }
 }
 
@@ -146,8 +167,17 @@ pub fn emit(
     let defined: HashMap<FuncId, &Func> = funcs.iter().map(|f| (f.id, f)).collect();
     for (id, d) in decls.get_functions() {
         let is_kiln = defined.contains_key(&id);
-        let ty = cx.fn_type(&d.signature, is_kiln)?;
         let name = d.linkage_name(id);
+        let rt_ptrs = if is_kiln {
+            &[][..]
+        } else {
+            runtime_nocapture(&name)
+        };
+        let ty = if rt_ptrs.is_empty() {
+            cx.fn_type(&d.signature, is_kiln)?
+        } else {
+            cx.fn_type_ptrs(&d.signature, |i| rt_ptrs.contains(&i))?
+        };
         let fv = match cx.m.get_function(&name) {
             Some(f) => f,
             None => cx.m.add_function(
@@ -160,6 +190,9 @@ pub fn emit(
                 }),
             ),
         };
+        for &i in rt_ptrs {
+            fv.add_attribute(AttributeLoc::Param(i as u32), cx.enum_attr("nocapture"));
+        }
         if name.starts_with("kn_panic") {
             fv.add_attribute(AttributeLoc::Function, cx.enum_attr("noreturn"));
             fv.add_attribute(AttributeLoc::Function, cx.enum_attr("cold"));
