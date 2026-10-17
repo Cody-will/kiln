@@ -38,6 +38,7 @@ impl dyn Tr<i32, Item = u8> {}
 
 import std::io::{self, Read as R, fs::*}
 import a::b as c
+
 const C i32 = 1 + 2 * 3
 static mut S [u8; 4] = [0; 4]
 type F<T> = fun mut(T, &&T) option<T>
@@ -49,6 +50,7 @@ type Ch = (chan<- i32, <-chan i32, Vec<<-chan i32>, !, _, impl Fn + Send)
 mod inner {
 	pub fun x() {}
 }
+
 mod outer
 
 extern "C" {
@@ -72,7 +74,7 @@ fun main() {
 	g := Vec::<i32>::new() + chan::<Job>(4) + Self::X + self.y
 	lit := (1u8, 0x_ff, 1_000i64, 1.5e3, 2.0f32, 'a', '\n', "s", r"raw\n", r#"x"#, b"by\x00", b'c', true, false, 340282366920938463463374607431768211455u128)
 	s := "a {x} b {y:>8.2} {z:?} {w:#x} {q:_^+#010.3e} {{lit}}"
-	arr := [1, 2, 3,]
+	arr := [1, 2, 3]
 	e := []
 	one := [x]
 	u := ()

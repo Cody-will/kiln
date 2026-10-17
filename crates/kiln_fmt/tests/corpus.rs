@@ -80,9 +80,6 @@ fn every_kiln_file_formats_idempotently() {
     }
     assert!(files.len() > 50, "found only {} files", files.len());
     let mut failures = Vec::new();
-    // The parser corpus keeps unusual spellings on purpose (`[1, 2,]`,
-    // `pub(pkg)`), which formatting would rewrite.
-    files.retain(|f| !f.starts_with(root.join("tests/parser")));
     for f in &files {
         let src = std::fs::read_to_string(f).unwrap().replace("\r\n", "\n");
         // Files under tests/ that are meant to fail to parse are skipped.

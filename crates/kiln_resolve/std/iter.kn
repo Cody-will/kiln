@@ -142,9 +142,9 @@ pub trait DoubleEndedIterator<T>: Iterator<T> {
 	fun next_back(&mut self) option<T>
 
 	// The values in reverse order.
-		fun rev(self) Rev<Self, T> {
-			return Rev { inner: self }
-		}
+	fun rev(self) Rev<Self, T> {
+		return Rev { inner: self }
+	}
 }
 
 impl<T> DoubleEndedIterator<T> for Range<T> {

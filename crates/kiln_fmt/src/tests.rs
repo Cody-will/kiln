@@ -72,6 +72,13 @@ fn glob_import_does_not_continue() {
 }
 
 #[test]
+fn relaxed_bounds_pkg_visibility_and_generic_line_ends() {
+    same("struct P<T: Ord + ?Sized, U: ?Sized> {\n\tpub(pkg) x T,\n}\n");
+    same("type F<T> = fun mut(T) option<T>\ntype G = (i32,)\n");
+    same("fun main() {\n\tx := a >\n\t\tb\n}\n");
+}
+
+#[test]
 fn syntax_errors_are_reported() {
     assert!(format("fun main( {\n").is_err());
 }

@@ -524,6 +524,14 @@ impl Fmt<'_> {
         };
         let nx = self.k(j);
         use T::*;
+        // `T: ?Sized`, `Ord + ?Sized`: a relaxed bound.
+        if matches!(nx, Question) && matches!(p, Plus | Colon) {
+            return Some(true);
+        }
+        // `pub(pkg)`.
+        if matches!(p, Keyword(K::Pub)) && matches!(nx, LParen) {
+            return Some(false);
+        }
         // Tokens that never have a space before them.
         if matches!(
             nx,
@@ -688,6 +696,8 @@ impl Fmt<'_> {
                             && pl > 0
                             && matches!(self.k(pl - 1), T::Arrow | T::RParen))
                         || self.add_comma[pl]
+                        // A generic `>` (`type F = option<T>`) ends the type.
+                        || (matches!(pk, T::Gt | T::Shr) && !self.angle_binary(pl))
                         // The `*` of a glob import (`import a::*`).
                         || (matches!(pk, T::Star)
                             && pl > 0

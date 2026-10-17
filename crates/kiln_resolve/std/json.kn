@@ -1127,10 +1127,10 @@ pub trait FromJson {
 	// Reads `Self` from the JSON at the cursor. Derived structs and the
 	// standard containers read directly from the text; the default parses a
 	// `Value` and converts it.
-		fun read_json<'p>(p &mut Parser<'p>) result<Self, Error> {
-			v := p.read_value()?
-			return Self::from_json(&v)
-		}
+	fun read_json<'p>(p &mut Parser<'p>) result<Self, Error> {
+		v := p.read_value()?
+		return Self::from_json(&v)
+	}
 
 	// The value for a missing object member (`Option` gives `None`; other
 	// types make the member required).

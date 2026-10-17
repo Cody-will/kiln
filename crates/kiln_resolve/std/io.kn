@@ -184,18 +184,18 @@ pub trait Read {
 	fun read(&mut self, buf &mut [u8]) result<usize, Error>
 
 	// Reads everything until the end, appending to `out`; returns the count.
-		fun read_to_end(&mut self, out &mut Vec<u8>) result<usize, Error> {
-			buf mut := [0 as u8; 8192]
-			total mut := 0
-			loop {
-				n := self.read(&mut buf)?
-				if n == 0 {
-					return Ok(total)
-				}
-				out.extend_from_slice(&buf[0..n])
-				total += n
+	fun read_to_end(&mut self, out &mut Vec<u8>) result<usize, Error> {
+		buf mut := [0 as u8; 8192]
+		total mut := 0
+		loop {
+			n := self.read(&mut buf)?
+			if n == 0 {
+				return Ok(total)
 			}
+			out.extend_from_slice(&buf[0..n])
+			total += n
 		}
+	}
 
 	// Reads everything until the end as UTF-8 text, appending to `out`.
 	fun read_to_string(&mut self, out &mut string) result<usize, Error> {
@@ -230,9 +230,9 @@ pub trait Write {
 	fun write(&mut self, buf &[u8]) result<usize, Error>
 
 	// Pushes buffered data to its destination.
-		fun flush(&mut self) result<void, Error> {
-			return Ok()
-		}
+	fun flush(&mut self) result<void, Error> {
+		return Ok()
+	}
 
 	// Writes all of `buf`.
 	fun write_all(&mut self, buf &[u8]) result<void, Error> {

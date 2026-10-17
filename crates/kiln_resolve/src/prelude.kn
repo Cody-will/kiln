@@ -16,10 +16,10 @@ pub enum result<T, E> {
 
 pub struct string
 pub struct Vec<T>
-	pub struct Box<T>
-	pub struct Range<T>
+pub struct Box<T>
+pub struct Range<T>
 
-	pub trait Copy {}
+pub trait Copy {}
 // An explicit copy. `#[derive(Clone)]` clones field by field; implement it
 // by hand for types that manage resources (like `Arc`).
 pub trait Clone {
@@ -180,9 +180,9 @@ pub trait Drop {
 // its result; dropping the handle detaches the task.
 pub struct Task<T>
 
-	impl<T> Task<T> {
-		pub fun join(self) result<T, Panic>
-	}
+impl<T> Task<T> {
+	pub fun join(self) result<T, Panic>
+}
 
 // A task's panic. Panics currently end the whole program, so `join` never
 // returns one yet.
@@ -236,9 +236,9 @@ pub trait Iterator<T> {
 	// ----- adapters ---------------------------------------------------------------
 
 	// Each value passed through `f`.
-		fun map<U>(self, f fun mut(T) U) std::iter::Map<Self, T, U> {
-			return std::iter::Map { inner: self, f: f }
-		}
+	fun map<U>(self, f fun mut(T) U) std::iter::Map<Self, T, U> {
+		return std::iter::Map { inner: self, f: f }
+	}
 
 	// Only the values for which `keep` returns true.
 	fun filter(self, keep fun mut(&T) bool) std::iter::Filter<Self, T> {
@@ -777,19 +777,19 @@ impl string {
 	pub fun into_bytes(self) Vec<u8>
 
 	// A string from bytes the caller knows are valid UTF-8.
-		pub unsafe fun from_utf8_unchecked(bytes Vec<u8>) string
+	pub unsafe fun from_utf8_unchecked(bytes Vec<u8>) string
 
 	// The underlying bytes; the caller must keep them valid UTF-8.
 	pub unsafe fun as_mut_vec(&mut self) &mut Vec<u8>
 
 	// A string from UTF-8 bytes, or an error saying where they stop being valid.
-		pub fun from_utf8(bytes Vec<u8>) result<string, Utf8Error> {
-			n := kn_utf8_valid_up_to(bytes.as_slice()) as usize
-			if n != bytes.len() {
-				return Err(Utf8Error { valid_up_to: n })
-			}
-			return Ok(unsafe { string::from_utf8_unchecked(bytes) })
+	pub fun from_utf8(bytes Vec<u8>) result<string, Utf8Error> {
+		n := kn_utf8_valid_up_to(bytes.as_slice()) as usize
+		if n != bytes.len() {
+			return Err(Utf8Error { valid_up_to: n })
 		}
+		return Ok(unsafe { string::from_utf8_unchecked(bytes) })
+	}
 
 	// A string from bytes, replacing invalid UTF-8 with U+FFFD.
 	pub fun from_utf8_lossy(bytes &[u8]) string {
@@ -1075,15 +1075,15 @@ fun ascii_lower(b u8) u8 {
 
 impl<T> Vec<T> {
 	pub fun new() Vec<T>
-		pub fun with_capacity(n usize) Vec<T>
-		pub fun len(&self) usize
+	pub fun with_capacity(n usize) Vec<T>
+	pub fun len(&self) usize
 	pub fun is_empty(&self) bool
 	pub fun push(&mut self, value T)
 	pub fun pop(&mut self) option<T>
-		pub fun get(&self, index usize) option<&T>
-		pub fun first(&self) option<&T>
-		pub fun last(&self) option<&T>
-		pub fun clear(&mut self)
+	pub fun get(&self, index usize) option<&T>
+	pub fun first(&self) option<&T>
+	pub fun last(&self) option<&T>
+	pub fun clear(&mut self)
 	pub fun capacity(&self) usize
 	pub fun reserve(&mut self, additional usize)
 
@@ -1172,7 +1172,7 @@ impl<T> Box<T> {
 	pub fun new(value T) Box<T>
 
 	// Gives up ownership: the caller must later rebuild the box with `from_raw`.
-		pub fun into_raw(b Box<T>) *mut T
+	pub fun into_raw(b Box<T>) *mut T
 
 	// Takes ownership of a pointer made by `into_raw`.
 	pub unsafe fun from_raw(p *mut T) Box<T>
