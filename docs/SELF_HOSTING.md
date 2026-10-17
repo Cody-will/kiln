@@ -107,6 +107,16 @@ takes out of the checker while it lowers. `crates/kiln_cli/tests/mir_diff.rs`
 runs `kilnc --mir` on every `.kn` file plus the Kiln snippets in the MIR,
 borrow checker and type checker unit tests.
 
+The borrow checker (`compiler/src/borrowck.kn`) ports `kiln_borrowck`: the
+signature checks (undeclared lifetimes, missing lifetime specifiers) and the
+per-body dataflow over the MIR from `lower.kn` (moves, initialization, loans
+with non-lexical lifetimes, drops, returned references, `spawn`/scoped task
+rules). Move states are sorted vectors ordered like the Rust derived `Ord`, so
+diagnostics come out in the same order. `kiln borrowck --dump` prints each
+diagnostic with its span, notes and help; `crates/kiln_cli/tests/borrowck_diff.rs`
+checks that `kilnc --borrowck` prints the same thing for the same inputs as
+`mir_diff.rs`.
+
 ## Stages
 
 | Stage | Rust crate | Kiln | Status |
@@ -117,7 +127,7 @@ borrow checker and type checker unit tests.
 | 3. Name resolution | `kiln_resolve` | `compiler/src/resolve.kn` | ✅ ported; identical tables and errors on 162 files |
 | 4. Type checking | `kiln_typeck` | `compiler/src/typeck.kn`, `ty.kn` | ✅ ported; identical results and errors on 163 files and 127 unit-test snippets |
 | 5. MIR lowering | `kiln_mir` | `compiler/src/mir.kn`, `sig.kn`, `lower.kn` | ✅ ported; identical MIR on 163 files (116 that type-check) and the unit-test snippets |
-| 5b. Borrow checking | `kiln_borrowck` | | ⬜ |
+| 5b. Borrow checking | `kiln_borrowck` | `compiler/src/borrowck.kn` | ✅ ported; identical diagnostics on every `.kn` file and the unit-test snippets |
 | 6. Codegen | `kiln_codegen` | | ⬜. Emit C or LLVM IR text first (no Cranelift bindings from Kiln) |
 | 7. Bootstrap | | | ⬜ `kilnc` builds `kilnc`; the stage-2 binary must reproduce stage 1 |
 
