@@ -19,6 +19,7 @@
 //! (`kiln run` exits with the program's status).
 
 mod fmt;
+mod install;
 mod package;
 mod test;
 
@@ -57,6 +58,8 @@ USAGE:
     the dependencies); --locked fails instead of updating it.
     Release builds use LLVM when this kiln includes it (built with
     --features llvm), Cranelift otherwise; --backend= overrides.
+    kiln version [-v]       Show the version (-v: where std and the runtime come from)
+    kiln doctor             Check the C toolchain/linker and build a test program
     kiln help               Show this message
     kiln --version          Show the version";
 
@@ -183,10 +186,12 @@ fn main() -> ExitCode {
             Some(o) => test::run(o),
             None => usage_error(),
         },
-        [flag] if flag == "--version" || flag == "-V" => {
-            println!("kiln {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
+        [flag] if flag == "--version" || flag == "-V" => install::version(false),
+        [cmd, rest @ ..] if cmd == "version" && rest.len() <= 1 => {
+            install::version(rest.first().is_some_and(|a| a == "-v" || a == "--verbose"))
         }
+        [cmd] if cmd == "doctor" => install::doctor(),
+        [cmd, dir] if cmd == "__install-lib" => install::install_lib(std::path::Path::new(dir)),
         [cmd] if cmd == "help" || cmd == "--help" || cmd == "-h" => {
             println!("{USAGE}");
             ExitCode::SUCCESS

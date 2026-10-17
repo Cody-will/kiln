@@ -337,6 +337,7 @@ dependencies = [
  "kiln_mir",
  "kiln_parser",
  "kiln_resolve",
+ "kiln_runtime",
  "kiln_typeck",
 ]
 

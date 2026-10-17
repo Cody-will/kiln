@@ -157,3 +157,46 @@ fn test_command_discovers_files_in_directories() {
         "{out}"
     );
 }
+
+#[test]
+fn version_and_installed_lib_dir() {
+    let (code, out, _) = kiln(&["--version"]);
+    assert_eq!(code, 0);
+    assert!(out.starts_with("kiln "), "{out}");
+
+    // Install std + runtime into a prefix, then build a fresh package
+    // outside the repository against that installed library.
+    let root = std::env::temp_dir().join(format!("kiln-install-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let lib = root.join("lib/kiln");
+    let (code, _, err) = kiln(&["__install-lib", lib.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    assert!(lib.join("std/prelude.kn").is_file());
+    assert!(lib.join("std/encoding/json.kn").is_file());
+    let run = |args: &[&str], dir: &std::path::Path| {
+        let o = Command::new(env!("CARGO_BIN_EXE_kiln"))
+            .args(args)
+            .env("KILN_LIB_DIR", &lib)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let s = String::from_utf8_lossy(&o.stdout).into_owned();
+        (
+            o.status.code().unwrap_or(-1),
+            s,
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+    let (code, out, _) = run(&["version", "-v"], &root);
+    assert_eq!(code, 0);
+    assert!(out.contains(lib.to_str().unwrap()), "{out}");
+    let (code, _, err) = run(&["new", "app"], &root);
+    assert_eq!(code, 0, "{err}");
+    for f in ["kiln.toml", "src/main.kn", ".gitignore", "README.md"] {
+        assert!(root.join("app").join(f).is_file(), "missing {f}");
+    }
+    let (code, out, err) = run(&["run"], &root.join("app/src"));
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out, "Hello, world!\n");
+    let _ = std::fs::remove_dir_all(&root);
+}

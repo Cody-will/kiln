@@ -81,13 +81,47 @@ pub struct BuiltinSource {
     pub files: Vec<(usize, &'static str, &'static str)>,
 }
 
+/// The installed library directory (`<prefix>/lib/kiln`): `$KILN_LIB_DIR`,
+/// or `../lib/kiln` next to the running executable, if it holds
+/// `std/prelude.kn`. It has `std/` (`prelude.kn`, and one file per module
+/// at its path, e.g. `std/encoding/json.kn`) and `runtime/` (the static
+/// libraries). Without one, the copies built into `kiln` are used.
+pub fn lib_dir() -> Option<std::path::PathBuf> {
+    static D: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    D.get_or_init(|| {
+        let cand = match std::env::var_os("KILN_LIB_DIR") {
+            Some(d) => std::path::PathBuf::from(d),
+            None => {
+                let exe = std::env::current_exe().ok()?;
+                let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+                exe.parent()?.parent()?.join("lib/kiln")
+            }
+        };
+        cand.join("std/prelude.kn").is_file().then_some(cand)
+    })
+    .clone()
+}
+
+/// Where module `path` (`encoding::json`) lives under `lib_dir()/std`.
+pub fn std_file(path: &str) -> String {
+    format!("{}.kn", path.replace("::", "/"))
+}
+
+fn installed(rel: &str, embedded: &'static str) -> &'static str {
+    match lib_dir().and_then(|d| std::fs::read_to_string(d.join("std").join(rel)).ok()) {
+        Some(t) => Box::leak(t.into_boxed_str()),
+        None => embedded,
+    }
+}
+
 /// The combined prelude and standard library source (built once).
 pub fn builtin() -> &'static BuiltinSource {
     static B: std::sync::OnceLock<BuiltinSource> = std::sync::OnceLock::new();
     B.get_or_init(|| {
         let mut text = String::new();
-        let mut files = vec![(0, "<prelude>", PRELUDE_SRC)];
-        text.push_str(PRELUDE_SRC);
+        let prelude = installed("prelude.kn", PRELUDE_SRC);
+        let mut files = vec![(0, "<prelude>", prelude)];
+        text.push_str(prelude);
         text.push_str("\npub mod std {\n");
         // Emit modules as a tree: open/close `pub mod` blocks along each path.
         let mut open: Vec<&str> = vec![];
@@ -104,7 +138,8 @@ pub fn builtin() -> &'static BuiltinSource {
             }
             let name: &'static str =
                 Box::leak(format!("<std>/{}.kn", path.replace("::", "/")).into_boxed_str());
-            files.push((text.len(), name, *src));
+            let src = installed(&std_file(path), src);
+            files.push((text.len(), name, src));
             text.push_str(src);
             text.push('\n');
         }

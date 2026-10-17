@@ -341,6 +341,15 @@ pub fn new(args: &[String]) -> ExitCode {
             format!("[package]\nname = \"{pkg_name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n"),
         ),
         (dir.join(".gitignore"), "/target\n".into()),
+        (
+            dir.join("README.md"),
+            format!(
+                "# {pkg_name}\n\nA Kiln {}.\n\n```sh\nkiln {}     # {}\nkiln build    # writes target/debug/{pkg_name}\nkiln test     # runs @test functions\nkiln fmt      # formats the sources\n```\n",
+                if lib { "library" } else { "program" },
+                if lib { "test " } else { "run  " },
+                if lib { "runs @test functions" } else { "build and run" },
+            ),
+        ),
         if lib {
             (
                 dir.join("src/lib.kn"),

@@ -16,16 +16,34 @@ pub fn link(object: &Path, out: &Path) -> Result<(), String> {
 /// [`link`], adding native libraries and C sources (`[link]` in kiln.toml).
 pub fn link_with(object: &Path, out: &Path, native: &NativeLink) -> Result<(), String> {
     let dir = object.parent().unwrap_or(Path::new("."));
-    let rt = dir.join(kiln_runtime::LIB_NAME);
-    std::fs::write(&rt, kiln_runtime::LIB)
-        .map_err(|e| format!("could not write {}: {e}", rt.display()))?;
+    // An installed kiln links the runtime from `<prefix>/lib/kiln/runtime`;
+    // otherwise the copy built into this executable is written out.
+    let installed = kiln_resolve::lib_dir().map(|d| d.join("runtime"));
+    let inst = |name: &str| {
+        installed
+            .as_ref()
+            .map(|d| d.join(name))
+            .filter(|p| p.is_file())
+    };
+    let (rt, rt_tmp) = match inst(kiln_runtime::LIB_NAME) {
+        Some(p) => (p, false),
+        None => {
+            let rt = dir.join(kiln_runtime::LIB_NAME);
+            std::fs::write(&rt, kiln_runtime::LIB)
+                .map_err(|e| format!("could not write {}: {e}", rt.display()))?;
+            (rt, true)
+        }
+    };
     // The TLS library is only written and linked for programs that use it
     // (their object refers to `kn_tls_*` symbols).
     let uses_tls = std::fs::read(object)
         .map(|b| b.windows(7).any(|w| w == b"kn_tls_"))
         .unwrap_or(false);
-    let tls = dir.join(kiln_runtime::TLS_LIB_NAME);
-    if uses_tls {
+    let (tls, tls_tmp) = match inst(kiln_runtime::TLS_LIB_NAME) {
+        Some(p) => (p, false),
+        None => (dir.join(kiln_runtime::TLS_LIB_NAME), true),
+    };
+    if uses_tls && tls_tmp {
         std::fs::write(&tls, kiln_runtime::TLS_LIB)
             .map_err(|e| format!("could not write {}: {e}", tls.display()))?;
     }
@@ -34,8 +52,10 @@ pub fn link_with(object: &Path, out: &Path, native: &NativeLink) -> Result<(), S
     let output = cmd
         .output()
         .map_err(|e| format!("could not run the linker ({cmd:?}): {e}"))?;
-    let _ = std::fs::remove_file(&rt);
-    if uses_tls {
+    if rt_tmp {
+        let _ = std::fs::remove_file(&rt);
+    }
+    if uses_tls && tls_tmp {
         let _ = std::fs::remove_file(&tls);
     }
     if !output.status.success() {

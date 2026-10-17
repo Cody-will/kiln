@@ -17,6 +17,7 @@ kiln_parser = { path = "../kiln_parser" }
 kiln_typeck = { path = "../kiln_typeck" }
 kiln_mir = { path = "../kiln_mir" }
 kiln_resolve = { path = "../kiln_resolve" }
+kiln_runtime = { path = "../kiln_runtime" }
 kiln_borrowck = { path = "../kiln_borrowck" }
 kiln_codegen = { path = "../kiln_codegen" }
 kiln_fmt = { path = "../kiln_fmt" }

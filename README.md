@@ -32,6 +32,16 @@ fun main() result<void, io::Error> {
 - [website/](website/): the Kiln website and step-by-step tutorial. Build it with `mdbook build website`.
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to build, test, and contribute.
 
+## Install
+
+```sh
+./install.sh      # or: make install  (installs into ~/.kiln and adds it to PATH)
+kiln doctor
+kiln new hello && cd hello && kiln run
+```
+
+See [website/src/install.md](website/src/install.md) for options (`--prefix`, `--no-llvm`, `--uninstall`).
+
 ## Building
 
 Requires Rust 1.80 or later.
