@@ -160,3 +160,22 @@ The load generator shares the 8 vCPUs with the server, so these numbers compare 
 1. Register passing in the Cranelift backend too (it still uses stack slots; LLVM recovers registers on its own).
 2. Fewer allocations in JSON decoding: reuse key and string buffers.
 3. Idle-worker parking without a futex per wake-up (a spinning worker handshake that doesn't burn CPU), for the worker pool.
+
+## Fixed-size arrays (nbody on `[Body; 5]`)
+
+nbody now holds its bodies in a `[Body; 5]` passed as `&[Body; 5]` /
+`&mut [Body; 5]`. hyperfine (-w1 -r5), same box:
+
+| Version | Kiln LLVM | Rust |
+|---|---:|---:|
+| `Vec<Body>` (before) | 0.212 | 0.174 |
+| `[Body; 5]` | 0.216–0.221 | 0.174–0.177 |
+
+Output is unchanged. With N constant, LLVM removes every bounds check in
+`advance` and fully unrolls it, and SLP packs the x/y pairs into
+`<2 x double>`. It still does not pair up the `sqrt`/`div` of two different
+body pairs the way Rust does (`sqrtpd`/`divpd`), so the result is ~1.25×
+Rust, the same as before. A second SLP round after O3 does pack those
+(`opt -O3` on the dumped IR gives `llvm.sqrt.v2f64`), but it measured no
+faster (221 ms), so it was not kept. Next to try: noalias/escape (the
+`energy(&b)` call stops SROA from promoting the array to registers).
