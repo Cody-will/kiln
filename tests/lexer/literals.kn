@@ -1,0 +1,19 @@
+/// Doc comment
+//// not a doc
+///no space
+x := 0x_ff_u8 + 0o17 + 0b1010i64 + 1_000_000 + 340282366920938463463374607431768211455u128
+y := 1.5e-3f32 + 2e10 + 3.0 + 1..2 + 5.secs() + 7e + 0x
+z := 'a' + '\n' + '\u{1F600}' + '\x41' + b'z' + b'\x00' + 'é' + '\''
+s := "plain {x} {y:>8} {a::b} {f(a: b)} {m["k"]} {{lit}} \t\"q\" \u{4e2d}\x7f"
+r := r"raw \n" + r#"has "quote""# + br"bytes" + br#"b#"# + b"a\x01\n"
+v := None::<Vec<Vec<i32>>>
+w := Foo::<i32>
+	.bar()
+	.baz()
+	..
+'outer: loop { break 'outer }
+fun f<'a>(x &'a str) &'a str { return x }
+/* block
+comment */ q := 1 /* nested /* inner */ */
+naïve := 日本 + _x + _ + Σ
+a <<= 1; b >>= 2; c ..= d; e -> f => g <- h

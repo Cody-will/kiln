@@ -1,0 +1,857 @@
+// The self-hosted Kiln lexer: a port of crates/kiln_lexer/src/lexer.rs.
+//
+// It produces the same tokens, doc comments and errors as the Rust lexer,
+// including Go-style semicolon insertion (an implicit `;` at a newline
+// after a token that can end a statement, unless the next line starts
+// with a single `.`). `tests/lexer_diff.rs` checks this over every `.kn`
+// file in the repository by comparing `dump` with `kiln lex --dump`.
+
+import super::token::{StrPart, Token, TokenKind, U128, ends_statement, is_keyword}
+
+pub struct LexError {
+	pub start usize,
+	pub end usize,
+	pub message string,
+}
+
+pub struct Lexed {
+	// Tokens, always ending with `Eof`.
+	pub tokens Vec<Token>,
+	// `///` doc comments: (start, end, text without `///` and one space).
+	pub docs Vec<(usize, usize, string)>,
+	pub errors Vec<LexError>,
+}
+
+pub fun lex(src &str) Lexed {
+	l mut := Lexer {
+		src: src,
+		bytes: src.as_bytes(),
+		pos: 0,
+		tokens: Vec::new(),
+		docs: Vec::new(),
+		errors: Vec::new(),
+		turbofish: Vec::new(),
+		closed_turbofish: false,
+	}
+	l.run()
+	return Lexed { tokens: l.tokens, docs: l.docs, errors: l.errors }
+}
+
+struct Lexer<'a> {
+	src &'a str,
+	bytes &'a [u8],
+	pos usize,
+	tokens Vec<Token>,
+	docs Vec<(usize, usize, string)>,
+	errors Vec<LexError>,
+	// Open `::<...>` groups: the `<`/`>` depth inside each.
+	turbofish Vec<usize>,
+	// The last token was the `>` closing a turbofish.
+	closed_turbofish bool,
+}
+
+fun is_ident_start(c char) bool {
+	return c == '_' || c.is_alphabetic()
+}
+
+fun is_ident_continue(c char) bool {
+	return c == '_' || c.is_alphanumeric()
+}
+
+fun is_hex(c char) bool {
+	return c.is_ascii_hexdigit()
+}
+
+fun hex_val(c char) u64 {
+	v := c as u32
+	if v >= 48 && v <= 57 {
+		return (v - 48) as u64
+	}
+	if v >= 97 && v <= 102 {
+		return (v - 87) as u64
+	}
+	return (v - 55) as u64
+}
+
+impl<'a> Lexer<'a> {
+	fun peek(&self) option<char> {
+		return self.src[self.pos..].chars().next()
+	}
+
+	fun peek_at(&self, n usize) option<char> {
+		it mut := self.src[self.pos..].chars()
+		i mut := 0
+		while i < n {
+			if it.next().is_none() {
+				return None
+			}
+			i += 1
+		}
+		return it.next()
+	}
+
+	fun peek_is(&self, n usize, c char) bool {
+		match self.peek_at(n) {
+			Some(x) => return x == c,
+			None => return false,
+		}
+	}
+
+	fun bump(&mut self) option<char> {
+		match self.peek() {
+			Some(c) => {
+				self.pos += c.len_utf8()
+				return Some(c)
+			}
+			None => return None,
+		}
+	}
+
+	fun error(&mut self, msg string, start usize, end usize) {
+		self.errors.push(LexError { start: start, end: end, message: msg })
+	}
+
+	fun push(&mut self, kind TokenKind, start usize) {
+		self.closed_turbofish = false
+		match &kind {
+			TokenKind::Punct(p) => {
+				if p == "<" {
+					after_colons := match self.tokens.last() {
+						Some(t) => match &t.kind {
+							TokenKind::Punct(q) => q == "::",
+							_ => false,
+						},
+						None => false,
+					}
+					if after_colons {
+						self.turbofish.push(1)
+					} else if self.turbofish.len() > 0 {
+						k := self.turbofish.len() - 1
+						self.turbofish[k] += 1
+					}
+				} else if p == ">" || p == ">>" {
+					n mut := if p == ">>" { 2 } else { 1 }
+					while n > 0 {
+						if self.turbofish.len() > 0 {
+							k := self.turbofish.len() - 1
+							self.turbofish[k] -= 1
+							if self.turbofish[k] == 0 {
+								self.turbofish.pop()
+								self.closed_turbofish = true
+							}
+						}
+						n -= 1
+					}
+				}
+			}
+			_ => {},
+		}
+		self.tokens.push(Token { kind: kind, start: start, end: self.pos })
+	}
+
+	fun last_ends_statement(&self) bool {
+		if self.closed_turbofish {
+			return true
+		}
+		match self.tokens.last() {
+			Some(t) => return ends_statement(&t.kind),
+			None => return false,
+		}
+	}
+
+	// At a newline at byte `at`: inserts a semicolon if needed.
+	fun newline(&mut self, at usize) {
+		if !self.last_ends_statement() {
+			return
+		}
+		next := self.src[at..].trim_start()
+		if next.starts_with(".") && !next.starts_with("..") {
+			return
+		}
+		self.tokens.push(Token { kind: TokenKind::Semi(true), start: at, end: at })
+	}
+
+	fun run(&mut self) {
+		while let Some(c) = self.peek() {
+			start := self.pos
+			if c == '\n' {
+				self.bump()
+				self.newline(start)
+			} else if c.is_whitespace() {
+				self.bump()
+			} else if c == '/' && self.peek_is(1, '/') {
+				self.line_comment()
+			} else if c == '/' && self.peek_is(1, '*') {
+				self.block_comment()
+			} else if c == 'r' && (self.peek_is(1, '"') || (self.peek_is(1, '#') && (self.peek_is(2, '"') || self.peek_is(2, '#')))) {
+				self.raw_string()
+			} else if c == 'b' && (self.peek_is(1, '"') || self.peek_is(1, '\'') || (self.peek_is(1, 'r') && (self.peek_is(2, '"') || self.peek_is(2, '#')))) {
+				self.byte_literal()
+			} else if is_ident_start(c) {
+				self.ident()
+			} else if c >= '0' && c <= '9' {
+				self.number()
+			} else if c == '"' {
+				self.string()
+			} else if c == '\'' {
+				self.quote()
+			} else {
+				self.punct()
+			}
+		}
+		end := self.pos
+		self.newline(end)
+		self.push(TokenKind::Eof, end)
+	}
+
+	fun line_comment(&mut self) {
+		start := self.pos
+		while let Some(c) = self.peek() {
+			if c == '\n' {
+				break
+			}
+			self.bump()
+		}
+		text := &self.src[start..self.pos]
+		if text.starts_with("///") && !text.starts_with("////") {
+			doc mut := &text[3..]
+			if doc.starts_with(" ") {
+				doc = &doc[1..]
+			}
+			self.docs.push((start, self.pos, doc.to_string()))
+		}
+	}
+
+	fun block_comment(&mut self) {
+		start := self.pos
+		self.pos += 2
+		depth mut := 1
+		saw_newline mut := false
+		while depth > 0 {
+			match self.peek() {
+				None => {
+					self.error("unterminated block comment".to_string(), start, start + 2)
+					return
+				}
+				Some(c) => {
+					if c == '/' && self.peek_is(1, '*') {
+						self.pos += 2
+						depth += 1
+					} else if c == '*' && self.peek_is(1, '/') {
+						self.pos += 2
+						depth -= 1
+					} else {
+						if c == '\n' {
+							saw_newline = true
+						}
+						self.bump()
+					}
+				},
+			}
+		}
+		if saw_newline {
+			p := self.pos
+			self.newline(p)
+		}
+	}
+
+	fun ident(&mut self) {
+		start := self.pos
+		self.eat_ident()
+		text := self.src[start..self.pos].to_string()
+		if text == "_" {
+			self.push(TokenKind::Punct("_".to_string()), start)
+		} else if is_keyword(&text) {
+			self.push(TokenKind::Keyword(text), start)
+		} else {
+			self.push(TokenKind::Ident(text), start)
+		}
+	}
+
+	fun eat_ident(&mut self) {
+		while let Some(c) = self.peek() {
+			if !is_ident_continue(c) {
+				break
+			}
+			self.bump()
+		}
+	}
+
+	fun eat_digits(&mut self, radix u32) string {
+		s mut := string::new()
+		while let Some(c) = self.peek() {
+			if c == '_' {
+				self.bump()
+			} else if c.is_digit(radix) {
+				s.push_char(c)
+				self.bump()
+			} else {
+				break
+			}
+		}
+		return s
+	}
+
+	fun suffix(&mut self) option<string> {
+		match self.peek() {
+			Some(c) => {
+				if !is_ident_start(c) {
+					return None
+				}
+			}
+			None => return None,
+		}
+		s := self.pos
+		self.eat_ident()
+		return Some(self.src[s..self.pos].to_string())
+	}
+
+	// Digits in `radix` as a 128-bit value; None on overflow.
+	fun digits_value(digits &str, radix u64) option<U128> {
+		v mut := U128::zero()
+		for c in digits.chars() {
+			match v.mul_add(radix, hex_val(c)) {
+				Some(n) => {
+					v = n
+				}
+				None => return None,
+			}
+		}
+		return Some(v)
+	}
+
+	fun number(&mut self) {
+		start := self.pos
+		radix mut := 10 as u32
+		if self.peek_is(0, '0') {
+			if self.peek_is(1, 'x') {
+				radix = 16
+			} else if self.peek_is(1, 'o') {
+				radix = 8
+			} else if self.peek_is(1, 'b') {
+				radix = 2
+			}
+		}
+		if radix != 10 {
+			self.pos += 2
+			digits := self.eat_digits(radix)
+			if digits.is_empty() {
+				p := self.pos
+				self.error("missing digits after integer base prefix".to_string(), start, p)
+			}
+			value := match Lexer::digits_value(&digits, radix as u64) {
+				Some(v) => v,
+				None => {
+					p := self.pos
+					self.error("integer literal is too large".to_string(), start, p)
+					U128::zero()
+				},
+			}
+			suffix := self.suffix()
+			self.check_int_suffix(&suffix, start)
+			self.push(TokenKind::Int(value, suffix), start)
+			return
+		}
+		text mut := self.eat_digits(10)
+		is_float mut := false
+		if self.peek_is(0, '.') {
+			match self.peek_at(1) {
+				Some(d) => {
+					if d.is_ascii_digit() {
+						self.bump()
+						text.push_char('.')
+						more := self.eat_digits(10)
+						text.push(&more)
+						is_float = true
+					}
+				}
+				None => {},
+			}
+		}
+		if self.peek_is(0, 'e') || self.peek_is(0, 'E') {
+			save := self.pos
+			self.bump()
+			exp mut := "e".to_string()
+			if self.peek_is(0, '+') || self.peek_is(0, '-') {
+				c := self.bump().unwrap()
+				exp.push_char(c)
+			}
+			digits := self.eat_digits(10)
+			if digits.is_empty() {
+				self.pos = save
+			} else {
+				text.push(&exp)
+				text.push(&digits)
+				is_float = true
+			}
+		}
+		suffix := self.suffix()
+		float_suffix := match &suffix {
+			Some(s) => s == "f32" || s == "f64",
+			None => false,
+		}
+		if is_float || float_suffix {
+			if let Some(s) = &suffix {
+				if s != "f32" && s != "f64" {
+					p := self.pos
+					self.error("invalid suffix `{s}` for float literal", start, p)
+				}
+			}
+			self.push(TokenKind::Float(text, suffix), start)
+		} else {
+			value := match Lexer::digits_value(&text, 10) {
+				Some(v) => v,
+				None => {
+					p := self.pos
+					self.error("integer literal is too large".to_string(), start, p)
+					U128::zero()
+				},
+			}
+			self.check_int_suffix(&suffix, start)
+			self.push(TokenKind::Int(value, suffix), start)
+		}
+	}
+
+	fun check_int_suffix(&mut self, suffix &option<string>, start usize) {
+		if let Some(s) = suffix {
+			ok := match s.as_str() {
+				"i8" | "i16" | "i32" | "i64" | "i128" | "isize" => true,
+				"u8" | "u16" | "u32" | "u64" | "u128" | "usize" => true,
+				_ => false,
+			}
+			if !ok {
+				p := self.pos
+				self.error("invalid suffix `{s}` for integer literal", start, p)
+			}
+		}
+	}
+
+	// An escape sequence after the backslash; None on error.
+	fun escape(&mut self, esc_start usize) option<char> {
+		c := self.bump()?
+		if c == 'n' {
+			return Some('\n')
+		} else if c == 'r' {
+			return Some('\r')
+		} else if c == 't' {
+			return Some('\t')
+		} else if c == '0' {
+			return Some('\0')
+		} else if c == '\\' || c == '"' || c == '\'' || c == '{' || c == '}' {
+			return Some(c)
+		} else if c == 'x' {
+			s := self.pos
+			k mut := 0
+			while k < 2 {
+				match self.peek() {
+					Some(h) => {
+						if is_hex(h) {
+							self.bump()
+						}
+					}
+					None => {},
+				}
+				k += 1
+			}
+			n := self.pos - s
+			if n > 0 {
+				v mut := 0 as u64
+				for h in self.src[s..self.pos].chars() {
+					v = v * 16 + hex_val(h)
+				}
+				if v <= 0x7f {
+					return char::from_u32(v as u32)
+				}
+			}
+			p := self.pos
+			self.error("invalid `\\x` escape (expected 00-7F)".to_string(), esc_start, p)
+			return None
+		} else if c == 'u' {
+			if !self.peek_is(0, '{') {
+				p := self.pos
+				self.error("expected `{{` after `\\u`".to_string(), esc_start, p)
+				return None
+			}
+			self.bump()
+			v mut := 0 as u64
+			nd mut := 0
+			while let Some(h) = self.peek() {
+				if is_hex(h) {
+					if v <= 0xFFFFFFFF {
+						v = v * 16 + hex_val(h)
+					}
+					nd += 1
+				} else if h != '_' {
+					break
+				}
+				self.bump()
+			}
+			if !self.peek_is(0, '}') {
+				p := self.pos
+				self.error("unterminated unicode escape".to_string(), esc_start, p)
+				return None
+			}
+			self.bump()
+			if nd > 0 && v <= 0xFFFFFFFF {
+				match char::from_u32(v as u32) {
+					Some(ch) => return Some(ch),
+					None => {},
+				}
+			}
+			p := self.pos
+			self.error("invalid unicode escape".to_string(), esc_start, p)
+			return None
+		}
+		p := self.pos
+		self.error("unknown escape `\\{c}`", esc_start, p)
+		return None
+	}
+
+	fun string(&mut self) {
+		start := self.pos
+		self.bump()
+		parts mut := Vec::new()
+		text mut := string::new()
+		loop {
+			at := self.pos
+			match self.peek() {
+				None => {
+					self.error("unterminated string literal".to_string(), start, start + 1)
+					break
+				}
+				Some(c) => {
+					if c == '"' {
+						self.bump()
+						break
+					} else if c == '\\' {
+						self.bump()
+						if let Some(e) = self.escape(at) {
+							text.push_char(e)
+						}
+					} else if c == '{' && self.peek_is(1, '{') {
+						self.pos += 2
+						text.push_char('{')
+					} else if c == '}' && self.peek_is(1, '}') {
+						self.pos += 2
+						text.push_char('}')
+					} else if c == '{' {
+						self.bump()
+						if !text.is_empty() {
+							parts.push(StrPart::Text(text.clone()))
+							text = string::new()
+						}
+						self.interpolation(at, &mut parts)
+					} else if c == '}' {
+						self.bump()
+						p := self.pos
+						self.error("unmatched `}}` in string literal".to_string(), at, p)
+					} else {
+						self.bump()
+						text.push_char(c)
+					}
+				},
+			}
+		}
+		if !text.is_empty() || parts.is_empty() {
+			parts.push(StrPart::Text(text))
+		}
+		self.push(TokenKind::Str(parts), start)
+	}
+
+	// An interpolation body after `{`, up to the matching `}`.
+	fun interpolation(&mut self, open usize, parts &mut Vec<StrPart>) {
+		s := self.pos
+		depth mut := 0
+		nest mut := 0
+		colon mut := None
+		loop {
+			match self.peek() {
+				None => {
+					self.error("unterminated interpolation in string literal".to_string(), open, open + 1)
+					return
+				}
+				Some(c) => {
+					if c == '\n' {
+						self.error("unterminated interpolation in string literal".to_string(), open, open + 1)
+						return
+					}
+					if c == '(' || c == '[' {
+						nest += 1
+					} else if c == ')' || c == ']' {
+						if nest > 0 {
+							nest -= 1
+						}
+					} else if c == ':' && depth == 0 && nest == 0 {
+						prev := self.pos > s && self.bytes[self.pos - 1] == 58
+						next := self.pos + 1 < self.bytes.len() && self.bytes[self.pos + 1] == 58
+						if !prev && !next {
+							colon = Some(self.pos)
+						}
+					} else if c == '{' {
+						depth += 1
+					} else if c == '}' && depth == 0 {
+						break
+					} else if c == '}' {
+						depth -= 1
+					} else if c == '"' {
+						self.bump()
+						while let Some(d) = self.peek() {
+							if d == '\\' {
+								self.bump()
+							} else if d == '"' {
+								break
+							}
+							self.bump()
+						}
+					}
+				},
+			}
+			self.bump()
+		}
+		end := self.pos
+		src mut := string::new()
+		spec mut := None
+		match colon {
+			Some(c) => {
+				src = self.src[s..c].to_string()
+				spec = Some((self.src[c + 1..end].to_string(), c + 1))
+			}
+			None => {
+				src = self.src[s..end].to_string()
+			},
+		}
+		self.bump()
+		if src.trim().is_empty() {
+			p := self.pos
+			self.error("empty interpolation `{{}}` (use `{{{{}}}}` for literal braces)".to_string(), open, p)
+			return
+		}
+		parts.push(StrPart::Interp(src, s, spec))
+	}
+
+	// `b"..."`, `br"..."` / `br#"..."#`, and `b'x'`.
+	fun byte_literal(&mut self) {
+		start := self.pos
+		self.bump()
+		if self.peek_is(0, 'r') {
+			n := self.tokens.len()
+			self.raw_string()
+			ascii mut := true
+			if self.tokens.len() > n {
+				k := self.tokens.len() - 1
+				body := match &self.tokens[k].kind {
+					TokenKind::RawStr(b) => Some(b.clone()),
+					_ => None,
+				}
+				if let Some(b) = body {
+					for x in b.as_bytes() {
+						if *x >= 128 {
+							ascii = false
+						}
+					}
+					self.tokens[k].kind = TokenKind::ByteStr(b.as_bytes().to_vec())
+					self.tokens[k].start -= 1
+				}
+			}
+			if !ascii {
+				p := self.pos
+				self.error("non-ASCII character in byte string (use `\\xHH`)".to_string(), start, p)
+			}
+			return
+		}
+		quote := self.bump().unwrap_or('"')
+		out mut := Vec::new()
+		loop {
+			at := self.pos
+			match self.peek() {
+				None => {
+					p := self.pos
+					self.error("unterminated byte literal".to_string(), start, p)
+					break
+				}
+				Some(c) => {
+					if c == '\n' && quote == '\'' {
+						p := self.pos
+						self.error("unterminated byte literal".to_string(), start, p)
+						break
+					} else if c == quote {
+						self.bump()
+						break
+					} else if c == '\\' {
+						self.bump()
+						if self.peek_is(0, 'x') {
+							self.bump()
+							s := self.pos
+							k mut := 0
+							while k < 2 {
+								match self.peek() {
+									Some(h) => {
+										if is_hex(h) {
+											self.bump()
+										}
+									}
+									None => {},
+								}
+								k += 1
+							}
+							if self.pos - s == 2 {
+								v mut := 0 as u64
+								for h in self.src[s..self.pos].chars() {
+									v = v * 16 + hex_val(h)
+								}
+								out.push(v as u8)
+							} else {
+								p := self.pos
+								self.error("invalid `\\x` escape (expected two hex digits)".to_string(), at, p)
+							}
+						} else if self.peek_is(0, 'u') {
+							self.bump()
+							p := self.pos
+							self.error("`\\u` escapes are not allowed in byte literals".to_string(), at, p)
+						} else if let Some(e) = self.escape(at) {
+							out.push(e as u32 as u8)
+						}
+					} else {
+						self.bump()
+						if (c as u32) < 128 {
+							out.push(c as u32 as u8)
+						} else {
+							p := self.pos
+							self.error("non-ASCII character in byte literal (use `\\xHH`)".to_string(), at, p)
+						}
+					}
+				},
+			}
+		}
+		if quote == '\'' {
+			if out.len() != 1 {
+				p := self.pos
+				self.error("a byte literal holds exactly one byte".to_string(), start, p)
+			}
+			v := if out.len() > 0 { out[0] as u64 } else { 0 as u64 }
+			self.push(TokenKind::Int(U128::from_u64(v), Some("u8".to_string())), start)
+		} else {
+			self.push(TokenKind::ByteStr(out), start)
+		}
+	}
+
+	fun raw_string(&mut self) {
+		start := self.pos
+		self.bump()
+		hashes mut := 0
+		while self.peek_is(0, '#') {
+			self.bump()
+			hashes += 1
+		}
+		if !self.peek_is(0, '"') {
+			p := self.pos
+			self.error("expected `\"` in raw string".to_string(), start, p)
+			return
+		}
+		self.bump()
+		body_start := self.pos
+		closing mut := "\"".to_string()
+		i mut := 0
+		while i < hashes {
+			closing.push_char('#')
+			i += 1
+		}
+		match self.src[self.pos..].find(&closing) {
+			Some(k) => {
+				body := self.src[body_start..body_start + k].to_string()
+				self.pos = body_start + k + closing.len()
+				self.push(TokenKind::RawStr(body), start)
+			}
+			None => {
+				self.pos = self.src.len()
+				self.error("unterminated raw string literal".to_string(), start, body_start)
+				self.push(TokenKind::RawStr(string::new()), start)
+			},
+		}
+	}
+
+	// A character literal (`'a'`) or a lifetime / label (`'a`).
+	fun quote(&mut self) {
+		start := self.pos
+		self.bump()
+		ident_start := match self.peek() {
+			Some(c) => is_ident_start(c),
+			None => false,
+		}
+		if ident_start && !self.peek_is(1, '\'') {
+			s := self.pos
+			self.eat_ident()
+			if !self.peek_is(0, '\'') {
+				name := self.src[s..self.pos].to_string()
+				self.push(TokenKind::Lifetime(name), start)
+				return
+			}
+			self.bump()
+			p := self.pos
+			self.error("character literal may only contain one character".to_string(), start, p)
+			self.push(TokenKind::Char('\0'), start)
+			return
+		}
+		c mut := '\0'
+		match self.peek() {
+			None => {
+				p := self.pos
+				self.error("unterminated character literal".to_string(), start, p)
+				return
+			}
+			Some(x) => {
+				if x == '\n' {
+					p := self.pos
+					self.error("unterminated character literal".to_string(), start, p)
+					return
+				} else if x == '\\' {
+					at := self.pos
+					self.bump()
+					c = self.escape(at).unwrap_or('\0')
+				} else if x == '\'' {
+					self.bump()
+					p := self.pos
+					self.error("empty character literal".to_string(), start, p)
+					self.push(TokenKind::Char('\0'), start)
+					return
+				} else {
+					self.bump()
+					c = x
+				}
+			},
+		}
+		if self.peek_is(0, '\'') {
+			self.bump()
+		} else {
+			p := self.pos
+			self.error("unterminated character literal".to_string(), start, p)
+		}
+		self.push(TokenKind::Char(c), start)
+	}
+
+	fun punct(&mut self) {
+		start := self.pos
+		rest := &self.src[self.pos..]
+		for p in PUNCTS {
+			if rest.starts_with(p) {
+				self.pos += p.len()
+				if p == ";" {
+					self.push(TokenKind::Semi(false), start)
+				} else {
+					self.push(TokenKind::Punct(p.to_string()), start)
+				}
+				return
+			}
+		}
+		c := self.bump().unwrap()
+		p := self.pos
+		self.error("unexpected character `{c}`", start, p)
+	}
+}
+
+// Longest first, as in the Rust lexer's table.
+const PUNCTS [&str; 50] = [
+	"<<=", ">>=", "..=", "::", ":=", "->", "=>", "<-", "..", "&&", "||", "<<", ">>", "==", "!=",
+	"<=", ">=", "+=", "-=", "*=", "/=", "%=", "^=", "&=", "|=", ";", "(", ")", "[", "]", "{{", "}}",
+	",", ".", ":", "?", "#", "@", "+", "-", "*", "/", "%", "^", "!", "&", "|", "=", "<", ">",
+]

@@ -1,0 +1,104 @@
+// kilnc: the beginnings of the self-hosted Kiln compiler.
+//
+// For now it is the lexer plus a driver that prints the canonical token
+// dump (the format of `kiln lex --dump`, see crates/kiln_lexer/src/dump.rs)
+// for each file given: `kilnc <file.kn>...`. With several files, each dump
+// is preceded by a line `== <path>`.
+
+mod token
+mod lexer
+
+import std::fs
+import std::os
+import token::{StrPart, TokenKind}
+
+fun esc(b &[u8]) string {
+	o mut := string::new()
+	for x in b {
+		c := *x
+		if c > 32 && c < 127 && c != 92 {
+			o.push_char(c as char)
+		} else {
+			o.push("\\x{c:02x}")
+		}
+	}
+	if o.is_empty() {
+		o.push("-")
+	}
+	return o
+}
+
+fun opt(s &option<string>) string {
+	match s {
+		Some(x) => return esc(x.as_bytes()),
+		None => return "-".to_string(),
+	}
+}
+
+fun dump(src &str) string {
+	l := lexer::lex(src)
+	o mut := string::new()
+	for t in &l.tokens {
+		o.push("tok {t.start} {t.end} ")
+		match &t.kind {
+			TokenKind::Ident(s) => o.push("ident {esc(s.as_bytes())}"),
+			TokenKind::Keyword(s) => o.push("kw {s}"),
+			TokenKind::Lifetime(s) => o.push("life {esc(s.as_bytes())}"),
+			TokenKind::Int(v, s) => o.push("int {v.to_decimal()} {opt(s)}"),
+			TokenKind::Float(text, s) => o.push("float {esc(text.as_bytes())} {opt(s)}"),
+			TokenKind::Str(parts) => {
+				o.push("str")
+				for p in parts {
+					match p {
+						StrPart::Text(s) => o.push(" T{esc(s.as_bytes())}"),
+						StrPart::Interp(src, off, spec) => {
+							o.push(" I{esc(src.as_bytes())}@{off}")
+							if let Some((s, at)) = spec {
+								o.push(":{esc(s.as_bytes())}@{at}")
+							}
+						},
+					}
+				}
+			}
+			TokenKind::RawStr(s) => o.push("raw {esc(s.as_bytes())}"),
+			TokenKind::ByteStr(b) => o.push("bytes {esc(b)}"),
+			TokenKind::Char(c) => o.push("char {*c as u32}"),
+			TokenKind::Semi(i) => o.push("semi {if *i { 1 } else { 0 }}"),
+			TokenKind::Punct(p) => o.push("p {p}"),
+			TokenKind::Eof => o.push("eof"),
+		}
+		o.push("\n")
+	}
+	for (s, e, text) in &l.docs {
+		o.push("doc {s} {e} {esc(text.as_bytes())}\n")
+	}
+	for e in &l.errors {
+		o.push("err {e.start} {e.end} {esc(e.message.as_bytes())}\n")
+	}
+	return o
+}
+
+fun main() {
+	args := os::args()
+	n := args.len() - 1
+	if n == 0 {
+		eprintln("usage: kilnc <file.kn>...")
+		os::exit(2)
+	}
+	i mut := 1
+	while i < args.len() {
+		match fs::read_to_string(&args[i]) {
+			Ok(src) => {
+				if n > 1 {
+					println("== {args[i]}")
+				}
+				print("{dump(&src)}")
+			}
+			Err(e) => {
+				eprintln("error: cannot read {args[i]}: {e}")
+				os::exit(1)
+			},
+		}
+		i += 1
+	}
+}

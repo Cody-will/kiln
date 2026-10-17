@@ -1,0 +1,10 @@
+a := 99999999999999999999999999999999999999999 + 0xfffffffffffffffffffffffffffffffff
+b := 1.5u8 + 3x + 10foo + 1e5i32
+c := '' + 'ab' + '\q' + '\x80' + '\u{110000}' + '\u{d800}' + '\u12' + '\u{}' + '\u{12'
+d := "unmatched } and {} empty and { } blank"
+e := b'ab' + b"é" + b"\xZ" + b"\u{41}" + br"ü"
+f := ` $ ~
+g := "interp {unterminated
+"
+h := 'x
+i := r#"never closed
