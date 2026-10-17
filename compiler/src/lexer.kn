@@ -6,7 +6,7 @@
 // with a single `.`). `tests/lexer_diff.rs` checks this over every `.kn`
 // file in the repository by comparing `dump` with `kiln lex --dump`.
 
-import super::token::{StrPart, Token, TokenKind, U128, ends_statement, is_keyword}
+import super::token::{StrPart, Token, TokenKind, ends_statement, is_keyword}
 
 pub struct LexError {
 	pub start usize,
@@ -307,13 +307,14 @@ impl<'a> Lexer<'a> {
 	}
 
 	// Digits in `radix` as a 128-bit value; None on overflow.
-	fun digits_value(digits &str, radix u64) option<U128> {
-		v mut := U128::zero()
+	fun digits_value(digits &str, radix u64) option<u128> {
+		v mut := 0 as u128
 		for c in digits.chars() {
-			match v.mul_add(radix, hex_val(c)) {
-				Some(n) => {
-					v = n
-				}
+			match v.checked_mul(radix as u128) {
+				Some(m) => match m.checked_add(hex_val(c) as u128) {
+					Some(n) => v = n,
+					None => return None,
+				},
 				None => return None,
 			}
 		}
@@ -344,7 +345,7 @@ impl<'a> Lexer<'a> {
 				None => {
 					p := self.pos
 					self.error("integer literal is too large".to_string(), start, p)
-					U128::zero()
+					0 as u128
 				},
 			}
 			suffix := self.suffix()
@@ -404,7 +405,7 @@ impl<'a> Lexer<'a> {
 				None => {
 					p := self.pos
 					self.error("integer literal is too large".to_string(), start, p)
-					U128::zero()
+					0 as u128
 				},
 			}
 			self.check_int_suffix(&suffix, start)
@@ -750,7 +751,7 @@ impl<'a> Lexer<'a> {
 				self.error("a byte literal holds exactly one byte".to_string(), start, p)
 			}
 			v := if out.len() > 0 { out[0] as u64 } else { 0 as u64 }
-			self.push(TokenKind::Int(U128::from_u64(v), Some("u8".to_string())), start)
+			self.push(TokenKind::Int(v as u128, Some("u8".to_string())), start)
 		} else {
 			self.push(TokenKind::ByteStr(out), start)
 		}

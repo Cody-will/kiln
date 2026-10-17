@@ -6,7 +6,6 @@
 //
 // (`chan` is a keyword, so fields the Rust AST calls `chan` are `ch` here.)
 
-import super::token::U128
 
 @derive(Clone, Copy)
 pub struct Span {
@@ -333,7 +332,7 @@ impl Expr {
 
 @derive(Clone)
 pub enum Lit {
-	Int { value U128, suffix option<string>, negative bool },
+	Int { value u128, suffix option<string>, negative bool },
 	Float { value f64, suffix option<string> },
 	Str(string),
 	ByteStr(Vec<u8>),

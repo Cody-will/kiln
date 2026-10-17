@@ -50,7 +50,7 @@ fun dump(src &str) string {
 			TokenKind::Ident(s) => o.push("ident {esc(s.as_bytes())}"),
 			TokenKind::Keyword(s) => o.push("kw {s}"),
 			TokenKind::Lifetime(s) => o.push("life {esc(s.as_bytes())}"),
-			TokenKind::Int(v, s) => o.push("int {v.to_decimal()} {opt(s)}"),
+			TokenKind::Int(v, s) => o.push("int {*v} {opt(s)}"),
 			TokenKind::Float(text, s) => o.push("float {esc(text.as_bytes())} {opt(s)}"),
 			TokenKind::Str(parts) => {
 				o.push("str")

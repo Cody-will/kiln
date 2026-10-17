@@ -1,71 +1,6 @@
 // Token definitions for the self-hosted lexer (a port of
 // crates/kiln_lexer/src/token.rs).
 
-// A 128-bit unsigned integer as four 32-bit limbs (least significant
-// first). Kiln's u128 cannot yet be used for constants or formatting.
-@derive(Clone, Copy)
-pub struct U128 {
-	limbs [u64; 4],
-}
-
-impl U128 {
-	pub fun zero() U128 {
-		return U128 { limbs: [0, 0, 0, 0] }
-	}
-
-	pub fun from_u64(v u64) U128 {
-		return U128 { limbs: [v & 0xFFFFFFFF, v >> 32, 0, 0] }
-	}
-
-	// `self * m + a`, or None on overflow (`m`, `a` < 2^32).
-	pub fun mul_add(self, m u64, a u64) option<U128> {
-		out mut := U128::zero()
-		carry mut := a
-		i mut := 0
-		while i < 4 {
-			t := self.limbs[i] * m + carry
-			out.limbs[i] = t & 0xFFFFFFFF
-			carry = t >> 32
-			i += 1
-		}
-		if carry != 0 {
-			return None
-		}
-		return Some(out)
-	}
-
-	pub fun is_zero(&self) bool {
-		return self.limbs[0] == 0 && self.limbs[1] == 0 && self.limbs[2] == 0 && self.limbs[3] == 0
-	}
-
-	// Decimal digits.
-	pub fun to_decimal(&self) string {
-		if self.is_zero() {
-			return "0".to_string()
-		}
-		x mut := *self
-		digits mut := Vec::new()
-		while !x.is_zero() {
-			rem mut := 0 as u64
-			i mut := 4
-			while i > 0 {
-				i -= 1
-				cur := (rem << 32) | x.limbs[i]
-				x.limbs[i] = cur / 10
-				rem = cur % 10
-			}
-			digits.push((48 + rem) as u8)
-		}
-		out mut := string::new()
-		j mut := digits.len()
-		while j > 0 {
-			j -= 1
-			out.push_char(digits[j] as char)
-		}
-		return out
-	}
-}
-
 // One segment of a string literal.
 @derive(Clone)
 pub enum StrPart {
@@ -81,7 +16,7 @@ pub enum TokenKind {
 	// A keyword, by spelling.
 	Keyword(string),
 	Lifetime(string),
-	Int(U128, option<string>),
+	Int(u128, option<string>),
 	// Source text (digits, `.`, exponent; no `_`) and suffix.
 	Float(string, option<string>),
 	Str(Vec<StrPart>),

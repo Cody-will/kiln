@@ -1017,7 +1017,7 @@ fun lit(w &mut W, l &Lit) {
 		Lit::Int { value, suffix, negative } => {
 			w.sopen("Int")
 			w.f("value")
-			w.raw(&value.to_decimal())
+			w.raw("{*value}")
 			w.e()
 			w.f("suffix")
 			w.opt_str(suffix)

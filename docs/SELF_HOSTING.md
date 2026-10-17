@@ -80,15 +80,15 @@ compiler through dumps only. Nothing in the Rust build depends on
   Rust.
 - **`chan` is a keyword**, so it can't be a field name. The Rust AST's
   `chan` fields are `ch` in `ast.kn` (the dump still prints `chan`).
-- **u128 now works**, but the lexer still uses the four-limb `U128`; the
-  parser keeps it so the two stay in step.
+- **u128 now works**, and the lexer and parser use it directly (the
+  four-limb `U128` workaround is gone).
 
 ## Gaps the lexer port hit
 
 - **u128 was barely usable** (constants, formatting, `checked_*`).
   *Fixed:* u128/i128 constants, arithmetic, division, formatting,
-  parsing, and `num.kn` methods (`tests/run/int128.kn`). The lexer still
-  uses its four-limb `U128`.
+  parsing, and `num.kn` methods (`tests/run/int128.kn`). The lexer now uses
+  native u128.
 - **An assignment couldn't be a match-arm body** (`Some(n) => v = n,`).
   *Fixed:* the parser now reads such an arm as a one-statement block
   (`tests/run/match_assign_arm.kn`).

@@ -11,7 +11,7 @@ import std::strconv
 import super::ast::*
 import super::lexer
 import super::lexer::LexError
-import super::token::{StrPart, Token, TokenKind, U128}
+import super::token::{StrPart, Token, TokenKind}
 
 pub struct Parsed {
 	pub file File,
@@ -279,7 +279,7 @@ fun parse_fmt_spec(s &str) result<FmtSpec, string> {
 	return Ok(f)
 }
 
-fun int_lit(v &U128, suffix &option<string>, negative bool) Lit {
+fun int_lit(v &u128, suffix &option<string>, negative bool) Lit {
 	return Lit::Int { value: *v, suffix: suffix.clone(), negative: negative }
 }
 
@@ -2050,7 +2050,7 @@ impl<'s> Parser<'s> {
 				match self.peek().clone() {
 					TokenKind::Int(v, None) => {
 						self.bump()
-						ExprKind::TupleIndex(Box::new(e), v.limbs[0] as u32)
+						ExprKind::TupleIndex(Box::new(e), v as u32)
 					}
 					TokenKind::Float(text, None) => {
 						if tuple_index_pair(&text) {
