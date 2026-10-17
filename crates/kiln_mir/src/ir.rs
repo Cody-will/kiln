@@ -465,7 +465,14 @@ pub struct Body {
     /// For closures and `spawn` blocks: the upvar locals and how each is captured,
     /// in the order of the capture operands.
     pub captures: Vec<(Local, CaptureMode)>,
+    /// Heads of `for` loops over a range whose trip count is a small
+    /// compile-time bound ([`BOUNDED_TRIPS`]). Their back-edges need no
+    /// preemption check, so the optimizer can fully unroll them.
+    pub bounded_loops: Vec<BlockId>,
 }
+
+/// The largest trip count for which a loop counts as bounded.
+pub const BOUNDED_TRIPS: i128 = 4096;
 
 impl Body {
     pub fn local(&self, l: Local) -> &LocalDecl {

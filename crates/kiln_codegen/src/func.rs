@@ -69,7 +69,8 @@ pub(crate) struct FnCx<'c, 'r, 'a, 'f> {
     /// nested in another loop, whose enclosing back-edge does the check.
     /// Keeping the hot inner loop free of the counter lets LLVM unroll and
     /// vectorize it; a yield waits at most one inner loop run longer.
-    pub no_preempt: Vec<usize>,
+    /// Back-edges `(latch, header)` that get a preemption check.
+    pub preempt_edges: Vec<(usize, usize)>,
     pub fn_idx: usize,
     pub locals: Vec<LocalInfo>,
     pub blocks: Vec<ir::Block>,
@@ -136,7 +137,7 @@ impl Codegen<'_, '_> {
             intr_substs: HashMap::new(),
             cur_block: 0,
             preempt: None,
-            no_preempt: Vec::new(),
+            preempt_edges: Vec::new(),
             want_reg: false,
             ret_val: None,
             span,
@@ -920,7 +921,7 @@ impl FnCx<'_, '_, '_, '_> {
                 .iter()
                 .map(|b| b.term.successors().iter().map(|t| t.0 as usize).collect())
                 .collect();
-            self.no_preempt = nested_inner_latches(&succs);
+            self.preempt_edges = preempt_edges(&succs);
         }
         let first = self.blocks[0];
         // Functions with `defer` run them on panic too: register a frame and
@@ -1170,8 +1171,8 @@ impl FnCx<'_, '_, '_, '_> {
                 let blk = self.blocks[b.0 as usize];
                 match self.preempt {
                     Some(s)
-                        if (b.0 as usize) <= self.cur_block
-                            && !self.no_preempt.contains(&self.cur_block) =>
+                        if self.preempt_edges.contains(&(self.cur_block, b.0 as usize))
+                            && !self.body.bounded_loops.contains(b) =>
                     {
                         let c = self.b.ins().stack_load(types::I64, s, 0);
                         let c = self.b.ins().iadd_imm(c, -1);
@@ -2752,9 +2753,13 @@ impl FnCx<'_, '_, '_, '_> {
     }
 }
 
-/// Latch blocks (sources of back-edges) of innermost natural loops that sit
-/// inside another loop. Block 0 is the entry.
-pub(crate) fn nested_inner_latches(succs: &[Vec<usize>]) -> Vec<usize> {
+/// The back-edges `(latch, header)` of natural loops that need a preemption
+/// check: all of them except those of innermost loops nested in another
+/// loop (the enclosing loop's check bounds the time between checks). Only
+/// real back-edges count: a jump to a lower-numbered block that is not a
+/// loop header (a loop exit, say) gets no check, which would otherwise be a
+/// side exit that keeps LLVM from unrolling. Block 0 is the entry.
+pub(crate) fn preempt_edges(succs: &[Vec<usize>]) -> Vec<(usize, usize)> {
     let n = succs.len();
     // Reverse postorder from the entry.
     let mut order = Vec::with_capacity(n);
@@ -2862,8 +2867,8 @@ pub(crate) fn nested_inner_latches(succs: &[Vec<usize>]) -> Vec<usize> {
     for (i, l) in loops.iter().enumerate() {
         let innermost = !loops.iter().enumerate().any(|(j, o)| j != i && l.1[o.0]);
         let nested = loops.iter().enumerate().any(|(j, o)| j != i && o.1[l.0]);
-        if innermost && nested {
-            out.extend(l.2.iter().copied());
+        if !(innermost && nested) {
+            out.extend(l.2.iter().map(|&u| (u, l.0)));
         }
     }
     out

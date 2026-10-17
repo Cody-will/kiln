@@ -111,7 +111,11 @@ impl fmt::Display for Body {
             )?;
         }
         for (i, b) in self.blocks.iter().enumerate() {
-            writeln!(f, "  bb{i}:")?;
+            if self.bounded_loops.iter().any(|h| h.0 as usize == i) {
+                writeln!(f, "  bb{i}: // bounded loop")?;
+            } else {
+                writeln!(f, "  bb{i}:")?;
+            }
             for s in &b.stmts {
                 match &s.kind {
                     StmtKind::Assign(p, rv) => writeln!(f, "    {p} = {rv}")?,
