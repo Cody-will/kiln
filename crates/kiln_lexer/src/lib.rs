@@ -5,6 +5,7 @@
 //! the lexical grammar.
 
 pub mod diagnostic;
+pub mod dump;
 mod lexer;
 pub mod span;
 pub mod token;

@@ -36,7 +36,9 @@ USAGE:
                             target/debug/<name> or target/release/<name>)
     kiln run [--release] [file.kn] [args...]
                             Build and run (in a package: kiln run [-- args...])
-    kiln lex <file.kn>      Print the token stream
+    kiln lex [--dump] <file.kn>
+                            Print the token stream (--dump: the canonical
+                            form the self-hosted lexer is tested against)
     kiln parse <file.kn>    Print the syntax tree
     kiln mir <file.kn>      Print the mid-level IR (compiler debugging)
 
@@ -101,6 +103,14 @@ pub(crate) fn finish_codegen_flags(
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
+        [cmd, flag, file] if cmd == "lex" && flag == "--dump" => {
+            let Ok(src) = std::fs::read_to_string(file) else {
+                eprintln!("error: cannot read {file}");
+                return ExitCode::from(1);
+            };
+            print!("{}", kiln_lexer::dump::dump(&kiln_lexer::lex(&src)));
+            ExitCode::SUCCESS
+        }
         [cmd, file]
             if (cmd == "lex" || cmd == "parse" || cmd == "mir")
                 && !std::path::Path::new(file).is_dir() =>
