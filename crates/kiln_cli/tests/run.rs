@@ -471,3 +471,47 @@ fn ffi_links_c_sources_and_libraries() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// `kiln.lock`: written on the first build of a package with dependencies;
+/// `--locked` fails once a dependency's sources change.
+#[test]
+fn lockfile_records_dependencies() {
+    let dir = scratch("lock");
+    for (p, text) in [
+        ("app/kiln.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nutil = { path = \"../util\" }\n"),
+        ("app/src/main.kn", "fun main() {\n\tprintln(\"{util::add(2, 3)}\")\n}\n"),
+        ("util/kiln.toml", "[package]\nname = \"util\"\nversion = \"0.2.0\"\n"),
+        ("util/src/lib.kn", "pub fun add(a i64, b i64) i64 {\n\treturn a + b\n}\n"),
+    ] {
+        let f = dir.join(p);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(f, text).unwrap();
+    }
+    let app = dir.join("app");
+    let build = |extra: &[&str]| {
+        Command::new(kiln())
+            .arg("build")
+            .args(extra)
+            .current_dir(&app)
+            .output()
+            .unwrap()
+    };
+    // --locked without a lockfile fails; a plain build writes one.
+    assert!(!build(&["--locked"]).status.success());
+    assert!(build(&[]).status.success());
+    let lock = std::fs::read_to_string(app.join("kiln.lock")).unwrap();
+    assert!(
+        lock.contains("name = \"util\"\nversion = \"0.2.0\"\nsource = \"path+../util\""),
+        "{lock}"
+    );
+    assert!(build(&["--locked"]).status.success());
+    std::fs::write(
+        dir.join("util/src/lib.kn"),
+        "pub fun add(a i64, b i64) i64 {\n\treturn b + a\n}\n",
+    )
+    .unwrap();
+    let out = build(&["--locked"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("kiln.lock is out of date"));
+}

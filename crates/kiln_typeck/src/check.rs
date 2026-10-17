@@ -3439,7 +3439,10 @@ impl Body<'_, '_, '_> {
             ]),
             Ty::Unit => Some(vec![(XCtor::Single, vec![])]),
             Ty::Tuple(ts) => Some(vec![(XCtor::Single, ts.clone())]),
-            Ty::Array(e, n) => Some(vec![(XCtor::Len(*n as usize), vec![(**e).clone(); *n as usize])]),
+            Ty::Array(e, n) => Some(vec![(
+                XCtor::Len(*n as usize),
+                vec![(**e).clone(); *n as usize],
+            )]),
             Ty::Slice(e) => Some(slice_ctors(e)),
             Ty::Adt(d, a) if self.c.is_lang(*d, "Vec") && !a.is_empty() => Some(slice_ctors(&a[0])),
             Ty::Adt(d, _) => {
@@ -3689,7 +3692,11 @@ impl Body<'_, '_, '_> {
     }
 
     fn check_exhaustive(&mut self, st: &Ty, arms: &[MatchArm], span: Span) {
-        let mut max = arms.iter().map(|a| pattern_slice_len(&a.pat)).max().unwrap_or(0);
+        let mut max = arms
+            .iter()
+            .map(|a| pattern_slice_len(&a.pat))
+            .max()
+            .unwrap_or(0);
         if let Ty::Array(_, n) = self.c.infer.zonk(&self.strip_refs(st)) {
             max = max.max(n as usize);
         }
@@ -3752,7 +3759,9 @@ impl Body<'_, '_, '_> {
 /// [`SLICE_MAX`], then all longer ones together.
 fn slice_ctors(e: &Ty) -> Vec<(XCtor, Vec<Ty>)> {
     let max = slice_max();
-    let mut v: Vec<(XCtor, Vec<Ty>)> = (0..=max).map(|n| (XCtor::Len(n), vec![e.clone(); n])).collect();
+    let mut v: Vec<(XCtor, Vec<Ty>)> = (0..=max)
+        .map(|n| (XCtor::Len(n), vec![e.clone(); n]))
+        .collect();
     v.push((XCtor::Long, vec![e.clone(); max + 1]));
     v
 }

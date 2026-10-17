@@ -91,3 +91,19 @@ The standard library is imported the same way as before: `import std::fs`, `impo
 <div class="status">
 🚧 <strong>Not implemented yet:</strong> the package registry and version requirements (<code>http = "1.2"</code>), git dependencies, the lockfile, and <code>pub(pkg)</code> visibility. Compilation is whole-program: an unchanged package isn't rebuilt, but any change rebuilds all of it.
 </div>
+
+## The lockfile
+
+Building a package that has dependencies writes `kiln.lock` next to `kiln.toml`:
+
+```toml
+version = 1
+
+[[package]]
+name = "util"
+version = "0.2.0"
+source = "path+../util"
+checksum = "fnv64:5e310b5e8ce596f8"
+```
+
+It records every dependency, including dependencies of dependencies, with a checksum of its sources. Commit it. In CI, build with `--locked`: the build fails if the lockfile is missing or if a dependency has changed since it was written.

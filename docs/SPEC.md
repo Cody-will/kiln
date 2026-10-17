@@ -586,7 +586,7 @@ json = { git = "https://github.com/kiln-lang/json", tag = "v0.3" }
 
 - **The `kiln` CLI**:
   - Commands: `kiln new`, `build`, `run`, `test`, `bench`, `fmt`, `lint`, `doc`, `add`, and `publish`.
-  - Lockfile: `kiln.lock`.
+  - Lockfile: `kiln.lock` (implemented for path dependencies). The first build of a package with dependencies writes it, and later builds update it when something changes. For each dependency, transitively, it records the name, version, source (`path+../util`), and a checksum of the files it contributes. Commit it. `kiln build/run/test --locked` fails instead of updating it and names what changed (for CI). Registry sources will add `registry+` entries.
   - Registry: `pkg.kiln-lang.dev`, using semver resolution.
   - Builds are incremental per package.
 - **Tests and benchmarks**: `@test fun ...` lives inline, and the `tests/` and `benches/` directories are recognized automatically.

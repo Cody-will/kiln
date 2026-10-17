@@ -31,7 +31,7 @@ kiln - the Kiln language toolchain
 USAGE:
     kiln new <name> [--lib] Create a package (kiln.toml, src/main.kn or src/lib.kn)
     kiln check [file.kn]    Resolve names, type-check, and borrow-check
-    kiln build [--release] [--backend=llvm|cranelift] [file.kn] [-o <output>]
+    kiln build [--release] [--backend=llvm|cranelift] [--locked] [file.kn] [-o <output>]
                             Compile to a native executable (a package goes to
                             target/debug/<name> or target/release/<name>)
     kiln run [--release] [file.kn] [args...]
@@ -51,6 +51,8 @@ USAGE:
     kiln lsp                The language server (LSP over stdio), for editors
 
     Debug builds (the default) panic on integer overflow; --release builds wrap.
+    Packages with dependencies get a kiln.lock (versions and checksums of
+    the dependencies); --locked fails instead of updating it.
     Release builds use LLVM when this kiln includes it (built with
     --features llvm), Cranelift otherwise; --backend= overrides.
     kiln help               Show this message
@@ -63,6 +65,7 @@ pub(crate) fn codegen_flag(opts: &mut kiln_codegen::Options, a: &str) -> bool {
         "--release" => opts.release = true,
         "--backend=cranelift" => opts.backend = kiln_codegen::Backend::Cranelift,
         "--backend=llvm" => opts.backend = kiln_codegen::Backend::Llvm,
+        "--locked" => package::set_locked(),
         _ => return false,
     }
     true
