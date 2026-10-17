@@ -91,6 +91,22 @@ definition's item and a variant). The Kiln checker keeps the per-body
 state in a field of `Checker` instead of a `Body` that borrows it, and
 swaps it out for trait queries made outside a body.
 
+For MIR, `kiln mir --dump <file>` (`kiln_mir::dump`) prints every body of
+every user function (closures and `spawn` blocks after their parent) with
+all fields: local declarations (kind, type, name, span, mutability,
+resolver id), each statement and terminator with its span, callee
+substitutions, call flows, captures, bounded loops, lowering errors and
+unsupported constructs. Types print as in the typeck dump; strings escape
+non-printable bytes and characters print by code point, so neither side's
+`Debug` formatting matters (`kiln mir` keeps the readable form).
+`compiler/src/mir.kn` holds the IR and that dump, `sig.kn` the signature
+lifetime rules (sets are sorted vectors) and `lower.kn` the lowering.
+`Lower` holds `&mut Checker` for trait queries (`is_copy`, `Send`/`Sync`,
+user `Deref` targets) plus the function's `FnResults`, which `lower_fn`
+takes out of the checker while it lowers. `crates/kiln_cli/tests/mir_diff.rs`
+runs `kilnc --mir` on every `.kn` file plus the Kiln snippets in the MIR,
+borrow checker and type checker unit tests.
+
 ## Stages
 
 | Stage | Rust crate | Kiln | Status |
@@ -100,7 +116,8 @@ swaps it out for trait queries made outside a body.
 | 2b. Derive expansion | `kiln_parser::derive` | `compiler/src/derive.kn` | ✅ ported; identical generated source on 159 files and identical expanded ASTs on every file deriving `Json` |
 | 3. Name resolution | `kiln_resolve` | `compiler/src/resolve.kn` | ✅ ported; identical tables and errors on 162 files |
 | 4. Type checking | `kiln_typeck` | `compiler/src/typeck.kn`, `ty.kn` | ✅ ported; identical results and errors on 163 files and 127 unit-test snippets |
-| 5. MIR + borrow checking | `kiln_mir`, `kiln_borrowck` | | ⬜ |
+| 5. MIR lowering | `kiln_mir` | `compiler/src/mir.kn`, `sig.kn`, `lower.kn` | ✅ ported; identical MIR on 163 files (116 that type-check) and the unit-test snippets |
+| 5b. Borrow checking | `kiln_borrowck` | | ⬜ |
 | 6. Codegen | `kiln_codegen` | | ⬜. Emit C or LLVM IR text first (no Cranelift bindings from Kiln) |
 | 7. Bootstrap | | | ⬜ `kilnc` builds `kilnc`; the stage-2 binary must reproduce stage 1 |
 

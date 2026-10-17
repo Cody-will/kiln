@@ -67,7 +67,7 @@ impl Place {
 		for p in &self.proj {
 			match p {
 				Proj::Deref(DerefKey::Shared) | Proj::Deref(DerefKey::Mut) | Proj::Deref(DerefKey::Ptr) => return true,
-				_ => {}
+				_ => {},
 			}
 		}
 		return false
@@ -380,7 +380,7 @@ fun operand(o &Operand) string {
 				ConstKind::Fn(i, s) => "fn#{i}[{substs(s)}]",
 			}
 			return "const {k}: {ty(&c.ty)}"
-		}
+		},
 	}
 }
 
@@ -412,7 +412,7 @@ fun spec(s &option<FmtSpec>) string {
 				None => "-".to_string(),
 			}
 			return "fill={fill} align={align} plus={s.plus} alt={s.alt} zero={s.zero} width={opt_us(s.width)} precision={opt_us(s.precision)} kind={s.kind}"
-		}
+		},
 	}
 }
 
@@ -578,7 +578,7 @@ pub fun body(b &Body) string {
 						caps.push("{c.name}:{ty(&c.ty)}:{mode(c.mode)}:{sp(c.span)}")
 					}
 					"spawn {k} ({list(operands)}) captures [{join(&caps, ", ")}] body {sp(*body)}"
-				}
+				},
 			}
 			o.push("    {t} @{sp(s.span)}\n")
 		}
@@ -603,7 +603,7 @@ pub fun body(b &Body) string {
 					}
 				}
 				"defer_dispatch [{join(&v, ", ")}] bb{done}"
-			}
+			},
 		}
 		o.push("    {t} @{sp(blk.term_span)}\n")
 	}

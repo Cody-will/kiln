@@ -2,8 +2,8 @@
 // crates/kiln_mir/src/sig.rs. Sets are sorted vectors.
 
 import super::ast::*
-import super::resolve::{DefKind, Res, Resolved}
 import super::mir::{DEEP_FLOW, one}
+import super::resolve::{DefKind, Res, Resolved}
 
 pub fun set_add(s &mut Vec<string>, x &str) {
 	i mut := 0
@@ -193,7 +193,7 @@ fun walk(t &Type, generics &Vec<string>, r &Resolved, out &mut TyLifetimes) {
 				}
 			}
 		}
-		_ => {}
+		_ => {},
 	}
 }
 

@@ -5465,6 +5465,128 @@ fun op_symbol(op BinOp) string {
 }
 
 // Type-checks a resolved file.
+
+// Queries for later phases (the Rust `Typed` API, crates/kiln_typeck/src/lib.rs).
+impl Checker {
+	pub fun implements_named(&mut self, t &Ty, name &str, bounds &Vec<(string, u32)>) bool {
+		match self.r.prelude_type(name) {
+			Some(tr) => return self.implements_detached(t, tr, bounds.clone()),
+			None => return false,
+		}
+	}
+
+	pub fun is_copy_ty(&mut self, t &Ty, bounds &Vec<(string, u32)>) bool {
+		match t {
+			Ty::Unknown | Ty::Never | Ty::Var(_) => return true,
+			Ty::Fn(_, _, is_mut) => return !*is_mut,
+			_ => return self.implements_named(t, "Copy", bounds),
+		}
+	}
+
+	pub fun trait_methods(&self, tr u32) Vec<usize> {
+		o mut := Vec::new()
+		for i in 0..self.r.fns.len() {
+			if self.r.fns[i].trait_def == Some(tr) {
+				o.push(i)
+			}
+		}
+		return o
+	}
+
+	pub fun deref_target(&mut self, t &Ty, mutable bool) option<(Ty, usize)> {
+		d := match t {
+			Ty::Adt(d, _) => *d,
+			_ => return None,
+		}
+		for n in ["Box", "string", "Vec"] {
+			if self.r.prelude_type(n) == Some(d) {
+				return None
+			}
+		}
+		tn := if mutable { "DerefMut" } else { "Deref" }
+		mn := if mutable { "deref_mut" } else { "deref" }
+		tr := match self.r.prelude_type(tn) {
+			Some(tr) => tr,
+			None => return None,
+		}
+		tf mut := None
+		for i in 0..self.r.fns.len() {
+			if self.r.fns[i].trait_def == Some(tr) && self.r.fns[i].decl.name.name == mn {
+				tf = Some(i)
+				break
+			}
+		}
+		tf := match tf {
+			Some(x) => x,
+			None => return None,
+		}
+		impls := self.impls.clone()
+		for imp in &impls {
+			(itr, iargs) := match &imp.trait_ref {
+				Some(x) => x.clone(),
+				None => continue,
+			}
+			if itr != tr {
+				continue
+			}
+			snap := self.infer.snapshot()
+			map mut := HashMap::new()
+			for g in &imp.generics {
+				map.insert(g.clone(), self.infer.fresh(VarKind::General))
+			}
+			if self.infer.unify(&imp.self_ty.subst(&map), t) {
+				target := if iargs.len() > 0 { Some(self.infer.zonk(&iargs[0].subst(&map))) } else { None }
+				self.infer.restore(snap)
+				match target {
+					Some(x) => return Some((x, tf)),
+					None => return None,
+				}
+			}
+			self.infer.restore(snap)
+		}
+		return None
+	}
+
+	pub fun adt_fields(&self, t &Ty, variant option<u32>) Vec<(string, Ty)> {
+		(d, args) := match t {
+			Ty::Adt(d, args) => (*d, args.clone()),
+			_ => return Vec::new(),
+		}
+		info := match self.adts.get(&d) {
+			Some(i) => i,
+			None => return Vec::new(),
+		}
+		map := zip_map(&info.generics, &args)
+		match variant {
+			None => return shape_fields(&info.shape, &map),
+			Some(v) => {
+				for (id, sh) in &info.variants {
+					if *id == v {
+						return shape_fields(sh, &map)
+					}
+				}
+				return Vec::new()
+			},
+		}
+	}
+
+	pub fun adt_has_lifetimes(&self, d u32) bool {
+		if let Some(item) = &self.r.def(d).item {
+			g := match &item.kind {
+				ItemKind::Struct(s) => s.generics.clone(),
+				ItemKind::Enum(e) => e.generics.clone(),
+				_ => return false,
+			}
+			for p in &g.params {
+				if let GenericParam::Lifetime { .. } = p {
+					return true
+				}
+			}
+		}
+		return false
+	}
+}
+
 pub fun typeck(r Resolved) Checker {
 	c mut := Checker::new(r)
 	c.collect()
