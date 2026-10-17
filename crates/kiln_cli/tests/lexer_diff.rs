@@ -49,8 +49,15 @@ fn self_hosted_lexer_matches_rust_lexer() {
     assert!(files.iter().any(|f| f.ends_with("tests/lexer/errors.kn")));
     let mut failures = Vec::new();
     for chunk in files.chunks(32) {
-        let out = Command::new(&kilnc).args(chunk).output().expect("run kilnc");
-        assert!(out.status.success(), "kilnc failed: {}", String::from_utf8_lossy(&out.stderr));
+        let out = Command::new(&kilnc)
+            .args(chunk)
+            .output()
+            .expect("run kilnc");
+        assert!(
+            out.status.success(),
+            "kilnc failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let text = String::from_utf8(out.stdout).expect("utf-8 dump");
         // `== <path>` headers split the dumps (only with several files).
         let mut dumps: Vec<String> = Vec::new();
@@ -83,6 +90,11 @@ fn self_hosted_lexer_matches_rust_lexer() {
             }
         }
     }
-    assert!(failures.is_empty(), "{} file(s) differ:\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} file(s) differ:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
     eprintln!("{} files lexed identically", files.len());
 }

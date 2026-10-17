@@ -80,7 +80,13 @@ pub fn dump(l: &Lexed) -> String {
         let _ = writeln!(o, "doc {} {} {}", s.start, s.end, esc(text.as_bytes()));
     }
     for e in &l.errors {
-        let _ = writeln!(o, "err {} {} {}", e.span.start, e.span.end, esc(e.message.as_bytes()));
+        let _ = writeln!(
+            o,
+            "err {} {} {}",
+            e.span.start,
+            e.span.end,
+            esc(e.message.as_bytes())
+        );
     }
     o
 }
