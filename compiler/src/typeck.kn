@@ -1,0 +1,5629 @@
+// The self-hosted type checker: a port of crates/kiln_typeck (collect.rs,
+// check.rs, display.rs and ffi.rs).
+//
+// `Checker` holds the shared state (lowered items, the inference table,
+// errors, per-function results). Where the Rust checker borrows the
+// `Checker` from a per-function `Body`, this one keeps the body state in
+// `Checker::b` and swaps it out for detached trait queries. Tables keyed by
+// a `Span` in Rust are keyed by `(start, end)` here. `dump` prints the
+// format of `kiln typeck --dump` (crates/kiln_typeck/src/dump.rs);
+// tests/typeck_diff.rs compares the two.
+
+import std::collections::{HashMap, HashSet}
+import super::ast::*
+import super::derive
+import super::resolve
+import super::resolve::{DefKind, Diag, Res, Resolved, key}
+import super::ty::{InferTable, Ty, VarKind, Snapshot, is_int_name, prim, subst_all}
+
+type SpanKey = (usize, usize)
+
+// Field layout of a struct or enum variant.
+@derive(Clone)
+pub enum Shape {
+	Unit,
+	Tuple(Vec<Ty>),
+	Named(Vec<(string, Ty)>),
+}
+
+@derive(Clone)
+pub struct AdtInfo {
+	pub generics Vec<string>,
+	pub shape Shape,
+	pub variants Vec<(u32, Shape)>,
+	pub derives Vec<string>,
+	pub is_enum bool,
+}
+
+@derive(Clone)
+pub struct FnSig {
+	pub generics Vec<string>,
+	pub outer_generics Vec<string>,
+	pub bounds Vec<(string, u32)>,
+	pub bound_args Vec<(string, u32, Vec<Ty>)>,
+	pub self_param option<SelfParam>,
+	pub params Vec<Ty>,
+	pub ret Ty,
+	pub has_body bool,
+}
+
+@derive(Clone)
+pub struct ImplInfo {
+	pub generics Vec<string>,
+	pub self_ty Ty,
+	pub trait_ref option<(u32, Vec<Ty>)>,
+	pub bounds Vec<(string, u32)>,
+	pub methods HashMap<string, usize>,
+}
+
+@derive(Clone)
+pub struct TraitInfo {
+	pub generics Vec<string>,
+	pub supertraits Vec<u32>,
+	pub methods HashMap<string, usize>,
+}
+
+impl TraitInfo {
+	pub fun empty() TraitInfo {
+		return TraitInfo { generics: Vec::new(), supertraits: Vec::new(), methods: HashMap::new() }
+	}
+}
+
+@derive(Clone)
+pub struct LoopCx {
+	label option<string>,
+	break_ty option<Ty>,
+	has_break bool,
+}
+
+// A resolved method candidate.
+@derive(Clone)
+pub struct Method {
+	self_param option<SelfParam>,
+	params Vec<Ty>,
+	ret Ty,
+	obligations Vec<(Ty, u32)>,
+	arg_obligations Vec<(Ty, u32, Vec<Ty>)>,
+	fn_idx option<usize>,
+	subst HashMap<string, Ty>,
+}
+
+@derive(Clone)
+pub struct MethodInfo {
+	pub steps usize,
+	pub self_param option<SelfParam>,
+	pub recv_ty Ty,
+	pub fn_idx option<usize>,
+	pub substs HashMap<string, Ty>,
+}
+
+pub struct FnResults {
+	pub locals HashMap<u32, Ty>,
+	pub tys HashMap<SpanKey, Ty>,
+	pub methods HashMap<SpanKey, MethodInfo>,
+	pub callees HashMap<SpanKey, usize>,
+	pub callee_substs HashMap<SpanKey, HashMap<string, Ty>>,
+	pub const_uses HashSet<SpanKey>,
+	pub fn_derefs HashMap<SpanKey, usize>,
+	pub coercions HashMap<SpanKey, Ty>,
+	pub deref_coercions HashMap<SpanKey, usize>,
+	pub bounds Vec<(string, u32)>,
+	pub iter_items HashMap<SpanKey, Ty>,
+}
+
+// Per-function checking state (the Rust `Body`, minus the checker).
+pub struct Body {
+	locals HashMap<u32, Ty>,
+	rets Vec<Ty>,
+	loops Vec<LoopCx>,
+	bounds Vec<(string, u32)>,
+	bound_args Vec<(string, u32, Vec<Ty>)>,
+	unsafe_depth usize,
+	self_ty option<Ty>,
+	tys HashMap<SpanKey, Ty>,
+	obligations Vec<(Ty, u32, Span)>,
+	arg_obligations Vec<(Ty, u32, Vec<Ty>)>,
+	declared Vec<(u32, Span)>,
+	int_lits Vec<(u128, Ty, Span)>,
+	negated_lits HashSet<SpanKey>,
+	methods HashMap<SpanKey, MethodInfo>,
+	callees HashMap<SpanKey, usize>,
+	callee_substs HashMap<SpanKey, HashMap<string, Ty>>,
+	const_uses HashSet<SpanKey>,
+	fn_derefs HashMap<SpanKey, usize>,
+	fmt_specs Vec<(Ty, FmtSpec, Span)>,
+	closure_stack Vec<(Span, bool)>,
+	iter_items HashMap<SpanKey, Ty>,
+	coercions Vec<(Span, Ty, Ty)>,
+	deref_coercions HashMap<SpanKey, usize>,
+	deref_steps usize,
+	interp_spans HashSet<SpanKey>,
+	auto_stack Vec<u32>,
+	expected_fn option<Ty>,
+	expected_ty option<Ty>,
+	deferred_init HashSet<u32>,
+}
+
+impl Body {
+	pub fun new(bounds Vec<(string, u32)>) Body {
+		return Body {
+			locals: HashMap::new(),
+			rets: Vec::new(),
+			loops: Vec::new(),
+			bounds: bounds,
+			bound_args: Vec::new(),
+			unsafe_depth: 0,
+			self_ty: None,
+			tys: HashMap::new(),
+			obligations: Vec::new(),
+			arg_obligations: Vec::new(),
+			declared: Vec::new(),
+			int_lits: Vec::new(),
+			negated_lits: HashSet::new(),
+			methods: HashMap::new(),
+			callees: HashMap::new(),
+			callee_substs: HashMap::new(),
+			const_uses: HashSet::new(),
+			fn_derefs: HashMap::new(),
+			fmt_specs: Vec::new(),
+			closure_stack: Vec::new(),
+			iter_items: HashMap::new(),
+			coercions: Vec::new(),
+			deref_coercions: HashMap::new(),
+			deref_steps: 0,
+			interp_spans: HashSet::new(),
+			auto_stack: Vec::new(),
+			expected_fn: None,
+			expected_ty: None,
+			deferred_init: HashSet::new(),
+		}
+	}
+}
+
+pub struct Checker {
+	pub r Resolved,
+	pub adts HashMap<u32, AdtInfo>,
+	pub sigs Vec<FnSig>,
+	pub impls Vec<ImplInfo>,
+	pub traits HashMap<u32, TraitInfo>,
+	pub infer InferTable,
+	pub errors Vec<Diag>,
+	pub results Vec<option<FnResults>>,
+	b Body,
+	// The longest slice length the current match distinguishes.
+	slice_max usize,
+}
+
+// Names of the generic type parameters declared in `g`.
+pub fun generic_names(g &Generics) Vec<string> {
+	o mut := Vec::new()
+	for p in &g.params {
+		match p {
+			GenericParam::Type { name, .. } => o.push(name.name.clone()),
+			_ => {},
+		}
+	}
+	return o
+}
+
+// Source name of a primitive type (by `PrimTy` variant name).
+pub fun prim_name(p &str) string {
+	s := match p {
+		"I8" => "i8",
+		"I16" => "i16",
+		"I32" => "i32",
+		"I64" => "i64",
+		"I128" => "i128",
+		"Isize" => "isize",
+		"U8" => "u8",
+		"U16" => "u16",
+		"U32" => "u32",
+		"U64" => "u64",
+		"U128" => "u128",
+		"Usize" => "usize",
+		"F32" => "f32",
+		"F64" => "f64",
+		"Bool" => "bool",
+		"Char" => "char",
+		_ => "str",
+	}
+	return s.to_string()
+}
+
+// The `PrimTy` variant named by a source name or literal suffix.
+pub fun prim_from_name(s &str) option<string> {
+	v := match s {
+		"i8" => "I8",
+		"i16" => "I16",
+		"i32" => "I32",
+		"i64" => "I64",
+		"i128" => "I128",
+		"isize" => "Isize",
+		"u8" => "U8",
+		"u16" => "U16",
+		"u32" => "U32",
+		"u64" => "U64",
+		"u128" => "U128",
+		"usize" => "Usize",
+		"f32" => "F32",
+		"f64" => "F64",
+		"bool" => "Bool",
+		"char" => "Char",
+		"str" => "Str",
+		_ => return None,
+	}
+	return Some(v.to_string())
+}
+
+pub fun join(v &Vec<string>, sep &str) string {
+	o mut := string::new()
+	i mut := 0
+	while i < v.len() {
+		if i > 0 {
+			o.push(sep)
+		}
+		o.push(&v[i])
+		i += 1
+	}
+	return o
+}
+
+fun mk_box(t Ty) Box<Ty> {
+	return Box::new(t)
+}
+
+fun zip_map(names &Vec<string>, tys &Vec<Ty>) HashMap<string, Ty> {
+	m mut := HashMap::new()
+	i mut := 0
+	while i < names.len() && i < tys.len() {
+		m.insert(names[i].clone(), tys[i].clone())
+		i += 1
+	}
+	return m
+}
+
+fun contains_u32(v &Vec<u32>, x u32) bool {
+	for y in v {
+		if *y == x {
+			return true
+		}
+	}
+	return false
+}
+
+fun contains_str(v &[&str], x &str) bool {
+	for y in v {
+		if *y == x {
+			return true
+		}
+	}
+	return false
+}
+
+// Trait names from `@derive(A, B)` attributes.
+fun derives(attrs &Vec<Attribute>) Vec<string> {
+	o mut := Vec::new()
+	for a in attrs {
+		if a.name.name != "derive" {
+			continue
+		}
+		args := match &a.args {
+			Some(s) => s.clone(),
+			None => string::new(),
+		}
+		for part in args.split(",") {
+			t := part.trim()
+			if !t.is_empty() {
+				o.push(t.to_string())
+			}
+		}
+	}
+	return o
+}
+
+// The length in `[T; N]` or `[x; N]`: an integer literal.
+pub fun array_len(e &Expr) option<u64> {
+	match &e.kind {
+		ExprKind::Lit(Lit::Int { value, negative, .. }) => {
+			if *negative || *value > 18446744073709551615 {
+				return None
+			}
+			return Some(*value as u64)
+		}
+		ExprKind::Paren(x) => return array_len(x),
+		_ => return None,
+	}
+}
+
+// Whether `attrs` carries `@repr(C)`.
+pub fun is_repr_c(attrs &Vec<Attribute>) bool {
+	for a in attrs {
+		if a.name.name == "repr" {
+			match &a.args {
+				Some(s) => {
+					if s.trim() == "C" {
+						return true
+					}
+				}
+				None => {},
+			}
+		}
+	}
+	return false
+}
+
+fun item_attrs(item &option<Item>) Vec<Attribute> {
+	match item {
+		Some(i) => return i.attrs.clone(),
+		None => return Vec::new(),
+	}
+}
+
+impl Checker {
+	pub fun new(r Resolved) Checker {
+		return Checker {
+			r: r,
+			adts: HashMap::new(),
+			sigs: Vec::new(),
+			impls: Vec::new(),
+			traits: HashMap::new(),
+			infer: InferTable::new(),
+			errors: Vec::new(),
+			results: Vec::new(),
+			b: Body::new(Vec::new()),
+			slice_max: 0,
+		}
+	}
+
+	fun error(&mut self, msg string, span Span) {
+		self.errors.push(Diag { message: msg, span: span, help: None })
+	}
+
+	fun error_help(&mut self, msg string, span Span, help string) {
+		self.errors.push(Diag { message: msg, span: span, help: Some(help) })
+	}
+
+	fun lang(&self, name &str) u32 {
+		match self.r.prelude_type(name) {
+			Some(d) => return d,
+			None => panic("prelude type `{name}` missing"),
+		}
+	}
+
+	fun string_ty(&self) Ty {
+		return Ty::Adt(self.lang("string"), Vec::new())
+	}
+
+	fun option_ty(&self, t Ty) Ty {
+		v mut := Vec::new()
+		v.push(t)
+		return Ty::Adt(self.lang("option"), v)
+	}
+
+	fun result_ty(&self, t Ty, e Ty) Ty {
+		v mut := Vec::new()
+		v.push(t)
+		v.push(e)
+		return Ty::Adt(self.lang("result"), v)
+	}
+
+	fun is_lang(&self, d u32, name &str) bool {
+		return self.r.prelude_type(name) == Some(d)
+	}
+
+	fun item_kind(&self, d u32) option<&ItemKind> {
+		match &self.r.def(d).item {
+			Some(i) => return Some(&i.kind),
+			None => return None,
+		}
+	}
+
+	fun is_static_mut(&self, d u32) bool {
+		match self.item_kind(d) {
+			Some(ItemKind::Static { mutable, .. }) => return *mutable,
+			_ => return false,
+		}
+	}
+
+	// ----- display -----------------------------------------------------------
+
+	// Renders a type as Kiln source, e.g. `Option<&str>` or `{integer}`.
+	pub fun fmt_ty(&self, t &Ty) string {
+		t := self.infer.zonk(t)
+		match &t {
+			Ty::Prim(p) => return prim_name(p),
+			Ty::Unit => return "void".to_string(),
+			Ty::Never => return "!".to_string(),
+			Ty::Tuple(ts) => {
+				inner := self.fmt_all(ts)
+				if ts.len() == 1 {
+					return "({inner[0]},)"
+				}
+				return "({join(&inner, ", ")})"
+			}
+			Ty::Ref(m, x) => {
+				mm := if *m { "mut " } else { "" }
+				return "&{mm}{self.fmt_ty(x)}"
+			}
+			Ty::Ptr(m, x) => {
+				mm := if *m { "mut" } else { "const" }
+				return "*{mm} {self.fmt_ty(x)}"
+			}
+			Ty::Array(x, n) => return "[{self.fmt_ty(x)}; {*n}]",
+			Ty::Slice(x) => return "[{self.fmt_ty(x)}]",
+			Ty::Adt(d, args) => {
+				name := self.r.def(*d).name.clone()
+				if args.is_empty() {
+					return name
+				}
+				return "{name}<{join(&self.fmt_all(args), ", ")}>"
+			}
+			Ty::Fn(ps, r, is_mut) => {
+				a := join(&self.fmt_all(ps), ", ")
+				kw := if *is_mut { "fun mut" } else { "fun" }
+				match self.infer.zonk(r) {
+					Ty::Unit => return "{kw}({a})",
+					r => return "{kw}({a}) {self.fmt_ty(&r)}",
+				}
+			}
+			Ty::Param(n) => return n.clone(),
+			Ty::Dyn(ts) => {
+				a mut := Vec::new()
+				for d in ts {
+					a.push(self.r.def(*d).name.clone())
+				}
+				return "dyn {join(&a, " + ")}"
+			}
+			Ty::ChanSend(x) => return "chan<- {self.fmt_ty(x)}",
+			Ty::ChanRecv(x) => return "<-chan {self.fmt_ty(x)}",
+			Ty::Var(v) => {
+				match self.infer.kind(*v) {
+					VarKind::Int => return "{{integer}}".to_string(),
+					VarKind::Float => return "{{float}}".to_string(),
+					VarKind::General => return "_".to_string(),
+				}
+			}
+			Ty::Unknown => return "{{unknown}}".to_string(),
+		}
+	}
+
+	fun fmt_all(&self, ts &Vec<Ty>) Vec<string> {
+		o mut := Vec::new()
+		for t in ts {
+			o.push(self.fmt_ty(t))
+		}
+		return o
+	}
+
+	pub fun fmt_sig(&self, sp &option<SelfParam>, params &Vec<Ty>, ret &Ty) string {
+		ps mut := Vec::new()
+		match sp {
+			Some(SelfParam::Value { .. }) => ps.push("self".to_string()),
+			Some(SelfParam::Ref { mutable, .. }) => {
+				if *mutable {
+					ps.push("&mut self".to_string())
+				} else {
+					ps.push("&self".to_string())
+				}
+			}
+			None => {},
+		}
+		for t in params {
+			ps.push(self.fmt_ty(t))
+		}
+		match ret {
+			Ty::Unit => return "fun({join(&ps, ", ")})",
+			r => return "fun({join(&ps, ", ")}) {self.fmt_ty(r)}",
+		}
+	}
+
+	// ----- type lowering -----------------------------------------------------
+
+	pub fun lower_ty(&mut self, t &Type, self_ty option<&Ty>, infer bool) Ty {
+		match &t.kind {
+			TypeKind::Path(p) => return self.lower_path_ty(p, self_ty, infer),
+			TypeKind::Ref { mutable, inner, .. } => return Ty::Ref(*mutable, mk_box(self.lower_ty(inner, self_ty, infer))),
+			TypeKind::Ptr { mutable, inner } => return Ty::Ptr(*mutable, mk_box(self.lower_ty(inner, self_ty, infer))),
+			TypeKind::Slice(inner) => return Ty::Slice(mk_box(self.lower_ty(inner, self_ty, infer))),
+			TypeKind::Array(inner, len) => {
+				n := match array_len(len) {
+					Some(n) => n,
+					None => {
+						self.error("array lengths must be integer literals for now".to_string(), len.span)
+						0
+					},
+				}
+				return Ty::Array(mk_box(self.lower_ty(inner, self_ty, infer)), n)
+			}
+			TypeKind::Tuple(ts) => {
+				if ts.is_empty() {
+					return Ty::Unit
+				}
+				o mut := Vec::new()
+				for x in ts {
+					o.push(self.lower_ty(x, self_ty, infer))
+				}
+				return Ty::Tuple(o)
+			}
+			TypeKind::Fn { params, ret, is_mut } => {
+				o mut := Vec::new()
+				for x in params {
+					o.push(self.lower_ty(x, self_ty, infer))
+				}
+				r := match ret {
+					Some(r) => self.lower_ty(r, self_ty, infer),
+					None => Ty::Unit,
+				}
+				return Ty::Fn(o, mk_box(r), *is_mut)
+			}
+			TypeKind::Dyn(bounds) | TypeKind::Impl(bounds) => {
+				// The principal trait comes first; `Send` and `Sync` add no
+				// methods (a stable partition).
+				ts := self.bound_traits(bounds)
+				o mut := Vec::new()
+				autos mut := Vec::new()
+				for d in ts {
+					if self.is_lang(d, "Send") || self.is_lang(d, "Sync") {
+						autos.push(d)
+					} else {
+						o.push(d)
+					}
+				}
+				for d in autos {
+					o.push(d)
+				}
+				return Ty::Dyn(o)
+			}
+			TypeKind::ChanSend(x) => return Ty::ChanSend(mk_box(self.lower_ty(x, self_ty, infer))),
+			TypeKind::ChanRecv(x) => return Ty::ChanRecv(mk_box(self.lower_ty(x, self_ty, infer))),
+			TypeKind::Never => return Ty::Never,
+			TypeKind::Infer => {
+				if infer {
+					return self.infer.fresh(VarKind::General)
+				}
+				self.error("the placeholder `_` is not allowed in item signatures".to_string(), t.span)
+				return Ty::Unknown
+			},
+		}
+	}
+
+	pub fun bound_traits(&self, bounds &Vec<Bound>) Vec<u32> {
+		o mut := Vec::new()
+		for b in bounds {
+			match b {
+				Bound::Trait { path, maybe } => {
+					if !*maybe {
+						match self.r.path(path.span) {
+							Res::Def(d) => {
+								if self.r.def(d).kind == DefKind::Trait {
+									o.push(d)
+								}
+							}
+							_ => {},
+						}
+					}
+				}
+				_ => {},
+			}
+		}
+		return o
+	}
+
+	fun lower_args(&mut self, args &Vec<GenericArg>, self_ty option<&Ty>, infer bool) Vec<Ty> {
+		o mut := Vec::new()
+		for a in args {
+			match a {
+				GenericArg::Type(t) => o.push(self.lower_ty(t, self_ty, infer)),
+				_ => {},
+			}
+		}
+		return o
+	}
+
+	fun lower_path_ty(&mut self, p &Path, self_ty option<&Ty>, infer bool) Ty {
+		args := self.lower_args(&p.segments[p.segments.len() - 1].args, self_ty, infer)
+		match self.r.path(p.span) {
+			Res::Prim(prim) => return Ty::Prim(prim),
+			Res::TyParam(n) => return Ty::Param(n),
+			Res::SelfTy => {
+				match self_ty {
+					Some(t) => return t.clone(),
+					None => return Ty::Param("Self".to_string()),
+				}
+			}
+			Res::Def(d) => {
+				match self.r.def(d).kind {
+					DefKind::Struct | DefKind::Enum => {
+						expected := self.adt_generic_count(d)
+						args := self.fit_args(d, args, expected, p.span, infer)
+						return Ty::Adt(d, args)
+					}
+					DefKind::TypeAlias => return self.lower_alias(d, args, p.span),
+					DefKind::Trait => {
+						name := self.r.def(d).name.clone()
+						self.error_help("trait `{name}` used as a type", p.span, "use `dyn {name}` for a trait object or a generic `T: {name}`")
+						return Ty::Unknown
+					}
+					_ => return Ty::Unknown,
+				}
+			}
+			_ => return Ty::Unknown,
+		}
+	}
+
+	fun adt_generic_count(&self, d u32) usize {
+		match self.item_kind(d) {
+			Some(ItemKind::Struct(s)) => return generic_names(&s.generics).len(),
+			Some(ItemKind::Enum(e)) => return generic_names(&e.generics).len(),
+			_ => return 0,
+		}
+	}
+
+	fun fit_args(&mut self, d u32, args Vec<Ty>, expected usize, span Span, infer bool) Vec<Ty> {
+		if args.len() == expected {
+			return args
+		}
+		o mut := Vec::new()
+		if args.is_empty() && infer {
+			i mut := 0
+			while i < expected {
+				o.push(self.infer.fresh(VarKind::General))
+				i += 1
+			}
+			return o
+		}
+		name := self.r.def(d).name.clone()
+		s := if expected == 1 { "" } else { "s" }
+		w := if args.len() == 1 { "was" } else { "were" }
+		self.error("`{name}` takes {expected} generic argument{s} but {args.len()} {w} supplied", span)
+		i mut := 0
+		while i < expected {
+			o.push(Ty::Unknown)
+			i += 1
+		}
+		return o
+	}
+
+	fun lower_alias(&mut self, d u32, args Vec<Ty>, span Span) Ty {
+		(generics, t) := match self.item_kind(d) {
+			Some(ItemKind::TypeAlias { generics, ty: Some(t), .. }) => (generics.clone(), t.clone()),
+			_ => return Ty::Unknown,
+		}
+		names := generic_names(&generics)
+		lowered := self.lower_ty(&t, None, false)
+		if names.len() != args.len() {
+			name := self.r.def(d).name.clone()
+			self.error("type alias `{name}` takes {names.len()} generic arguments but {args.len()} were supplied", span)
+			return Ty::Unknown
+		}
+		return lowered.subst(&zip_map(&names, &args))
+	}
+
+	// ----- collection --------------------------------------------------------
+
+	pub fun collect(&mut self) {
+		// ADTs.
+		i mut := 0
+		while i < self.r.defs.len() {
+			id := i as u32
+			item := self.r.defs[i].item.clone()
+			i += 1
+			match &item {
+				Some(it) => {
+					match &it.kind {
+						ItemKind::Struct(s) => {
+							shape := self.lower_fields(&s.fields)
+							info := AdtInfo { generics: generic_names(&s.generics), shape: shape, variants: Vec::new(), derives: derives(&it.attrs), is_enum: false }
+							self.adts.insert(id, info)
+						}
+						ItemKind::Enum(e) => {
+							vs mut := Vec::new()
+							for v in self.r.variants(id) {
+								fields := self.r.def(v).variant.as_ref().unwrap().fields.clone()
+								vs.push((v, self.lower_fields(&fields)))
+							}
+							info := AdtInfo { generics: generic_names(&e.generics), shape: Shape::Unit, variants: vs, derives: derives(&it.attrs), is_enum: true }
+							self.adts.insert(id, info)
+						}
+						_ => {},
+					}
+				}
+				None => {},
+			}
+		}
+		// Traits.
+		i = 0
+		while i < self.r.defs.len() {
+			match self.item_kind(i as u32) {
+				Some(ItemKind::Trait(t)) => {
+					info := TraitInfo { generics: generic_names(&t.generics), supertraits: self.bound_traits(&t.supertraits), methods: HashMap::new() }
+					self.traits.insert(i as u32, info)
+				}
+				_ => {},
+			}
+			i += 1
+		}
+		// Impl headers.
+		k mut := 0
+		while k < self.r.impls.len() {
+			decl := self.r.impls[k].decl.clone()
+			is_prelude := self.r.impls[k].is_prelude
+			k += 1
+			generics := generic_names(&decl.generics)
+			self_ty := self.lower_ty(&decl.self_ty, None, false)
+			trait_ref mut := None
+			match &decl.trait_ref {
+				Some(p) => {
+					match self.r.path(p.span) {
+						Res::Def(d) => {
+							if self.r.def(d).kind == DefKind::Trait {
+								args := self.lower_args(&p.segments[p.segments.len() - 1].args, Some(&self_ty), false)
+								trait_ref = Some((d, args))
+							}
+						}
+						_ => {},
+					}
+				}
+				None => {},
+			}
+			if trait_ref.is_none() && decl.trait_ref.is_none() && !is_prelude {
+				local := match &self_ty {
+					Ty::Adt(d, _) => !self.r.def(*d).is_prelude,
+					Ty::Unknown => true,
+					_ => false,
+				}
+				if !local {
+					t := self.fmt_ty(&self_ty)
+					self.error_help("cannot define inherent `impl` for type `{t}` defined outside this package", decl.self_ty.span, "define a trait and implement it for the type instead".to_string())
+				}
+			}
+			match (&trait_ref, &decl.trait_ref) {
+				(Some((tr, _)), Some(path)) => {
+					unsafe_trait := match self.item_kind(*tr) {
+						Some(ItemKind::Trait(t)) => t.is_unsafe,
+						_ => false,
+					}
+					name := self.r.def(*tr).name.clone()
+					if unsafe_trait && !decl.is_unsafe {
+						self.error_help("the trait `{name}` requires an `unsafe impl` declaration", path.span, "write `unsafe impl {name} for ...`: implementing `{name}` manually promises thread safety the compiler can't check")
+					} else if !unsafe_trait && decl.is_unsafe {
+						self.error_help("implementing the trait `{name}` is not unsafe", path.span, "remove `unsafe` from this impl".to_string())
+					}
+				}
+				_ => {
+					if decl.is_unsafe && decl.trait_ref.is_none() {
+						self.error_help("inherent impls cannot be unsafe".to_string(), decl.self_ty.span, "remove `unsafe`".to_string())
+					}
+				},
+			}
+			bounds mut := Vec::new()
+			self.push_bounds(&decl.generics, None, &mut bounds)
+			self.impls.push(ImplInfo { generics: generics, self_ty: self_ty, trait_ref: trait_ref, bounds: bounds, methods: HashMap::new() })
+		}
+		// Function signatures.
+		i = 0
+		while i < self.r.fns.len() {
+			sig := self.lower_sig(i)
+			self.sigs.push(sig)
+			name := self.r.fns[i].decl.name.name.clone()
+			nspan := self.r.fns[i].decl.name.span
+			match self.r.fns[i].impl_idx {
+				Some(idx) => {
+					if self.impls[idx].methods.insert(name.clone(), i).is_some() {
+						self.error("duplicate definitions with name `{name}`", nspan)
+					}
+				}
+				None => {
+					match self.r.fns[i].trait_def {
+						Some(t) => {
+							self.traits.get_mut(&t).unwrap().methods.insert(name, i)
+						}
+						None => {},
+					}
+				},
+			}
+			i += 1
+		}
+		i = 0
+		while i < self.r.fns.len() {
+			self.results.push(None)
+			i += 1
+		}
+		// Duplicate inherent methods across impl blocks of the same type.
+		seen mut := HashSet::new()
+		idx mut := 0
+		while idx < self.impls.len() {
+			if self.impls[idx].trait_ref.is_some() {
+				idx += 1
+				continue
+			}
+			k := "{self.impls[idx].self_ty:?}"
+			ty := self.fmt_ty(&self.impls[idx].self_ty)
+			names mut := Vec::new()
+			for (n, fi) in self.impls[idx].methods.iter() {
+				names.push((n.clone(), *fi))
+			}
+			names.sort()
+			for (n, fi) in names {
+				span := self.r.fns[fi].decl.name.span
+				if !seen.insert((k.clone(), n.clone())) {
+					self.error("duplicate definitions with name `{n}` for type `{ty}`", span)
+				}
+			}
+			idx += 1
+		}
+		idx = 0
+		while idx < self.impls.len() {
+			self.check_trait_impl(idx)
+			idx += 1
+		}
+	}
+
+	fun lower_fields(&mut self, f &Fields) Shape {
+		match f {
+			Fields::Unit => return Shape::Unit,
+			Fields::Tuple(ts) => {
+				o mut := Vec::new()
+				for t in ts {
+					o.push(self.lower_ty(t, None, false))
+				}
+				return Shape::Tuple(o)
+			}
+			Fields::Named(fs) => {
+				o mut := Vec::new()
+				for f in fs {
+					o.push((f.name.name.clone(), self.lower_ty(&f.ty, None, false)))
+				}
+				return Shape::Named(o)
+			},
+		}
+	}
+
+	fun lower_sig(&mut self, i usize) FnSig {
+		decl := self.r.fns[i].decl.clone()
+		impl_idx := self.r.fns[i].impl_idx
+		trait_def := self.r.fns[i].trait_def
+		bounds mut := Vec::new()
+		bound_args mut := Vec::new()
+		outer_generics mut := Vec::new()
+		self_ty mut := None
+		match impl_idx {
+			Some(idx) => {
+				g := self.r.impls[idx].decl.generics.clone()
+				outer_generics = generic_names(&g)
+				self.push_bounds(&g, None, &mut bounds)
+				self.push_bound_args(&g, None, &mut bound_args)
+				self_ty = Some(self.impls[idx].self_ty.clone())
+			}
+			None => {
+				match trait_def {
+					Some(t) => {
+						bounds.push(("Self".to_string(), t))
+						match self.item_kind(t) {
+							Some(ItemKind::Trait(td)) => outer_generics = generic_names(&td.generics),
+							_ => {},
+						}
+						own mut := Vec::new()
+						for g in &outer_generics {
+							own.push(Ty::Param(g.clone()))
+						}
+						bound_args.push(("Self".to_string(), t, own))
+					}
+					None => {},
+				}
+			},
+		}
+		sty := self_ty.as_ref()
+		self.push_bounds(&decl.generics, sty, &mut bounds)
+		self.push_bound_args(&decl.generics, sty, &mut bound_args)
+		params mut := Vec::new()
+		for p in &decl.params {
+			params.push(self.lower_ty(&p.ty, sty, false))
+		}
+		ret := match &decl.ret {
+			Some(t) => self.lower_ty(t, sty, false),
+			None => Ty::Unit,
+		}
+		return FnSig {
+			generics: generic_names(&decl.generics),
+			outer_generics: outer_generics,
+			bounds: bounds,
+			bound_args: bound_args,
+			self_param: decl.self_param.clone(),
+			params: params,
+			ret: ret,
+			has_body: decl.body.is_some(),
+		}
+	}
+
+	fun push_bound_args_one(&mut self, name &str, bounds &Vec<Bound>, self_ty option<&Ty>, out &mut Vec<(string, u32, Vec<Ty>)>) {
+		for b in bounds {
+			match b {
+				Bound::Trait { path, maybe } => {
+					if !*maybe {
+						match self.r.path(path.span) {
+							Res::Def(d) => {
+								if self.r.def(d).kind == DefKind::Trait {
+									args := self.lower_args(&path.segments[path.segments.len() - 1].args, self_ty, false)
+									out.push((name.to_string(), d, args))
+								}
+							}
+							_ => {},
+						}
+					}
+				}
+				_ => {},
+			}
+		}
+	}
+
+	fun push_bound_args(&mut self, g &Generics, self_ty option<&Ty>, out &mut Vec<(string, u32, Vec<Ty>)>) {
+		for p in &g.params {
+			match p {
+				GenericParam::Type { name, bounds, .. } => self.push_bound_args_one(&name.name, bounds, self_ty, out),
+				_ => {},
+			}
+		}
+		for w in &g.where_clause {
+			if w.lifetime.is_some() {
+				continue
+			}
+			match self.lower_ty(&w.ty, self_ty, false) {
+				Ty::Param(n) => self.push_bound_args_one(&n, &w.bounds, self_ty, out),
+				_ => {},
+			}
+		}
+	}
+
+	fun push_bounds(&mut self, g &Generics, self_ty option<&Ty>, out &mut Vec<(string, u32)>) {
+		for p in &g.params {
+			match p {
+				GenericParam::Type { name, bounds, .. } => {
+					for t in self.bound_traits(bounds) {
+						out.push((name.name.clone(), t))
+					}
+				}
+				_ => {},
+			}
+		}
+		for w in &g.where_clause {
+			if w.lifetime.is_some() {
+				continue
+			}
+			match self.lower_ty(&w.ty, self_ty, false) {
+				Ty::Param(n) => {
+					for t in self.bound_traits(&w.bounds) {
+						out.push((n.clone(), t))
+					}
+				}
+				_ => self.error("`where` clauses currently only support generic parameters (`T: Trait`)".to_string(), w.span),
+			}
+		}
+	}
+
+	fun trait_info(&self, tr u32) TraitInfo {
+		match self.traits.get(&tr) {
+			Some(t) => return t.clone(),
+			None => return TraitInfo::empty(),
+		}
+	}
+
+	// Checks that a trait impl provides exactly the trait's methods with
+	// matching signatures.
+	fun check_trait_impl(&mut self, idx usize) {
+		(tr, trait_args) := match &self.impls[idx].trait_ref {
+			Some((t, a)) => (*t, a.clone()),
+			None => return,
+		}
+		span := self.r.impls[idx].span
+		tinfo := self.trait_info(tr)
+		tname := self.r.def(tr).name.clone()
+		self_ty := self.impls[idx].self_ty.clone()
+		subst mut := zip_map(&tinfo.generics, &trait_args)
+		subst.insert("Self".to_string(), self_ty.clone())
+		missing mut := Vec::new()
+		for (n, i) in tinfo.methods.iter() {
+			if !self.sigs[*i].has_body && !self.impls[idx].methods.contains_key(n) {
+				missing.push(n.clone())
+			}
+		}
+		missing.sort()
+		if !missing.is_empty() {
+			l mut := Vec::new()
+			for m in &missing {
+				l.push("`{m}`")
+			}
+			self.error_help("not all trait items implemented, missing: {join(&l, ", ")}", span, "implement the missing method(s) of trait `{tname}`")
+		}
+		methods mut := Vec::new()
+		for (n, i) in self.impls[idx].methods.iter() {
+			methods.push((n.clone(), *i))
+		}
+		methods.sort()
+		for (name, fi) in methods {
+			name_span := self.r.fns[fi].decl.name.span
+			ti := match tinfo.methods.get(&name) {
+				Some(t) => *t,
+				None => {
+					self.error("method `{name}` is not a member of trait `{tname}`", name_span)
+					continue
+				},
+			}
+			want := self.sigs[ti].clone()
+			have := self.sigs[fi].clone()
+			want_params := subst_all(&want.params, &subst)
+			want_ret := want.ret.subst(&subst)
+			same_self := match (&want.self_param, &have.self_param) {
+				(None, None) => true,
+				(Some(SelfParam::Ref { mutable: a, .. }), Some(SelfParam::Ref { mutable: b, .. })) => *a == *b,
+				(Some(SelfParam::Value { .. }), Some(SelfParam::Value { .. })) => true,
+				_ => false,
+			}
+			same := same_self && want_params == have.params && want_ret == have.ret
+			if !same {
+				w := self.fmt_sig(&want.self_param, &want_params, &want_ret)
+				h := self.fmt_sig(&have.self_param, &have.params, &have.ret)
+				self.error_help("method `{name}` has an incompatible signature for trait `{tname}`", name_span, "expected `{w}`, found `{h}`")
+			}
+		}
+	}
+
+	// ----- FFI ---------------------------------------------------------------
+
+	fun repr_c(&self, d u32) bool {
+		match &self.r.def(d).item {
+			Some(i) => return is_repr_c(&i.attrs),
+			None => return false,
+		}
+	}
+
+	// Why `t` has no C equivalent, or `None` if it does.
+	fun not_ffi(&self, t &Ty, by_value bool) option<string> {
+		match t {
+			Ty::Prim(p) => {
+				if p == "Str" {
+					return Some("`str` has no C equivalent; pass `*const u8` and a length".to_string())
+				}
+				if p == "I128" || p == "U128" {
+					return Some("128-bit integers have no stable C ABI".to_string())
+				}
+				return None
+			}
+			Ty::Ptr(..) | Ty::Unit => return None,
+			Ty::Array(x, _) => {
+				if !by_value {
+					return self.not_ffi(x, false)
+				}
+				return Some("this type has no C equivalent".to_string())
+			}
+			Ty::Adt(d, _) => {
+				if self.repr_c(*d) {
+					if by_value {
+						return Some("structs are passed to C through pointers here: use `*const T` / `*mut T`".to_string())
+					}
+					return None
+				}
+				return Some("`{self.r.def(*d).name}` is not `@repr(C)`")
+			}
+			Ty::Ref(..) => return Some("references are Kiln-only; use a raw pointer (`r as *const T`)".to_string()),
+			Ty::Fn(..) => return Some("Kiln function values are not C function pointers".to_string()),
+			_ => return Some("this type has no C equivalent".to_string()),
+		}
+	}
+
+	pub fun check_ffi(&mut self) {
+		errs mut := Vec::new()
+		i mut := 0
+		while i < self.r.defs.len() {
+			d := &self.r.defs[i]
+			id := i as u32
+			i += 1
+			attrs := match &d.item {
+				Some(it) => &it.attrs,
+				None => continue,
+			}
+			if !is_repr_c(attrs) {
+				continue
+			}
+			if d.kind != DefKind::Struct {
+				errs.push(("`@repr(C)` applies to structs".to_string(), d.span))
+				continue
+			}
+			info := match self.adts.get(&id) {
+				Some(x) => x,
+				None => continue,
+			}
+			if !info.generics.is_empty() {
+				errs.push(("`@repr(C)` structs cannot be generic".to_string(), d.span))
+				continue
+			}
+			fields mut := Vec::new()
+			match &info.shape {
+				Shape::Named(fs) => fields = fs.clone(),
+				Shape::Tuple(ts) => {
+					j mut := 0
+					while j < ts.len() {
+						fields.push(("{j}", ts[j].clone()))
+						j += 1
+					}
+				}
+				Shape::Unit => {},
+			}
+			if fields.is_empty() {
+				errs.push(("a `@repr(C)` struct needs at least one field (empty C structs are not portable)".to_string(), d.span))
+			}
+			for (n, t) in &fields {
+				match self.not_ffi(t, false) {
+					Some(why) => errs.push(("field `{n}` of `@repr(C)` struct `{d.name}`: {why}", d.span)),
+					None => {},
+				}
+			}
+		}
+		i = 0
+		while i < self.r.fns.len() {
+			f := &self.r.fns[i]
+			ext mut := false
+			for a in &f.attrs {
+				if a.name.name == "extern" {
+					ext = true
+				}
+			}
+			if !ext {
+				i += 1
+				continue
+			}
+			sig := &self.sigs[i]
+			name := &f.decl.name.name
+			k mut := 0
+			while k < sig.params.len() {
+				match self.not_ffi(&sig.params[k], true) {
+					Some(why) => {
+						span := if k < f.decl.params.len() { f.decl.params[k].span } else { f.decl.name.span }
+						errs.push(("parameter of foreign function `{name}`: {why}", span))
+					}
+					None => {},
+				}
+				k += 1
+			}
+			match self.not_ffi(&sig.ret, true) {
+				Some(why) => errs.push(("result of foreign function `{name}`: {why}", f.decl.name.span)),
+				None => {},
+			}
+			i += 1
+		}
+		for (m, s) in errs {
+			self.error(m, s)
+		}
+	}
+
+	// ----- bodies ------------------------------------------------------------
+
+	pub fun check_bodies(&mut self) {
+		i mut := 0
+		while i < self.r.fns.len() {
+			if self.r.fns[i].decl.body.is_some() {
+				self.check_fn(i)
+			}
+			i += 1
+		}
+		self.check_main()
+		self.check_statics()
+	}
+
+	// Runs `f` (a trait query) outside any body, with `bounds` in scope.
+	fun detach(&mut self, bounds Vec<(string, u32)>) Body {
+		return std::mem::replace(&mut self.b, Body::new(bounds))
+	}
+
+	fun reattach(&mut self, saved Body) {
+		self.b = saved
+	}
+
+	pub fun implements_detached(&mut self, t &Ty, tr u32, bounds Vec<(string, u32)>) bool {
+		saved := self.detach(bounds)
+		ok := self.implements(t, tr)
+		self.reattach(saved)
+		return ok
+	}
+
+	fun check_statics(&mut self) {
+		sync := match self.r.prelude_type("Sync") {
+			Some(s) => s,
+			None => return,
+		}
+		statics := self.r.statics.clone()
+		for (d, i) in statics {
+			if self.is_static_mut(d) {
+				continue
+			}
+			name := self.r.def(d).name.clone()
+			span := self.r.fns[i].decl.name.span
+			t := self.sigs[i].ret.clone()
+			if !self.implements_detached(&t, sync, Vec::new()) {
+				tn := self.fmt_ty(&t)
+				self.error_help("static `{name}` has type `{tn}`, which cannot be shared between tasks safely", span, "statics are shared by every task, so their type must be `Sync`; wrap the value in a `Mutex` or use an atomic".to_string())
+			}
+		}
+	}
+
+	fun check_main(&mut self) {
+		main := match self.r.module(self.r.root).values.get("main") {
+			Some(m) => *m,
+			None => return,
+		}
+		if self.r.def(main).kind != DefKind::Fn {
+			return
+		}
+		i mut := 0
+		while i < self.r.fns.len() && self.r.fns[i].def != Some(main) {
+			i += 1
+		}
+		if i == self.r.fns.len() {
+			return
+		}
+		sig := self.sigs[i].clone()
+		span := self.r.fns[i].decl.name.span
+		if !sig.params.is_empty() || !sig.generics.is_empty() {
+			self.error("`main` must not take parameters or generic arguments".to_string(), span)
+		}
+		ok := match &sig.ret {
+			Ty::Unit => true,
+			Ty::Adt(d, args) => self.is_lang(*d, "result") && args[0] == Ty::Unit,
+			_ => false,
+		}
+		if !ok {
+			found := self.fmt_ty(&sig.ret)
+			self.error_help("`main` has invalid return type `{found}`", span, "`main` must return `void` or `result<void, E>`".to_string())
+		}
+	}
+
+	fun check_fn(&mut self, i usize) {
+		decl := self.r.fns[i].decl.clone()
+		impl_idx := self.r.fns[i].impl_idx
+		trait_def := self.r.fns[i].trait_def
+		self_local := self.r.fns[i].self_local
+		sig := self.sigs[i].clone()
+		self_ty := match impl_idx {
+			Some(idx) => Some(self.impls[idx].self_ty.clone()),
+			None => if trait_def.is_some() { Some(Ty::Param("Self".to_string())) } else { None },
+		}
+		b mut := Body::new(sig.bounds.clone())
+		b.rets.push(sig.ret.clone())
+		b.bound_args = sig.bound_args.clone()
+		b.unsafe_depth = if decl.is_unsafe { 1 } else { 0 }
+		b.self_ty = self_ty.clone()
+		self.b = b
+		match (self_local, &sig.self_param, &self_ty) {
+			(Some(sl), Some(sp), Some(st)) => {
+				t := match sp {
+					SelfParam::Value { .. } => st.clone(),
+					SelfParam::Ref { mutable, .. } => Ty::Ref(*mutable, mk_box(st.clone())),
+				}
+				self.b.locals.insert(sl, t)
+			}
+			_ => {},
+		}
+		k mut := 0
+		while k < decl.params.len() && k < sig.params.len() {
+			self.bind_pat(&decl.params[k].pat, &sig.params[k], None)
+			k += 1
+		}
+		body := decl.body.as_ref().unwrap()
+		t := self.block(body, false)
+		self.check_explicit_return(body, &t, &sig.ret, &decl.name)
+		self.finish()
+		results := self.export()
+		self.results[i] = Some(results)
+		self.b = Body::new(Vec::new())
+	}
+
+	fun fresh(&mut self) Ty {
+		return self.infer.fresh(VarKind::General)
+	}
+
+	fun shallow(&self, t &Ty) Ty {
+		return self.infer.shallow(t)
+	}
+
+	fun fmt(&self, t &Ty) string {
+		return self.fmt_ty(t)
+	}
+
+	fun lower(&mut self, t &Type) Ty {
+		st := self.b.self_ty.clone()
+		return self.lower_ty(t, st.as_ref(), true)
+	}
+
+	fun zmap(&self, m &HashMap<string, Ty>) HashMap<string, Ty> {
+		o mut := HashMap::new()
+		for (n, t) in m.iter() {
+			o.insert(n.clone(), self.infer.zonk(t))
+		}
+		return o
+	}
+
+	fun export(&mut self) FnResults {
+		locals mut := HashMap::new()
+		for (k, v) in self.b.locals.iter() {
+			locals.insert(*k, self.infer.zonk(v))
+		}
+		tys mut := HashMap::new()
+		for (k, v) in self.b.tys.iter() {
+			tys.insert(*k, self.infer.zonk(v))
+		}
+		methods mut := HashMap::new()
+		for (k, m) in self.b.methods.iter() {
+			m2 mut := m.clone()
+			m2.recv_ty = self.infer.zonk(&m.recv_ty)
+			m2.substs = self.zmap(&m.substs)
+			methods.insert(*k, m2)
+		}
+		callee_substs mut := HashMap::new()
+		for (k, m) in self.b.callee_substs.iter() {
+			callee_substs.insert(*k, self.zmap(m))
+		}
+		coercions mut := HashMap::new()
+		for (sp, f, e) in &self.b.coercions {
+			f := self.infer.zonk(f)
+			e := self.infer.zonk(e)
+			if f != e && f != Ty::Never {
+				coercions.insert(key(*sp), e)
+			}
+		}
+		iter_items mut := HashMap::new()
+		for (k, v) in self.b.iter_items.iter() {
+			iter_items.insert(*k, self.infer.zonk(v))
+		}
+		return FnResults {
+			locals: locals,
+			tys: tys,
+			methods: methods,
+			callees: self.b.callees.clone(),
+			callee_substs: callee_substs,
+			const_uses: self.b.const_uses.clone(),
+			fn_derefs: self.b.fn_derefs.clone(),
+			coercions: coercions,
+			deref_coercions: self.b.deref_coercions.clone(),
+			bounds: self.b.bounds.clone(),
+			iter_items: iter_items,
+		}
+	}
+
+	// Infers trait arguments from impls.
+	fun solve_arg_obligations(&mut self) {
+		pending := std::mem::replace(&mut self.b.arg_obligations, Vec::new())
+		for (t, tr, args) in pending {
+			t := self.infer.zonk(&t)
+			match self.shallow(&t) {
+				Ty::Var(_) | Ty::Unknown => {
+					self.b.arg_obligations.push((t, tr, args))
+					continue
+				}
+				Ty::Param(n) => {
+					found mut := None
+					for (bn, btr, a) in &self.b.bound_args {
+						if *bn == n && *btr == tr {
+							found = Some(a.clone())
+							break
+						}
+					}
+					match found {
+						Some(have) => {
+							j mut := 0
+							while j < args.len() && j < have.len() {
+								self.infer.try_unify(&args[j], &have[j])
+								j += 1
+							}
+						}
+						None => {},
+					}
+					continue
+				}
+				_ => {},
+			}
+			fits mut := Vec::new()
+			idx mut := 0
+			while idx < self.impls.len() {
+				iargs := match &self.impls[idx].trait_ref {
+					Some((itr, ia)) => if *itr == tr { ia.clone() } else {
+						idx += 1
+						continue
+					},
+					None => {
+						idx += 1
+						continue
+					},
+				}
+				snap := self.infer.snapshot()
+				(st, map) := self.instantiate_impl(idx)
+				ok mut := self.infer.try_unify(&st, &t)
+				j mut := 0
+				while ok && j < args.len() && j < iargs.len() {
+					ok = self.infer.try_unify(&args[j], &iargs[j].subst(&map))
+					j += 1
+				}
+				self.infer.restore(snap)
+				if ok {
+					fits.push(idx)
+				}
+				idx += 1
+			}
+			if fits.len() == 1 {
+				idx := fits[0]
+				iargs := self.impls[idx].trait_ref.as_ref().unwrap().1.clone()
+				(st, map) := self.instantiate_impl(idx)
+				self.infer.unify(&st, &t)
+				j mut := 0
+				while j < args.len() && j < iargs.len() {
+					self.infer.try_unify(&args[j], &iargs[j].subst(&map))
+					j += 1
+				}
+			} else if fits.len() > 1 {
+				self.b.arg_obligations.push((t, tr, args))
+			}
+		}
+	}
+
+	// Checks that each format spec suits its argument's type.
+	fun check_fmt_specs(&mut self) {
+		specs := std::mem::replace(&mut self.b.fmt_specs, Vec::new())
+		for (t, spec, span) in specs {
+			t mut := self.infer.zonk(&t)
+			while let Ty::Ref(_, inner) = &t {
+				t = (**inner).clone()
+			}
+			int := t.is_int_prim()
+			float := t.is_float_prim()
+			shown := self.fmt(&t)
+			k := spec.kind.as_str()
+			if k == "Debug" {
+				match self.r.prelude_type("Debug") {
+					Some(d) => {
+						if !self.implements(&t, d) {
+							self.error_help("`{shown}` cannot be formatted with `:?` because it does not implement `Debug`", span, "add `@derive(Debug)` to the type, or implement `fmt::Debug`".to_string())
+						}
+					}
+					None => {},
+				}
+			} else if k == "LowerHex" || k == "UpperHex" || k == "Octal" || k == "Binary" {
+				if !int {
+					self.error("hexadecimal, octal, and binary formats need an integer, found `{shown}`", span)
+				}
+			} else if k == "LowerExp" || k == "UpperExp" {
+				if !int && !float {
+					self.error("scientific notation needs a number, found `{shown}`", span)
+				}
+			}
+		}
+	}
+
+	fun finish(&mut self) {
+		self.solve_arg_obligations()
+		obligations := std::mem::replace(&mut self.b.obligations, Vec::new())
+		for (t, tr, span) in obligations {
+			t := self.infer.zonk(&t)
+			if let Ty::Var(_) = self.shallow(&t) {
+				continue
+			}
+			if !self.implements(&t, tr) {
+				tn := self.fmt(&t)
+				trn := self.r.def(tr).name.clone()
+				help := if trn == "Send" || trn == "Sync" {
+					"`{trn}` is automatic when every field is `{trn}` (raw pointers are not); if `{tn}` is safe anyway, add `unsafe impl {trn} for {tn} {{}}`"
+				} else {
+					"add `impl {trn} for {tn}` or `@derive({trn})`"
+				}
+				self.error_help("the trait `{trn}` is not implemented for `{tn}`", span, help)
+			}
+		}
+		self.infer.apply_literal_defaults()
+		self.check_int_literals()
+		self.check_fmt_specs()
+		declared := std::mem::replace(&mut self.b.declared, Vec::new())
+		for (id, span) in declared {
+			t := match self.b.locals.get(&id) {
+				Some(t) => t.clone(),
+				None => Ty::Unknown,
+			}
+			if self.infer.has_unbound(&t) {
+				name := self.r.local(id).name.clone()
+				shown := self.fmt(&t)
+				self.error_help("type annotations needed for `{name}`", span, "the type is only partially known (`{shown}`); write `let {name}: Type = ...`")
+			}
+		}
+	}
+
+	// Rejects integer literals that do not fit their (inferred) type.
+	fun check_int_literals(&mut self) {
+		lits := std::mem::replace(&mut self.b.int_lits, Vec::new())
+		for (v, t, span) in lits {
+			p := match self.infer.zonk(&t) {
+				Ty::Prim(p) => p,
+				_ => continue,
+			}
+			(max, signed) := match p.as_str() {
+				"I8" => (127u128, true),
+				"I16" => (32767u128, true),
+				"I32" => (2147483647u128, true),
+				"I64" | "Isize" => (9223372036854775807u128, true),
+				"I128" => (170141183460469231731687303715884105727u128, true),
+				"U8" => (255u128, false),
+				"U16" => (65535u128, false),
+				"U32" => (4294967295u128, false),
+				"U64" | "Usize" => (18446744073709551615u128, false),
+				"U128" => (340282366920938463463374607431768211455u128, false),
+				_ => continue,
+			}
+			neg := self.b.negated_lits.contains(&key(span))
+			limit := if signed && neg { max + 1 } else { max }
+			if v > limit {
+				name := self.fmt(&Ty::Prim(p.clone()))
+				lo := if signed { "-{max + 1}" } else { "0".to_string() }
+				self.error_help("literal out of range for `{name}`", span, "`{name}` holds {lo} to {max}; give the literal a wider type with a suffix (e.g. `{v}i64`, `{v}u64`)")
+			}
+		}
+	}
+
+	// SPEC §3.1: non-unit functions must end every path with `return`.
+	fun check_explicit_return(&mut self, body &Block, body_ty &Ty, ret &Ty, name &Ident) {
+		ret := self.infer.zonk(ret)
+		if ret == Ty::Unit {
+			return
+		}
+		if let Ty::Never = self.shallow(body_ty) {
+			return
+		}
+		if body.stmts.len() > 0 {
+			match &body.stmts[body.stmts.len() - 1].kind {
+				StmtKind::Expr(e) => {
+					t := self.ty_of(e.span, Ty::Unit)
+					unitish := match self.shallow(&t) {
+						Ty::Unit | Ty::Never => true,
+						_ => false,
+					}
+					if !unitish && !e.is_block_like() {
+						self.error_help("missing `return`: Kiln functions do not return their last expression implicitly".to_string(), e.span, "write `return <expr>`".to_string())
+						return
+					}
+				}
+				_ => {},
+			}
+		}
+		r := self.fmt(&ret)
+		start := if body.span.end > 0 { body.span.end - 1 } else { 0 }
+		end := Span::new(start, body.span.end)
+		self.error_help("function `{name.name}` must return a value of type `{r}` on every path", end, "add a `return` statement before the end of the function".to_string())
+	}
+
+	fun ty_of(&self, s Span, default Ty) Ty {
+		match self.b.tys.get(&key(s)) {
+			Some(t) => return t.clone(),
+			None => return default,
+		}
+	}
+
+	// ----- coercion ----------------------------------------------------------
+
+	fun is_string_and_str(&self, found &Ty, expected &Ty, need_shared bool) bool {
+		match (self.shallow(found), self.shallow(expected)) {
+			(Ty::Adt(sd, _), Ty::Ref(m, inner)) => {
+				if need_shared && m {
+					return false
+				}
+				return self.is_lang(sd, "string") && self.shallow(&inner).is_prim("Str")
+			}
+			_ => return false,
+		}
+	}
+
+	fun coerce(&mut self, found &Ty, expected &Ty, span Span) bool {
+		if self.coerces(found, expected) {
+			if self.b.deref_steps > 0 {
+				self.b.deref_coercions.insert(key(span), self.b.deref_steps)
+			}
+			self.b.coercions.push((span, found.clone(), expected.clone()))
+			return true
+		}
+		if self.b.interp_spans.contains(&key(span)) && self.is_string_and_str(found, expected, true) {
+			self.b.coercions.push((span, found.clone(), expected.clone()))
+			return true
+		}
+		e := self.fmt(expected)
+		f := self.fmt(found)
+		help := if self.is_string_and_str(found, expected, false) { Some("borrow it: `&value` (a `&String` coerces to `&str`)".to_string()) } else { None }
+		self.errors.push(Diag { message: "mismatched types: expected `{e}`, found `{f}`", span: span, help: help })
+		return false
+	}
+
+	fun implements_all(&mut self, t &Ty, traits &Vec<u32>) bool {
+		for tr in traits {
+			if !self.implements(t, *tr) {
+				return false
+			}
+		}
+		return true
+	}
+
+	fun coerces(&mut self, found &Ty, expected &Ty) bool {
+		self.b.deref_steps = 0
+		f := self.shallow(found)
+		e := self.shallow(expected)
+		if f == Ty::Never {
+			return true
+		}
+		match (&f, &e) {
+			(Ty::Fn(fp, fr, false), Ty::Fn(_, _, true)) => {
+				as_mut := Ty::Fn(fp.clone(), fr.clone(), true)
+				return self.infer.try_unify(&as_mut, &e)
+			}
+			_ => {},
+		}
+		match (&f, &e) {
+			(Ty::Ref(fm, fi), Ty::Ref(em, ei)) => {
+				fm := *fm
+				em := *em
+				if em && !fm {
+					return false
+				}
+				fi := self.shallow(fi)
+				ei := self.shallow(ei)
+				if self.infer.try_unify(&fi, &ei) {
+					return true
+				}
+				match (&fi, &ei) {
+					(Ty::Adt(d, _), Ty::Prim(p)) => {
+						if p == "Str" && self.is_lang(*d, "string") {
+							return true
+						}
+					}
+					_ => {},
+				}
+				match (&fi, &ei) {
+					(Ty::Adt(d, args), Ty::Slice(t)) => {
+						if self.is_lang(*d, "Vec") {
+							return self.infer.unify(&args[0], t)
+						}
+					}
+					_ => {},
+				}
+				match (&fi, &ei) {
+					(Ty::Array(a, _), Ty::Slice(t)) => return self.infer.unify(a, t),
+					(Ty::Adt(d, args), _) => {
+						if self.is_lang(*d, "Box") {
+							return self.infer.try_unify(&args[0], &ei)
+						}
+					}
+					_ => {},
+				}
+				match &ei {
+					Ty::Dyn(traits) => {
+						traits := traits.clone()
+						return self.implements_all(&fi, &traits)
+					}
+					_ => {},
+				}
+				match &fi {
+					Ty::Ref(m2, _) => {
+						if em && !*m2 {
+							return false
+						}
+						next := fi.clone()
+						if self.coerces(&next, &e) {
+							self.b.deref_steps += 1
+							return true
+						}
+						return false
+					}
+					Ty::Adt(..) => {
+						tn := if em { "DerefMut" } else { "Deref" }
+						u := match self.overloaded_deref(&fi, tn) {
+							Some(u) => u,
+							None => return false,
+						}
+						next := Ty::Ref(em, mk_box(u))
+						if self.coerces(&next, &e) {
+							self.b.deref_steps += 1
+							return true
+						}
+						return false
+					}
+					_ => return false,
+				}
+			}
+			_ => {},
+		}
+		match (&f, &e) {
+			(Ty::Adt(d, fa), Ty::Adt(d2, ea)) => {
+				if d == d2 && self.is_lang(*d, "Box") {
+					fi := self.shallow(&fa[0])
+					ei := self.shallow(&ea[0])
+					fi_dyn_or_var := match &fi {
+						Ty::Dyn(_) | Ty::Var(_) => true,
+						_ => false,
+					}
+					match &ei {
+						Ty::Dyn(traits) => {
+							if !fi_dyn_or_var {
+								traits := traits.clone()
+								return self.implements_all(&fi, &traits)
+							}
+						}
+						_ => {},
+					}
+				}
+			}
+			_ => {},
+		}
+		match (&f, &e) {
+			(Ty::Adt(d, args), Ty::Dyn(traits)) => {
+				if self.is_lang(*d, "Box") {
+					inner := args[0].clone()
+					traits := traits.clone()
+					return self.implements_all(&inner, &traits)
+				}
+			}
+			_ => {},
+		}
+		return self.infer.try_unify(&f, &e)
+	}
+
+	// ----- traits ------------------------------------------------------------
+
+	fun supertrait_closure(&self, tr u32) Vec<u32> {
+		out mut := Vec::new()
+		out.push(tr)
+		i mut := 0
+		while i < out.len() {
+			match self.traits.get(&out[i]) {
+				Some(info) => {
+					for s in &info.supertraits {
+						if !contains_u32(&out, *s) {
+							out.push(*s)
+						}
+					}
+				}
+				None => {},
+			}
+			i += 1
+		}
+		return out
+	}
+
+	fun param_bounds(&self, name &str) Vec<u32> {
+		out mut := Vec::new()
+		for (n, t) in &self.b.bounds {
+			if n == name {
+				for s in self.supertrait_closure(*t) {
+					if !contains_u32(&out, s) {
+						out.push(s)
+					}
+				}
+			}
+		}
+		return out
+	}
+
+	fun implements_each(&mut self, ts &Vec<Ty>, tr u32) bool {
+		for x in ts {
+			if !self.implements(x, tr) {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Whether `t` implements trait `tr`.
+	pub fun implements(&mut self, t &Ty, tr u32) bool {
+		t := self.infer.zonk(t)
+		tn := self.r.def(tr).name.clone()
+		tn := tn.as_str()
+		match &t {
+			Ty::Var(v) => {
+				match self.infer.kind(*v) {
+					VarKind::Int => return self.implements(&prim("I32"), tr),
+					VarKind::Float => return self.implements(&prim("F64"), tr),
+					VarKind::General => return true,
+				}
+			}
+			Ty::Unknown | Ty::Never => return true,
+			Ty::Param(n) => return contains_u32(&self.param_bounds(n), tr) || self.has_impl(&t, tr),
+			Ty::Prim(p) => {
+				m := if p == "F32" || p == "F64" {
+					contains_str(&["Copy", "Clone", "Debug", "Display", "Default", "Send", "Sync"], tn)
+				} else if p == "Str" {
+					contains_str(&["Eq", "Ord", "Hash", "Debug", "Display", "Send", "Sync"], tn)
+				} else {
+					contains_str(&["Copy", "Clone", "Eq", "Ord", "Hash", "Debug", "Display", "Default", "Send", "Sync"], tn)
+				}
+				return m || self.has_impl(&t, tr)
+			}
+			Ty::Unit => return contains_str(&["Copy", "Clone", "Eq", "Ord", "Hash", "Debug", "Default", "Send", "Sync"], tn),
+			Ty::Ref(m, inner) => {
+				if tn == "Copy" || tn == "Clone" {
+					return !*m
+				}
+				inner := (**inner).clone()
+				if tn == "Send" && !*m {
+					match self.r.prelude_type("Sync") {
+						Some(sync) => return self.implements(&inner, sync),
+						None => return true,
+					}
+				}
+				return self.implements(&inner, tr)
+			}
+			Ty::Tuple(ts) => {
+				ts := ts.clone()
+				return self.implements_each(&ts, tr)
+			}
+			Ty::Array(x, _) | Ty::Slice(x) => {
+				x := (**x).clone()
+				return self.implements(&x, tr)
+			}
+			Ty::ChanSend(x) | Ty::ChanRecv(x) => {
+				if tn == "Send" || tn == "Sync" {
+					x := (**x).clone()
+					match self.r.prelude_type("Send") {
+						Some(send) => return self.implements(&x, send),
+						None => return true,
+					}
+				}
+				return tn == "Clone"
+			}
+			Ty::Fn(_, _, is_mut) => {
+				if *is_mut {
+					return false
+				}
+				return contains_str(&["Copy", "Clone", "Send", "Sync"], tn)
+			}
+			Ty::Ptr(..) => return tn == "Copy" || tn == "Clone",
+			Ty::Dyn(ts) => {
+				for d in ts {
+					if contains_u32(&self.supertrait_closure(*d), tr) {
+						return true
+					}
+				}
+				return false
+			}
+			Ty::Adt(d, args) => {
+				d := *d
+				is_core := self.r.is_core(d)
+				dname := self.r.def(d).name.clone()
+				if is_core && !self.adts.get(&d).unwrap().is_enum && dname == "string" {
+					return contains_str(&["Clone", "Eq", "Ord", "Hash", "Debug", "Display", "Default", "Send", "Sync"], tn) || self.has_impl(&t, tr)
+				}
+				if is_core {
+					args := args.clone()
+					structural := contains_str(&["Clone", "Eq", "Ord", "Hash", "Debug", "Default", "Send", "Sync"], tn) || (tn == "Copy" && dname == "option")
+					return (structural && self.implements_each(&args, tr)) || self.has_impl(&t, tr)
+				}
+				if tn == "Send" || tn == "Sync" {
+					if self.has_impl(&t, tr) || contains_u32(&self.b.auto_stack, d) {
+						return true
+					}
+					info := self.adts.get(&d).unwrap().clone()
+					map := zip_map(&info.generics, args)
+					fields mut := Vec::new()
+					push_shape(&info.shape, &map, &mut fields)
+					for (_, sh) in &info.variants {
+						push_shape(sh, &map, &mut fields)
+					}
+					self.b.auto_stack.push(d)
+					ok := self.implements_each(&fields, tr)
+					self.b.auto_stack.pop()
+					return ok
+				}
+				for x in &self.adts.get(&d).unwrap().derives {
+					if x == tn {
+						return true
+					}
+				}
+				return self.has_impl(&t, tr)
+			},
+		}
+	}
+
+	pub fun has_impl_pub(&mut self, t &Ty, tr u32) bool {
+		return self.has_impl(t, tr)
+	}
+
+	fun impl_trait(&self, idx usize) option<u32> {
+		match &self.impls[idx].trait_ref {
+			Some((t, _)) => return Some(*t),
+			None => return None,
+		}
+	}
+
+	// Whether an explicit `impl Trait for T` matches `t`.
+	fun has_impl(&mut self, t &Ty, tr u32) bool {
+		idx mut := 0
+		while idx < self.impls.len() {
+			if self.impl_trait(idx) != Some(tr) {
+				idx += 1
+				continue
+			}
+			(st, map) := self.instantiate_impl(idx)
+			if !self.infer.can_unify(&st, t) {
+				idx += 1
+				continue
+			}
+			bounds := self.impls[idx].bounds.clone()
+			if bounds.is_empty() {
+				return true
+			}
+			snap := self.infer.snapshot()
+			self.infer.unify(&st, t)
+			ok mut := true
+			for (g, b) in &bounds {
+				match map.get(g) {
+					Some(v) => {
+						v := self.infer.zonk(v)
+						is_var := match &v {
+							Ty::Var(_) => true,
+							_ => false,
+						}
+						if !is_var && !self.implements(&v, *b) {
+							ok = false
+							break
+						}
+					}
+					None => {},
+				}
+			}
+			self.infer.restore(snap)
+			if ok {
+				return true
+			}
+			idx += 1
+		}
+		return false
+	}
+
+	// Instantiates an impl's generics with fresh variables.
+	fun instantiate_impl(&mut self, idx usize) (Ty, HashMap<string, Ty>) {
+		generics := self.impls[idx].generics.clone()
+		map mut := HashMap::new()
+		for g in generics {
+			v := self.infer.fresh(VarKind::General)
+			map.insert(g, v)
+		}
+		return (self.impls[idx].self_ty.subst(&map), map)
+	}
+
+	// ----- method lookup -----------------------------------------------------
+
+	fun instantiate_sig(&mut self, i usize, subst HashMap<string, Ty>) Method {
+		subst mut := subst
+		sig := self.sigs[i].clone()
+		for g in &sig.generics {
+			if !subst.contains_key(g) {
+				v := self.fresh()
+				subst.insert(g.clone(), v)
+			}
+		}
+		for g in &sig.outer_generics {
+			if !subst.contains_key(g) {
+				v := self.fresh()
+				subst.insert(g.clone(), v)
+			}
+		}
+		obligations mut := Vec::new()
+		for (n, t) in &sig.bounds {
+			if n == "Self" {
+				continue
+			}
+			match subst.get(n) {
+				Some(ty) => obligations.push((ty.clone(), *t)),
+				None => {},
+			}
+		}
+		arg_obligations mut := Vec::new()
+		for (n, t, args) in &sig.bound_args {
+			if n == "Self" || args.is_empty() {
+				continue
+			}
+			args := subst_all(args, &subst)
+			match subst.get(n) {
+				Some(ty) => arg_obligations.push((ty.clone(), *t, args)),
+				None => {},
+			}
+		}
+		return Method {
+			arg_obligations: arg_obligations,
+			self_param: sig.self_param.clone(),
+			params: subst_all(&sig.params, &subst),
+			ret: sig.ret.subst(&subst),
+			obligations: obligations,
+			fn_idx: Some(i),
+			subst: subst,
+		}
+	}
+
+	fun trait_method(&mut self, traits Vec<u32>, self_t &Ty, name &str) option<Method> {
+		for tr in traits {
+			for sup in self.supertrait_closure(tr) {
+				found := match self.traits.get(&sup) {
+					Some(ti) => match ti.methods.get(name) {
+						Some(i) => Some(*i),
+						None => None,
+					},
+					None => None,
+				}
+				match found {
+					Some(i) => {
+						subst mut := HashMap::new()
+						subst.insert("Self".to_string(), self_t.clone())
+						return Some(self.instantiate_sig(i, subst))
+					}
+					None => {},
+				}
+			}
+		}
+		return None
+	}
+
+	// Finds method `name` on exactly type `t` (no autoderef).
+	fun method_on(&mut self, t &Ty, name &str) option<Method> {
+		t := self.shallow(t)
+		match &t {
+			Ty::Param(n) => {
+				for (bn, tr, args) in self.b.bound_args.clone() {
+					if &bn != n {
+						continue
+					}
+					tinfo := self.trait_info(tr)
+					match tinfo.methods.get(name) {
+						Some(i) => {
+							subst mut := zip_map(&tinfo.generics, &args)
+							subst.insert("Self".to_string(), t.clone())
+							return Some(self.instantiate_sig(*i, subst))
+						}
+						None => {},
+					}
+				}
+				traits := self.param_bounds(n)
+				return self.trait_method(traits, &t, name)
+			}
+			Ty::Dyn(traits) => return self.trait_method(traits.clone(), &t, name),
+			Ty::Var(v) => {
+				if self.infer.kind(*v) != VarKind::General {
+					return self.builtin_trait_method(&t, name)
+				}
+				return None
+			}
+			Ty::Unknown => return None,
+			_ => {},
+		}
+		t_is_ref := match &t {
+			Ty::Ref(..) => true,
+			_ => false,
+		}
+		pass mut := 0
+		while pass < 2 {
+			idx mut := 0
+			while idx < self.impls.len() {
+				is_trait := self.impls[idx].trait_ref.is_some()
+				st_is_ref := match &self.impls[idx].self_ty {
+					Ty::Ref(..) => true,
+					_ => false,
+				}
+				if is_trait != (pass == 1) || (t_is_ref && st_is_ref) {
+					idx += 1
+					continue
+				}
+				(st, map) := self.instantiate_impl(idx)
+				if !self.infer.can_unify(&st, &t) {
+					idx += 1
+					continue
+				}
+				match self.impls[idx].methods.get(name) {
+					Some(i) => {
+						i := *i
+						self.infer.unify(&st, &t)
+						return Some(self.instantiate_sig(i, map))
+					}
+					None => {},
+				}
+				match self.impls[idx].trait_ref.clone() {
+					Some((tr, args)) => {
+						tinfo := self.trait_info(tr)
+						match tinfo.methods.get(name) {
+							Some(i) => {
+								self.infer.unify(&st, &t)
+								subst mut := zip_map(&tinfo.generics, &subst_all(&args, &map))
+								subst.insert("Self".to_string(), t.clone())
+								return Some(self.instantiate_sig(*i, subst))
+							}
+							None => {},
+						}
+					}
+					None => {},
+				}
+				idx += 1
+			}
+			pass += 1
+		}
+		if t_is_ref {
+			return None
+		}
+		return self.builtin_trait_method(&t, name)
+	}
+
+	// Built-in and derived implementations of `Eq`, `Ord`, `Hash` and
+	// `Debug` have no impl block; their methods are the traits' defaults.
+	fun builtin_trait_method(&mut self, t &Ty, name &str) option<Method> {
+		t := t.clone()
+		for tn in ["Eq", "Ord", "Hash", "Debug"] {
+			tr := match self.r.prelude_type(tn) {
+				Some(x) => x,
+				None => continue,
+			}
+			i := match self.traits.get(&tr) {
+				Some(ti) => match ti.methods.get(name) {
+					Some(i) => *i,
+					None => continue,
+				},
+				None => continue,
+			}
+			if self.implements(&t, tr) {
+				subst mut := HashMap::new()
+				subst.insert("Self".to_string(), t.clone())
+				return Some(self.instantiate_sig(i, subst))
+			}
+		}
+		return None
+	}
+
+	// The target of a user `Deref` or `DerefMut` impl for `t`, if any.
+	pub fun overloaded_deref(&mut self, t &Ty, trait_name &str) option<Ty> {
+		t := self.shallow(t)
+		d := match &t {
+			Ty::Adt(d, _) => *d,
+			_ => return None,
+		}
+		if self.is_lang(d, "Box") || self.is_lang(d, "string") || self.is_lang(d, "Vec") {
+			return None
+		}
+		tr := match self.r.prelude_type(trait_name) {
+			Some(x) => x,
+			None => return None,
+		}
+		idx mut := 0
+		while idx < self.impls.len() {
+			args := match &self.impls[idx].trait_ref {
+				Some((itr, a)) => if *itr == tr { a.clone() } else {
+					idx += 1
+					continue
+				},
+				None => {
+					idx += 1
+					continue
+				},
+			}
+			(st, map) := self.instantiate_impl(idx)
+			if self.infer.can_unify(&st, &t) {
+				self.infer.unify(&st, &t)
+				if args.is_empty() {
+					return None
+				}
+				return Some(args[0].subst(&map))
+			}
+			idx += 1
+		}
+		return None
+	}
+
+	// One autoderef step.
+	fun deref_step(&mut self, t &Ty) option<Ty> {
+		match self.overloaded_deref(t, "Deref") {
+			Some(u) => return Some(u),
+			None => {},
+		}
+		match self.shallow(t) {
+			Ty::Ref(_, x) | Ty::Ptr(_, x) => return Some(*x),
+			Ty::Adt(d, args) => {
+				if self.is_lang(d, "Box") {
+					return Some(args[0].clone())
+				}
+				if self.is_lang(d, "string") {
+					return Some(prim("Str"))
+				}
+				if self.is_lang(d, "Vec") {
+					return Some(Ty::Slice(mk_box(args[0].clone())))
+				}
+				return None
+			}
+			Ty::Array(x, _) => return Some(Ty::Slice(x)),
+			_ => return None,
+		}
+	}
+
+	// Strips references only.
+	fun strip_refs(&self, t &Ty) Ty {
+		t mut := self.shallow(t)
+		while let Ty::Ref(_, x) = &t {
+			t = self.shallow(x)
+		}
+		return t
+	}
+
+	// ----- statements and blocks ---------------------------------------------
+
+	fun is_never(&self, t &Ty) bool {
+		match self.shallow(t) {
+			Ty::Never => return true,
+			_ => return false,
+		}
+	}
+
+	fun is_unit_or_never(&self, t &Ty) bool {
+		match self.shallow(t) {
+			Ty::Unit | Ty::Never => return true,
+			_ => return false,
+		}
+	}
+
+	fun block(&mut self, b &Block, value bool) Ty {
+		diverges mut := false
+		n := b.stmts.len()
+		last mut := Ty::Unit
+		i mut := 0
+		while i < n {
+			is_last := i + 1 == n
+			t := self.stmt(&b.stmts[i], value && is_last)
+			if self.is_never(&t) {
+				diverges = true
+			}
+			if is_last {
+				last = t
+			}
+			i += 1
+		}
+		tail_is_expr := n > 0 && match &b.stmts[n - 1].kind {
+			StmtKind::Expr(_) => true,
+			_ => false,
+		}
+		if value && tail_is_expr {
+			return last
+		}
+		if diverges {
+			return Ty::Never
+		}
+		return Ty::Unit
+	}
+
+	fun stmt(&mut self, s &Stmt, value bool) Ty {
+		match &s.kind {
+			StmtKind::Let { pat, ty, init } => {
+				if init.is_none() {
+					match &pat.kind {
+						PatternKind::Ident { name, .. } => {
+							match self.r.binding(name.span) {
+								Some(id) => {
+									self.b.deferred_init.insert(id)
+								}
+								None => {},
+							}
+						}
+						_ => {},
+					}
+				}
+				declared := match ty {
+					Some(t) => Some(self.lower(t)),
+					None => None,
+				}
+				t := match (&declared, init) {
+					(Some(d), Some(e)) => {
+						f := self.expr_expect(e, d)
+						self.coerce(&f, d, e.span)
+						d.clone()
+					}
+					(Some(d), None) => d.clone(),
+					(None, Some(e)) => self.expr(e),
+					(None, None) => self.fresh(),
+				}
+				never := self.is_never(&t)
+				self.bind_pat(pat, &t, None)
+				match &pat.kind {
+					PatternKind::Ident { name, .. } => {
+						match self.r.binding(name.span) {
+							Some(id) => self.b.declared.push((id, name.span)),
+							None => {},
+						}
+					}
+					_ => {},
+				}
+				if never {
+					return Ty::Never
+				}
+				return Ty::Unit
+			}
+			StmtKind::ShortDecl { names, tuple, init } => {
+				t := self.expr(init)
+				if self.is_never(&t) {
+					return Ty::Never
+				}
+				elems mut := Vec::new()
+				if *tuple {
+					vars mut := Vec::new()
+					for _ in names {
+						vars.push(self.fresh())
+					}
+					tup := Ty::Tuple(vars.clone())
+					if !self.infer.unify(&t, &tup) {
+						f := self.fmt(&t)
+						self.error("cannot destructure `{f}` into {names.len()} names; expected a tuple with {names.len()} elements", init.span)
+						for _ in names {
+							elems.push(Ty::Unknown)
+						}
+					} else {
+						elems = vars
+					}
+				} else {
+					if self.shallow(&t) == Ty::Unit {
+						self.error("cannot declare a variable from an expression of type `void`".to_string(), init.span)
+					}
+					elems.push(t)
+				}
+				i mut := 0
+				while i < names.len() && i < elems.len() {
+					match &names[i].name {
+						Some(nm) => {
+							match self.r.binding(nm.span) {
+								Some(id) => {
+									self.b.locals.insert(id, elems[i].clone())
+									self.b.declared.push((id, nm.span))
+								}
+								None => {},
+							}
+						}
+						None => {},
+					}
+					i += 1
+				}
+				return Ty::Unit
+			}
+			StmtKind::Assign { target, op, value } => {
+				vt := self.expr(value)
+				tt := self.expr(target)
+				self.check_place_mut(target, "assign to")
+				match op {
+					None => {
+						self.coerce(&vt, &tt, value.span)
+					}
+					Some(op) => {
+						self.arith(*op, &tt, &vt, s.span)
+					},
+				}
+				if self.is_never(&vt) {
+					return Ty::Never
+				}
+				return Ty::Unit
+			}
+			StmtKind::Send { ch, value } => {
+				ct := self.expr(ch)
+				vt := self.expr(value)
+				elem := self.fresh()
+				want := Ty::ChanSend(mk_box(elem.clone()))
+				stripped := self.strip_refs(&ct)
+				if !self.infer.unify(&stripped, &want) {
+					f := self.fmt(&ct)
+					self.error_help("cannot send on a value of type `{f}`", ch.span, "sending requires a send-only channel `chan<- T`".to_string())
+				} else {
+					self.coerce(&vt, &elem, value.span)
+				}
+				return Ty::Unit
+			}
+			StmtKind::Defer(e) => {
+				self.expr(e)
+				return Ty::Unit
+			}
+			StmtKind::Item(_) => return Ty::Unit,
+			StmtKind::Expr(e) => return self.expr_v(e, value),
+		}
+	}
+
+	fun check_deref_mut(&mut self, t &Ty, base &Expr, what &str) {
+		if self.overloaded_deref(t, "DerefMut").is_none() {
+			tn := self.fmt(t)
+			self.error_help("cannot {what} data through `{tn}`", base.span, "`{tn}` implements `Deref` but not `DerefMut`, so it only gives shared access")
+			return
+		}
+		match self.shallow(t) {
+			Ty::Ref(true, _) => {},
+			_ => self.check_place_mut(base, "borrow"),
+		}
+	}
+
+	fun check_place_mut(&mut self, e &Expr, what &str) {
+		match &e.kind {
+			ExprKind::Path(p) => {
+				match self.r.path(p.span) {
+					Res::Local(id) => {
+						lname := self.r.local(id).name.clone()
+						lmut := self.r.local(id).mutable
+						lstart := self.r.local(id).span.start
+						for entry in self.b.closure_stack.iter_mut() {
+							if lstart < entry.0.start || lstart >= entry.0.end {
+								entry.1 = true
+							}
+						}
+						deferred := what == "assign to" && self.b.deferred_init.contains(&id)
+						if !(lmut || deferred) {
+							msg := if what == "assign to" { "cannot assign twice to immutable variable `{lname}`" } else { "cannot {what} `{lname}`, as it is not declared as mutable" }
+							self.error_help(msg, e.span, "make it mutable: `{lname} mut := ...` or `let mut {lname} = ...`")
+						}
+					}
+					Res::Def(d) => {
+						if self.is_static_mut(d) {
+							return
+						}
+						if self.r.def(d).kind == DefKind::Static {
+							n := self.r.def(d).name.clone()
+							self.error_help("cannot {what} the immutable static `{n}`", e.span, "shared statics change through interior mutability (`AtomicI64`, `Mutex`); `static mut` needs `unsafe`".to_string())
+							return
+						}
+						self.error("cannot {what} this expression", e.span)
+					}
+					Res::Err | Res::External => {},
+					_ => self.error("cannot {what} this expression", e.span),
+				}
+			}
+			ExprKind::Field(base, _) | ExprKind::TupleIndex(base, _) | ExprKind::Index(base, _) => {
+				bt := self.ty_of(base.span, Ty::Unknown)
+				match (&e.kind, self.shallow(&bt)) {
+					(ExprKind::Field(_, name), Ty::Adt(d, _)) => {
+						direct := match &self.adts.get(&d).unwrap().shape {
+							Shape::Named(fs) => {
+								found mut := false
+								for (n, _) in fs {
+									if *n == name.name {
+										found = true
+									}
+								}
+								found
+							}
+							_ => false,
+						}
+						if !direct && self.overloaded_deref(&bt, "Deref").is_some() {
+							self.check_deref_mut(&bt, base, what)
+							return
+						}
+					}
+					_ => {},
+				}
+				match (&e.kind, self.shallow(&bt)) {
+					(ExprKind::Index(..), Ty::Adt(..)) => {
+						if self.overloaded_deref(&bt, "Deref").is_some() {
+							self.check_deref_mut(&bt, base, what)
+							return
+						}
+					}
+					_ => {},
+				}
+				match self.shallow(&bt) {
+					Ty::Ref(true, _) | Ty::Ptr(true, _) => {},
+					Ty::Ref(false, _) => self.error_help("cannot {what} data behind a `&` reference", e.span, "take a `&mut` reference instead".to_string()),
+					_ => self.check_place_mut(base, what),
+				}
+			}
+			ExprKind::Unary(UnOp::Deref, inner) => {
+				it := self.ty_of(inner.span, Ty::Unknown)
+				match self.shallow(&it) {
+					Ty::Adt(..) => {
+						self.check_deref_mut(&it, inner, what)
+						return
+					}
+					Ty::Ref(false, _) => self.error_help("cannot {what} data behind a `&` reference", e.span, "take a `&mut` reference instead".to_string()),
+					_ => {},
+				}
+			}
+			ExprKind::Paren(inner) => self.check_place_mut(inner, what),
+			ExprKind::Call(..) | ExprKind::MethodCall { .. } | ExprKind::StructLit { .. } | ExprKind::Tuple(_) | ExprKind::Array(_) | ExprKind::Lit(_) | ExprKind::Range { .. } => {
+				if what != "borrow" {
+					self.error("cannot {what} this expression", e.span)
+				}
+			}
+			_ => self.error("cannot {what} this expression", e.span),
+		}
+	}
+
+	// ----- expressions -------------------------------------------------------
+
+	fun expr(&mut self, e &Expr) Ty {
+		return self.expr_v(e, true)
+	}
+
+	fun expr_expect(&mut self, e &Expr, expected &Ty) Ty {
+		self.b.expected_ty = Some(expected.clone())
+		t := self.expr(e)
+		self.b.expected_ty = None
+		return t
+	}
+
+	fun expr_v(&mut self, e &Expr, value bool) Ty {
+		match &e.kind {
+			ExprKind::Call(..) => {},
+			_ => self.b.expected_ty = None,
+		}
+		t := self.expr_inner(e, value)
+		self.b.tys.insert(key(e.span), t.clone())
+		return t
+	}
+
+	fun lit_ty(&mut self, l &Lit) Ty {
+		match l {
+			Lit::Int { suffix: Some(s), .. } | Lit::Float { suffix: Some(s), .. } => {
+				match prim_from_name(s) {
+					Some(p) => return Ty::Prim(p),
+					None => return Ty::Unknown,
+				}
+			}
+			Lit::Int { .. } => return self.infer.fresh(VarKind::Int),
+			Lit::Float { .. } => return self.infer.fresh(VarKind::Float),
+			Lit::Str(_) => return Ty::mk_ref(prim("Str")),
+			Lit::ByteStr(_) => return Ty::mk_ref(Ty::Slice(mk_box(prim("U8")))),
+			Lit::Char(_) => return prim("Char"),
+			Lit::Bool(_) => return prim("Bool"),
+		}
+	}
+
+	fun expr_inner(&mut self, e &Expr, value bool) Ty {
+		match &e.kind {
+			ExprKind::Lit(l) => {
+				t := self.lit_ty(l)
+				match l {
+					Lit::Int { value, .. } => self.b.int_lits.push((*value, t.clone(), e.span)),
+					_ => {},
+				}
+				return t
+			}
+			ExprKind::Interp(parts) => {
+				self.b.interp_spans.insert(key(e.span))
+				for p in parts {
+					match p {
+						InterpPart::Expr(x, spec) => {
+							t := self.expr(x)
+							match spec {
+								Some(spec) => self.b.fmt_specs.push((t, spec.clone(), x.span)),
+								None => {},
+							}
+						}
+						_ => {},
+					}
+				}
+				return self.string_ty()
+			}
+			ExprKind::Path(p) => return self.path_expr(p, e.span),
+			ExprKind::Paren(x) => return self.expr_v(x, value),
+			ExprKind::Unary(op, x) => return self.unary(*op, x, e.span),
+			ExprKind::Binary(op, l, r) => {
+				lt := self.expr(l)
+				rt := self.expr(r)
+				return self.binary(*op, &lt, &rt, e.span)
+			}
+			ExprKind::Cast(x, t) => {
+				from := self.expr(x)
+				to := self.lower(t)
+				self.check_cast(&from, &to, e.span)
+				return to
+			}
+			ExprKind::Call(f, args) => {
+				expected := std::mem::replace(&mut self.b.expected_ty, None)
+				return self.call_expect(f, args, e.span, expected)
+			}
+			ExprKind::MethodCall { receiver, method, args, .. } => return self.method_call(receiver, method, args, e.span),
+			ExprKind::Field(base, name) => {
+				bt := self.expr(base)
+				return self.field(&bt, name)
+			}
+			ExprKind::TupleIndex(base, i) => {
+				bt := self.expr(base)
+				return self.tuple_index(&bt, *i, e.span)
+			}
+			ExprKind::Index(base, idx) => {
+				bt := self.expr(base)
+				it := self.expr(idx)
+				return self.index(&bt, &it, e.span)
+			}
+			ExprKind::Try(x) => {
+				t := self.expr(x)
+				return self.try_op(&t, e.span)
+			}
+			ExprKind::Range { start, end, .. } => {
+				v := self.fresh()
+				for x in [start, end] {
+					match x {
+						Some(x) => {
+							t := self.expr(x)
+							if !self.infer.unify(&t, &v) {
+								a := self.fmt(&v)
+								b := self.fmt(&t)
+								self.error("mismatched range bounds: `{a}` and `{b}`", x.span)
+							}
+						}
+						None => {},
+					}
+				}
+				vs mut := Vec::new()
+				vs.push(v)
+				return Ty::Adt(self.lang("Range"), vs)
+			}
+			ExprKind::StructLit { path, fields, base } => return self.struct_lit(path, fields, base, e.span),
+			ExprKind::Tuple(xs) => {
+				if xs.is_empty() {
+					return Ty::Unit
+				}
+				ts mut := Vec::new()
+				for x in xs {
+					ts.push(self.expr(x))
+				}
+				return Ty::Tuple(ts)
+			}
+			ExprKind::Array(xs) => {
+				elem := self.fresh()
+				for x in xs {
+					t := self.expr(x)
+					self.coerce(&t, &elem, x.span)
+				}
+				return Ty::Array(mk_box(elem), xs.len() as u64)
+			}
+			ExprKind::ArrayRepeat(x, n) => {
+				t := self.expr(x)
+				nt := self.expr(n)
+				self.coerce(&nt, &prim("Usize"), n.span)
+				len := match array_len(n) {
+					Some(l) => l,
+					None => {
+						self.error("array lengths must be integer literals for now".to_string(), n.span)
+						0
+					},
+				}
+				zt := self.infer.zonk(&t)
+				if len > 1 && !self.infer.has_unbound(&zt) {
+					match self.r.prelude_type("Copy") {
+						Some(c) => {
+							if !self.implements(&zt, c) {
+								self.error("`[x; {len}]` needs a `Copy` element type, found `{self.fmt(&zt)}`", x.span)
+							}
+						}
+						None => {},
+					}
+				}
+				return Ty::Array(mk_box(t), len)
+			}
+			ExprKind::Block(b) => return self.block(b, value),
+			ExprKind::Unsafe(b) => {
+				self.b.unsafe_depth += 1
+				t := self.block(b, value)
+				self.b.unsafe_depth -= 1
+				return t
+			}
+			ExprKind::If { cond, then, els } => {
+				ct := self.expr(cond)
+				self.coerce(&ct, &prim("Bool"), cond.span)
+				return self.if_tail(then, els, value, e.span)
+			}
+			ExprKind::IfLet { pat, expr, then, els } => {
+				t := self.expr(expr)
+				self.bind_pat(pat, &t, None)
+				return self.if_tail(then, els, value, e.span)
+			}
+			ExprKind::Match(scrut, arms) => return self.match_expr(scrut, arms, value, e.span),
+			ExprKind::Select(arms) => {
+				for arm in arms {
+					match &arm.op {
+						SelectOp::Recv { bind, ch } => {
+							ct := self.expr(ch)
+							elem := self.recv_elem(&ct, ch.span)
+							match bind {
+								Some(b) => {
+									match &b.name {
+										Some(n) => {
+											match self.r.binding(n.span) {
+												Some(id) => {
+													self.b.locals.insert(id, elem)
+												}
+												None => {},
+											}
+										}
+										None => {},
+									}
+								}
+								None => {},
+							}
+						}
+						SelectOp::Send { ch, value } => {
+							ct := self.expr(ch)
+							vt := self.expr(value)
+							elem := self.fresh()
+							ct := self.strip_refs(&ct)
+							if self.infer.unify(&ct, &Ty::ChanSend(mk_box(elem.clone()))) {
+								self.coerce(&vt, &elem, value.span)
+							} else {
+								f := self.fmt(&ct)
+								self.error("cannot send on a value of type `{f}`", ch.span)
+							}
+						}
+						SelectOp::Default => {},
+					}
+					self.expr_v(&arm.body, false)
+				}
+				return Ty::Unit
+			}
+			ExprKind::For { label, pat, iter, body } => {
+				it := self.expr(iter)
+				elem := self.iter_elem(&it, iter.span, e.span)
+				self.bind_pat(pat, &elem, None)
+				self.loop_body(label, None, body)
+				return Ty::Unit
+			}
+			ExprKind::While { label, cond, body } => {
+				ct := self.expr(cond)
+				self.coerce(&ct, &prim("Bool"), cond.span)
+				self.loop_body(label, None, body)
+				return Ty::Unit
+			}
+			ExprKind::WhileLet { label, pat, expr, body } => {
+				t := self.expr(expr)
+				self.bind_pat(pat, &t, None)
+				self.loop_body(label, None, body)
+				return Ty::Unit
+			}
+			ExprKind::Loop { label, body } => {
+				bt := self.fresh()
+				cx := self.loop_body(label, Some(bt.clone()), body)
+				if cx.has_break {
+					t := self.shallow(&bt)
+					if let Ty::Var(v) = &t {
+						if self.infer.kind(*v) == VarKind::General {
+							self.infer.unify(&t, &Ty::Unit)
+						}
+					}
+					return bt
+				}
+				return Ty::Never
+			}
+			ExprKind::Break(label, val) => {
+				vt := match val {
+					Some(v) => Some((self.expr(v), v.span)),
+					None => None,
+				}
+				target mut := None
+				match label {
+					Some(l) => {
+						i mut := self.b.loops.len()
+						while i > 0 {
+							i -= 1
+							if self.b.loops[i].label == Some(l.name.clone()) {
+								target = Some(i)
+								break
+							}
+						}
+					}
+					None => {
+						if self.b.loops.len() > 0 {
+							target = Some(self.b.loops.len() - 1)
+						}
+					},
+				}
+				match target {
+					Some(i) => {
+						self.b.loops[i].has_break = true
+						bt := self.b.loops[i].break_ty.clone()
+						match (&bt, vt) {
+							(Some(bt), Some((t, sp))) => {
+								self.coerce(&t, bt, sp)
+							}
+							(Some(bt), None) => {
+								if !self.infer.unify(bt, &Ty::Unit) {
+									b := self.fmt(bt)
+									self.error("`break` without a value in a `loop` that produces `{b}`", e.span)
+								}
+							}
+							(None, Some((_, sp))) => self.error("`break` with a value is only allowed inside `loop`".to_string(), sp),
+							(None, None) => {},
+						}
+					}
+					None => {},
+				}
+				return Ty::Never
+			}
+			ExprKind::Continue(_) => return Ty::Never,
+			ExprKind::Return(v) => {
+				ret := match self.b.rets.last() {
+					Some(r) => r.clone(),
+					None => Ty::Unit,
+				}
+				match v {
+					Some(x) => {
+						t := self.expr_expect(x, &ret)
+						if self.infer.zonk(&ret) == Ty::Unit && !self.is_unit_or_never(&t) {
+							f := self.fmt(&t)
+							self.error_help("mismatched types: this function returns `void` but a value of type `{f}` was returned", x.span, "add the return type `{f}` after the parameters")
+						} else {
+							self.coerce(&t, &ret, x.span)
+						}
+					}
+					None => {
+						if !self.infer.unify(&ret, &Ty::Unit) {
+							r := self.fmt(&ret)
+							self.error("`return` without a value in a function that returns `{r}`", e.span)
+						}
+					},
+				}
+				return Ty::Never
+			}
+			ExprKind::Closure { params, ret, body, .. } => {
+				ef := std::mem::replace(&mut self.b.expected_fn, None)
+				(expected, is_mut) := match ef {
+					Some(Ty::Fn(ps, _, m)) => if ps.len() == params.len() { (Some(ps), m) } else { (None, false) },
+					_ => (None, false),
+				}
+				expected_given := expected.is_some()
+				pts mut := Vec::new()
+				i mut := 0
+				while i < params.len() {
+					t := match (&params[i].ty, &expected) {
+						(Some(t), _) => self.lower(t),
+						(None, Some(ps)) => ps[i].clone(),
+						(None, None) => self.fresh(),
+					}
+					pts.push(t)
+					i += 1
+				}
+				i = 0
+				while i < params.len() {
+					self.bind_pat(&params[i].pat, &pts[i], None)
+					i += 1
+				}
+				rt := match ret {
+					Some(t) => self.lower(t),
+					None => self.fresh(),
+				}
+				self.b.rets.push(rt.clone())
+				saved := std::mem::replace(&mut self.b.loops, Vec::new())
+				self.b.closure_stack.push((e.span, false))
+				match &body.kind {
+					ExprKind::Block(b) => {
+						bt := self.block(b, false)
+						if !self.is_never(&bt) && !self.infer.try_unify(&rt, &Ty::Unit) {
+							r := self.fmt(&rt)
+							self.error_help("closure must return a value of type `{r}` on every path", body.span, "add a `return` statement".to_string())
+						}
+					}
+					_ => {
+						bt := self.expr(body)
+						self.coerce(&bt, &rt, body.span)
+					},
+				}
+				self.b.loops = saved
+				self.b.rets.pop()
+				mutates := match self.b.closure_stack.pop() {
+					Some((_, m)) => m,
+					None => false,
+				}
+				is_mut := if expected_given { is_mut } else { mutates }
+				return Ty::Fn(pts, mk_box(rt), is_mut)
+			}
+			ExprKind::Spawn(g) => {
+				t := match &**g {
+					SpawnTarget::Call(call) => self.expr(call),
+					SpawnTarget::Block { body, .. } => {
+						rt := self.fresh()
+						self.b.rets.push(rt.clone())
+						saved := std::mem::replace(&mut self.b.loops, Vec::new())
+						bt := self.block(body, false)
+						self.b.loops = saved
+						self.b.rets.pop()
+						if !self.is_never(&bt) && !self.infer.try_unify(&rt, &Ty::Unit) {
+							r := self.fmt(&rt)
+							self.error_help("`spawn` block must return a value of type `{r}` on every path", body.span, "add a `return` statement".to_string())
+						}
+						rt
+					},
+				}
+				match self.r.prelude_type("Task") {
+					Some(d) => {
+						v mut := Vec::new()
+						v.push(t)
+						return Ty::Adt(d, v)
+					}
+					None => return Ty::Unknown,
+				}
+			}
+			ExprKind::Error => return Ty::Unknown,
+		}
+	}
+
+	fun loop_body(&mut self, label &option<Ident>, break_ty option<Ty>, body &Block) LoopCx {
+		l := match label {
+			Some(l) => Some(l.name.clone()),
+			None => None,
+		}
+		self.b.loops.push(LoopCx { label: l, break_ty: break_ty, has_break: false })
+		self.block(body, false)
+		return self.b.loops.pop().unwrap()
+	}
+
+	fun if_tail(&mut self, then &Block, els &option<Box<Expr>>, value bool, span Span) Ty {
+		tt := self.block(then, value)
+		match els {
+			None => {
+				if value && !self.is_unit_or_never(&tt) {
+					t := self.fmt(&tt)
+					self.error_help("`if` without `else` used as a value of type `{t}`", span, "add an `else` branch".to_string())
+				}
+				return Ty::Unit
+			}
+			Some(e) => {
+				et := self.expr_v(e, value)
+				if value {
+					return self.join(&tt, &et, e.span)
+				}
+				if self.is_never(&tt) && self.is_never(&et) {
+					return Ty::Never
+				}
+				return Ty::Unit
+			},
+		}
+	}
+
+	// Joins branch types (`!` defers to the other branch).
+	fun join(&mut self, a &Ty, b &Ty, span Span) Ty {
+		if self.is_never(a) {
+			return b.clone()
+		}
+		if self.is_never(b) {
+			return a.clone()
+		}
+		if !self.coerces(b, a) && !self.coerces(a, b) {
+			x := self.fmt(a)
+			y := self.fmt(b)
+			self.error("branches have incompatible types: expected `{x}`, found `{y}`", span)
+		}
+		return a.clone()
+	}
+
+	fun recv_elem(&mut self, ct &Ty, span Span) Ty {
+		elem := self.fresh()
+		ct := self.strip_refs(ct)
+		if self.infer.unify(&ct, &Ty::ChanRecv(mk_box(elem.clone()))) {
+			return elem
+		}
+		f := self.fmt(&ct)
+		self.error_help("cannot receive from a value of type `{f}`", span, "receiving requires a receive-only channel `<-chan T`".to_string())
+		return Ty::Unknown
+	}
+
+	fun iter_elem(&mut self, t &Ty, span Span, for_span Span) Ty {
+		match self.iterator_next(t, for_span) {
+			Some(elem) => return elem,
+			None => {},
+		}
+		match self.shallow(t) {
+			Ty::Unknown => return Ty::Unknown,
+			Ty::Adt(d, args) => {
+				if self.is_lang(d, "Range") || self.is_lang(d, "Vec") {
+					return args[0].clone()
+				}
+				return self.not_iterable(t, span)
+			}
+			Ty::Array(x, _) | Ty::Slice(x) | Ty::ChanRecv(x) => return *x,
+			Ty::Ref(m, inner) => {
+				match self.shallow(&inner) {
+					Ty::Adt(d, args) => {
+						if self.is_lang(d, "Vec") {
+							return Ty::Ref(m, mk_box(args[0].clone()))
+						}
+						return self.not_iterable(t, span)
+					}
+					Ty::Array(x, _) | Ty::Slice(x) => return Ty::Ref(m, x),
+					Ty::Unknown => return Ty::Unknown,
+					_ => return self.not_iterable(t, span),
+				}
+			}
+			_ => return self.not_iterable(t, span),
+		}
+	}
+
+	fun iterator_next(&mut self, t &Ty, for_span Span) option<Ty> {
+		t := self.shallow(t)
+		match &t {
+			Ty::Adt(d, _) => {
+				if self.is_lang(*d, "Range") || self.is_lang(*d, "Vec") {
+					return None
+				}
+			}
+			Ty::Param(_) => {},
+			_ => return None,
+		}
+		tr := match self.r.prelude_type("Iterator") {
+			Some(x) => x,
+			None => return None,
+		}
+		if !self.implements(&t, tr) {
+			return None
+		}
+		m := match self.method_on(&t, "next") {
+			Some(m) => m,
+			None => return None,
+		}
+		i := match m.fn_idx {
+			Some(i) => i,
+			None => return None,
+		}
+		self.b.callees.insert(key(for_span), i)
+		self.b.callee_substs.insert(key(for_span), m.subst.clone())
+		elem := match self.shallow(&m.ret) {
+			Ty::Adt(o, args) => {
+				if Some(o) == self.r.prelude_type("option") && args.len() > 0 {
+					args[0].clone()
+				} else {
+					return None
+				}
+			}
+			_ => return None,
+		}
+		self.b.iter_items.insert(key(for_span), elem.clone())
+		return Some(elem)
+	}
+
+	fun not_iterable(&mut self, t &Ty, span Span) Ty {
+		f := self.fmt(t)
+		self.error("`{f}` is not iterable", span)
+		return Ty::Unknown
+	}
+
+	// ----- paths -------------------------------------------------------------
+
+	fun ctor_ty(&mut self, adt u32, shape &Shape, args &Vec<Ty>, what &str, span Span) Ty {
+		generics := self.adts.get(&adt).unwrap().generics.clone()
+		map := zip_map(&generics, args)
+		me := Ty::Adt(adt, args.clone())
+		match shape {
+			Shape::Unit => return me,
+			Shape::Tuple(ts) => return Ty::Fn(subst_all(ts, &map), mk_box(me), false),
+			Shape::Named(_) => {
+				self.error_help("expected value, found struct-like {what}", span, "use a struct literal: `{what} {{ ... }}`")
+				return Ty::Unknown
+			},
+		}
+	}
+
+	fun fresh_args(&mut self, adt u32, explicit Vec<Ty>) Vec<Ty> {
+		n := self.adts.get(&adt).unwrap().generics.len()
+		if explicit.len() == n {
+			return explicit
+		}
+		o mut := Vec::new()
+		i mut := 0
+		while i < n {
+			o.push(self.fresh())
+			i += 1
+		}
+		return o
+	}
+
+	fun seg_args(&mut self, p &Path, seg usize) Vec<Ty> {
+		o mut := Vec::new()
+		if seg >= p.segments.len() {
+			return o
+		}
+		for a in &p.segments[seg].args {
+			match a {
+				GenericArg::Type(t) => o.push(self.lower(t)),
+				_ => {},
+			}
+		}
+		return o
+	}
+
+	fun variant_info(&self, v u32) (u32, Shape) {
+		match self.r.def(v).kind {
+			DefKind::Variant { parent, index } => return (parent, self.adts.get(&parent).unwrap().variants[index].1.clone()),
+			_ => panic("variant_info: not a variant"),
+		}
+	}
+
+	fun fn_of_def(&self, d u32) option<usize> {
+		i mut := 0
+		while i < self.r.fns.len() {
+			if self.r.fns[i].def == Some(d) {
+				return Some(i)
+			}
+			i += 1
+		}
+		return None
+	}
+
+	fun path_expr(&mut self, p &Path, span Span) Ty {
+		res := self.r.path(p.span)
+		match res {
+			Res::Local(id) => {
+				match self.b.locals.get(&id) {
+					Some(t) => return t.clone(),
+					None => return Ty::Unknown,
+				}
+			}
+			Res::Def(d) => {
+				match self.r.def(d).kind {
+					DefKind::Fn => {
+						i := match self.fn_of_def(d) {
+							Some(i) => i,
+							None => return Ty::Unknown,
+						}
+						m := self.instantiate_sig(i, HashMap::new())
+						explicit := self.seg_args(p, p.segments.len() - 1)
+						if !explicit.is_empty() {
+							gens := self.sigs[i].generics.clone()
+							if gens.len() == explicit.len() {
+								map := zip_map(&gens, &explicit)
+								m := self.instantiate_sig(i, map)
+								return self.method_fn_ty(m, span)
+							}
+							self.error("function takes {self.sigs[i].generics.len()} generic arguments but {explicit.len()} were supplied", span)
+						}
+						return self.method_fn_ty(m, span)
+					}
+					DefKind::Const | DefKind::Static => {
+						kind := match self.item_kind(d) {
+							Some(k) => k.clone(),
+							None => return Ty::Unknown,
+						}
+						match &kind {
+							ItemKind::Const { ty, value, .. } => {
+								literal := match value {
+									Some(v) => match &v.kind {
+										ExprKind::Lit(_) => true,
+										_ => false,
+									},
+									None => false,
+								}
+								if !literal {
+									match self.r.const_fns.get(&d) {
+										Some(i) => {
+											i := *i
+											self.b.callees.insert(key(span), i)
+											self.b.callee_substs.insert(key(span), HashMap::new())
+											self.b.const_uses.insert(key(span))
+										}
+										None => {},
+									}
+								}
+								return self.lower_ty(&resolve::static_lifetimes(ty), None, false)
+							}
+							ItemKind::Static { ty, mutable, .. } => {
+								if *mutable {
+									self.require_unsafe("using a `static mut`", span)
+								}
+								return self.lower_ty(ty, None, false)
+							}
+							_ => return Ty::Unknown,
+						}
+					}
+					DefKind::Variant { .. } => {
+						(adt, shape) := self.variant_info(d)
+						last := p.segments.len() - 1
+						explicit := if !p.segments[last].args.is_empty() {
+							self.seg_args(p, last)
+						} else if p.segments.len() >= 2 {
+							self.seg_args(p, p.segments.len() - 2)
+						} else {
+							Vec::new()
+						}
+						args := self.fresh_args(adt, explicit)
+						name := self.r.def(d).name.clone()
+						return self.ctor_ty(adt, &shape, &args, &name, span)
+					}
+					DefKind::Struct => {
+						shape := self.adts.get(&d).unwrap().shape.clone()
+						explicit := self.seg_args(p, p.segments.len() - 1)
+						args := self.fresh_args(d, explicit)
+						name := self.r.def(d).name.clone()
+						return self.ctor_ty(d, &shape, &args, &name, span)
+					}
+					_ => return Ty::Unknown,
+				}
+			}
+			Res::Assoc(base, name) => return self.assoc(p, &base, &name, span),
+			Res::Builtin(b) => {
+				if b == "Drop" {
+					v := self.fresh()
+					vs mut := Vec::new()
+					vs.push(v)
+					return Ty::Fn(vs, mk_box(Ty::Unit), false)
+				}
+				self.error("`chan` must be called: `chan::<T>(capacity)`".to_string(), span)
+				return Ty::Unknown
+			}
+			_ => return Ty::Unknown,
+		}
+	}
+
+	fun require_unsafe(&mut self, what &str, span Span) {
+		if self.b.unsafe_depth == 0 {
+			self.error_help("{what} is unsafe and requires an `unsafe` block", span, "wrap it in `unsafe {{ ... }}` after checking the safety requirements".to_string())
+		}
+	}
+
+	fun check_unsafe_call(&mut self, i usize, span Span) {
+		if self.r.fns[i].decl.is_unsafe {
+			name := self.r.fns[i].decl.name.name.clone()
+			self.require_unsafe("calling `unsafe fun {name}`", span)
+		}
+	}
+
+	fun method_fn_ty(&mut self, m Method, span Span) Ty {
+		match m.fn_idx {
+			Some(i) => {
+				self.check_unsafe_call(i, span)
+				self.b.callees.insert(key(span), i)
+				self.b.callee_substs.insert(key(span), m.subst.clone())
+			}
+			None => {},
+		}
+		for (t, tr) in m.obligations {
+			self.b.obligations.push((t, tr, span))
+		}
+		for x in m.arg_obligations {
+			self.b.arg_obligations.push(x)
+		}
+		return Ty::Fn(m.params, mk_box(m.ret), false)
+	}
+
+	// `Base::name` paths: associated functions, methods (UFCS), and
+	// `Self::Variant`.
+	fun assoc(&mut self, p &Path, base &Res, name &str, span Span) Ty {
+		base_ty mut := Ty::Unknown
+		match base {
+			Res::Def(d) => {
+				d := *d
+				k := self.r.def(d).kind
+				if k == DefKind::Struct || k == DefKind::Enum {
+					explicit := self.seg_args(p, p.segments.len() - 2)
+					args := self.fresh_args(d, explicit)
+					base_ty = Ty::Adt(d, args)
+				} else if k == DefKind::Trait {
+					tr := d
+					found := match self.traits.get(&tr) {
+						Some(t) => match t.methods.get(name) {
+							Some(i) => Some(*i),
+							None => None,
+						},
+						None => None,
+					}
+					match found {
+						Some(i) => {
+							selft := self.fresh()
+							map mut := HashMap::new()
+							map.insert("Self".to_string(), selft.clone())
+							m := self.instantiate_sig(i, map)
+							self.b.obligations.push((selft.clone(), tr, span))
+							return self.with_self_param(m, selft, span)
+						}
+						None => {},
+					}
+					tn := self.r.def(tr).name.clone()
+					self.error("trait `{tn}` has no method `{name}`", span)
+					return Ty::Unknown
+				} else {
+					return Ty::Unknown
+				}
+			}
+			Res::Prim(pr) => base_ty = Ty::Prim(pr.clone()),
+			Res::SelfTy => {
+				base_ty = match &self.b.self_ty {
+					Some(t) => t.clone(),
+					None => Ty::Param("Self".to_string()),
+				}
+			}
+			Res::TyParam(n) => base_ty = Ty::Param(n.clone()),
+			_ => return Ty::Unknown,
+		}
+		match &base_ty {
+			Ty::Adt(d, args) => {
+				if self.adts.get(d).unwrap().is_enum {
+					vs := self.adts.get(d).unwrap().variants.clone()
+					for (v, shape) in &vs {
+						if self.r.def(*v).name == name {
+							return self.ctor_ty(*d, shape, args, name, span)
+						}
+					}
+				}
+			}
+			_ => {},
+		}
+		match self.method_on(&base_ty, name) {
+			Some(m) => {
+				is_const := match m.fn_idx {
+					Some(i) => self.r.const_fn_set.contains(&i),
+					None => false,
+				}
+				if is_const {
+					ret := m.ret.clone()
+					self.method_fn_ty(m, span)
+					self.b.const_uses.insert(key(span))
+					return ret
+				}
+				return self.with_self_param(m, base_ty, span)
+			}
+			None => {
+				msg := match &base_ty {
+					Ty::Adt(d, _) => if self.adts.get(d).unwrap().is_enum {
+						"no variant or associated function named `{name}` in enum `{self.r.def(*d).name}`"
+					} else {
+						"no function or associated item named `{name}` found for `{self.fmt(&base_ty)}`"
+					},
+					_ => "no function or associated item named `{name}` found for `{self.fmt(&base_ty)}`",
+				}
+				self.error(msg, span)
+				return Ty::Unknown
+			},
+		}
+	}
+
+	fun with_self_param(&mut self, m Method, self_ty Ty, span Span) Ty {
+		m mut := m
+		match &m.self_param {
+			Some(SelfParam::Value { .. }) => m.params.insert(0, self_ty),
+			Some(SelfParam::Ref { mutable, .. }) => m.params.insert(0, Ty::Ref(*mutable, mk_box(self_ty))),
+			None => {},
+		}
+		return self.method_fn_ty(m, span)
+	}
+
+	// ----- calls -------------------------------------------------------------
+
+	fun is_print_fn(&self, f &Expr) bool {
+		match &f.kind {
+			ExprKind::Path(p) => {
+				match self.r.path(p.span) {
+					Res::Def(d) => {
+						n := self.r.def(d).name.as_str()
+						return self.r.is_core(d) && (n == "print" || n == "println" || n == "eprint" || n == "eprintln")
+					}
+					_ => return false,
+				}
+			}
+			_ => return false,
+		}
+	}
+
+	fun call_expect(&mut self, f &Expr, args &Vec<Expr>, span Span, expected option<Ty>) Ty {
+		match &f.kind {
+			ExprKind::Path(p) => {
+				if self.r.path(p.span) == Res::Builtin("Chan".to_string()) {
+					explicit := self.seg_args(p, p.segments.len() - 1)
+					elem := if explicit.len() > 0 { explicit[0].clone() } else { self.infer.fresh(VarKind::General) }
+					if args.len() > 1 {
+						self.error("`chan` takes at most 1 argument (the capacity) but {args.len()} were supplied", span)
+					}
+					for a in args {
+						t := self.expr(a)
+						self.coerce(&t, &prim("Usize"), a.span)
+					}
+					match self.r.prelude_type("Send") {
+						Some(send) => self.b.obligations.push((elem.clone(), send, span)),
+						None => {},
+					}
+					v mut := Vec::new()
+					v.push(Ty::ChanSend(mk_box(elem.clone())))
+					v.push(Ty::ChanRecv(mk_box(elem)))
+					return Ty::Tuple(v)
+				}
+			}
+			_ => {},
+		}
+		if self.is_print_fn(f) {
+			for a in args {
+				self.expr(a)
+			}
+			if args.len() > 1 {
+				self.error_help("print functions take a single argument".to_string(), span, "use string interpolation: \"{{a}} {{b}}\"".to_string())
+			}
+			return Ty::Unit
+		}
+		ft mut := self.expr(f)
+		derefs mut := 0
+		shared mut := false
+		while let Ty::Ref(m, inner) = self.shallow(&ft) {
+			ok := match self.shallow(&inner) {
+				Ty::Fn(..) | Ty::Ref(..) => true,
+				_ => false,
+			}
+			if !ok {
+				break
+			}
+			if !m {
+				shared = true
+			}
+			ft = *inner
+			derefs += 1
+		}
+		if derefs > 0 {
+			is_fn_mut := match self.shallow(&ft) {
+				Ty::Fn(_, _, true) => true,
+				_ => false,
+			}
+			if shared && is_fn_mut {
+				self.error_help("cannot call a `fun mut` through a shared reference".to_string(), f.span, "pass it as `&mut fn mut(...)`".to_string())
+			}
+			self.b.fn_derefs.insert(key(f.span), derefs)
+		}
+		match self.shallow(&ft) {
+			Ty::Fn(params, ret, _) => {
+				match (&expected, &f.kind) {
+					(Some(exp), ExprKind::Path(p)) => {
+						match self.r.path(p.span) {
+							Res::Def(d) => {
+								is_variant := match self.r.def(d).kind {
+									DefKind::Variant { .. } => true,
+									_ => false,
+								}
+								if is_variant && self.infer.can_unify(&ret, exp) {
+									self.infer.unify(&ret, exp)
+								}
+							}
+							_ => {},
+						}
+					}
+					_ => {},
+				}
+				self.check_args(&params, args, span)
+				self.solve_arg_obligations()
+				return *ret
+			}
+			Ty::Unknown => {
+				for a in args {
+					self.expr(a)
+				}
+				return Ty::Unknown
+			}
+			Ty::Var(v) => {
+				if self.infer.kind(v) == VarKind::General {
+					pts mut := Vec::new()
+					for a in args {
+						pts.push(self.expr(a))
+					}
+					ret := self.fresh()
+					self.infer.unify(&ft, &Ty::Fn(pts, mk_box(ret.clone()), false))
+					return ret
+				}
+				return self.not_a_function(&Ty::Var(v), f, args)
+			}
+			other => return self.not_a_function(&other, f, args),
+		}
+	}
+
+	fun not_a_function(&mut self, other &Ty, f &Expr, args &Vec<Expr>) Ty {
+		t := self.fmt(other)
+		self.error("expected function, found `{t}`", f.span)
+		for a in args {
+			self.expr(a)
+		}
+		return Ty::Unknown
+	}
+
+	fun check_args(&mut self, params &Vec<Ty>, args &Vec<Expr>, span Span) {
+		if params.len() != args.len() {
+			s := if params.len() == 1 { "" } else { "s" }
+			w := if args.len() == 1 { "was" } else { "were" }
+			self.error("this function takes {params.len()} argument{s} but {args.len()} {w} supplied", span)
+		}
+		i mut := 0
+		while i < args.len() {
+			a := &args[i]
+			has_p := i < params.len()
+			match &a.kind {
+				ExprKind::Closure { .. } => {
+					if has_p {
+						p := self.shallow(&params[i])
+						match &p {
+							Ty::Fn(..) => self.b.expected_fn = Some(p.clone()),
+							_ => {},
+						}
+					}
+				}
+				_ => {},
+			}
+			t := if has_p {
+				p := params[i].clone()
+				self.expr_expect(a, &p)
+			} else {
+				self.expr(a)
+			}
+			if has_p {
+				self.coerce(&t, &params[i], a.span)
+			}
+			i += 1
+		}
+	}
+
+	fun method_call(&mut self, recv &Expr, method &Ident, args &Vec<Expr>, span Span) Ty {
+		rt := self.expr(recv)
+		name := method.name.as_str()
+		cands mut := Vec::new()
+		cands.push(rt.clone())
+		loop {
+			last := cands[cands.len() - 1].clone()
+			match self.deref_step(&last) {
+				Some(next) => {
+					if cands.len() > 8 {
+						break
+					}
+					cands.push(next)
+				}
+				None => break,
+			}
+		}
+		steps mut := 0
+		while steps < cands.len() {
+			c := self.shallow(&cands[steps])
+			if c == Ty::Unknown {
+				for a in args {
+					self.expr(a)
+				}
+				return Ty::Unknown
+			}
+			match self.builtin_method(&c, name, args, span) {
+				Some(t) => {
+					sp := Some(SelfParam::Ref { lifetime: None, mutable: false })
+					info := MethodInfo { steps: steps, self_param: sp, recv_ty: c.clone(), fn_idx: None, substs: HashMap::new() }
+					self.b.methods.insert(key(span), info)
+					return t
+				}
+				None => {},
+			}
+			match self.method_on(&c, name) {
+				Some(m) => {
+					info := MethodInfo { steps: steps, self_param: m.self_param.clone(), recv_ty: c.clone(), fn_idx: m.fn_idx, substs: m.subst.clone() }
+					self.b.methods.insert(key(span), info)
+					is_mut_self := match &m.self_param {
+						Some(SelfParam::Ref { mutable: true, .. }) => true,
+						_ => false,
+					}
+					if is_mut_self {
+						overloaded mut := None
+						k mut := 0
+						while k < steps {
+							ck := cands[k].clone()
+							if self.overloaded_deref(&ck, "Deref").is_some() {
+								overloaded = Some(k)
+								break
+							}
+							k += 1
+						}
+						match overloaded {
+							Some(k) => {
+								ck := cands[k].clone()
+								if k == 0 {
+									self.check_deref_mut(&ck, recv, "borrow")
+								} else if self.overloaded_deref(&ck, "DerefMut").is_none() {
+									tn := self.fmt(&ck)
+									self.error("cannot borrow data through `{tn}` mutably: it does not implement `DerefMut`", recv.span)
+								}
+							}
+							None => {
+								if steps == 0 {
+									self.check_place_mut(recv, "borrow")
+								} else {
+									match self.shallow(&cands[0]) {
+										Ty::Ref(false, _) => self.error_help("cannot call `{name}` (which takes `&mut self`) through a `&` reference", recv.span, "take a `&mut` reference instead".to_string()),
+										_ => {},
+									}
+								}
+							},
+						}
+					}
+					for (t, tr) in &m.obligations {
+						self.b.obligations.push((t.clone(), *tr, span))
+					}
+					for x in &m.arg_obligations {
+						self.b.arg_obligations.push(x.clone())
+					}
+					match m.fn_idx {
+						Some(i) => self.check_unsafe_call(i, span),
+						None => {},
+					}
+					self.check_args(&m.params, args, span)
+					self.solve_arg_obligations()
+					return m.ret
+				}
+				None => {},
+			}
+			steps += 1
+		}
+		for a in args {
+			self.expr(a)
+		}
+		t := self.fmt(&rt)
+		match self.shallow(&rt) {
+			Ty::Var(_) => self.error_help("type annotations needed before calling `.{name}()`", recv.span, "annotate the receiver's type".to_string()),
+			_ => self.error("no method named `{name}` found for type `{t}`", method.span),
+		}
+		return Ty::Unknown
+	}
+
+	// Methods the compiler provides for all types or for channels.
+	fun builtin_method(&mut self, c &Ty, name &str, args &Vec<Expr>, span Span) option<Ty> {
+		ret mut := Ty::Unknown
+		match c {
+			Ty::ChanSend(x) => {
+				if name == "try_send" {
+					ps mut := Vec::new()
+					ps.push((**x).clone())
+					self.check_args(&ps, args, span)
+					ea mut := Vec::new()
+					ea.push((**x).clone())
+					err := Ty::Adt(self.lang("TrySendError"), ea)
+					return Some(self.result_ty(Ty::Unit, err))
+				} else if name == "close" {
+					ret = Ty::Unit
+				} else if name == "len" || name == "cap" {
+					ret = prim("Usize")
+				} else if name == "clone" {
+					ret = c.clone()
+				} else {
+					return None
+				}
+			}
+			Ty::ChanRecv(x) => {
+				if name == "try_recv" {
+					err := Ty::Adt(self.lang("TryRecvError"), Vec::new())
+					ret = self.result_ty((**x).clone(), err)
+				} else if name == "recv" {
+					ret = self.option_ty((**x).clone())
+				} else if name == "len" || name == "cap" {
+					ret = prim("Usize")
+				} else if name == "clone" {
+					ret = c.clone()
+				} else {
+					return None
+				}
+			}
+			_ => {
+				clone_able := match c {
+					Ty::Adt(..) | Ty::Prim(_) | Ty::Tuple(_) | Ty::Unit | Ty::Param(_) | Ty::Array(..) => true,
+					_ => false,
+				}
+				to_string_able := match c {
+					Ty::Prim(p) => p != "Str",
+					Ty::Adt(..) | Ty::Param(_) => true,
+					_ => false,
+				}
+				is_adt := match c {
+					Ty::Adt(..) => true,
+					_ => false,
+				}
+				is_seq := match c {
+					Ty::Slice(_) | Ty::Array(..) => true,
+					_ => false,
+				}
+				if clone_able && name == "clone" {
+					match self.r.prelude_type("Clone") {
+						Some(cl) => {
+							if is_adt && self.has_impl(c, cl) {
+								return None
+							}
+							self.b.obligations.push((c.clone(), cl, span))
+						}
+						None => {},
+					}
+					ret = c.clone()
+				} else if to_string_able && name == "to_string" {
+					if self.method_on(c, name).is_some() {
+						return None
+					}
+					match self.r.prelude_type("Display") {
+						Some(d) => {
+							if is_adt && !self.implements(c, d) && self.deref_step(c).is_some() {
+								return None
+							}
+							self.b.obligations.push((c.clone(), d, span))
+						}
+						None => {},
+					}
+					ret = self.string_ty()
+				} else if is_seq && name == "len" {
+					ret = prim("Usize")
+				} else if is_seq && name == "is_empty" {
+					ret = prim("Bool")
+				} else {
+					return None
+				}
+			},
+		}
+		self.check_args(&Vec::new(), args, span)
+		return Some(ret)
+	}
+
+	// ----- fields and indexing -----------------------------------------------
+
+	fun field(&mut self, bt &Ty, name &Ident) Ty {
+		t mut := bt.clone()
+		loop {
+			match self.shallow(&t) {
+				Ty::Adt(d, args) => {
+					if !self.adts.get(&d).unwrap().is_enum {
+						info := self.adts.get(&d).unwrap().clone()
+						match &info.shape {
+							Shape::Named(fs) => {
+								for (n, ft) in fs {
+									if *n == name.name {
+										return ft.subst(&zip_map(&info.generics, &args))
+									}
+								}
+							}
+							_ => {},
+						}
+					}
+				}
+				Ty::Unknown => return Ty::Unknown,
+				_ => {},
+			}
+			is_vec_or_string := match self.shallow(&t) {
+				Ty::Adt(d, _) => self.is_lang(d, "string") || self.is_lang(d, "Vec"),
+				_ => false,
+			}
+			match self.deref_step(&t) {
+				Some(n) => {
+					if is_vec_or_string {
+						break
+					}
+					t = n
+				}
+				None => break,
+			}
+		}
+		tn := self.fmt(bt)
+		self.error("no field `{name.name}` on type `{tn}`", name.span)
+		return Ty::Unknown
+	}
+
+	fun tuple_index(&mut self, bt &Ty, i u32, span Span) Ty {
+		t := self.strip_refs(bt)
+		match &t {
+			Ty::Tuple(ts) => {
+				if (i as usize) < ts.len() {
+					return ts[i as usize].clone()
+				}
+			}
+			Ty::Adt(d, args) => {
+				if !self.adts.get(d).unwrap().is_enum {
+					info := self.adts.get(d).unwrap().clone()
+					match &info.shape {
+						Shape::Tuple(ts) => {
+							if (i as usize) < ts.len() {
+								return ts[i as usize].subst(&zip_map(&info.generics, args))
+							}
+						}
+						_ => {},
+					}
+				}
+			}
+			Ty::Unknown => return Ty::Unknown,
+			_ => {},
+		}
+		tn := self.fmt(bt)
+		self.error("no field `{i}` on type `{tn}`", span)
+		return Ty::Unknown
+	}
+
+	fun index(&mut self, bt &Ty, it &Ty, span Span) Ty {
+		t mut := self.strip_refs(bt)
+		k mut := 0
+		while k < 8 {
+			match self.overloaded_deref(&t, "Deref") {
+				Some(u) => t = self.strip_refs(&u),
+				None => break,
+			}
+			k += 1
+		}
+		elem := match &t {
+			Ty::Adt(d, args) => {
+				if self.is_lang(*d, "Vec") {
+					args[0].clone()
+				} else if self.is_lang(*d, "string") {
+					return prim("Str")
+				} else {
+					tn := self.fmt(bt)
+					self.error("cannot index into a value of type `{tn}`", span)
+					return Ty::Unknown
+				}
+			}
+			Ty::Array(x, _) | Ty::Slice(x) => (**x).clone(),
+			Ty::Prim(p) => {
+				if p == "Str" {
+					return prim("Str")
+				}
+				tn := self.fmt(bt)
+				self.error("cannot index into a value of type `{tn}`", span)
+				return Ty::Unknown
+			}
+			Ty::Unknown => return Ty::Unknown,
+			_ => {
+				tn := self.fmt(bt)
+				self.error("cannot index into a value of type `{tn}`", span)
+				return Ty::Unknown
+			},
+		}
+		match self.shallow(it) {
+			Ty::Adt(d, _) => {
+				if self.is_lang(d, "Range") {
+					return Ty::Slice(mk_box(elem))
+				}
+			}
+			_ => {},
+		}
+		self.coerce(it, &prim("Usize"), span)
+		return elem
+	}
+
+	// ----- `?` ---------------------------------------------------------------
+
+	fun try_op(&mut self, t &Ty, span Span) Ty {
+		ret := match self.b.rets.last() {
+			Some(r) => r.clone(),
+			None => Ty::Unit,
+		}
+		ret := self.shallow(&ret)
+		match self.shallow(t) {
+			Ty::Unknown => return Ty::Unknown,
+			Ty::Adt(d, args) => {
+				if self.is_lang(d, "result") {
+					match &ret {
+						Ty::Adt(rd, rargs) => {
+							if self.is_lang(*rd, "result") {
+								from := args[1].clone()
+								to := rargs[1].clone()
+								if !self.infer.try_unify(&from, &to) && !self.has_from(&to, &from) {
+									f := self.fmt(&from)
+									t := self.fmt(&to)
+									self.error_help("`?` couldn't convert the error to `{t}`", span, "the error type is `{f}`; implement `From<{f}> for {t}`")
+								}
+							} else {
+								self.try_outside(&ret, "result", span)
+							}
+						}
+						Ty::Unknown | Ty::Var(_) => {},
+						other => self.try_outside(other, "result", span),
+					}
+					return args[0].clone()
+				}
+				if self.is_lang(d, "option") {
+					match &ret {
+						Ty::Adt(rd, _) => {
+							if !self.is_lang(*rd, "option") {
+								self.try_outside(&ret, "option", span)
+							}
+						}
+						Ty::Unknown | Ty::Var(_) => {},
+						other => self.try_outside(other, "option", span),
+					}
+					return args[0].clone()
+				}
+				return self.try_bad(&Ty::Adt(d, args), span)
+			}
+			other => return self.try_bad(&other, span),
+		}
+	}
+
+	fun try_bad(&mut self, other &Ty, span Span) Ty {
+		tn := self.fmt(other)
+		self.error("the `?` operator can only be applied to `result` or `option`, found `{tn}`", span)
+		return Ty::Unknown
+	}
+
+	fun try_outside(&mut self, ret &Ty, kind &str, span Span) {
+		r := self.fmt(ret)
+		self.error_help("the `?` operator on `{kind}` can only be used in a function that returns `{kind}`", span, "this function returns `{r}`")
+	}
+
+	// Whether `impl From<from> for to` exists.
+	fun has_from(&mut self, to &Ty, from &Ty) bool {
+		tr := match self.r.prelude_type("From") {
+			Some(x) => x,
+			None => return false,
+		}
+		idx mut := 0
+		while idx < self.impls.len() {
+			args := match &self.impls[idx].trait_ref {
+				Some((t, a)) => if *t == tr && a.len() == 1 { a.clone() } else {
+					idx += 1
+					continue
+				},
+				None => {
+					idx += 1
+					continue
+				},
+			}
+			(st, map) := self.instantiate_impl(idx)
+			arg := args[0].subst(&map)
+			saved := self.infer.clone()
+			ok := self.infer.unify(&st, to) && self.infer.unify(&arg, from)
+			self.infer = saved
+			if ok {
+				return true
+			}
+			idx += 1
+		}
+		return false
+	}
+
+	// ----- operators ---------------------------------------------------------
+
+	fun is_numeric(&self, t &Ty) bool {
+		match self.shallow(t) {
+			Ty::Var(v) => return self.infer.kind(v) != VarKind::General,
+			t => return t.is_int_prim() || t.is_float_prim(),
+		}
+	}
+
+	fun is_integral(&self, t &Ty) bool {
+		match self.shallow(t) {
+			Ty::Var(v) => return self.infer.kind(v) == VarKind::Int,
+			t => return t.is_int_prim(),
+		}
+	}
+
+	fun is_string_ty(&self, t &Ty) bool {
+		match t {
+			Ty::Adt(d, _) => return self.is_lang(*d, "string"),
+			_ => return false,
+		}
+	}
+
+	fun arith(&mut self, op BinOp, lt &Ty, rt &Ty, span Span) Ty {
+		l := self.strip_refs(lt)
+		r := self.strip_refs(rt)
+		if l == Ty::Unknown || r == Ty::Unknown {
+			return Ty::Unknown
+		}
+		is_add := match op {
+			BinOp::Add => true,
+			_ => false,
+		}
+		if is_add && self.is_string_ty(&l) {
+			if !r.is_prim("Str") && !self.is_string_ty(&r) {
+				f := self.fmt(rt)
+				self.error("cannot add `{f}` to `string`", span)
+			}
+			return l
+		}
+		sym := op_symbol(op)
+		shift := match op {
+			BinOp::Shl | BinOp::Shr => true,
+			_ => false,
+		}
+		bitwise := match op {
+			BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => true,
+			_ => false,
+		}
+		match &l {
+			Ty::Var(v) => {
+				if self.infer.kind(*v) == VarKind::General {
+					self.infer.unify(&l, &r)
+					return l
+				}
+			}
+			_ => {},
+		}
+		ok_operand := if shift {
+			self.is_integral(&l)
+		} else if bitwise {
+			self.is_integral(&l) || self.shallow(&l).is_prim("Bool")
+		} else {
+			self.is_numeric(&l)
+		}
+		if !ok_operand {
+			f := self.fmt(&l)
+			self.error("cannot apply `{sym}` to a value of type `{f}`", span)
+			return Ty::Unknown
+		}
+		if shift {
+			if !self.is_integral(&r) {
+				f := self.fmt(&r)
+				self.error("shift amount must be an integer, found `{f}`", span)
+			}
+			return l
+		}
+		if !self.infer.unify(&l, &r) {
+			a := self.fmt(&l)
+			b := self.fmt(&r)
+			self.error_help("mismatched types: cannot apply `{sym}` to `{a}` and `{b}`", span, "convert one side with `as`".to_string())
+		}
+		return l
+	}
+
+	fun binary(&mut self, op BinOp, lt &Ty, rt &Ty, span Span) Ty {
+		bool_ty := prim("Bool")
+		match op {
+			BinOp::And | BinOp::Or => {
+				for t in [lt, rt] {
+					if !self.infer.unify(t, &bool_ty) {
+						f := self.fmt(t)
+						self.error("`{op_symbol(op)}` requires `bool` operands, found `{f}`", span)
+					}
+				}
+				return bool_ty
+			}
+			BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+				l := self.strip_refs(lt)
+				r := self.strip_refs(rt)
+				direct := self.infer.try_unify(lt, rt)
+				str_like := (l.is_prim("Str") || self.is_string_ty(&l)) && (r.is_prim("Str") || self.is_string_ty(&r))
+				if !(direct || str_like || self.infer.unify(&l, &r)) {
+					a := self.fmt(lt)
+					b := self.fmt(rt)
+					self.error("mismatched types: cannot compare `{a}` with `{b}`", span)
+					return bool_ty
+				}
+				needed := match op {
+					BinOp::Eq | BinOp::Ne => "Eq",
+					_ => "Ord",
+				}
+				l := self.infer.zonk(&l)
+				float_ok := match &l {
+					Ty::Prim(p) => p == "F32" || p == "F64",
+					Ty::Var(v) => self.infer.kind(*v) == VarKind::Float,
+					_ => false,
+				}
+				if !float_ok {
+					match self.r.prelude_type(needed) {
+						Some(tr) => self.b.obligations.push((l, tr, span)),
+						None => {},
+					}
+				}
+				return bool_ty
+			}
+			_ => return self.arith(op, lt, rt, span),
+		}
+	}
+
+	fun unary(&mut self, op UnOp, x &Expr, span Span) Ty {
+		match (op, &x.kind) {
+			(UnOp::Neg, ExprKind::Lit(Lit::Int { .. })) => {
+				self.b.negated_lits.insert(key(x.span))
+			}
+			_ => {},
+		}
+		t := self.expr(x)
+		match op {
+			UnOp::Neg => {
+				s := self.strip_refs(&t)
+				signed := match &s {
+					Ty::Prim(p) => !(p == "U8" || p == "U16" || p == "U32" || p == "U64" || p == "U128" || p == "Usize") && self.is_numeric(&s),
+					Ty::Var(_) => self.is_numeric(&s),
+					Ty::Unknown => true,
+					_ => false,
+				}
+				if !signed {
+					f := self.fmt(&t)
+					self.error("cannot negate a value of type `{f}`", span)
+				}
+				return s
+			}
+			UnOp::Not => {
+				s := self.strip_refs(&t)
+				if !(self.is_integral(&s) || s.is_prim("Bool") || s == Ty::Unknown) {
+					f := self.fmt(&t)
+					self.error("cannot apply `!` to a value of type `{f}`", span)
+				}
+				return s
+			}
+			UnOp::Deref => {
+				match self.shallow(&t) {
+					Ty::Ref(_, i) => return *i,
+					Ty::Ptr(_, i) => {
+						self.require_unsafe("dereferencing a raw pointer", span)
+						return *i
+					}
+					Ty::Adt(d, args) => {
+						ot := Ty::Adt(d, args.clone())
+						if self.overloaded_deref(&ot, "Deref").is_some() {
+							return self.overloaded_deref(&ot, "Deref").unwrap()
+						}
+						if self.is_lang(d, "Box") {
+							return args[0].clone()
+						}
+						f := self.fmt(&ot)
+						self.error("type `{f}` cannot be dereferenced", span)
+						return Ty::Unknown
+					}
+					Ty::Unknown => return Ty::Unknown,
+					other => {
+						f := self.fmt(&other)
+						self.error("type `{f}` cannot be dereferenced", span)
+						return Ty::Unknown
+					},
+				}
+			}
+			UnOp::Ref => return Ty::Ref(false, mk_box(t)),
+			UnOp::RefMut => {
+				self.check_place_mut(x, "borrow")
+				return Ty::Ref(true, mk_box(t))
+			}
+			UnOp::Recv => return self.recv_elem(&t, x.span),
+		}
+	}
+
+	fun check_cast(&mut self, from &Ty, to &Ty, span Span) {
+		f := self.shallow(from)
+		t := self.shallow(to)
+		ok := self.cast_ok(&f, &t)
+		if !ok {
+			a := self.fmt(from)
+			b := self.fmt(to)
+			self.error("invalid cast from `{a}` to `{b}`", span)
+		}
+	}
+
+	fun cast_ok(&mut self, f &Ty, t &Ty) bool {
+		if *f == Ty::Unknown || *t == Ty::Unknown {
+			return true
+		}
+		if self.is_numeric(f) && self.is_numeric(t) {
+			return true
+		}
+		match f {
+			Ty::Prim(p) => {
+				if (p == "Char" || p == "Bool") && self.is_integral(t) {
+					return true
+				}
+				if p == "U8" && t.is_prim("Char") {
+					return true
+				}
+			}
+			_ => {},
+		}
+		match (f, t) {
+			(Ty::Var(v), Ty::Prim(p)) => {
+				if p == "Char" && self.infer.kind(*v) == VarKind::Int {
+					self.infer.unify(f, &prim("U8"))
+					return true
+				}
+			}
+			_ => {},
+		}
+		match (f, t) {
+			(Ty::Ref(..), Ty::Ptr(..)) | (Ty::Ptr(..), Ty::Ptr(..)) => return true,
+			(Ty::Ptr(..), _) => {
+				if self.is_integral(t) {
+					return true
+				}
+			}
+			_ => {},
+		}
+		match (f, t) {
+			(Ty::Prim(_), Ty::Ptr(..)) | (Ty::Var(_), Ty::Ptr(..)) => return true,
+			_ => {},
+		}
+		return self.infer.can_unify(f, t)
+	}
+
+	// ----- struct literals ---------------------------------------------------
+
+	fun self_adt(&self) option<(u32, Vec<Ty>)> {
+		match &self.b.self_ty {
+			Some(t) => {
+				match self.shallow(t) {
+					Ty::Adt(d, args) => return Some((d, args)),
+					_ => return None,
+				}
+			}
+			None => return None,
+		}
+	}
+
+	fun struct_lit(&mut self, path &Path, fields &Vec<FieldInit>, base &option<Box<Expr>>, span Span) Ty {
+		res := self.r.path(path.span)
+		adt mut := 0
+		args mut := Vec::new()
+		shape mut := Shape::Unit
+		what mut := string::new()
+		matched mut := false
+		match &res {
+			Res::Def(d) => {
+				d := *d
+				match self.r.def(d).kind {
+					DefKind::Struct => {
+						explicit := self.seg_args(path, path.segments.len() - 1)
+						args = self.fresh_args(d, explicit)
+						adt = d
+						shape = self.adts.get(&d).unwrap().shape.clone()
+						what = self.r.def(d).name.clone()
+						matched = true
+					}
+					DefKind::Variant { .. } => {
+						(a, sh) := self.variant_info(d)
+						args = self.fresh_args(a, Vec::new())
+						adt = a
+						shape = sh
+						what = self.r.def(d).name.clone()
+						matched = true
+					}
+					_ => {},
+				}
+			}
+			Res::SelfTy => {
+				match self.self_adt() {
+					Some((d, a)) => {
+						if !self.adts.get(&d).unwrap().is_enum {
+							adt = d
+							args = a
+							shape = self.adts.get(&d).unwrap().shape.clone()
+							what = "Self".to_string()
+							matched = true
+						}
+					}
+					None => {},
+				}
+			}
+			Res::Assoc(b, name) => {
+				if **b == Res::SelfTy {
+					match self.self_adt() {
+						Some((d, a)) => {
+							if self.adts.get(&d).unwrap().is_enum {
+								vs := self.adts.get(&d).unwrap().variants.clone()
+								for (v, sh) in vs {
+									if self.r.def(v).name == *name {
+										adt = d
+										args = a.clone()
+										shape = sh
+										what = name.clone()
+										matched = true
+										break
+									}
+								}
+							}
+						}
+						None => {},
+					}
+				}
+			}
+			_ => {},
+		}
+		if !matched {
+			return self.lit_fallback(fields, base)
+		}
+		me := Ty::Adt(adt, args.clone())
+		decl := match shape {
+			Shape::Named(fs) => fs,
+			_ => {
+				self.error("`{what}` has no named fields; use `{what}(...)`", span)
+				self.lit_fallback(fields, base)
+				return me
+			},
+		}
+		map := zip_map(&self.adts.get(&adt).unwrap().generics, &args)
+		seen mut := Vec::new()
+		for f in fields {
+			vt := self.expr(&f.value)
+			dup mut := false
+			for s in &seen {
+				if *s == f.name.name {
+					dup = true
+				}
+			}
+			if dup {
+				self.error("field `{f.name.name}` specified more than once", f.name.span)
+				continue
+			}
+			seen.push(f.name.name.clone())
+			found mut := None
+			for (n, ft) in &decl {
+				if *n == f.name.name {
+					found = Some(ft.subst(&map))
+					break
+				}
+			}
+			match found {
+				Some(ft) => {
+					self.coerce(&vt, &ft, f.value.span)
+				}
+				None => self.error("`{what}` has no field named `{f.name.name}`", f.name.span),
+			}
+		}
+		match base {
+			Some(b) => {
+				bt := self.expr(b)
+				self.coerce(&bt, &me, b.span)
+			}
+			None => {
+				missing mut := Vec::new()
+				for (n, _) in &decl {
+					has mut := false
+					for s in &seen {
+						if s == n {
+							has = true
+						}
+					}
+					if !has {
+						missing.push("`{n}`")
+					}
+				}
+				if !missing.is_empty() {
+					s := if missing.len() == 1 { "" } else { "s" }
+					self.error("missing field{s} {join(&missing, ", ")} in initializer of `{what}`", span)
+				}
+			},
+		}
+		return me
+	}
+
+	fun lit_fallback(&mut self, fields &Vec<FieldInit>, base &option<Box<Expr>>) Ty {
+		for f in fields {
+			self.expr(&f.value)
+		}
+		match base {
+			Some(b) => {
+				self.expr(b)
+			}
+			None => {},
+		}
+		return Ty::Unknown
+	}
+
+	// ----- patterns ----------------------------------------------------------
+
+	// Binds pattern `p` against a value of type `ty`. `mode` is the default
+	// binding mode (`Some(mutable)` when matching through a reference).
+	fun bind_pat(&mut self, p &Pattern, ty &Ty, mode option<bool>) {
+		t := self.shallow(ty)
+		destructures := match &p.kind {
+			PatternKind::Tuple(_) | PatternKind::TupleStruct(..) | PatternKind::Struct { .. } | PatternKind::Path(_) | PatternKind::Slice(_) | PatternKind::Lit(_) | PatternKind::Range { .. } => true,
+			_ => false,
+		}
+		if destructures {
+			if let Ty::Ref(m, inner) = &t {
+				base := match mode {
+					Some(x) => x,
+					None => *m,
+				}
+				self.bind_pat(p, inner, Some(base && *m))
+				return
+			}
+		}
+		match &p.kind {
+			PatternKind::Wild | PatternKind::Rest => {},
+			PatternKind::Ident { name, sub, .. } => {
+				match self.r.binding(name.span) {
+					Some(id) => {
+						bt := match mode {
+							Some(m) => Ty::Ref(m, mk_box(t.clone())),
+							None => t.clone(),
+						}
+						self.b.locals.insert(id, bt)
+					}
+					None => {
+						inner := self.strip_refs(&t)
+						self.path_pat(name.span, &inner, p.span)
+					},
+				}
+				match sub {
+					Some(s) => self.bind_pat(s, &t, mode),
+					None => {},
+				}
+			}
+			PatternKind::Lit(l) => {
+				lt := self.lit_ty(l)
+				lt := match (&lt, &t) {
+					(Ty::Ref(_, x), Ty::Prim(pn)) => if pn == "Str" { (**x).clone() } else { lt.clone() },
+					(Ty::Ref(_, _), Ty::Adt(d, _)) => if self.is_lang(*d, "string") { t.clone() } else { lt.clone() },
+					_ => lt,
+				}
+				self.pat_unify(&lt, &t, p.span)
+			}
+			PatternKind::Range { lo, hi, .. } => {
+				self.bind_pat(lo, &t, None)
+				self.bind_pat(hi, &t, None)
+				ok := self.is_integral(&t) || match self.shallow(&t) {
+					Ty::Unknown => true,
+					x => x.is_prim("Char"),
+				}
+				if !ok {
+					f := self.fmt(&t)
+					self.error("range patterns require integer or `char` values, found `{f}`", p.span)
+				}
+			}
+			PatternKind::Tuple(ps) => {
+				rest_at mut := ps.len()
+				i mut := 0
+				while i < ps.len() {
+					if let PatternKind::Rest = &ps[i].kind {
+						rest_at = i
+						break
+					}
+					i += 1
+				}
+				has_rest := rest_at < ps.len()
+				fits := match &t {
+					Ty::Tuple(ts) => has_rest || ts.len() == ps.len(),
+					_ => false,
+				}
+				if fits {
+					ts := match &t {
+						Ty::Tuple(ts) => ts.clone(),
+						_ => Vec::new(),
+					}
+					after := ps.len() - rest_at - if has_rest { 1 } else { 0 }
+					i = 0
+					while i < ps.len() {
+						ti := if i < rest_at {
+							Some(i)
+						} else if i > rest_at {
+							k := after - (i - rest_at - 1)
+							if ts.len() >= k { Some(ts.len() - k) } else { None }
+						} else {
+							None
+						}
+						match ti {
+							Some(ti) => {
+								et := if ti < ts.len() { ts[ti].clone() } else { Ty::Unknown }
+								self.bind_pat(&ps[i], &et, mode)
+							}
+							None => {},
+						}
+						i += 1
+					}
+				} else if t == Ty::Unknown {
+					for x in ps {
+						self.bind_pat(x, &Ty::Unknown, mode)
+					}
+				} else if ps.is_empty() {
+					self.pat_unify(&Ty::Unit, &t, p.span)
+				} else if !has_rest {
+					vars mut := Vec::new()
+					for _ in ps {
+						vars.push(self.fresh())
+					}
+					tup := Ty::Tuple(vars.clone())
+					self.pat_unify(&tup, &t, p.span)
+					i = 0
+					while i < ps.len() {
+						self.bind_pat(&ps[i], &vars[i], mode)
+						i += 1
+					}
+				} else {
+					f := self.fmt(&t)
+					self.error("mismatched types: expected `{f}`, found a tuple pattern", p.span)
+				}
+			}
+			PatternKind::Slice(ps) => {
+				elem := match &t {
+					Ty::Array(x, _) | Ty::Slice(x) => (**x).clone(),
+					Ty::Adt(d, a) => if self.is_lang(*d, "Vec") { a[0].clone() } else { self.slice_mismatch(&t, p.span) },
+					Ty::Unknown => Ty::Unknown,
+					_ => self.slice_mismatch(&t, p.span),
+				}
+				for sp in ps {
+					self.bind_pat(sp, &elem, mode)
+				}
+			}
+			PatternKind::Path(path) => self.path_pat(path.span, &t, p.span),
+			PatternKind::TupleStruct(path, ps) => {
+				(adt, shape, name) := match self.pat_ctor(path.span, &t, p.span) {
+					Some(x) => x,
+					None => {
+						for x in ps {
+							self.bind_pat(x, &Ty::Unknown, mode)
+						}
+						return
+					},
+				}
+				args := match self.shallow(&t) {
+					Ty::Adt(_, args) => args,
+					_ => return,
+				}
+				map := zip_map(&self.adts.get(&adt).unwrap().generics, &args)
+				fields := match &shape {
+					Shape::Tuple(ts) => subst_all(ts, &map),
+					_ => {
+						self.error("`{name}` is not a tuple variant or tuple struct", p.span)
+						for x in ps {
+							self.bind_pat(x, &Ty::Unknown, mode)
+						}
+						return
+					},
+				}
+				has_rest mut := false
+				for x in ps {
+					if let PatternKind::Rest = &x.kind {
+						has_rest = true
+					}
+				}
+				if !has_rest && ps.len() != fields.len() {
+					s := if ps.len() == 1 { "" } else { "s" }
+					self.error("this pattern has {ps.len()} field{s}, but `{name}` has {fields.len()}", p.span)
+				}
+				i mut := 0
+				while i < ps.len() {
+					ft := if i < fields.len() { fields[i].clone() } else { Ty::Unknown }
+					self.bind_pat(&ps[i], &ft, mode)
+					i += 1
+				}
+			}
+			PatternKind::Struct { path, fields, rest } => {
+				(adt, shape, name) := match self.pat_ctor(path.span, &t, p.span) {
+					Some(x) => x,
+					None => {
+						for f in fields {
+							self.bind_pat(&f.pat, &Ty::Unknown, mode)
+						}
+						return
+					},
+				}
+				args := match self.shallow(&t) {
+					Ty::Adt(_, args) => args,
+					_ => return,
+				}
+				map := zip_map(&self.adts.get(&adt).unwrap().generics, &args)
+				decl := match shape {
+					Shape::Named(fs) => fs,
+					_ => {
+						self.error("`{name}` has no named fields", p.span)
+						return
+					},
+				}
+				for f in fields {
+					found mut := None
+					for (n, ft) in &decl {
+						if *n == f.name.name {
+							found = Some(ft.subst(&map))
+							break
+						}
+					}
+					match found {
+						Some(ft) => self.bind_pat(&f.pat, &ft, mode),
+						None => {
+							self.error("`{name}` has no field named `{f.name.name}`", f.name.span)
+							self.bind_pat(&f.pat, &Ty::Unknown, mode)
+						},
+					}
+				}
+				if !*rest {
+					missing mut := Vec::new()
+					for (n, _) in &decl {
+						has mut := false
+						for f in fields {
+							if f.name.name == *n {
+								has = true
+							}
+						}
+						if !has {
+							missing.push("`{n}`")
+						}
+					}
+					if !missing.is_empty() {
+						s := if missing.len() == 1 { "" } else { "s" }
+						self.error_help("pattern does not mention field{s} {join(&missing, ", ")}", p.span, "add the missing fields or `..` to ignore them".to_string())
+					}
+				}
+			}
+			PatternKind::Ref { mutable, inner } => {
+				match &t {
+					Ty::Ref(m, x) => {
+						if *m == *mutable {
+							self.bind_pat(inner, x, None)
+						} else {
+							self.ref_pat_mismatch(&t, p.span)
+						}
+					}
+					Ty::Unknown => self.bind_pat(inner, &Ty::Unknown, None),
+					Ty::Var(_) => {
+						v := self.fresh()
+						self.infer.unify(&t, &Ty::Ref(*mutable, mk_box(v.clone())))
+						self.bind_pat(inner, &v, None)
+					}
+					_ => self.ref_pat_mismatch(&t, p.span),
+				}
+			}
+			PatternKind::Or(alts) => {
+				for a in alts {
+					self.bind_pat(a, &t, mode)
+				}
+			},
+		}
+	}
+
+	fun slice_mismatch(&mut self, t &Ty, span Span) Ty {
+		f := self.fmt(t)
+		self.error("mismatched types: expected `{f}`, found a slice pattern", span)
+		return Ty::Unknown
+	}
+
+	fun ref_pat_mismatch(&mut self, t &Ty, span Span) {
+		f := self.fmt(t)
+		self.error("mismatched types: expected `{f}`, found a reference pattern", span)
+	}
+
+	fun pat_unify(&mut self, pat_ty &Ty, t &Ty, span Span) {
+		if !self.infer.unify(pat_ty, t) {
+			e := self.fmt(t)
+			f := self.fmt(pat_ty)
+			self.error("mismatched types: expected `{e}`, found `{f}`", span)
+		}
+	}
+
+	// The constructor a pattern path names, unified with the scrutinee type.
+	fun pat_ctor(&mut self, path_span Span, t &Ty, span Span) option<(u32, Shape, string)> {
+		res := self.r.path(path_span)
+		adt mut := 0
+		shape mut := Shape::Unit
+		name mut := string::new()
+		match &res {
+			Res::Def(d) => {
+				d := *d
+				match self.r.def(d).kind {
+					DefKind::Variant { .. } => {
+						(a, sh) := self.variant_info(d)
+						adt = a
+						shape = sh
+						name = self.r.def(d).name.clone()
+					}
+					DefKind::Struct => {
+						adt = d
+						shape = self.adts.get(&d).unwrap().shape.clone()
+						name = self.r.def(d).name.clone()
+					}
+					_ => return None,
+				}
+			}
+			Res::Assoc(base, n) => {
+				if **base != Res::SelfTy {
+					return None
+				}
+				d := match self.self_adt() {
+					Some((d, _)) => d,
+					None => return None,
+				}
+				vs := match self.adts.get(&d) {
+					Some(i) => i.variants.clone(),
+					None => return None,
+				}
+				found mut := None
+				for (v, sh) in vs {
+					if self.r.def(v).name == *n {
+						found = Some(sh)
+						break
+					}
+				}
+				match found {
+					Some(sh) => {
+						adt = d
+						shape = sh
+						name = n.clone()
+					}
+					None => return None,
+				}
+			}
+			Res::SelfTy => {
+				d := match self.self_adt() {
+					Some((d, _)) => d,
+					None => return None,
+				}
+				adt = d
+				shape = self.adts.get(&d).unwrap().shape.clone()
+				name = "Self".to_string()
+			}
+			_ => return None,
+		}
+		args := self.fresh_args(adt, Vec::new())
+		at := Ty::Adt(adt, args)
+		if !self.infer.unify(&at, t) {
+			e := self.fmt(t)
+			f := self.fmt(&at)
+			self.error("mismatched types: expected `{e}`, found `{f}`", span)
+			return None
+		}
+		return Some((adt, shape, name))
+	}
+
+	fun path_pat(&mut self, path_span Span, t &Ty, span Span) {
+		match self.r.path(path_span) {
+			Res::Def(d) => {
+				if self.r.def(d).kind == DefKind::Const {
+					match self.item_kind(d) {
+						Some(ItemKind::Const { ty, .. }) => {
+							ty := ty.clone()
+							ct := self.lower_ty(&ty, None, false)
+							self.pat_unify(&ct, t, span)
+						}
+						_ => {},
+					}
+					return
+				}
+			}
+			_ => {},
+		}
+		match self.pat_ctor(path_span, t, span) {
+			Some((_, shape, name)) => {
+				match shape {
+					Shape::Unit => {},
+					_ => self.error_help("`{name}` has fields but the pattern has none", span, "use `{name}(..)` or `{name} {{ .. }}`"),
+				}
+			}
+			None => {},
+		}
+	}
+
+	// ----- match -------------------------------------------------------------
+
+	fun match_expr(&mut self, scrut &Expr, arms &Vec<MatchArm>, value bool, span Span) Ty {
+		st := self.expr(scrut)
+		result mut := None
+		all_never mut := !arms.is_empty()
+		for arm in arms {
+			self.bind_pat(&arm.pat, &st, None)
+			match &arm.guard {
+				Some(g) => {
+					gt := self.expr(g)
+					self.coerce(&gt, &prim("Bool"), g.span)
+				}
+				None => {},
+			}
+			bt := self.expr_v(&arm.body, value)
+			never := self.is_never(&bt)
+			all_never = all_never && never
+			if value && !never {
+				result = match result {
+					None => Some(bt),
+					Some(r) => Some(self.join(&r, &bt, arm.body.span)),
+				}
+			}
+		}
+		self.check_exhaustive(&st, arms, span)
+		if value {
+			match result {
+				Some(r) => return r,
+				None => return if all_never { Ty::Never } else { Ty::Unit },
+			}
+		}
+		if all_never {
+			return Ty::Never
+		}
+		return Ty::Unit
+	}
+
+	// ----- exhaustiveness ----------------------------------------------------
+	//
+	// The usefulness algorithm (Maranget, "Warnings for pattern matching").
+
+	fun x_fields(&self, t &Ty, variant option<u32>) Vec<(string, Ty)> {
+		(d, args) := match t {
+			Ty::Adt(d, args) => (*d, args),
+			_ => return Vec::new(),
+		}
+		info := match self.adts.get(&d) {
+			Some(i) => i,
+			None => return Vec::new(),
+		}
+		map := zip_map(&info.generics, args)
+		shape := match variant {
+			None => &info.shape,
+			Some(v) => {
+				found mut := None
+				for (id, sh) in &info.variants {
+					if *id == v {
+						found = Some(sh)
+						break
+					}
+				}
+				match found {
+					Some(sh) => sh,
+					None => return Vec::new(),
+				}
+			},
+		}
+		return shape_fields(shape, &map)
+	}
+
+	fun zs(&self, t &Ty) Ty {
+		return self.infer.zonk(&self.strip_refs(t))
+	}
+
+	fun x_ctors(&self, t &Ty) option<Vec<(XCtor, Vec<Ty>)>> {
+		t := self.zs(t)
+		v mut := Vec::new()
+		match &t {
+			Ty::Prim(p) => {
+				if p != "Bool" {
+					return None
+				}
+				v.push((XCtor::Bool(true), Vec::new()))
+				v.push((XCtor::Bool(false), Vec::new()))
+			}
+			Ty::Unit => v.push((XCtor::Single, Vec::new())),
+			Ty::Tuple(ts) => v.push((XCtor::Single, ts.clone())),
+			Ty::Array(e, n) => v.push((XCtor::Len(*n as usize), repeat_ty(e, *n as usize))),
+			Ty::Slice(e) => return Some(slice_ctors(e, self.slice_max)),
+			Ty::Adt(d, a) => {
+				if self.is_lang(*d, "Vec") && !a.is_empty() {
+					return Some(slice_ctors(&a[0], self.slice_max))
+				}
+				info := match self.adts.get(d) {
+					Some(i) => i,
+					None => return None,
+				}
+				if info.is_enum {
+					i mut := 0
+					while i < info.variants.len() {
+						fs mut := Vec::new()
+						for (_, ft) in self.x_fields(&t, Some(info.variants[i].0)) {
+							fs.push(ft)
+						}
+						v.push((XCtor::Variant(i), fs))
+						i += 1
+					}
+				} else {
+					fs mut := Vec::new()
+					for (_, ft) in self.x_fields(&t, None) {
+						fs.push(ft)
+					}
+					v.push((XCtor::Single, fs))
+				}
+			}
+			_ => return None,
+		}
+		return Some(v)
+	}
+
+	fun x_ctor_of(&self, span Span, t &Ty) option<(XCtor, Vec<(string, Ty)>)> {
+		t := self.zs(t)
+		match self.r.path(span) {
+			Res::Def(d) => {
+				match self.r.def(d).kind {
+					DefKind::Variant { index, .. } => return Some((XCtor::Variant(index), self.x_fields(&t, Some(d)))),
+					DefKind::Struct => return Some((XCtor::Single, self.x_fields(&t, None))),
+					_ => return None,
+				}
+			}
+			Res::Assoc(_, name) => {
+				d := match &t {
+					Ty::Adt(d, _) => *d,
+					_ => return None,
+				}
+				info := match self.adts.get(&d) {
+					Some(i) => i,
+					None => return None,
+				}
+				i mut := 0
+				while i < info.variants.len() {
+					v := info.variants[i].0
+					if self.r.def(v).name == name {
+						return Some((XCtor::Variant(i), self.x_fields(&t, Some(v))))
+					}
+					i += 1
+				}
+				return None
+			}
+			_ => return None,
+		}
+	}
+
+	fun x_positional(&self, ps &Vec<Pattern>, tys &Vec<Ty>) Vec<XPat> {
+		n := tys.len()
+		rest mut := None
+		i mut := 0
+		while i < ps.len() {
+			if let PatternKind::Rest = &ps[i].kind {
+				rest = Some(i)
+				break
+			}
+			i += 1
+		}
+		out mut := Vec::new()
+		i = 0
+		while i < n {
+			out.push(XPat::Wild)
+			i += 1
+		}
+		match rest {
+			Some(r) => {
+				i = 0
+				while i < r {
+					if i < n {
+						out[i] = self.x_lower(&ps[i], &tys[i])
+					}
+					i += 1
+				}
+				alen := ps.len() - r - 1
+				k mut := 0
+				while k < alen {
+					if n + k >= alen {
+						j := n + k - alen
+						out[j] = self.x_lower(&ps[r + 1 + k], &tys[j])
+					}
+					k += 1
+				}
+			}
+			None => {
+				i = 0
+				while i < ps.len() && i < n {
+					out[i] = self.x_lower(&ps[i], &tys[i])
+					i += 1
+				}
+			},
+		}
+		return out
+	}
+
+	fun x_lower(&self, p &Pattern, t &Ty) XPat {
+		match &p.kind {
+			PatternKind::Wild | PatternKind::Rest => return XPat::Wild,
+			PatternKind::Ident { name, sub, .. } => {
+				if self.r.binding(name.span).is_some() {
+					match sub {
+						Some(s) => return self.x_lower(s, t),
+						None => return XPat::Wild,
+					}
+				}
+				match self.x_ctor_of(name.span, t) {
+					Some((k, fs)) => return XPat::Ctor(k, wilds(fs.len())),
+					None => return XPat::Opaque,
+				}
+			}
+			PatternKind::Ref { inner, .. } => return self.x_lower(inner, t),
+			PatternKind::Or(ps) => {
+				v mut := Vec::new()
+				for x in ps {
+					v.push(self.x_lower(x, t))
+				}
+				return XPat::Or(v)
+			}
+			PatternKind::Lit(Lit::Bool(b)) => return XPat::Ctor(XCtor::Bool(*b), Vec::new()),
+			PatternKind::Slice(ps) => {
+				elem := match self.zs(t) {
+					Ty::Array(e, _) | Ty::Slice(e) => *e,
+					Ty::Adt(_, a) => if !a.is_empty() { a[0].clone() } else { Ty::Unknown },
+					_ => Ty::Unknown,
+				}
+				rest mut := None
+				i mut := 0
+				while i < ps.len() {
+					if let PatternKind::Rest = &ps[i].kind {
+						rest = Some(i)
+						break
+					}
+					i += 1
+				}
+				match rest {
+					None => {
+						v mut := Vec::new()
+						for x in ps {
+							v.push(self.x_lower(x, &elem))
+						}
+						return XPat::Ctor(XCtor::Len(ps.len()), v)
+					}
+					Some(r) => {
+						pre mut := Vec::new()
+						i = 0
+						while i < r {
+							pre.push(self.x_lower(&ps[i], &elem))
+							i += 1
+						}
+						suf mut := Vec::new()
+						i = r + 1
+						while i < ps.len() {
+							suf.push(self.x_lower(&ps[i], &elem))
+							i += 1
+						}
+						max := self.slice_max
+						alts mut := Vec::new()
+						n mut := pre.len() + suf.len()
+						while n <= max {
+							alts.push(XPat::Ctor(XCtor::Len(n), fill(&pre, &suf, n)))
+							n += 1
+						}
+						alts.push(XPat::Ctor(XCtor::Long, fill(&pre, &suf, max + 1)))
+						return XPat::Or(alts)
+					},
+				}
+			}
+			PatternKind::Tuple(ps) => {
+				tys := match self.zs(t) {
+					Ty::Tuple(ts) => ts,
+					_ => repeat_ty(&Ty::Unknown, ps.len()),
+				}
+				return XPat::Ctor(XCtor::Single, self.x_positional(ps, &tys))
+			}
+			PatternKind::Path(path) => {
+				match self.x_ctor_of(path.span, t) {
+					Some((k, fs)) => return XPat::Ctor(k, wilds(fs.len())),
+					None => return XPat::Opaque,
+				}
+			}
+			PatternKind::TupleStruct(path, ps) => {
+				match self.x_ctor_of(path.span, t) {
+					Some((k, fs)) => {
+						tys mut := Vec::new()
+						for (_, ft) in fs {
+							tys.push(ft)
+						}
+						return XPat::Ctor(k, self.x_positional(ps, &tys))
+					}
+					None => return XPat::Opaque,
+				}
+			}
+			PatternKind::Struct { path, fields, .. } => {
+				match self.x_ctor_of(path.span, t) {
+					Some((k, fs)) => {
+						v mut := Vec::new()
+						for (n, ft) in &fs {
+							found mut := None
+							for f in fields {
+								if f.name.name == *n {
+									found = Some(&f.pat)
+									break
+								}
+							}
+							match found {
+								Some(fp) => v.push(self.x_lower(fp, ft)),
+								None => v.push(XPat::Wild),
+							}
+						}
+						return XPat::Ctor(k, v)
+					}
+					None => return XPat::Opaque,
+				}
+			}
+			_ => return XPat::Opaque,
+		}
+	}
+
+	fun ctor_tys(&self, t &Ty, k XCtor, arity usize) Vec<Ty> {
+		match self.x_ctors(t) {
+			Some(cs) => {
+				for (c, ts) in cs {
+					if c == k {
+						return ts
+					}
+				}
+			}
+			None => {},
+		}
+		return repeat_ty(&Ty::Unknown, arity)
+	}
+
+	// Whether the pattern row `q` matches some value that no row of `rows`
+	// matches.
+	fun x_useful(&self, rows &Vec<Vec<XPat>>, q &[XPat], tys &[Ty]) bool {
+		if q.len() == 0 {
+			return rows.is_empty()
+		}
+		flat mut := Vec::new()
+		stack mut := Vec::new()
+		i mut := rows.len()
+		while i > 0 {
+			i -= 1
+			stack.push(rows[i].clone())
+		}
+		while let Some(r) = stack.pop() {
+			// A row whose constructor arity disagreed with the column's
+			// (a pattern naming another type's variant) has run out early.
+			if r.is_empty() {
+				continue
+			}
+			match &r[0] {
+				XPat::Or(alts) => {
+					j mut := alts.len()
+					while j > 0 {
+						j -= 1
+						v mut := Vec::new()
+						v.push(alts[j].clone())
+						for x in &r[1..] {
+							v.push(x.clone())
+						}
+						stack.push(v)
+					}
+				}
+				_ => flat.push(r.clone()),
+			}
+		}
+		match &q[0] {
+			XPat::Or(alts) => {
+				for a in alts {
+					v mut := Vec::new()
+					v.push(a.clone())
+					for x in &q[1..] {
+						v.push(x.clone())
+					}
+					if self.x_useful(&flat, &v, tys) {
+						return true
+					}
+				}
+				return false
+			}
+			XPat::Ctor(k, args) => {
+				nq mut := args.clone()
+				for x in &q[1..] {
+					nq.push(x.clone())
+				}
+				nt mut := self.ctor_tys(&tys[0], *k, args.len())
+				for x in &tys[1..] {
+					nt.push(x.clone())
+				}
+				return self.x_useful(&specialize(&flat, *k, args.len()), &nq, &nt)
+			}
+			_ => {
+				seen mut := Vec::new()
+				for r in &flat {
+					match &r[0] {
+						XPat::Ctor(k, _) => seen.push(*k),
+						_ => {},
+					}
+				}
+				all := self.x_ctors(&tys[0])
+				complete := match &all {
+					Some(cs) => {
+						ok mut := true
+						for (k, _) in cs {
+							has mut := false
+							for s in &seen {
+								if *s == *k {
+									has = true
+								}
+							}
+							if !has {
+								ok = false
+							}
+						}
+						ok
+					}
+					None => false,
+				}
+				if complete {
+					for (k, ftys) in all.as_ref().unwrap() {
+						nq mut := wilds(ftys.len())
+						for x in &q[1..] {
+							nq.push(x.clone())
+						}
+						nt mut := ftys.clone()
+						for x in &tys[1..] {
+							nt.push(x.clone())
+						}
+						if self.x_useful(&specialize(&flat, *k, ftys.len()), &nq, &nt) {
+							return true
+						}
+					}
+					return false
+				}
+				default mut := Vec::new()
+				for r in &flat {
+					if let XPat::Wild = &r[0] {
+						default.push(r[1..].to_vec())
+					}
+				}
+				return self.x_useful(&default, &q[1..], &tys[1..])
+			},
+		}
+	}
+
+	fun check_exhaustive(&mut self, st &Ty, arms &Vec<MatchArm>, span Span) {
+		max mut := 0
+		for a in arms {
+			l := pattern_slice_len(&a.pat)
+			if l > max {
+				max = l
+			}
+		}
+		if let Ty::Array(_, n) = self.zs(st) {
+			if n as usize > max {
+				max = n as usize
+			}
+		}
+		self.slice_max = max
+		rows mut := Vec::new()
+		for a in arms {
+			if a.guard.is_none() {
+				row mut := Vec::new()
+				row.push(self.x_lower(&a.pat, st))
+				rows.push(row)
+			}
+		}
+		tys mut := Vec::new()
+		tys.push(st.clone())
+		wild mut := Vec::new()
+		wild.push(XPat::Wild)
+		if !self.x_useful(&rows, &wild, &tys) {
+			return
+		}
+		t := self.zs(st)
+		match &t {
+			Ty::Unknown | Ty::Never => return,
+			_ => {},
+		}
+		names mut := None
+		match &t {
+			Ty::Adt(d, _) => {
+				match self.adts.get(d) {
+					Some(info) => {
+						if info.is_enum {
+							ns mut := Vec::new()
+							for (v, _) in &info.variants {
+								ns.push(self.r.def(*v).name.clone())
+							}
+							names = Some(ns)
+						}
+					}
+					None => {},
+				}
+			}
+			Ty::Prim(p) => {
+				if p == "Bool" {
+					ns mut := Vec::new()
+					ns.push("true".to_string())
+					ns.push("false".to_string())
+					names = Some(ns)
+				}
+			}
+			_ => {},
+		}
+		missing mut := Vec::new()
+		match (names, self.x_ctors(&t)) {
+			(Some(names), Some(cs)) => {
+				i mut := 0
+				while i < cs.len() && i < names.len() {
+					q mut := Vec::new()
+					q.push(XPat::Ctor(cs[i].0, wilds(cs[i].1.len())))
+					if self.x_useful(&rows, &q, &tys) {
+						missing.push("`{names[i]}`")
+					}
+					i += 1
+				}
+			}
+			_ => {},
+		}
+		if missing.is_empty() {
+			f := self.fmt(&t)
+			self.error_help("non-exhaustive match: not all values of `{f}` are covered", span, "add a `_ => ...` arm".to_string())
+		} else {
+			self.error_help("non-exhaustive match: {join(&missing, ", ")} not covered", span, "add arms for the missing cases or a `_ => ...` arm".to_string())
+		}
+	}
+}
+
+fun push_shape(sh &Shape, map &HashMap<string, Ty>, out &mut Vec<Ty>) {
+	match sh {
+		Shape::Unit => {},
+		Shape::Tuple(ts) => {
+			for x in ts {
+				out.push(x.subst(map))
+			}
+		}
+		Shape::Named(fs) => {
+			for (_, x) in fs {
+				out.push(x.subst(map))
+			}
+		},
+	}
+}
+
+pub fun shape_fields(shape &Shape, map &HashMap<string, Ty>) Vec<(string, Ty)> {
+	o mut := Vec::new()
+	match shape {
+		Shape::Named(fs) => {
+			for (n, t) in fs {
+				o.push((n.clone(), t.subst(map)))
+			}
+		}
+		Shape::Tuple(ts) => {
+			i mut := 0
+			while i < ts.len() {
+				o.push(("{i}", ts[i].subst(map)))
+				i += 1
+			}
+		}
+		Shape::Unit => {},
+	}
+	return o
+}
+
+fun repeat_ty(t &Ty, n usize) Vec<Ty> {
+	v mut := Vec::new()
+	i mut := 0
+	while i < n {
+		v.push(t.clone())
+		i += 1
+	}
+	return v
+}
+
+fun wilds(n usize) Vec<XPat> {
+	v mut := Vec::new()
+	i mut := 0
+	while i < n {
+		v.push(XPat::Wild)
+		i += 1
+	}
+	return v
+}
+
+fun fill(pre &Vec<XPat>, suf &Vec<XPat>, n usize) Vec<XPat> {
+	v mut := pre.clone()
+	i mut := pre.len() + suf.len()
+	while i < n {
+		v.push(XPat::Wild)
+		i += 1
+	}
+	for x in suf {
+		v.push(x.clone())
+	}
+	return v
+}
+
+fun specialize(flat &Vec<Vec<XPat>>, k XCtor, arity usize) Vec<Vec<XPat>> {
+	o mut := Vec::new()
+	for r in flat {
+		head mut := match &r[0] {
+			XPat::Ctor(k2, args) => if *k2 == k { args.clone() } else { continue },
+			XPat::Wild => wilds(arity),
+			_ => continue,
+		}
+		for x in &r[1..] {
+			head.push(x.clone())
+		}
+		o.push(head)
+	}
+	return o
+}
+
+// The constructors of a slice of `e`: every length up to `max`, then all
+// longer ones together.
+fun slice_ctors(e &Ty, max usize) Vec<(XCtor, Vec<Ty>)> {
+	v mut := Vec::new()
+	n mut := 0
+	while n <= max {
+		v.push((XCtor::Len(n), repeat_ty(e, n)))
+		n += 1
+	}
+	v.push((XCtor::Long, repeat_ty(e, max + 1)))
+	return v
+}
+
+// A pattern simplified for exhaustiveness checking.
+@derive(Clone)
+enum XPat {
+	Wild,
+	Ctor(XCtor, Vec<XPat>),
+	Or(Vec<XPat>),
+	Opaque,
+}
+
+@derive(Clone, Copy, Eq)
+enum XCtor {
+	Variant(usize),
+	Bool(bool),
+	Single,
+	Len(usize),
+	Long,
+}
+
+fun max_slice_len(ps &Vec<Pattern>) usize {
+	m mut := 0
+	for p in ps {
+		l := pattern_slice_len(p)
+		if l > m {
+			m = l
+		}
+	}
+	return m
+}
+
+fun pattern_slice_len(p &Pattern) usize {
+	match &p.kind {
+		PatternKind::Slice(ps) => {
+			own mut := 0
+			for x in ps {
+				match &x.kind {
+					PatternKind::Rest => {},
+					_ => own += 1,
+				}
+			}
+			m := max_slice_len(ps)
+			return if m > own { m } else { own }
+		}
+		PatternKind::Tuple(ps) | PatternKind::TupleStruct(_, ps) | PatternKind::Or(ps) => return max_slice_len(ps),
+		PatternKind::Struct { fields, .. } => {
+			m mut := 0
+			for f in fields {
+				l := pattern_slice_len(&f.pat)
+				if l > m {
+					m = l
+				}
+			}
+			return m
+		}
+		PatternKind::Ref { inner, .. } => return pattern_slice_len(inner),
+		PatternKind::Ident { sub: Some(s), .. } => return pattern_slice_len(s),
+		_ => return 0,
+	}
+}
+
+fun op_symbol(op BinOp) string {
+	s := match op {
+		BinOp::Add => "+",
+		BinOp::Sub => "-",
+		BinOp::Mul => "*",
+		BinOp::Div => "/",
+		BinOp::Rem => "%",
+		BinOp::And => "&&",
+		BinOp::Or => "||",
+		BinOp::BitAnd => "&",
+		BinOp::BitOr => "|",
+		BinOp::BitXor => "^",
+		BinOp::Shl => "<<",
+		BinOp::Shr => ">>",
+		BinOp::Eq => "==",
+		BinOp::Ne => "!=",
+		BinOp::Lt => "<",
+		BinOp::Le => "<=",
+		BinOp::Gt => ">",
+		BinOp::Ge => ">=",
+	}
+	return s.to_string()
+}
+
+// Type-checks a resolved file.
+pub fun typeck(r Resolved) Checker {
+	c mut := Checker::new(r)
+	c.collect()
+	c.check_ffi()
+	c.check_bodies()
+	return c
+}
+
+// ----- dump ------------------------------------------------------------------
+
+fun dty(c &Checker, t &Ty) string {
+	t := c.infer.zonk(t)
+	match &t {
+		Ty::Prim(p) => return prim_name(p),
+		Ty::Unit => return "()".to_string(),
+		Ty::Never => return "!".to_string(),
+		Ty::Tuple(ts) => return "({dall(c, ts)})",
+		Ty::Ref(m, x) => {
+			mm := if *m { "mut " } else { "" }
+			return "&{mm}{dty(c, x)}"
+		}
+		Ty::Ptr(m, x) => {
+			mm := if *m { "mut" } else { "const" }
+			return "*{mm} {dty(c, x)}"
+		}
+		Ty::Array(x, n) => return "[{dty(c, x)}; {*n}]",
+		Ty::Slice(x) => return "[{dty(c, x)}]",
+		Ty::Adt(d, args) => return "d{*d}<{dall(c, args)}>",
+		Ty::Fn(ps, r, m) => {
+			mm := if *m { " mut" } else { "" }
+			return "fun{mm}({dall(c, ps)}) {dty(c, r)}"
+		}
+		Ty::Param(n) => return "'{n}",
+		Ty::Dyn(ds) => {
+			v mut := Vec::new()
+			for d in ds {
+				v.push("d{*d}")
+			}
+			return "dyn {join(&v, " + ")}"
+		}
+		Ty::ChanSend(x) => return "chan<- {dty(c, x)}",
+		Ty::ChanRecv(x) => return "<-chan {dty(c, x)}",
+		Ty::Var(v) => {
+			match c.infer.kind(*v) {
+				VarKind::Int => return "?int".to_string(),
+				VarKind::Float => return "?float".to_string(),
+				VarKind::General => return "?".to_string(),
+			}
+		}
+		Ty::Unknown => return "{{unknown}}".to_string(),
+	}
+}
+
+fun dall(c &Checker, ts &Vec<Ty>) string {
+	v mut := Vec::new()
+	for t in ts {
+		v.push(dty(c, t))
+	}
+	return join(&v, ", ")
+}
+
+fun dsubsts(c &Checker, m &HashMap<string, Ty>) string {
+	v mut := Vec::new()
+	for (k, t) in m.iter() {
+		v.push("{k}={dty(c, t)}")
+	}
+	v.sort()
+	return join(&v, " ")
+}
+
+fun sorted_keys<V>(m &HashMap<SpanKey, V>) Vec<SpanKey> {
+	v mut := Vec::new()
+	for (k, _) in m.iter() {
+		v.push(*k)
+	}
+	v.sort()
+	return v
+}
+
+// The format of `kiln typeck --dump` (crates/kiln_typeck/src/dump.rs).
+pub fun dump(src &str, dir &str) string {
+	next mut := derive::DERIVE_BASE
+	user := resolve::parse_at(src, 0, &mut next)
+	pre := resolve::parse_at(&resolve::builtin_text(dir), resolve::BUILTIN_BASE, &mut next)
+	r := resolve::resolve(&user.file, &pre.file)
+	c := typeck(r)
+	o mut := string::new()
+	for e in &c.errors {
+		o.push("error {e.span.start}..{e.span.end}: {e.message}\n")
+		if let Some(h) = &e.help {
+			o.push("  help: {h}\n")
+		}
+	}
+	i mut := 0
+	while i < c.r.fns.len() {
+		if c.r.fns[i].is_prelude {
+			i += 1
+			continue
+		}
+		r := match &c.results[i] {
+			Some(r) => r,
+			None => {
+				i += 1
+				continue
+			},
+		}
+		o.push("fn f{i} {c.r.fns[i].decl.name.name}\n")
+		ls mut := Vec::new()
+		for (l, _) in r.locals.iter() {
+			ls.push(*l)
+		}
+		ls.sort()
+		for l in &ls {
+			o.push("  local l{*l} {dty(&c, r.locals.get(l).unwrap())}\n")
+		}
+		for k in sorted_keys(&r.tys) {
+			o.push("  expr {k.0}..{k.1} {dty(&c, r.tys.get(&k).unwrap())}\n")
+		}
+		for k in sorted_keys(&r.methods) {
+			m := r.methods.get(&k).unwrap()
+			sp := match &m.self_param {
+				None => "-",
+				Some(SelfParam::Value { .. }) => "self",
+				Some(SelfParam::Ref { mutable, .. }) => if *mutable { "&mut self" } else { "&self" },
+			}
+			fi := match m.fn_idx {
+				Some(i) => "f{i}",
+				None => "-".to_string(),
+			}
+			o.push("  method {k.0}..{k.1} steps={m.steps} {sp} recv={dty(&c, &m.recv_ty)} fn={fi} [{dsubsts(&c, &m.substs)}]\n")
+		}
+		for k in sorted_keys(&r.callees) {
+			su := match r.callee_substs.get(&k) {
+				Some(m) => dsubsts(&c, m),
+				None => string::new(),
+			}
+			o.push("  callee {k.0}..{k.1} f{*r.callees.get(&k).unwrap()} [{su}]\n")
+		}
+		for k in sorted_keys(&r.coercions) {
+			o.push("  coerce {k.0}..{k.1} {dty(&c, r.coercions.get(&k).unwrap())}\n")
+		}
+		for k in sorted_keys(&r.deref_coercions) {
+			o.push("  deref_coerce {k.0}..{k.1} {*r.deref_coercions.get(&k).unwrap()}\n")
+		}
+		for k in sorted_keys(&r.fn_derefs) {
+			o.push("  fn_deref {k.0}..{k.1} {*r.fn_derefs.get(&k).unwrap()}\n")
+		}
+		cu mut := Vec::new()
+		for s in r.const_uses.iter() {
+			cu.push(*s)
+		}
+		cu.sort()
+		for s in &cu {
+			o.push("  const_use {s.0}..{s.1}\n")
+		}
+		for k in sorted_keys(&r.iter_items) {
+			o.push("  iter_item {k.0}..{k.1} {dty(&c, r.iter_items.get(&k).unwrap())}\n")
+		}
+		i += 1
+	}
+	return o
+}

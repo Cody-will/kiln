@@ -74,6 +74,23 @@ covers the scope errors. The Kiln resolver keeps no references into the
 AST: where Rust compares `&Item` pointers it keys by the item's span, and
 a definition records the shape of its fields instead of the item.
 
+For type checking, `kiln typeck --dump <file>` (`kiln_typeck::dump`)
+prints every type error with its help line, then for each function body
+outside the prelude: local types (by id), expression types (by span),
+method resolutions (autoderef steps, `self` kind, receiver type, callee
+and substitution), callees with their substitutions, coercions, deref
+coercions, callee derefs, constant uses and `for` element types. Types
+print with definition ids (`d10<usize>`, `fun(i32) bool`, `'T` for a
+parameter, `?int` for an unresolved literal) so equal names can't hide a
+wrong id. `crates/kiln_cli/tests/typeck_diff.rs` runs `kilnc --typeck` on
+every `.kn` file plus every Kiln snippet in
+`crates/kiln_typeck/src/tests.rs` (written to a temporary directory), so
+the error paths are covered too. The resolver now keeps copies of the
+items typeck needs (a function's declaration, an impl's header, a
+definition's item and a variant). The Kiln checker keeps the per-body
+state in a field of `Checker` instead of a `Body` that borrows it, and
+swaps it out for trait queries made outside a body.
+
 ## Stages
 
 | Stage | Rust crate | Kiln | Status |
@@ -82,7 +99,7 @@ a definition records the shape of its fields instead of the item.
 | 2. Parser + AST | `kiln_parser` | `compiler/src/parser.kn`, `ast.kn` | ✅ ported; identical AST and diagnostics on 159 files |
 | 2b. Derive expansion | `kiln_parser::derive` | `compiler/src/derive.kn` | ✅ ported; identical generated source on 159 files and identical expanded ASTs on every file deriving `Json` |
 | 3. Name resolution | `kiln_resolve` | `compiler/src/resolve.kn` | ✅ ported; identical tables and errors on 162 files |
-| 4. Type checking | `kiln_typeck` | | ⬜ |
+| 4. Type checking | `kiln_typeck` | `compiler/src/typeck.kn`, `ty.kn` | ✅ ported; identical results and errors on 163 files and 127 unit-test snippets |
 | 5. MIR + borrow checking | `kiln_mir`, `kiln_borrowck` | | ⬜ |
 | 6. Codegen | `kiln_codegen` | | ⬜. Emit C or LLVM IR text first (no Cranelift bindings from Kiln) |
 | 7. Bootstrap | | | ⬜ `kilnc` builds `kilnc`; the stage-2 binary must reproduce stage 1 |
@@ -105,6 +122,11 @@ compiler through dumps only. Nothing in the Rust build depends on
   exponent form outside `1e-4 <= |x| < 1e16`, as Rust does
   (`tests/run/float_debug.kn`). Display never uses an exponent, also as in
   Rust.
+- **Exhaustiveness checking panicked** (index out of bounds) when a
+  pattern named a variant of another type with a different arity, e.g. a
+  user `enum option` matched with the prelude's `Some(_)`; the typeck port
+  hit it on `prelude.kn`. *Fixed* in both checkers: an exhausted row is
+  skipped.
 - **`chan` is a keyword**, so it can't be a field name. The Rust AST's
   `chan` fields are `ch` in `ast.kn` (the dump still prints `chan`).
 - **u128 now works**, and the lexer and parser use it directly (the

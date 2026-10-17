@@ -3617,6 +3617,11 @@ impl Body<'_, '_, '_> {
         let mut flat: Vec<Vec<XPat>> = vec![];
         let mut stack: Vec<Vec<XPat>> = rows.iter().rev().cloned().collect();
         while let Some(r) = stack.pop() {
+            // A row whose constructor arity disagreed with the column's
+            // (a pattern naming another type's variant) has run out early.
+            if r.is_empty() {
+                continue;
+            }
             match &r[0] {
                 XPat::Or(alts) => {
                     for a in alts.iter().rev() {

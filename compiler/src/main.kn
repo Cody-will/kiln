@@ -18,6 +18,7 @@ mod escape
 mod derive
 mod resolve
 mod ty
+mod typeck
 
 import std::fs
 import std::os
@@ -132,10 +133,11 @@ fun main() {
 	der := args.len() > 1 && args[1] == "--derive"
 	exp := args.len() > 1 && args[1] == "--ast-expanded"
 	res := args.len() > 1 && args[1] == "--resolve"
-	first := if ast || der || exp || res { 2 } else { 1 }
+	tck := args.len() > 1 && args[1] == "--typeck"
+	first := if ast || der || exp || res || tck { 2 } else { 1 }
 	n := args.len() - first
 	if n == 0 {
-		eprintln("usage: kilnc [--ast | --ast-expanded | --derive | --resolve] <file.kn>...")
+		eprintln("usage: kilnc [--ast | --ast-expanded | --derive | --resolve | --typeck] <file.kn>...")
 		os::exit(2)
 	}
 	i mut := first
@@ -145,12 +147,16 @@ fun main() {
 				if n > 1 {
 					println("== {args[i]}")
 				}
-				if res {
+				if res || tck {
 					dir := match os::getenv("KILNC_RESOLVE_DIR") {
 						Some(d) => d,
 						None => "crates/kiln_resolve".to_string(),
 					}
-					print("{resolve::dump(&src, &dir)}")
+					if tck {
+						print("{typeck::dump(&src, &dir)}")
+					} else {
+						print("{resolve::dump(&src, &dir)}")
+					}
 				} else if exp {
 					print("{dump_expanded(&src)}")
 				} else if der {
