@@ -2,13 +2,17 @@
 //
 // For now it is the lexer plus a driver that prints the canonical token
 // dump (the format of `kiln lex --dump`, see crates/kiln_lexer/src/dump.rs)
-// for each file given: `kilnc <file.kn>...`. With several files, each dump
-// is preceded by a line `== <path>`.
+// for each file given: `kilnc <file.kn>...`. `kilnc --ast <file.kn>...`
+// parses instead and prints the canonical AST dump (the format of
+// `kiln parse --dump`, see crates/kiln_parser/src/dump.rs). With several
+// files, each dump is preceded by a line `== <path>`.
 
 mod token
 mod lexer
 mod ast
 mod debug
+mod parser
+mod escape
 
 import std::fs
 import std::os
@@ -80,21 +84,36 @@ fun dump(src &str) string {
 	return o
 }
 
+fun dump_ast(src &str) string {
+	p := parser::parse(src)
+	o mut := debug::dump_file(&p.file)
+	for e in &p.errors {
+		o.push("error {e.start}..{e.end}: {e.message}\n")
+	}
+	return o
+}
+
 fun main() {
 	args := os::args()
-	n := args.len() - 1
+	ast := args.len() > 1 && args[1] == "--ast"
+	first := if ast { 2 } else { 1 }
+	n := args.len() - first
 	if n == 0 {
-		eprintln("usage: kilnc <file.kn>...")
+		eprintln("usage: kilnc [--ast] <file.kn>...")
 		os::exit(2)
 	}
-	i mut := 1
+	i mut := first
 	while i < args.len() {
 		match fs::read_to_string(&args[i]) {
 			Ok(src) => {
 				if n > 1 {
 					println("== {args[i]}")
 				}
-				print("{dump(&src)}")
+				if ast {
+					print("{dump_ast(&src)}")
+				} else {
+					print("{dump(&src)}")
+				}
 			}
 			Err(e) => {
 				eprintln("error: cannot read {args[i]}: {e}")

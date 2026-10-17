@@ -1,0 +1,2564 @@
+// The self-hosted Kiln parser: a port of crates/kiln_parser/src/parser.rs
+// (recursive descent, with Pratt-style binary operators).
+//
+// It produces the same AST (`ast.kn`) and the same diagnostics, in the same
+// order, as the Rust parser before derive expansion. `parse` returns the
+// file and all errors (lexer errors first). `tests/parser_diff.rs` checks
+// this over every `.kn` file in the repository by comparing
+// `debug::dump_file` with `kiln parse --dump`.
+
+import std::strconv
+import super::ast::*
+import super::lexer
+import super::lexer::LexError
+import super::token::{StrPart, Token, TokenKind, U128}
+
+pub struct Parsed {
+	pub file File,
+	pub errors Vec<LexError>,
+}
+
+pub fun parse(src &str) Parsed {
+	l := lexer::lex(src)
+	p mut := Parser::new(src, l.tokens, l.docs)
+	file := p.parse_file()
+	errors mut := l.errors
+	for e in p.errors {
+		errors.push(e)
+	}
+	return Parsed { file: file, errors: errors }
+}
+
+// The error marker: the diagnostic has already been recorded.
+pub struct Reported {}
+
+fun binop(k &TokenKind) option<(BinOp, u8)> {
+	match k {
+		TokenKind::Punct(p) => {
+			match p.as_str() {
+				"||" => return Some((BinOp::Or, 2)),
+				"&&" => return Some((BinOp::And, 3)),
+				"==" => return Some((BinOp::Eq, 4)),
+				"!=" => return Some((BinOp::Ne, 4)),
+				"<" => return Some((BinOp::Lt, 4)),
+				"<=" => return Some((BinOp::Le, 4)),
+				">" => return Some((BinOp::Gt, 4)),
+				">=" => return Some((BinOp::Ge, 4)),
+				"|" => return Some((BinOp::BitOr, 5)),
+				"^" => return Some((BinOp::BitXor, 6)),
+				"&" => return Some((BinOp::BitAnd, 7)),
+				"<<" => return Some((BinOp::Shl, 8)),
+				">>" => return Some((BinOp::Shr, 8)),
+				"+" => return Some((BinOp::Add, 9)),
+				"-" => return Some((BinOp::Sub, 9)),
+				"*" => return Some((BinOp::Mul, 10)),
+				"/" => return Some((BinOp::Div, 10)),
+				"%" => return Some((BinOp::Rem, 10)),
+				_ => return None,
+			}
+		}
+		_ => return None,
+	}
+}
+
+const CAST_PREC u8 = 11
+
+// `Some(None)` for `=`, `Some(Some(op))` for a compound assignment.
+fun assign_op(k &TokenKind) option<option<BinOp>> {
+	match k {
+		TokenKind::Punct(p) => {
+			match p.as_str() {
+				"=" => return Some(None),
+				"+=" => return Some(Some(BinOp::Add)),
+				"-=" => return Some(Some(BinOp::Sub)),
+				"*=" => return Some(Some(BinOp::Mul)),
+				"/=" => return Some(Some(BinOp::Div)),
+				"%=" => return Some(Some(BinOp::Rem)),
+				"^=" => return Some(Some(BinOp::BitXor)),
+				"&=" => return Some(Some(BinOp::BitAnd)),
+				"|=" => return Some(Some(BinOp::BitOr)),
+				"<<=" => return Some(Some(BinOp::Shl)),
+				">>=" => return Some(Some(BinOp::Shr)),
+				_ => return None,
+			}
+		}
+		_ => return None,
+	}
+}
+
+fun describe(k &TokenKind) string {
+	match k {
+		TokenKind::Ident(s) => return "identifier `{s}`",
+		TokenKind::Keyword(s) => return "keyword `{s}`",
+		TokenKind::Lifetime(s) => return "lifetime `'{s}`",
+		TokenKind::Int(_, _) => return "integer literal".to_string(),
+		TokenKind::Float(_, _) => return "float literal".to_string(),
+		TokenKind::Str(_) | TokenKind::RawStr(_) => return "string literal".to_string(),
+		TokenKind::ByteStr(_) => return "byte string literal".to_string(),
+		TokenKind::Char(_) => return "character literal".to_string(),
+		TokenKind::Semi(implicit) => {
+			if *implicit {
+				return "newline".to_string()
+			}
+			return "`;`".to_string()
+		}
+		TokenKind::Eof => return "end of file".to_string(),
+		TokenKind::Punct(p) => return "`{p}`",
+	}
+}
+
+fun is_reserved(k &str) bool {
+	return k == "async" || k == "await" || k == "macro" || k == "yield" || k == "try"
+}
+
+fun is_punct(k &TokenKind, s &str) bool {
+	match k {
+		TokenKind::Punct(p) => return p == s,
+		_ => return false,
+	}
+}
+
+fun is_kw(k &TokenKind, s &str) bool {
+	match k {
+		TokenKind::Keyword(w) => return w == s,
+		_ => return false,
+	}
+}
+
+fun is_ident(k &TokenKind) bool {
+	match k {
+		TokenKind::Ident(_) => return true,
+		_ => return false,
+	}
+}
+
+fun is_ident_named(k &TokenKind, s &str) bool {
+	match k {
+		TokenKind::Ident(n) => return n == s,
+		_ => return false,
+	}
+}
+
+fun is_any_kw(k &TokenKind) bool {
+	match k {
+		TokenKind::Keyword(_) => return true,
+		_ => return false,
+	}
+}
+
+fun is_lifetime(k &TokenKind) bool {
+	match k {
+		TokenKind::Lifetime(_) => return true,
+		_ => return false,
+	}
+}
+
+// Shifts every position in `l` (a lexed interpolation) by `off`.
+fun shift(toks &mut Vec<Token>, errs &mut Vec<LexError>, off usize) {
+	i mut := 0
+	while i < toks.len() {
+		toks[i].start += off
+		toks[i].end += off
+		match &mut toks[i].kind {
+			TokenKind::Str(parts) => {
+				j mut := 0
+				while j < parts.len() {
+					match &mut parts[j] {
+						StrPart::Interp(_, at, spec) => {
+							*at += off
+							match spec {
+								Some(sp) => sp.1 += off,
+								None => {},
+							}
+						}
+						_ => {},
+					}
+					j += 1
+				}
+			}
+			_ => {},
+		}
+		i += 1
+	}
+	k mut := 0
+	while k < errs.len() {
+		errs[k].start += off
+		errs[k].end += off
+		k += 1
+	}
+}
+
+fun fmt_align(c char) option<string> {
+	match c {
+		'<' => return Some("Left".to_string()),
+		'^' => return Some("Center".to_string()),
+		'>' => return Some("Right".to_string()),
+		_ => return None,
+	}
+}
+
+fun spec_num(cs &Vec<char>, i &mut usize) option<usize> {
+	st := *i
+	v mut := 0 as usize
+	over mut := false
+	while *i < cs.len() && cs[*i] >= '0' && cs[*i] <= '9' {
+		d := (cs[*i] as u32 - 48) as usize
+		if v > (usize::MAX - d) / 10 {
+			over = true
+		} else {
+			v = v * 10 + d
+		}
+		*i += 1
+	}
+	if *i == st {
+		return None
+	}
+	if over {
+		return Some(usize::MAX)
+	}
+	return Some(v)
+}
+
+// `FmtSpec::parse`: the text after `:` in `{x:spec}`.
+fun parse_fmt_spec(s &str) result<FmtSpec, string> {
+	cs mut := Vec::new()
+	for c in s.chars() {
+		cs.push(c)
+	}
+	i mut := 0 as usize
+	f mut := FmtSpec { fill: None, align: None, plus: false, alt: false, zero: false, width: None, precision: None, kind: "Display".to_string() }
+	if cs.len() >= 2 && fmt_align(cs[1]).is_some() {
+		f.fill = Some(cs[0])
+		f.align = fmt_align(cs[1])
+		i = 2
+	} else if cs.len() >= 1 && fmt_align(cs[0]).is_some() {
+		f.align = fmt_align(cs[0])
+		i = 1
+	}
+	if i < cs.len() && cs[i] == '+' {
+		f.plus = true
+		i += 1
+	}
+	if i < cs.len() && cs[i] == '#' {
+		f.alt = true
+		i += 1
+	}
+	if i < cs.len() && cs[i] == '0' {
+		f.zero = true
+		i += 1
+	}
+	f.width = spec_num(&cs, &mut i)
+	if i < cs.len() && cs[i] == '.' {
+		i += 1
+		f.precision = spec_num(&cs, &mut i)
+		if f.precision.is_none() {
+			return Err("expected a number after `.` in format spec".to_string())
+		}
+	}
+	if i < cs.len() {
+		c := cs[i]
+		k := match c {
+			'?' => "Debug",
+			'x' => "LowerHex",
+			'X' => "UpperHex",
+			'o' => "Octal",
+			'b' => "Binary",
+			'e' => "LowerExp",
+			'E' => "UpperExp",
+			_ => "",
+		}
+		if k == "" {
+			return Err("unknown format `{c}` (expected one of `?`, `x`, `X`, `o`, `b`, `e`, `E`)")
+		}
+		f.kind = k.to_string()
+		i += 1
+	}
+	if i != cs.len() {
+		return Err("invalid format spec `{s}`; the form is `[[fill]align][+][#][0][width][.precision][?|x|X|o|b|e|E]`")
+	}
+	return Ok(f)
+}
+
+fun int_lit(v &U128, suffix &option<string>, negative bool) Lit {
+	return Lit::Int { value: *v, suffix: suffix.clone(), negative: negative }
+}
+
+fun float_val(text &str) f64 {
+	match strconv::parse_float(text) {
+		Ok(v) => return v,
+		Err(_) => return 0.0,
+	}
+}
+
+pub struct Parser<'s> {
+	src &'s str,
+	base usize,
+	tokens Vec<Token>,
+	pos usize,
+	docs Vec<(usize, usize, string)>,
+	doc_idx usize,
+	pub errors Vec<LexError>,
+	// When true, `Path {` is not a struct literal (conditions, scrutinees).
+	no_struct bool,
+}
+
+impl<'s> Parser<'s> {
+	pub fun new(src &'s str, tokens Vec<Token>, docs Vec<(usize, usize, string)>) Parser<'s> {
+		return Parser { src: src, base: 0, tokens: tokens, pos: 0, docs: docs, doc_idx: 0, errors: Vec::new(), no_struct: false }
+	}
+
+	// ----- token helpers -----
+
+	fun peek(&self) &TokenKind {
+		return &self.tokens[self.pos].kind
+	}
+
+	fun nth(&self, n usize) &TokenKind {
+		i mut := self.pos + n
+		if i > self.tokens.len() - 1 {
+			i = self.tokens.len() - 1
+		}
+		return &self.tokens[i].kind
+	}
+
+	fun tok_span(&self, i usize) Span {
+		return Span::new(self.tokens[i].start, self.tokens[i].end)
+	}
+
+	fun span(&self) Span {
+		return self.tok_span(self.pos)
+	}
+
+	fun prev_span(&self) Span {
+		if self.pos == 0 {
+			return Span::new(0, 0)
+		}
+		return self.tok_span(self.pos - 1)
+	}
+
+	fun bump(&mut self) Token {
+		t := self.tokens[self.pos].clone()
+		if self.pos < self.tokens.len() - 1 {
+			self.pos += 1
+		}
+		return t
+	}
+
+	fun bump_span(&mut self) Span {
+		t := self.bump()
+		return Span::new(t.start, t.end)
+	}
+
+	fun at(&self, s &str) bool {
+		return is_punct(self.peek(), s)
+	}
+
+	fun nth_is(&self, n usize, s &str) bool {
+		return is_punct(self.nth(n), s)
+	}
+
+	fun at_kw(&self, s &str) bool {
+		return is_kw(self.peek(), s)
+	}
+
+	fun at_semi(&self) bool {
+		match self.peek() {
+			TokenKind::Semi(_) => return true,
+			_ => return false,
+		}
+	}
+
+	fun at_explicit_semi(&self) bool {
+		match self.peek() {
+			TokenKind::Semi(i) => return !*i,
+			_ => return false,
+		}
+	}
+
+	fun at_eof(&self) bool {
+		match self.peek() {
+			TokenKind::Eof => return true,
+			_ => return false,
+		}
+	}
+
+	fun eat(&mut self, s &str) bool {
+		if self.at(s) {
+			self.bump()
+			return true
+		}
+		return false
+	}
+
+	fun eat_kw(&mut self, s &str) bool {
+		if self.at_kw(s) {
+			self.bump()
+			return true
+		}
+		return false
+	}
+
+	fun skip_semis(&mut self) {
+		while self.at_semi() {
+			self.bump()
+		}
+	}
+
+	fun skip_implicit_semis(&mut self) {
+		loop {
+			match self.peek() {
+				TokenKind::Semi(i) => {
+					if !*i {
+						return
+					}
+				}
+				_ => return,
+			}
+			self.bump()
+		}
+	}
+
+	fun push_error(&mut self, msg string, sp Span) {
+		self.errors.push(LexError { start: sp.start, end: sp.end, message: msg })
+	}
+
+	fun error_at<R>(&mut self, msg string, sp Span) result<R, Reported> {
+		self.push_error(msg, sp)
+		return Err(Reported {})
+	}
+
+	fun unexpected<R>(&mut self, expected &str) result<R, Reported> {
+		found := describe(self.peek())
+		sp := self.span()
+		return self.error_at("expected {expected}, found {found}", sp)
+	}
+
+	fun expect(&mut self, s &str) result<Span, Reported> {
+		if self.at(s) {
+			return Ok(self.bump_span())
+		}
+		what := "`{s}`"
+		return self.unexpected(&what)
+	}
+
+	fun expect_semi(&mut self) result<Span, Reported> {
+		if self.at_explicit_semi() {
+			return Ok(self.bump_span())
+		}
+		return self.unexpected("`;`")
+	}
+
+	fun expect_kw(&mut self, s &str) result<Span, Reported> {
+		if self.at_kw(s) {
+			return Ok(self.bump_span())
+		}
+		what := "`{s}`"
+		return self.unexpected(&what)
+	}
+
+	fun expect_ident(&mut self) result<Ident, Reported> {
+		match self.peek().clone() {
+			TokenKind::Ident(name) => {
+				sp := self.bump_span()
+				return Ok(Ident { name: name, span: sp })
+			}
+			TokenKind::Keyword(k) => {
+				if is_reserved(&k) {
+					sp := self.span()
+					return self.error_at("`{k}` is a reserved keyword", sp)
+				}
+				return self.unexpected("identifier")
+			}
+			_ => return self.unexpected("identifier"),
+		}
+	}
+
+	// A member name: an identifier or any keyword (after `.`/`::`, method names).
+	fun member_name(&mut self) result<Ident, Reported> {
+		match self.peek().clone() {
+			TokenKind::Keyword(k) => {
+				sp := self.bump_span()
+				return Ok(Ident { name: k, span: sp })
+			}
+			_ => return self.expect_ident(),
+		}
+	}
+
+	fun expect_lifetime(&mut self) result<Ident, Reported> {
+		match self.peek().clone() {
+			TokenKind::Lifetime(name) => {
+				sp := self.bump_span()
+				return Ok(Ident { name: name, span: sp })
+			}
+			_ => return self.unexpected("lifetime"),
+		}
+	}
+
+	// Expects `>`, splitting `>>`, `>=`, `>>=` for nested generics.
+	fun expect_gt(&mut self) result<(), Reported> {
+		rest := match self.peek() {
+			TokenKind::Punct(p) => {
+				if p == ">" {
+					"!"
+				} else if p == ">>" {
+					">"
+				} else if p == ">=" {
+					"="
+				} else if p == ">>=" {
+					">="
+				} else {
+					""
+				}
+			}
+			_ => "",
+		}
+		if rest == "!" {
+			self.bump()
+			return Ok(())
+		}
+		if rest == "" {
+			return self.unexpected("`>`")
+		}
+		i := self.pos
+		self.tokens[i].kind = TokenKind::Punct(rest.to_string())
+		self.tokens[i].start += 1
+		return Ok(())
+	}
+
+	// Whether token `n` ahead opens generic arguments (`<`, or the `<<` of `<<-chan`).
+	fun lt_at(&self, n usize) bool {
+		return self.nth_is(n, "<") || (self.nth_is(n, "<<") && self.nth_is(n + 1, "-"))
+	}
+
+	// `Vec<<-chan T>` lexes as `<<` `-`: splits it into `<` `<-`.
+	fun split_shl_arrow(&mut self) {
+		if self.at("<<") && self.nth_is(1, "-") && self.tokens[self.pos + 1].start == self.tokens[self.pos].end {
+			i := self.pos
+			end := self.tokens[i].end
+			self.tokens[i].kind = TokenKind::Punct("<".to_string())
+			self.tokens[i].end = end - 1
+			self.tokens[i + 1].kind = TokenKind::Punct("<-".to_string())
+			self.tokens[i + 1].start = end - 1
+		}
+	}
+
+	fun at_gt(&self) bool {
+		return self.at(">") || self.at(">>") || self.at(">=") || self.at(">>=")
+	}
+
+	// Error after `item (, item)*` when neither `,` nor `close` follows.
+	fun list_end<R>(&mut self, close &str) result<R, Reported> {
+		what := "`,` or `{close}`"
+		return self.unexpected(&what)
+	}
+
+	// After an element of a comma list: true when the list is closed.
+	fun comma_next(&mut self, close &str) result<bool, Reported> {
+		self.skip_implicit_semis()
+		if self.eat(",") {
+			return Ok(false)
+		}
+		if self.eat(close) {
+			return Ok(true)
+		}
+		return self.list_end(close)
+	}
+
+	// Before an element of a comma list: true when the list is closed.
+	fun comma_start(&mut self, close &str) bool {
+		self.skip_implicit_semis()
+		return self.eat(close)
+	}
+
+	// Before an element of a brace list: true when the list is closed.
+	fun brace_start(&mut self) result<bool, Reported> {
+		self.skip_semis()
+		if self.eat("}}") {
+			return Ok(true)
+		}
+		if self.at_eof() {
+			return self.unexpected("`}}`")
+		}
+		return Ok(false)
+	}
+
+	fun brace_next(&mut self) result<(), Reported> {
+		if self.eat(",") || self.at_semi() || self.at("}}") {
+			return Ok(())
+		}
+		return self.unexpected("`,`, newline, or `}}`")
+	}
+
+	// ----- recovery -----
+
+	fun at_item_start(&self) bool {
+		match self.peek() {
+			TokenKind::Keyword(k) => {
+				match k.as_str() {
+					"fun" | "struct" | "enum" | "trait" | "impl" | "import" | "const" | "static" | "type" | "mod" | "pub" | "use" => return true,
+					_ => {},
+				}
+			}
+			TokenKind::Punct(p) => {
+				if p == "#" || p == "@" {
+					return true
+				}
+			}
+			_ => {},
+		}
+		if is_ident_named(self.peek(), "fn") && is_ident(self.nth(1)) {
+			return true
+		}
+		return self.at_kw("unsafe") && (is_kw(self.nth(1), "fun") || is_kw(self.nth(1), "impl") || is_kw(self.nth(1), "trait"))
+	}
+
+	fun is_open(&self) bool {
+		return self.at("{{") || self.at("(") || self.at("[")
+	}
+
+	fun is_close(&self) bool {
+		return self.at("}}") || self.at(")") || self.at("]")
+	}
+
+	// Skips tokens until the start of the next item at nesting depth 0.
+	fun recover_item(&mut self) {
+		depth mut := 0 as usize
+		start := self.pos
+		loop {
+			if self.at_eof() {
+				return
+			}
+			if self.is_open() {
+				depth += 1
+			} else if self.is_close() {
+				if depth > 0 {
+					depth -= 1
+				}
+			} else if depth == 0 && self.pos > start && self.at_item_start() {
+				return
+			}
+			self.bump()
+		}
+	}
+
+	// Skips to the end of the current statement.
+	fun recover_stmt(&mut self) {
+		depth mut := 0 as usize
+		loop {
+			if self.at_eof() {
+				return
+			}
+			if self.at_semi() && depth == 0 {
+				self.bump()
+				return
+			}
+			if self.at("}}") && depth == 0 {
+				return
+			}
+			if self.is_open() {
+				depth += 1
+			} else if self.is_close() {
+				if depth > 0 {
+					depth -= 1
+				}
+			}
+			self.bump()
+		}
+	}
+
+	// ----- items -----
+
+	pub fun parse_file(&mut self) File {
+		return File { items: self.parse_items(true) }
+	}
+
+	fun parse_items(&mut self, top bool) Vec<Item> {
+		items mut := Vec::new()
+		loop {
+			self.skip_semis()
+			if self.at_eof() || (!top && self.at("}}")) {
+				return items
+			}
+			before := self.pos
+			if self.at_kw("extern") && (self.nth_is(1, "{{") || match self.nth(1) {
+				TokenKind::Str(_) => true,
+				_ => false,
+			}) {
+				match self.parse_extern_block() {
+					Ok(fs) => {
+						for f in fs {
+							items.push(f)
+						}
+					}
+					Err(_) => {
+						self.recover_item()
+						if self.pos == before {
+							self.bump()
+						}
+					},
+				}
+				continue
+			}
+			match self.parse_item() {
+				Ok(it) => items.push(it),
+				Err(_) => {
+					self.recover_item()
+					if self.pos == before {
+						self.bump()
+					}
+				},
+			}
+		}
+	}
+
+	// `extern "C" { fun f(x i32) i32 ... }`: foreign function declarations.
+	fun parse_extern_block(&mut self) result<Vec<Item>, Reported> {
+		start := self.span()
+		self.expect_kw("extern")?
+		abi mut := "C".to_string()
+		match self.peek().clone() {
+			TokenKind::Str(parts) => {
+				sp := self.span()
+				self.bump()
+				text mut := string::new()
+				for p in &parts {
+					match p {
+						StrPart::Text(t) => text.push(t),
+						_ => {},
+					}
+				}
+				if text != "C" {
+					self.push_error("unsupported ABI `\"{text}\"`", sp)
+				}
+				abi = text
+			}
+			_ => {},
+		}
+		self.expect("{{")?
+		inner := self.parse_items(false)
+		self.expect("}}")?
+		out mut := Vec::new()
+		for it in inner {
+			item mut := it
+			ok mut := false
+			match &mut item.kind {
+				ItemKind::Fn(f) => {
+					match &f.body {
+						Some(b) => {
+							self.push_error("functions in an `extern` block have no body".to_string(), b.span)
+						}
+						None => {},
+					}
+					f.body = None
+					if !f.generics.params.is_empty() {
+						self.push_error("foreign functions cannot be generic".to_string(), f.name.span)
+					}
+					f.is_unsafe = true
+					ok = true
+				}
+				_ => {},
+			}
+			if ok {
+				item.attrs.push(Attribute { name: Ident { name: "extern".to_string(), span: start }, args: Some(abi.clone()), span: start })
+				out.push(item)
+			} else {
+				self.push_error("only function declarations may appear in an `extern` block".to_string(), item.span)
+			}
+		}
+		return Ok(out)
+	}
+
+	// Collects `///` doc comments located between `boundary` and `pos`.
+	fun take_docs(&mut self, pos usize, boundary usize) option<string> {
+		text mut := string::new()
+		any mut := false
+		while self.doc_idx < self.docs.len() {
+			s := self.docs[self.doc_idx].0
+			if s >= pos {
+				break
+			}
+			if s >= boundary {
+				if any {
+					text.push("\n")
+				}
+				text.push(&self.docs[self.doc_idx].2)
+				any = true
+			}
+			self.doc_idx += 1
+		}
+		if any {
+			return Some(text)
+		}
+		return None
+	}
+
+	fun parse_attr(&mut self) result<Attribute, Reported> {
+		if self.at("#") {
+			sp := self.span()
+			self.push_error("attributes are written with `@` in Kiln".to_string(), sp)
+			return Err(Reported {})
+		}
+		start := self.expect("@")?
+		name := self.expect_ident()?
+		args mut := None
+		if self.at("(") {
+			open := self.bump_span()
+			depth mut := 1
+			loop {
+				if self.at_eof() {
+					return self.unexpected("`)`")
+				}
+				if self.at("(") {
+					depth += 1
+				} else if self.at(")") {
+					depth -= 1
+					if depth == 0 {
+						break
+					}
+				}
+				self.bump()
+			}
+			close := self.bump_span()
+			args = Some(self.src[open.end - self.base..close.start - self.base].trim().to_string())
+		}
+		end := self.prev_span()
+		return Ok(Attribute { name: name, args: args, span: start.to(end) })
+	}
+
+	fun parse_vis(&mut self) Visibility {
+		if !self.eat_kw("pub") {
+			return Visibility::Private
+		}
+		if self.at("(") && is_ident_named(self.nth(1), "pkg") && self.nth_is(2, ")") {
+			self.bump()
+			self.bump()
+			self.bump()
+			return Visibility::Package
+		}
+		return Visibility::Public
+	}
+
+	fun opt_eq_expr(&mut self) result<option<Expr>, Reported> {
+		if self.eat("=") {
+			return Ok(Some(self.parse_expr()?))
+		}
+		return Ok(None)
+	}
+
+	fun parse_item(&mut self) result<Item, Reported> {
+		start := self.span()
+		boundary := if self.pos == 0 { 0 } else { self.prev_span().end }
+		doc := self.take_docs(start.start, boundary)
+		attrs mut := Vec::new()
+		while self.at("@") || self.at("#") {
+			attrs.push(self.parse_attr()?)
+			self.skip_semis()
+		}
+		vis := self.parse_vis()
+		kind := self.parse_item_kind()?
+		return Ok(Item { kind: kind, vis: vis, attrs: attrs, doc: doc, span: start.to(self.prev_span()) })
+	}
+
+	fun parse_item_kind(&mut self) result<ItemKind, Reported> {
+		if self.at_kw("fun") || (is_ident_named(self.peek(), "fn") && is_ident(self.nth(1))) {
+			return Ok(ItemKind::Fn(self.parse_fn(false)?))
+		}
+		if self.at_kw("unsafe") && is_kw(self.nth(1), "fun") {
+			self.bump()
+			return Ok(ItemKind::Fn(self.parse_fn(true)?))
+		}
+		if self.at_kw("unsafe") && is_kw(self.nth(1), "impl") {
+			self.bump()
+			i mut := self.parse_impl()?
+			i.is_unsafe = true
+			return Ok(ItemKind::Impl(i))
+		}
+		if self.at_kw("unsafe") && is_kw(self.nth(1), "trait") {
+			self.bump()
+			t mut := self.parse_trait()?
+			t.is_unsafe = true
+			return Ok(ItemKind::Trait(t))
+		}
+		if self.at_kw("struct") {
+			return Ok(ItemKind::Struct(self.parse_struct()?))
+		}
+		if self.at_kw("enum") {
+			return Ok(ItemKind::Enum(self.parse_enum()?))
+		}
+		if self.at_kw("trait") {
+			return Ok(ItemKind::Trait(self.parse_trait()?))
+		}
+		if self.at_kw("impl") {
+			return Ok(ItemKind::Impl(self.parse_impl()?))
+		}
+		if self.at_kw("import") {
+			self.bump()
+			return Ok(ItemKind::Import(self.parse_import_tree()?))
+		}
+		if self.at_kw("use") {
+			sp := self.span()
+			self.push_error("`use` is reserved; Kiln imports with `import`".to_string(), sp)
+			self.bump()
+			return Ok(ItemKind::Import(self.parse_import_tree()?))
+		}
+		if self.eat_kw("const") {
+			name := self.expect_ident()?
+			t := self.parse_annot()?
+			value := self.opt_eq_expr()?
+			return Ok(ItemKind::Const { name: name, ty: t, value: value })
+		}
+		if self.eat_kw("static") {
+			mutable := self.eat_kw("mut")
+			name := self.expect_ident()?
+			t := self.parse_annot()?
+			self.expect("=")?
+			value := self.parse_expr()?
+			return Ok(ItemKind::Static { name: name, mutable: mutable, ty: t, value: value })
+		}
+		if self.eat_kw("type") {
+			name := self.expect_ident()?
+			g := self.parse_generics()?
+			t := if self.eat("=") { Some(self.parse_type()?) } else { None }
+			return Ok(ItemKind::TypeAlias { name: name, generics: g, ty: t })
+		}
+		if self.eat_kw("mod") {
+			name := self.expect_ident()?
+			its := if self.eat("{{") {
+				v := self.parse_items(false)
+				self.expect("}}")?
+				Some(v)
+			} else {
+				None
+			}
+			return Ok(ItemKind::Mod { name: name, items: its })
+		}
+		return self.unexpected("item (`fun`, `struct`, `enum`, `trait`, `impl`, `import`, ...)")
+	}
+
+	// Whether the next token can start a type.
+	fun starts_type(&self) bool {
+		match self.peek() {
+			TokenKind::Ident(_) => return true,
+			TokenKind::Punct(p) => {
+				return p == "&" || p == "&&" || p == "*" || p == "(" || p == "[" || p == "!" || p == "_" || p == "<-"
+			}
+			TokenKind::Keyword(k) => return k == "fun" || k == "dyn" || k == "impl" || k == "chan" || k == "Self",
+			_ => return false,
+		}
+	}
+
+	// The type after a name (`x i32`); an old-style `x: i32` is reported and accepted.
+	fun parse_annot(&mut self) result<Type, Reported> {
+		if self.at(":") {
+			sp := self.span()
+			self.push_error("types follow names without `:` in Kiln".to_string(), sp)
+			self.bump()
+		}
+		return self.parse_type()
+	}
+
+	fun parse_ret(&mut self) result<option<Type>, Reported> {
+		if self.at("->") {
+			sp := self.span()
+			self.push_error("return types follow the parameters without `->` in Kiln".to_string(), sp)
+			self.bump()
+			return Ok(Some(self.parse_type()?))
+		}
+		if self.starts_type() {
+			return Ok(Some(self.parse_type()?))
+		}
+		return Ok(None)
+	}
+
+	fun parse_params(&mut self) result<Vec<Param>, Reported> {
+		out mut := Vec::new()
+		loop {
+			if self.comma_start(")") {
+				break
+			}
+			out.push(self.parse_param()?)
+			if self.comma_next(")")? {
+				break
+			}
+		}
+		return Ok(out)
+	}
+
+	fun parse_fn(&mut self, is_unsafe bool) result<FnDecl, Reported> {
+		if is_ident_named(self.peek(), "fn") {
+			sp := self.span()
+			self.push_error("Kiln declares functions with `fun`".to_string(), sp)
+			self.bump()
+		} else {
+			self.expect_kw("fun")?
+		}
+		name_is_kw := is_any_kw(self.peek())
+		name := self.member_name()?
+		generics mut := self.parse_generics()?
+		self.expect("(")?
+		self.skip_implicit_semis()
+		self_param := self.parse_self_param()?
+		if name_is_kw && self_param.is_none() {
+			self.push_error("`{name.name}` is a keyword; only methods (functions taking `self`) may use a keyword as their name", name.span)
+		}
+		params := if self_param.is_some() {
+			if self.eat(")") {
+				Vec::new()
+			} else {
+				self.expect(",")?
+				self.parse_params()?
+			}
+		} else {
+			self.parse_params()?
+		}
+		ret := self.parse_ret()?
+		generics.where_clause = self.parse_where()?
+		body := if self.at("{{") { Some(self.parse_block()?) } else { None }
+		return Ok(FnDecl { name: name, is_unsafe: is_unsafe, generics: generics, self_param: self_param, params: params, ret: ret, body: body })
+	}
+
+	fun parse_self_param(&mut self) result<option<SelfParam>, Reported> {
+		if self.at_kw("self") {
+			self.bump()
+			return Ok(Some(SelfParam::Value { mutable: false }))
+		}
+		if self.at_kw("mut") && is_kw(self.nth(1), "self") {
+			self.bump()
+			self.bump()
+			return Ok(Some(SelfParam::Value { mutable: true }))
+		}
+		if !self.at("&") {
+			return Ok(None)
+		}
+		i mut := 1 as usize
+		lifetime := match self.nth(1).clone() {
+			TokenKind::Lifetime(name) => {
+				i += 1
+				Some(Ident { name: name, span: self.tok_span(self.pos + 1) })
+			}
+			_ => None,
+		}
+		mutable := is_kw(self.nth(i), "mut")
+		if mutable {
+			i += 1
+		}
+		if !is_kw(self.nth(i), "self") {
+			return Ok(None)
+		}
+		j mut := 0
+		while j <= i {
+			self.bump()
+			j += 1
+		}
+		return Ok(Some(SelfParam::Ref { lifetime: lifetime, mutable: mutable }))
+	}
+
+	// A pattern that may be followed by a type: `x (i32, i32)` binds `x`.
+	fun parse_binding_pattern(&mut self) result<Pattern, Reported> {
+		i mut := 0 as usize
+		if self.at_kw("mut") {
+			i = 1
+		}
+		match self.nth(i).clone() {
+			TokenKind::Ident(name) => {
+				k := self.pos + i + 1
+				spaced := k < self.tokens.len() && (is_punct(&self.tokens[k].kind, "(") || is_punct(&self.tokens[k].kind, "[")) && self.tokens[k].start > self.tokens[self.pos + i].end
+				if spaced {
+					start := self.span()
+					mutable := self.eat_kw("mut")
+					sp := self.bump_span()
+					return Ok(Pattern { kind: PatternKind::Ident { name: Ident { name: name, span: sp }, mutable: mutable, sub: None }, span: start.to(sp) })
+				}
+			}
+			_ => {},
+		}
+		return self.parse_pattern_no_or()
+	}
+
+	fun parse_param(&mut self) result<Param, Reported> {
+		pat := self.parse_binding_pattern()?
+		t := self.parse_annot()?
+		sp := pat.span.to(t.span)
+		return Ok(Param { pat: pat, ty: t, span: sp })
+	}
+
+	fun parse_generics(&mut self) result<Generics, Reported> {
+		g mut := Generics::empty()
+		if !self.eat("<") {
+			return Ok(g)
+		}
+		loop {
+			if self.at_gt() {
+				self.expect_gt()?
+				return Ok(g)
+			}
+			param := if is_lifetime(self.peek()) {
+				name := self.expect_lifetime()?
+				bounds mut := Vec::new()
+				if self.eat(":") {
+					loop {
+						bounds.push(self.expect_lifetime()?)
+						if !self.eat("+") {
+							break
+						}
+					}
+				}
+				GenericParam::Lifetime { name: name, bounds: bounds }
+			} else if self.eat_kw("const") {
+				name := self.expect_ident()?
+				t := self.parse_annot()?
+				GenericParam::Const { name: name, ty: t }
+			} else {
+				name := self.expect_ident()?
+				bounds := if self.eat(":") { self.parse_bounds()? } else { Vec::new() }
+				default := if self.eat("=") { Some(self.parse_type()?) } else { None }
+				GenericParam::Type { name: name, bounds: bounds, default: default }
+			}
+			g.params.push(param)
+			if !self.eat(",") {
+				self.expect_gt()?
+				return Ok(g)
+			}
+		}
+	}
+
+	fun parse_bounds(&mut self) result<Vec<Bound>, Reported> {
+		out mut := Vec::new()
+		loop {
+			b := if is_lifetime(self.peek()) {
+				Bound::Lifetime(self.expect_lifetime()?)
+			} else if self.eat("?") {
+				Bound::Trait { path: self.parse_type_path()?, maybe: true }
+			} else {
+				Bound::Trait { path: self.parse_type_path()?, maybe: false }
+			}
+			out.push(b)
+			if !self.eat("+") {
+				return Ok(out)
+			}
+		}
+	}
+
+	fun parse_where(&mut self) result<Vec<WherePredicate>, Reported> {
+		preds mut := Vec::new()
+		if !self.eat_kw("where") {
+			return Ok(preds)
+		}
+		loop {
+			self.skip_implicit_semis()
+			if is_lifetime(self.peek()) {
+				lt := self.expect_lifetime()?
+				self.expect(":")?
+				bounds := self.parse_bounds()?
+				sp := lt.span.to(self.prev_span())
+				t := Type { kind: TypeKind::Infer, span: lt.span }
+				preds.push(WherePredicate { lifetime: Some(lt), ty: t, bounds: bounds, span: sp })
+			} else {
+				t := self.parse_type()?
+				self.expect(":")?
+				bounds := self.parse_bounds()?
+				sp := t.span.to(self.prev_span())
+				preds.push(WherePredicate { lifetime: None, ty: t, bounds: bounds, span: sp })
+			}
+			if !self.eat(",") {
+				return Ok(preds)
+			}
+			self.skip_implicit_semis()
+			if self.at("{{") {
+				return Ok(preds)
+			}
+		}
+	}
+
+	fun parse_struct(&mut self) result<StructDecl, Reported> {
+		self.expect_kw("struct")?
+		name := self.expect_ident()?
+		generics mut := self.parse_generics()?
+		fields := if self.at("(") {
+			f := self.parse_tuple_fields()?
+			generics.where_clause = self.parse_where()?
+			f
+		} else {
+			generics.where_clause = self.parse_where()?
+			if self.at("{{") {
+				Fields::Named(self.parse_field_decls()?)
+			} else {
+				Fields::Unit
+			}
+		}
+		return Ok(StructDecl { name: name, generics: generics, fields: fields })
+	}
+
+	fun parse_tuple_fields(&mut self) result<Fields, Reported> {
+		self.expect("(")?
+		tys mut := Vec::new()
+		loop {
+			if self.comma_start(")") {
+				break
+			}
+			self.parse_vis()
+			tys.push(self.parse_type()?)
+			if self.comma_next(")")? {
+				break
+			}
+		}
+		return Ok(Fields::Tuple(tys))
+	}
+
+	fun parse_field_decls(&mut self) result<Vec<FieldDecl>, Reported> {
+		self.expect("{{")?
+		out mut := Vec::new()
+		loop {
+			if self.brace_start()? {
+				return Ok(out)
+			}
+			out.push(self.parse_field_decl()?)
+			self.brace_next()?
+		}
+	}
+
+	fun parse_field_decl(&mut self) result<FieldDecl, Reported> {
+		start := self.span()
+		v := self.parse_vis()
+		name := self.expect_ident()?
+		t := self.parse_annot()?
+		sp := start.to(t.span)
+		return Ok(FieldDecl { vis: v, name: name, ty: t, span: sp })
+	}
+
+	fun parse_enum(&mut self) result<EnumDecl, Reported> {
+		self.expect_kw("enum")?
+		name := self.expect_ident()?
+		generics mut := self.parse_generics()?
+		generics.where_clause = self.parse_where()?
+		self.expect("{{")?
+		variants mut := Vec::new()
+		loop {
+			if self.brace_start()? {
+				break
+			}
+			vname := self.expect_ident()?
+			fields := if self.at("(") {
+				self.parse_tuple_fields()?
+			} else if self.at("{{") {
+				Fields::Named(self.parse_field_decls()?)
+			} else {
+				Fields::Unit
+			}
+			discriminant := self.opt_eq_expr()?
+			sp := vname.span.to(self.prev_span())
+			variants.push(Variant { name: vname, fields: fields, discriminant: discriminant, span: sp })
+			self.brace_next()?
+		}
+		return Ok(EnumDecl { name: name, generics: generics, variants: variants })
+	}
+
+	fun parse_assoc_items(&mut self) result<Vec<Item>, Reported> {
+		self.expect("{{")?
+		items := self.parse_items(false)
+		self.expect("}}")?
+		return Ok(items)
+	}
+
+	fun parse_trait(&mut self) result<TraitDecl, Reported> {
+		self.expect_kw("trait")?
+		name := self.expect_ident()?
+		generics mut := self.parse_generics()?
+		supertraits := if self.eat(":") { self.parse_bounds()? } else { Vec::new() }
+		generics.where_clause = self.parse_where()?
+		items := self.parse_assoc_items()?
+		return Ok(TraitDecl { is_unsafe: false, name: name, generics: generics, supertraits: supertraits, items: items })
+	}
+
+	fun parse_impl(&mut self) result<ImplDecl, Reported> {
+		self.expect_kw("impl")?
+		generics mut := self.parse_generics()?
+		first := self.parse_type()?
+		trait_ref mut := None
+		self_ty mut := first.clone()
+		if self.eat_kw("for") {
+			match first.kind {
+				TypeKind::Path(p) => trait_ref = Some(p),
+				_ => return self.error_at("expected a trait path before `for`".to_string(), first.span),
+			}
+			self_ty = self.parse_type()?
+		}
+		generics.where_clause = self.parse_where()?
+		items := self.parse_assoc_items()?
+		return Ok(ImplDecl { is_unsafe: false, generics: generics, trait_ref: trait_ref, self_ty: self_ty, items: items })
+	}
+
+	// An identifier usable as a path segment (`self`, `Self`, `chan` allowed).
+	fun path_ident(&mut self) result<Ident, Reported> {
+		name := match self.peek() {
+			TokenKind::Ident(s) => s.clone(),
+			TokenKind::Keyword(k) => {
+				if k == "self" || k == "Self" || k == "chan" {
+					k.clone()
+				} else {
+					string::new()
+				}
+			}
+			_ => string::new(),
+		}
+		if name.is_empty() {
+			return self.unexpected("identifier")
+		}
+		sp := self.bump_span()
+		return Ok(Ident { name: name, span: sp })
+	}
+
+	fun parse_import_tree(&mut self) result<ImportTree, Reported> {
+		prefix mut := Vec::new()
+		loop {
+			if !prefix.is_empty() && self.eat("*") {
+				return Ok(ImportTree::Glob { prefix: prefix })
+			}
+			if !prefix.is_empty() && self.eat("{{") {
+				items mut := Vec::new()
+				loop {
+					if self.comma_start("}}") {
+						break
+					}
+					items.push(self.parse_import_tree()?)
+					if self.comma_next("}}")? {
+						break
+					}
+				}
+				return Ok(ImportTree::Group { prefix: prefix, items: items })
+			}
+			prefix.push(self.path_ident()?)
+			if !self.eat("::") {
+				break
+			}
+		}
+		alias := if self.eat_kw("as") { Some(self.expect_ident()?) } else { None }
+		return Ok(ImportTree::Path { path: prefix, alias: alias })
+	}
+
+	// ----- types -----
+
+	fun parse_generic_args(&mut self) result<Vec<GenericArg>, Reported> {
+		self.split_shl_arrow()
+		self.expect("<")?
+		args mut := Vec::new()
+		loop {
+			if self.at_gt() {
+				self.expect_gt()?
+				return Ok(args)
+			}
+			arg := if is_lifetime(self.peek()) {
+				GenericArg::Lifetime(self.expect_lifetime()?)
+			} else if is_ident(self.peek()) && self.nth_is(1, "=") {
+				name := self.expect_ident()?
+				self.bump()
+				GenericArg::Binding { name: name, ty: self.parse_type()? }
+			} else {
+				GenericArg::Type(self.parse_type()?)
+			}
+			args.push(arg)
+			if !self.eat(",") {
+				self.expect_gt()?
+				return Ok(args)
+			}
+		}
+	}
+
+	// A path in type position: `a::b::C<T>`.
+	fun parse_type_path(&mut self) result<Path, Reported> {
+		start := self.span()
+		segments mut := Vec::new()
+		loop {
+			ident := self.path_ident()?
+			args mut := Vec::new()
+			self.split_shl_arrow()
+			if self.at("<") {
+				args = self.parse_generic_args()?
+			} else if self.at("::") && self.lt_at(1) {
+				self.bump()
+				args = self.parse_generic_args()?
+			}
+			segments.push(PathSegment { ident: ident, args: args })
+			if !(self.at("::") && (is_ident(self.nth(1)) || is_any_kw(self.nth(1)))) {
+				break
+			}
+			self.bump()
+		}
+		return Ok(Path { segments: segments, span: start.to(self.prev_span()) })
+	}
+
+	fun parse_types_until(&mut self, close &str) result<Vec<Type>, Reported> {
+		out mut := Vec::new()
+		loop {
+			if self.comma_start(close) {
+				break
+			}
+			out.push(self.parse_type()?)
+			if self.comma_next(close)? {
+				break
+			}
+		}
+		return Ok(out)
+	}
+
+	pub fun parse_type(&mut self) result<Type, Reported> {
+		start := self.span()
+		if self.at("&") || self.at("&&") {
+			double := self.at("&&")
+			self.bump()
+			lifetime := if is_lifetime(self.peek()) { Some(self.expect_lifetime()?) } else { None }
+			mutable := self.eat_kw("mut")
+			inner := self.parse_type()?
+			r := TypeKind::Ref { lifetime: lifetime, mutable: mutable, inner: Box::new(inner) }
+			kind := if double {
+				TypeKind::Ref { lifetime: None, mutable: false, inner: Box::new(Type { kind: r, span: start.to(self.prev_span()) }) }
+			} else {
+				r
+			}
+			return Ok(Type { kind: kind, span: start.to(self.prev_span()) })
+		}
+		kind := if self.eat("*") {
+			mutable := if self.eat_kw("mut") {
+				true
+			} else {
+				self.expect_kw("const")?
+				false
+			}
+			TypeKind::Ptr { mutable: mutable, inner: Box::new(self.parse_type()?) }
+		} else if self.eat("[") {
+			elem := self.parse_type()?
+			if self.at_explicit_semi() {
+				self.bump()
+				old := self.no_struct
+				self.no_struct = false
+				len := self.parse_expr()
+				self.no_struct = old
+				n := len?
+				self.expect("]")?
+				TypeKind::Array(Box::new(elem), Box::new(n))
+			} else {
+				self.expect("]")?
+				TypeKind::Slice(Box::new(elem))
+			}
+		} else if self.eat("(") {
+			elems mut := Vec::new()
+			trailing mut := false
+			loop {
+				if self.eat(")") {
+					break
+				}
+				elems.push(self.parse_type()?)
+				trailing = self.eat(",")
+				if !trailing {
+					self.expect(")")?
+					break
+				}
+			}
+			if elems.len() == 1 && !trailing {
+				inner := elems.pop().unwrap()
+				return Ok(Type { kind: inner.kind, span: start.to(self.prev_span()) })
+			}
+			TypeKind::Tuple(elems)
+		} else if self.eat_kw("fun") {
+			is_mut := self.eat_kw("mut")
+			self.expect("(")?
+			params := self.parse_types_until(")")?
+			ret := match self.parse_ret()? {
+				Some(t) => Some(Box::new(t)),
+				None => None,
+			}
+			TypeKind::Fn { params: params, ret: ret, is_mut: is_mut }
+		} else if self.eat_kw("dyn") {
+			TypeKind::Dyn(self.parse_bounds()?)
+		} else if self.eat_kw("impl") {
+			TypeKind::Impl(self.parse_bounds()?)
+		} else if self.at_kw("chan") && self.nth_is(1, "<-") {
+			self.bump()
+			self.bump()
+			TypeKind::ChanSend(Box::new(self.parse_type()?))
+		} else if self.at_kw("chan") {
+			sp := self.span()
+			self.push_error("bidirectional `chan T` is not a type in Kiln".to_string(), sp)
+			return Err(Reported {})
+		} else if self.eat("<-") {
+			self.expect_kw("chan")?
+			TypeKind::ChanRecv(Box::new(self.parse_type()?))
+		} else if self.eat("!") {
+			TypeKind::Never
+		} else if self.eat("_") {
+			TypeKind::Infer
+		} else if is_ident_named(self.peek(), "fn") && self.nth_is(1, "(") {
+			sp := self.span()
+			self.push_error("function types are written `fun(...)` in Kiln".to_string(), sp)
+			return Err(Reported {})
+		} else if is_ident_named(self.peek(), "void") && !self.nth_is(1, "::") {
+			self.bump()
+			TypeKind::Tuple(Vec::new())
+		} else if is_ident(self.peek()) || self.at_kw("Self") || self.at_kw("self") {
+			TypeKind::Path(self.parse_type_path()?)
+		} else {
+			return self.unexpected("type")
+		}
+		return Ok(Type { kind: kind, span: start.to(self.prev_span()) })
+	}
+
+	// ----- patterns -----
+
+	pub fun parse_pattern(&mut self) result<Pattern, Reported> {
+		self.eat("|")
+		first := self.parse_pattern_no_or()?
+		if !self.at("|") {
+			return Ok(first)
+		}
+		alts mut := Vec::new()
+		alts.push(first)
+		while self.eat("|") {
+			alts.push(self.parse_pattern_no_or()?)
+		}
+		sp := alts[0].span.to(alts[alts.len() - 1].span)
+		return Ok(Pattern { kind: PatternKind::Or(alts), span: sp })
+	}
+
+	fun parse_patterns_until(&mut self, close &str) result<Vec<Pattern>, Reported> {
+		out mut := Vec::new()
+		loop {
+			if self.comma_start(close) {
+				break
+			}
+			out.push(self.parse_pattern()?)
+			if self.comma_next(close)? {
+				break
+			}
+		}
+		return Ok(out)
+	}
+
+	// An (optionally negative) literal in pattern position, if present.
+	fun lit_pattern(&mut self) result<option<Lit>, Reported> {
+		negative := self.at("-")
+		off := if negative { 1 } else { 0 }
+		l := match self.nth(off).clone() {
+			TokenKind::Int(v, suffix) => int_lit(&v, &suffix, negative),
+			TokenKind::Float(text, suffix) => {
+				v := float_val(&text)
+				Lit::Float { value: if negative { -v } else { v }, suffix: suffix }
+			}
+			other => {
+				if negative {
+					return self.unexpected("number after `-` in pattern")
+				}
+				match other {
+					TokenKind::Str(parts) => {
+						if parts.len() == 1 {
+							match &parts[0] {
+								StrPart::Text(s) => Lit::Str(s.clone()),
+								_ => {
+									sp := self.span()
+									return self.error_at("interpolated strings are not allowed in patterns".to_string(), sp)
+								},
+							}
+						} else {
+							sp := self.span()
+							return self.error_at("interpolated strings are not allowed in patterns".to_string(), sp)
+						}
+					}
+					TokenKind::RawStr(s) => Lit::Str(s),
+					TokenKind::ByteStr(_) => {
+						sp := self.span()
+						return self.error_at("byte strings are not allowed in patterns yet; use `bytes::equal`".to_string(), sp)
+					}
+					TokenKind::Char(c) => Lit::Char(c),
+					TokenKind::Keyword(k) => {
+						if k == "true" {
+							Lit::Bool(true)
+						} else if k == "false" {
+							Lit::Bool(false)
+						} else {
+							return Ok(None)
+						}
+					}
+					_ => return Ok(None),
+				}
+			},
+		}
+		i mut := 0
+		while i <= off {
+			self.bump()
+			i += 1
+		}
+		return Ok(Some(l))
+	}
+
+	fun parse_pattern_no_or(&mut self) result<Pattern, Reported> {
+		start := self.span()
+		kind := if self.eat("_") {
+			PatternKind::Wild
+		} else if self.eat("..") {
+			PatternKind::Rest
+		} else if self.at("&") || self.at("&&") {
+			double := self.at("&&")
+			self.bump()
+			mutable := self.eat_kw("mut")
+			inner := self.parse_pattern_no_or()?
+			p := PatternKind::Ref { mutable: mutable, inner: Box::new(inner) }
+			if double {
+				PatternKind::Ref { mutable: false, inner: Box::new(Pattern { kind: p, span: start.to(self.prev_span()) }) }
+			} else {
+				p
+			}
+		} else if self.eat_kw("mut") {
+			PatternKind::Ident { name: self.expect_ident()?, mutable: true, sub: None }
+		} else if self.eat("(") {
+			elems mut := Vec::new()
+			trailing mut := false
+			loop {
+				self.skip_implicit_semis()
+				if self.eat(")") {
+					break
+				}
+				elems.push(self.parse_pattern()?)
+				trailing = self.eat(",")
+				if !trailing {
+					self.skip_implicit_semis()
+					self.expect(")")?
+					break
+				}
+			}
+			if elems.len() == 1 && !trailing {
+				p mut := elems.pop().unwrap()
+				p.span = start.to(self.prev_span())
+				return Ok(p)
+			}
+			PatternKind::Tuple(elems)
+		} else if self.eat("[") {
+			PatternKind::Slice(self.parse_patterns_until("]")?)
+		} else if is_ident(self.peek()) || self.at_kw("self") || self.at_kw("Self") {
+			p := self.parse_expr_path()?
+			if self.eat("(") {
+				elems mut := self.parse_patterns_until(")")?
+				// `Ok()` matches `Ok(void)`.
+				if elems.is_empty() && p.is_name("Ok") {
+					elems.push(Pattern { kind: PatternKind::Tuple(Vec::new()), span: self.prev_span() })
+				}
+				PatternKind::TupleStruct(p, elems)
+			} else if self.at("{{") {
+				self.parse_struct_pattern(p)?
+			} else if p.segments.len() == 1 && p.segments[0].args.is_empty() {
+				name := p.segments[0].ident.clone()
+				sub := if self.eat("@") { Some(Box::new(self.parse_pattern_no_or()?)) } else { None }
+				PatternKind::Ident { name: name, mutable: false, sub: sub }
+			} else {
+				PatternKind::Path(p)
+			}
+		} else {
+			lo_lit := match self.lit_pattern()? {
+				Some(l) => l,
+				None => return self.unexpected("pattern"),
+			}
+			lo := Pattern { kind: PatternKind::Lit(lo_lit), span: start.to(self.prev_span()) }
+			inclusive := if self.at("..=") {
+				true
+			} else if self.at("..") {
+				false
+			} else {
+				return Ok(lo)
+			}
+			self.bump()
+			hs := self.span()
+			hi_lit := match self.lit_pattern()? {
+				Some(l) => l,
+				None => return self.unexpected("literal range end"),
+			}
+			hi := Pattern { kind: PatternKind::Lit(hi_lit), span: hs.to(self.prev_span()) }
+			PatternKind::Range { lo: Box::new(lo), hi: Box::new(hi), inclusive: inclusive }
+		}
+		return Ok(Pattern { kind: kind, span: start.to(self.prev_span()) })
+	}
+
+	fun parse_struct_pattern(&mut self, p Path) result<PatternKind, Reported> {
+		rest mut := false
+		fields mut := Vec::new()
+		self.expect("{{")?
+		loop {
+			if self.brace_start()? {
+				break
+			}
+			if self.eat("..") {
+				rest = true
+			} else {
+				mutable := self.eat_kw("mut")
+				name := self.expect_ident()?
+				pat := if !mutable && self.eat(":") {
+					self.parse_pattern()?
+				} else {
+					Pattern { kind: PatternKind::Ident { name: name.clone(), mutable: mutable, sub: None }, span: name.span }
+				}
+				fields.push(FieldPat { name: name, pat: pat })
+			}
+			self.brace_next()?
+		}
+		return Ok(PatternKind::Struct { path: p, fields: fields, rest: rest })
+	}
+
+	// ----- blocks and statements -----
+
+	pub fun parse_block(&mut self) result<Block, Reported> {
+		start := self.expect("{{")?
+		old := self.no_struct
+		self.no_struct = false
+		r := self.parse_block_rest(start)
+		self.no_struct = old
+		return r
+	}
+
+	fun parse_block_rest(&mut self, start Span) result<Block, Reported> {
+		stmts mut := Vec::new()
+		loop {
+			self.skip_semis()
+			if self.at("}}") || self.at_eof() {
+				break
+			}
+			before := self.pos
+			match self.parse_stmt() {
+				Ok(s) => {
+					block_like := match &s.kind {
+						StmtKind::Expr(e) => e.is_block_like(),
+						StmtKind::Item(_) => true,
+						_ => false,
+					}
+					stmts.push(s)
+					if !(self.at_semi() || self.at("}}") || block_like) {
+						let _u result<(), Reported> = self.unexpected("newline or `;` after statement")
+						self.recover_stmt()
+					}
+				}
+				Err(_) => {
+					self.recover_stmt()
+					if self.pos == before {
+						self.bump()
+					}
+				},
+			}
+		}
+		end := self.expect("}}")?
+		return Ok(Block { stmts: stmts, span: start.to(end) })
+	}
+
+	// The index after `name [mut]` at token `i`, if a name (or `_`) is there.
+	fun name_end(&self, i usize) option<usize> {
+		if is_ident(self.nth(i)) || self.nth_is(i, "_") {
+			if is_kw(self.nth(i + 1), "mut") {
+				return Some(i + 2)
+			}
+			return Some(i + 1)
+		}
+		return None
+	}
+
+	// Whether the next tokens are `x [mut] :=` or `(a, b [mut]) :=`.
+	fun at_short_decl(&self) bool {
+		match self.name_end(0) {
+			Some(i) => return self.nth_is(i, ":="),
+			None => {},
+		}
+		if !self.at("(") {
+			return false
+		}
+		i mut := 1
+		loop {
+			j := match self.name_end(i) {
+				Some(j) => j,
+				None => return false,
+			}
+			if self.nth_is(j, ",") {
+				i = j + 1
+			} else if self.nth_is(j, ")") {
+				return self.nth_is(j + 1, ":=")
+			} else {
+				return false
+			}
+		}
+	}
+
+	fun parse_short_name(&mut self) result<ShortName, Reported> {
+		name := if self.eat("_") { None } else { Some(self.expect_ident()?) }
+		mutable := self.eat_kw("mut")
+		return Ok(ShortName { name: name, mutable: mutable })
+	}
+
+	fun parse_stmt(&mut self) result<Stmt, Reported> {
+		start := self.span()
+		kind := if self.at_item_start() {
+			StmtKind::Item(Box::new(self.parse_item()?))
+		} else if self.eat_kw("let") {
+			first := self.parse_binding_pattern()?
+			pat := if self.at("|") {
+				alts mut := Vec::new()
+				alts.push(first)
+				while self.eat("|") {
+					alts.push(self.parse_pattern_no_or()?)
+				}
+				sp := alts[0].span.to(alts[alts.len() - 1].span)
+				Pattern { kind: PatternKind::Or(alts), span: sp }
+			} else {
+				first
+			}
+			t := if self.at(":") || self.starts_type() { Some(self.parse_annot()?) } else { None }
+			init := self.opt_eq_expr()?
+			StmtKind::Let { pat: pat, ty: t, init: init }
+		} else if self.at_short_decl() {
+			tuple := self.eat("(")
+			names mut := Vec::new()
+			if tuple {
+				loop {
+					if self.comma_start(")") {
+						break
+					}
+					names.push(self.parse_short_name()?)
+					if self.comma_next(")")? {
+						break
+					}
+				}
+			} else {
+				names.push(self.parse_short_name()?)
+			}
+			self.expect(":=")?
+			init := self.parse_expr()?
+			StmtKind::ShortDecl { names: names, tuple: tuple, init: init }
+		} else if self.eat_kw("defer") {
+			StmtKind::Defer(self.parse_expr()?)
+		} else {
+			e := self.parse_expr()?
+			match assign_op(self.peek()) {
+				Some(op) => {
+					self.bump()
+					value := self.parse_expr()?
+					StmtKind::Assign { target: e, op: op, value: value }
+				}
+				None => {
+					if self.eat("<-") {
+						value := self.parse_expr()?
+						StmtKind::Send { ch: e, value: value }
+					} else if self.at(":=") {
+						sp := self.span()
+						return self.error_at("left side of `:=` must be a name, `name mut`, or a tuple of names".to_string(), sp)
+					} else if self.at(":") && match &e.kind {
+						ExprKind::Path(_) => true,
+						_ => false,
+					} {
+						sp := self.span()
+						self.push_error("type annotations require `let`".to_string(), sp)
+						return Err(Reported {})
+					} else {
+						StmtKind::Expr(e)
+					}
+				},
+			}
+		}
+		return Ok(Stmt { kind: kind, span: start.to(self.prev_span()) })
+	}
+
+	// ----- expressions -----
+
+	fun can_start_expr(&self) bool {
+		match self.peek() {
+			TokenKind::Ident(_) | TokenKind::Lifetime(_) | TokenKind::Int(_, _) | TokenKind::Float(_, _) => return true,
+			TokenKind::Str(_) | TokenKind::RawStr(_) | TokenKind::ByteStr(_) | TokenKind::Char(_) => return true,
+			TokenKind::Punct(p) => {
+				match p.as_str() {
+					"(" | "[" | "-" | "!" | "*" | "&" | "&&" | "<-" | "|" | "||" | ".." | "..=" => return true,
+					"{{" => return !self.no_struct,
+					_ => return false,
+				}
+			}
+			TokenKind::Keyword(k) => {
+				match k.as_str() {
+					"self" | "Self" | "true" | "false" | "if" | "match" | "loop" | "while" | "for" => return true,
+					"return" | "break" | "continue" | "move" | "unsafe" | "select" | "chan" => return true,
+					_ => return false,
+				}
+			}
+			_ => return false,
+		}
+	}
+
+	fun range_end(&mut self) result<option<Box<Expr>>, Reported> {
+		if self.can_start_expr() {
+			return Ok(Some(Box::new(self.parse_bin(2)?)))
+		}
+		return Ok(None)
+	}
+
+	// An expression with `no_struct` set to `v` for its duration.
+	fun expr_with(&mut self, v bool) result<Expr, Reported> {
+		old := self.no_struct
+		self.no_struct = v
+		r := self.parse_expr()
+		self.no_struct = old
+		return r
+	}
+
+	// Parses an expression, including ranges.
+	pub fun parse_expr(&mut self) result<Expr, Reported> {
+		start := self.span()
+		lhs := if self.at("..") || self.at("..=") { None } else { Some(self.parse_bin(2)?) }
+		if !(self.at("..") || self.at("..=")) {
+			return Ok(lhs.unwrap())
+		}
+		inclusive := self.at("..=")
+		self.bump()
+		end := self.range_end()?
+		st := match lhs {
+			Some(e) => Some(Box::new(e)),
+			None => None,
+		}
+		return Ok(Expr { kind: ExprKind::Range { start: st, end: end, inclusive: inclusive }, span: start.to(self.prev_span()) })
+	}
+
+	fun parse_bin(&mut self, min u8) result<Expr, Reported> {
+		lhs mut := self.parse_unary()?
+		loop {
+			if self.at_kw("as") && CAST_PREC >= min {
+				self.bump()
+				t := self.parse_type()?
+				sp := lhs.span.to(t.span)
+				lhs = Expr { kind: ExprKind::Cast(Box::new(lhs), t), span: sp }
+				continue
+			}
+			(op, prec) := match binop(self.peek()) {
+				Some(x) => x,
+				None => return Ok(lhs),
+			}
+			if prec < min {
+				return Ok(lhs)
+			}
+			self.bump()
+			self.skip_implicit_semis()
+			rhs := self.parse_bin(prec + 1)?
+			sp := lhs.span.to(rhs.span)
+			lhs = Expr { kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)), span: sp }
+		}
+	}
+
+	// `spawn f(args)` / `spawn [move] { ... }` (after `spawn`).
+	fun parse_spawn(&mut self, start Span) result<Expr, Reported> {
+		is_move := self.eat_kw("move")
+		target := if self.at("{{") {
+			SpawnTarget::Block { is_move: is_move, body: self.parse_block()? }
+		} else if is_move {
+			return self.unexpected("`{{` after `spawn move`")
+		} else {
+			e := self.parse_unary()?
+			ok := match &e.kind {
+				ExprKind::Call(_, _) | ExprKind::MethodCall { .. } => true,
+				_ => false,
+			}
+			if !ok {
+				return self.error_at("`spawn` requires a function call or a block (`spawn f(x)` or `spawn move {{ ... }}`)".to_string(), e.span)
+			}
+			SpawnTarget::Call(e)
+		}
+		return Ok(Expr { kind: ExprKind::Spawn(Box::new(target)), span: start.to(self.prev_span()) })
+	}
+
+	fun parse_unary(&mut self) result<Expr, Reported> {
+		start := self.span()
+		if self.eat_kw("spawn") {
+			return self.parse_spawn(start)
+		}
+		if is_ident_named(self.peek(), "go") && (is_ident(self.nth(1)) || is_kw(self.nth(1), "move")) {
+			sp := self.span()
+			self.push_error("tasks are started with `spawn` in Kiln".to_string(), sp)
+			self.bump()
+			return self.parse_spawn(start)
+		}
+		op := if self.at("-") {
+			UnOp::Neg
+		} else if self.at("!") {
+			UnOp::Not
+		} else if self.at("*") {
+			UnOp::Deref
+		} else if self.at("<-") {
+			UnOp::Recv
+		} else if self.at("&") || self.at("&&") {
+			double := self.at("&&")
+			self.bump()
+			rop := if self.eat_kw("mut") { UnOp::RefMut } else { UnOp::Ref }
+			inner := self.parse_unary()?
+			sp := start.to(inner.span)
+			e mut := Expr { kind: ExprKind::Unary(rop, Box::new(inner)), span: sp }
+			if double {
+				e = Expr { kind: ExprKind::Unary(UnOp::Ref, Box::new(e)), span: sp }
+			}
+			return Ok(e)
+		} else {
+			prim := self.parse_primary()?
+			return self.parse_postfix(prim)
+		}
+		self.bump()
+		inner := self.parse_unary()?
+		sp := start.to(inner.span)
+		return Ok(Expr { kind: ExprKind::Unary(op, Box::new(inner)), span: sp })
+	}
+
+	fun parse_exprs_until(&mut self, close &str) result<Vec<Expr>, Reported> {
+		out mut := Vec::new()
+		loop {
+			if self.comma_start(close) {
+				break
+			}
+			out.push(self.parse_expr()?)
+			if self.comma_next(close)? {
+				break
+			}
+		}
+		return Ok(out)
+	}
+
+	fun call_args(&mut self) result<Vec<Expr>, Reported> {
+		old := self.no_struct
+		self.no_struct = false
+		r := self.parse_exprs_until(")")
+		self.no_struct = old
+		return r
+	}
+
+	fun parse_postfix(&mut self, first Expr) result<Expr, Reported> {
+		e mut := first
+		loop {
+			start := e.span
+			kind := if self.eat("?") {
+				ExprKind::Try(Box::new(e))
+			} else if self.eat("(") {
+				args mut := self.call_args()?
+				// `Ok()` is `Ok(void)`.
+				if args.is_empty() {
+					is_ok := match &e.kind {
+						ExprKind::Path(p) => p.is_name("Ok"),
+						_ => false,
+					}
+					if is_ok {
+						args.push(Expr { kind: ExprKind::Tuple(Vec::new()), span: self.prev_span() })
+					}
+				}
+				ExprKind::Call(Box::new(e), args)
+			} else if self.eat("[") {
+				idx := self.expr_with(false)?
+				self.expect("]")?
+				ExprKind::Index(Box::new(e), Box::new(idx))
+			} else if self.eat(".") {
+				match self.peek().clone() {
+					TokenKind::Int(v, None) => {
+						self.bump()
+						ExprKind::TupleIndex(Box::new(e), v.limbs[0] as u32)
+					}
+					TokenKind::Float(text, None) => {
+						if tuple_index_pair(&text) {
+							sp := self.bump_span()
+							dot := text.find(".").unwrap()
+							a := index_u32(&text[..dot])
+							b := index_u32(&text[dot + 1..])
+							inner := Expr { kind: ExprKind::TupleIndex(Box::new(e), a), span: start.to(sp) }
+							ExprKind::TupleIndex(Box::new(inner), b)
+						} else {
+							self.member_kind(e)?
+						}
+					}
+					TokenKind::Keyword(k) => {
+						if k == "await" {
+							sp := self.span()
+							return self.error_at("`await` is reserved; Kiln uses `spawn` and channels for concurrency".to_string(), sp)
+						}
+						self.member_kind(e)?
+					}
+					_ => self.member_kind(e)?,
+				}
+			} else {
+				return Ok(e)
+			}
+			e = Expr { kind: kind, span: start.to(self.prev_span()) }
+		}
+	}
+
+	// `.name`, `.name(args)`, or `.name::<T>(args)` after the `.`.
+	fun member_kind(&mut self, e Expr) result<ExprKind, Reported> {
+		method := self.member_name()?
+		generic_args mut := Vec::new()
+		if self.at("::") && self.lt_at(1) {
+			self.bump()
+			generic_args = self.parse_generic_args()?
+		}
+		if self.eat("(") {
+			args := self.call_args()?
+			return Ok(ExprKind::MethodCall { receiver: Box::new(e), method: method, generic_args: generic_args, args: args })
+		}
+		if !generic_args.is_empty() {
+			return self.unexpected("`(` after method turbofish")
+		}
+		return Ok(ExprKind::Field(Box::new(e), method))
+	}
+
+	// A path in expression or pattern position; generics need `::<T>`.
+	fun parse_expr_path(&mut self) result<Path, Reported> {
+		start := self.span()
+		segments mut := Vec::new()
+		segments.push(PathSegment { ident: self.path_ident()?, args: Vec::new() })
+		while self.eat("::") {
+			if self.lt_at(0) {
+				args := self.parse_generic_args()?
+				k := segments.len() - 1
+				segments[k].args = args
+			} else {
+				ident := if self.at_kw("self") || self.at_kw("Self") || self.at_kw("chan") {
+					self.path_ident()?
+				} else if is_any_kw(self.peek()) {
+					self.member_name()?
+				} else {
+					self.path_ident()?
+				}
+				segments.push(PathSegment { ident: ident, args: Vec::new() })
+			}
+		}
+		return Ok(Path { segments: segments, span: start.to(self.prev_span()) })
+	}
+
+	fun parse_label(&mut self) option<Ident> {
+		match self.peek().clone() {
+			TokenKind::Lifetime(name) => {
+				sp := self.bump_span()
+				return Some(Ident { name: name, span: sp })
+			}
+			_ => return None,
+		}
+	}
+
+	fun opt_value(&mut self) result<option<Box<Expr>>, Reported> {
+		if self.can_start_expr() {
+			return Ok(Some(Box::new(self.parse_expr()?)))
+		}
+		return Ok(None)
+	}
+
+	fun literal(&mut self) option<ExprKind> {
+		kind := match self.peek().clone() {
+			TokenKind::Int(v, suffix) => ExprKind::Lit(int_lit(&v, &suffix, false)),
+			TokenKind::Float(text, suffix) => ExprKind::Lit(Lit::Float { value: float_val(&text), suffix: suffix }),
+			TokenKind::RawStr(s) => ExprKind::Lit(Lit::Str(s)),
+			TokenKind::ByteStr(b) => ExprKind::Lit(Lit::ByteStr(b)),
+			TokenKind::Char(c) => ExprKind::Lit(Lit::Char(c)),
+			TokenKind::Keyword(k) => {
+				if k == "true" {
+					ExprKind::Lit(Lit::Bool(true))
+				} else if k == "false" {
+					ExprKind::Lit(Lit::Bool(false))
+				} else {
+					return None
+				}
+			}
+			TokenKind::Str(parts) => {
+				simple := parts.len() == 1 && match &parts[0] {
+					StrPart::Text(_) => true,
+					_ => false,
+				}
+				if simple {
+					match &parts[0] {
+						StrPart::Text(s) => ExprKind::Lit(Lit::Str(s.clone())),
+						_ => return None,
+					}
+				} else {
+					ExprKind::Interp(self.parse_interp(&parts))
+				}
+			}
+			_ => return None,
+		}
+		self.bump()
+		return Some(kind)
+	}
+
+	fun parse_primary(&mut self) result<Expr, Reported> {
+		start := self.span()
+		match self.literal() {
+			Some(kind) => return Ok(Expr { kind: kind, span: start }),
+			None => {},
+		}
+		kind := if is_ident(self.peek()) || self.at_kw("self") || self.at_kw("Self") {
+			p := self.parse_expr_path()?
+			if self.at("{{") && !self.no_struct {
+				return self.parse_struct_lit(p)
+			}
+			ExprKind::Path(p)
+		} else if self.at_kw("chan") && self.nth_is(1, "::") {
+			ExprKind::Path(self.parse_expr_path()?)
+		} else if self.eat("(") {
+			old := self.no_struct
+			self.no_struct = false
+			r := self.paren_rest()
+			self.no_struct = old
+			r?
+		} else if self.eat("[") {
+			old := self.no_struct
+			self.no_struct = false
+			r := self.array_rest()
+			self.no_struct = old
+			r?
+		} else if self.at("{{") {
+			ExprKind::Block(self.parse_block()?)
+		} else if self.eat_kw("unsafe") {
+			ExprKind::Unsafe(self.parse_block()?)
+		} else if self.at_kw("if") {
+			return self.parse_if()
+		} else if self.at_kw("match") {
+			self.parse_match()?
+		} else if self.at_kw("select") {
+			self.parse_select()?
+		} else if is_lifetime(self.peek()) && self.nth_is(1, ":") {
+			label := self.parse_label()
+			self.bump()
+			if !(self.at_kw("for") || self.at_kw("while") || self.at_kw("loop")) {
+				return self.unexpected("`for`, `while`, or `loop` after label")
+			}
+			self.parse_loop(label)?
+		} else if self.at_kw("for") || self.at_kw("while") || self.at_kw("loop") {
+			self.parse_loop(None)?
+		} else if self.eat_kw("return") {
+			ExprKind::Return(self.opt_value()?)
+		} else if self.eat_kw("break") {
+			label := self.parse_label()
+			ExprKind::Break(label, self.opt_value()?)
+		} else if self.eat_kw("continue") {
+			ExprKind::Continue(self.parse_label())
+		} else if self.at("|") || self.at("||") || self.at_kw("move") {
+			self.parse_closure()?
+		} else {
+			match self.peek().clone() {
+				TokenKind::Keyword(k) => {
+					if is_reserved(&k) {
+						sp := self.span()
+						return self.error_at("`{k}` is a reserved keyword", sp)
+					}
+				}
+				_ => {},
+			}
+			return self.unexpected("expression")
+		}
+		return Ok(Expr { kind: kind, span: start.to(self.prev_span()) })
+	}
+
+	// After `(`: unit, a parenthesized expression, or a tuple.
+	fun paren_rest(&mut self) result<ExprKind, Reported> {
+		self.skip_implicit_semis()
+		if self.eat(")") {
+			return Ok(ExprKind::Tuple(Vec::new()))
+		}
+		first := self.parse_expr()?
+		self.skip_implicit_semis()
+		if self.eat(")") {
+			return Ok(ExprKind::Paren(Box::new(first)))
+		}
+		self.expect(",")?
+		elems mut := Vec::new()
+		elems.push(first)
+		for e in self.parse_exprs_until(")")? {
+			elems.push(e)
+		}
+		return Ok(ExprKind::Tuple(elems))
+	}
+
+	// After `[`: an array literal or `[v; n]`.
+	fun array_rest(&mut self) result<ExprKind, Reported> {
+		self.skip_implicit_semis()
+		if self.eat("]") {
+			return Ok(ExprKind::Array(Vec::new()))
+		}
+		first := self.parse_expr()?
+		if self.at_explicit_semi() {
+			self.bump()
+			n := self.parse_expr()?
+			self.expect("]")?
+			return Ok(ExprKind::ArrayRepeat(Box::new(first), Box::new(n)))
+		}
+		self.skip_implicit_semis()
+		if self.eat("]") {
+			v mut := Vec::new()
+			v.push(first)
+			return Ok(ExprKind::Array(v))
+		}
+		self.expect(",")?
+		elems mut := Vec::new()
+		elems.push(first)
+		for e in self.parse_exprs_until("]")? {
+			elems.push(e)
+		}
+		return Ok(ExprKind::Array(elems))
+	}
+
+	// The `{expr}` parts of an interpolated string, with a sub-parser.
+	fun parse_interp(&mut self, parts &Vec<StrPart>) Vec<InterpPart> {
+		out mut := Vec::new()
+		for part in parts {
+			match part {
+				StrPart::Text(s) => out.push(InterpPart::Text(s.clone())),
+				StrPart::Interp(src, offset, spec) => {
+					l := lexer::lex(src)
+					toks mut := l.tokens
+					lerrs mut := l.errors
+					shift(&mut toks, &mut lerrs, *offset)
+					for e in lerrs {
+						self.errors.push(e)
+					}
+					sub mut := Parser::new(self.src, toks, Vec::new())
+					sub.base = self.base
+					x := match sub.parse_expr() {
+						Ok(e) => {
+							sub.skip_semis()
+							if !sub.at_eof() {
+								let _u result<(), Reported> = sub.unexpected("end of interpolated expression")
+							}
+							e
+						}
+						Err(_) => Expr { kind: ExprKind::Error, span: Span::new(*offset, *offset + src.len()) },
+					}
+					for e in sub.errors {
+						self.errors.push(e)
+					}
+					f := match spec {
+						Some((text, at)) => {
+							match parse_fmt_spec(text) {
+								Ok(f) => Some(f),
+								Err(msg) => {
+									n := if text.len() > 1 { text.len() } else { 1 }
+									self.push_error(msg, Span::new(*at, *at + n))
+									None
+								},
+							}
+						}
+						None => None,
+					}
+					out.push(InterpPart::Expr(x, f))
+				},
+			}
+		}
+		return out
+	}
+
+	fun parse_struct_lit(&mut self, p Path) result<Expr, Reported> {
+		start := p.span
+		base mut := None
+		fields mut := Vec::new()
+		self.expect("{{")?
+		loop {
+			if self.brace_start()? {
+				break
+			}
+			if self.eat("..") {
+				base = Some(Box::new(self.parse_expr()?))
+			} else {
+				name := self.expect_ident()?
+				value := if self.eat(":") {
+					self.parse_expr()?
+				} else {
+					Expr { kind: ExprKind::Path(Path::single(name.clone())), span: name.span }
+				}
+				fields.push(FieldInit { name: name, value: value })
+			}
+			self.brace_next()?
+		}
+		return Ok(Expr { kind: ExprKind::StructLit { path: p, fields: fields, base: base }, span: start.to(self.prev_span()) })
+	}
+
+	// A condition or scrutinee, where `Path {` starts the block.
+	fun parse_cond(&mut self) result<Expr, Reported> {
+		return self.expr_with(true)
+	}
+
+	fun parse_if(&mut self) result<Expr, Reported> {
+		start := self.expect_kw("if")?
+		kind := if self.eat_kw("let") {
+			pat := self.parse_pattern()?
+			self.expect("=")?
+			x := self.parse_cond()?
+			then := self.parse_block()?
+			els := self.parse_else()?
+			ExprKind::IfLet { pat: pat, expr: Box::new(x), then: then, els: els }
+		} else {
+			cond := self.parse_cond()?
+			then := self.parse_block()?
+			els := self.parse_else()?
+			ExprKind::If { cond: Box::new(cond), then: then, els: els }
+		}
+		return Ok(Expr { kind: kind, span: start.to(self.prev_span()) })
+	}
+
+	fun parse_else(&mut self) result<option<Box<Expr>>, Reported> {
+		if !self.eat_kw("else") {
+			return Ok(None)
+		}
+		if self.at_kw("if") {
+			return Ok(Some(Box::new(self.parse_if()?)))
+		}
+		b := self.parse_block()?
+		sp := b.span
+		return Ok(Some(Box::new(Expr { kind: ExprKind::Block(b), span: sp })))
+	}
+
+	fun parse_match(&mut self) result<ExprKind, Reported> {
+		self.expect_kw("match")?
+		scrutinee := self.parse_cond()?
+		old := self.no_struct
+		self.no_struct = false
+		r := self.match_arms()
+		self.no_struct = old
+		return Ok(ExprKind::Match(Box::new(scrutinee), r?))
+	}
+
+	fun match_arms(&mut self) result<Vec<MatchArm>, Reported> {
+		self.expect("{{")?
+		arms mut := Vec::new()
+		loop {
+			if self.brace_start()? {
+				return Ok(arms)
+			}
+			pat := self.parse_pattern()?
+			guard := if self.eat_kw("if") { Some(self.parse_expr()?) } else { None }
+			self.expect("=>")?
+			body mut := self.parse_expr()?
+			// `pat => x = v,`: an assignment arm is a one-statement block.
+			match assign_op(self.peek()) {
+				Some(op) => {
+					self.bump()
+					value := self.parse_expr()?
+					sp := body.span.to(value.span)
+					st := Stmt { kind: StmtKind::Assign { target: body, op: op, value: value }, span: sp }
+					stmts mut := Vec::new()
+					stmts.push(st)
+					body = Expr { kind: ExprKind::Block(Block { stmts: stmts, span: sp }), span: sp }
+				}
+				None => {},
+			}
+			sp := pat.span.to(body.span)
+			arms.push(MatchArm { pat: pat, guard: guard, body: body, span: sp })
+			self.brace_next()?
+		}
+	}
+
+	fun parse_select(&mut self) result<ExprKind, Reported> {
+		self.expect_kw("select")?
+		old := self.no_struct
+		self.no_struct = false
+		r := self.select_arms()
+		self.no_struct = old
+		return Ok(ExprKind::Select(r?))
+	}
+
+	fun select_arms(&mut self) result<Vec<SelectArm>, Reported> {
+		self.expect("{{")?
+		arms mut := Vec::new()
+		loop {
+			if self.brace_start()? {
+				return Ok(arms)
+			}
+			start := self.span()
+			op := if self.at("_") && self.nth_is(1, "=>") {
+				self.bump()
+				SelectOp::Default
+			} else if self.at_short_decl() {
+				bind := self.parse_short_name()?
+				self.expect(":=")?
+				self.expect("<-")?
+				SelectOp::Recv { bind: Some(bind), ch: self.parse_expr()? }
+			} else if self.eat("<-") {
+				SelectOp::Recv { bind: None, ch: self.parse_expr()? }
+			} else {
+				ch := self.parse_expr()?
+				if !self.eat("<-") {
+					return self.unexpected("`<-` in select arm (`<-rx`, `v := <-rx`, `tx <- v`, or `_`)")
+				}
+				SelectOp::Send { ch: ch, value: self.parse_expr()? }
+			}
+			self.expect("=>")?
+			body := self.parse_expr()?
+			sp := start.to(body.span)
+			arms.push(SelectArm { op: op, body: body, span: sp })
+			self.brace_next()?
+		}
+	}
+
+	fun parse_loop(&mut self, label option<Ident>) result<ExprKind, Reported> {
+		if self.eat_kw("loop") {
+			return Ok(ExprKind::Loop { label: label, body: self.parse_block()? })
+		}
+		if self.eat_kw("while") {
+			if self.eat_kw("let") {
+				pat := self.parse_pattern()?
+				self.expect("=")?
+				x := self.parse_cond()?
+				return Ok(ExprKind::WhileLet { label: label, pat: pat, expr: Box::new(x), body: self.parse_block()? })
+			}
+			cond := self.parse_cond()?
+			return Ok(ExprKind::While { label: label, cond: Box::new(cond), body: self.parse_block()? })
+		}
+		self.bump()
+		pat := self.parse_pattern()?
+		self.expect_kw("in")?
+		iter := self.parse_cond()?
+		return Ok(ExprKind::For { label: label, pat: pat, iter: Box::new(iter), body: self.parse_block()? })
+	}
+
+	fun parse_closure(&mut self) result<ExprKind, Reported> {
+		is_move := self.eat_kw("move")
+		params mut := Vec::new()
+		if !self.eat("||") {
+			self.expect("|")?
+			loop {
+				if self.comma_start("|") {
+					break
+				}
+				pat := self.parse_binding_pattern()?
+				t := if self.at(":") || self.starts_type() { Some(self.parse_annot()?) } else { None }
+				params.push(ClosureParam { pat: pat, ty: t })
+				if self.comma_next("|")? {
+					break
+				}
+			}
+		}
+		if self.at("->") {
+			sp := self.span()
+			self.push_error("closures don't take a return type; it is inferred".to_string(), sp)
+			return Err(Reported {})
+		}
+		body := self.expr_with(false)?
+		return Ok(ExprKind::Closure { is_move: is_move, params: params, ret: None, body: Box::new(body) })
+	}
+}
+
+// `0.1` after a `.`: two non-empty runs of digits.
+fun tuple_index_pair(text &str) bool {
+	dots mut := 0
+	run mut := 0
+	for b in text.as_bytes() {
+		c := *b
+		if c == 46 {
+			if run == 0 {
+				return false
+			}
+			dots += 1
+			run = 0
+		} else if c >= 48 && c <= 57 {
+			run += 1
+		} else {
+			return false
+		}
+	}
+	return dots == 1 && run > 0
+}
+
+fun index_u32(s &str) u32 {
+	v mut := 0 as u64
+	for b in s.as_bytes() {
+		v = v * 10 + (*b - 48) as u64
+		if v > 4294967295 {
+			return 0
+		}
+	}
+	return v as u32
+}

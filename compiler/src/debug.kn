@@ -2,6 +2,7 @@
 // spans written `start..end` on one line (see crates/kiln_parser/src/dump.rs).
 
 import super::ast::*
+import super::escape
 
 pub struct W {
 	pub out string,
@@ -161,6 +162,16 @@ impl W {
 	}
 }
 
+// Rust's `{:?}` for f64: plain decimal for 1e-4 <= |v| < 1e16 (and 0),
+// otherwise the shortest exponential form.
+fun float_debug(v f64) string {
+	a := if v < 0.0 { -v } else { v }
+	if a != 0.0 && (a < 0.0001 || a >= 10000000000000000.0) {
+		return "{v:e}"
+	}
+	return "{v:?}"
+}
+
 fun hex(c u32) string {
 	return "{c:x}"
 }
@@ -178,29 +189,13 @@ fun esc_char(out &mut string, c char, quote char) {
 		'\t' => out.push("\\t"),
 		'\0' => out.push("\\0"),
 		_ => {
-			if printable(c) {
-				out.push_char(c)
-			} else {
+			if escape::escaped(c) {
 				out.push("\\u{{{hex(c as u32)}}}")
+			} else {
+				out.push_char(c)
 			}
 		},
 	}
-}
-
-// An approximation of Rust's `is_printable` (core::unicode::printable)
-// covering the characters that occur in practice.
-fun printable(c char) bool {
-	v := c as u32
-	if v < 0x20 || (v >= 0x7f && v < 0xa0) || v == 0xad {
-		return false
-	}
-	if (v >= 0x200b && v <= 0x200f) || (v >= 0x2028 && v <= 0x202e) || (v >= 0x2060 && v <= 0x206f) {
-		return false
-	}
-	if v == 0xfeff || (v >= 0xfff0 && v <= 0xfffb) || (v >= 0xe000 && v <= 0xf8ff) {
-		return false
-	}
-	return true
 }
 
 pub fun dump_file(file &File) string {
@@ -470,7 +465,7 @@ fun item_kind(w &mut W, k &ItemKind) {
 			}
 			w.e()
 			w.sclose()
-		}
+		},
 	}
 }
 
@@ -512,7 +507,7 @@ fun import_tree(w &mut W, t &ImportTree) {
 			}
 			w.e()
 			w.sclose()
-		}
+		},
 	}
 }
 
@@ -542,7 +537,7 @@ fun fn_decl(w &mut W, f &FnDecl) {
 					w.e()
 					w.boolf("mutable", *mutable)
 					w.sclose()
-				}
+				},
 			}
 			w.some_close()
 		}
@@ -628,7 +623,7 @@ fun generics(w &mut W, g &Generics) {
 					ty(w, t)
 					w.e()
 					w.sclose()
-				}
+				},
 			}
 			w.e()
 		}
@@ -683,7 +678,7 @@ fun bounds(w &mut W, v &Vec<Bound>) {
 				w.tuple1_open("Lifetime")
 				ident(w, i)
 				w.tuple1_close()
-			}
+			},
 		}
 		w.e()
 	}
@@ -723,7 +718,7 @@ fun fields(w &mut W, f &Fields) {
 				w.lclose()
 			}
 			w.tuple1_close()
-		}
+		},
 	}
 }
 
@@ -781,7 +776,7 @@ fun generic_args(w &mut W, v &Vec<GenericArg>) {
 				ty(w, t)
 				w.e()
 				w.sclose()
-			}
+			},
 		}
 		w.e()
 	}
@@ -1020,7 +1015,7 @@ fun pattern(w &mut W, p &Pattern) {
 			w.tuple1_open("Or")
 			patterns(w, ps)
 			w.tuple1_close()
-		}
+		},
 	}
 	w.e()
 	w.spanf(p.span)
@@ -1043,8 +1038,7 @@ fun lit(w &mut W, l &Lit) {
 		Lit::Float { value, suffix } => {
 			w.sopen("Float")
 			w.f("value")
-			v := *value
-			w.raw("{v:?}")
+			w.raw(&float_debug(*value))
 			w.e()
 			w.f("suffix")
 			w.opt_str(suffix)
@@ -1080,7 +1074,7 @@ fun lit(w &mut W, l &Lit) {
 			w.tuple1_open("Bool")
 			w.bool(*b)
 			w.tuple1_close()
-		}
+		},
 	}
 }
 
@@ -1228,7 +1222,7 @@ fun stmt(w &mut W, s &Stmt) {
 			w.tuple1_open("Item")
 			item(w, i)
 			w.tuple1_close()
-		}
+		},
 	}
 	w.e()
 	w.spanf(s.span)
@@ -1369,7 +1363,7 @@ fun expr_kind(w &mut W, k &ExprKind) {
 								None => w.none(),
 							}
 							w.tuple1_close()
-						}
+						},
 					}
 					w.e()
 				}
@@ -1536,7 +1530,7 @@ fun expr_kind(w &mut W, k &ExprKind) {
 					w.boolf("is_move", *is_move)
 					blockf(w, "body", body)
 					w.sclose()
-				}
+				},
 			}
 			w.tuple1_close()
 		}
