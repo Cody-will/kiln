@@ -120,6 +120,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             errors: vec![],
             unsupported: vec![],
             captures: vec![],
+                bounded_loops: vec![],
         };
         let mut l = Lower {
             typed,
@@ -2638,6 +2639,106 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
     }
 
     /// `for pat in iter { body }` over ranges, `&Vec<T>`/`&[T]` (by reference), and `Vec<T>` (by value).
+    /// Whether the range `op` (just built for a `for` loop) runs at most
+    /// [`BOUNDED_TRIPS`] times: its end is a constant (a literal, an array
+    /// length, or an immutable local holding one), and its start is a
+    /// constant or of an unsigned type (so it cannot start far below).
+    fn bounded_range(&self, it_ty: &Ty, op: &Operand) -> bool {
+        let Ty::Adt(d, a) = it_ty else {
+            return false;
+        };
+        if !self.lang(*d, "Range") || a.is_empty() {
+            return false;
+        }
+        let Some(Rvalue::Aggregate(
+            AggKind::Range {
+                has_start: true,
+                has_end: true,
+                inclusive,
+            },
+            ops,
+        )) = op.place().and_then(|p| self.sole_assignment(p.local))
+        else {
+            return false;
+        };
+        let Some(end) = self.const_int(&ops[1], 8) else {
+            return false;
+        };
+        let start = match self.const_int(&ops[0], 8) {
+            Some(v) => v,
+            None if matches!(
+                &a[0],
+                Ty::Prim(PrimTy::U8 | PrimTy::U16 | PrimTy::U32 | PrimTy::U64 | PrimTy::Usize)
+            ) =>
+            {
+                0
+            }
+            None => return false,
+        };
+        end.saturating_sub(start).saturating_add(*inclusive as i128) <= BOUNDED_TRIPS
+    }
+
+    /// The rvalue of the only assignment to the whole local `l` so far, if it
+    /// is assigned exactly once and never borrowed mutably or assigned in part.
+    fn sole_assignment(&self, l: Local) -> Option<&Rvalue> {
+        let mut found = None;
+        for blk in &self.body.blocks {
+            for st in &blk.stmts {
+                match &st.kind {
+                    StmtKind::Assign(p, rv) if p.local == l => {
+                        if !p.proj.is_empty() || found.is_some() {
+                            return None;
+                        }
+                        found = Some(rv);
+                    }
+                    StmtKind::Assign(_, Rvalue::Ref { mutable: true, place }) if place.local == l => {
+                        return None;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        found
+    }
+
+    /// The value of an integer operand known at compile time.
+    fn const_int(&self, op: &Operand, depth: u32) -> Option<i128> {
+        match op {
+            Operand::Const(c) => match c.kind {
+                ConstKind::Int(v) => Some(v),
+                _ => None,
+            },
+            Operand::Copy(p) | Operand::Move(p) if p.proj.is_empty() && depth > 0 => {
+                // Temps are assigned once; a mutable variable could change on a
+                // later iteration of an enclosing loop.
+                let d = self.body.local(p.local);
+                if d.mutable && d.kind != LocalKind::Temp {
+                    return None;
+                }
+                match self.sole_assignment(p.local)? {
+                    Rvalue::Use(o) => self.const_int(o, depth - 1),
+                    // `a.len()` of an array (or a reference to one).
+                    Rvalue::Call {
+                        callee: Callee::Intrinsic(n),
+                        args,
+                        ..
+                    } if n == "len" && args.len() == 1 => {
+                        let mut t = &self.body.local(args[0].place()?.local).ty;
+                        while let Ty::Ref(_, x) = t {
+                            t = x;
+                        }
+                        match t {
+                            Ty::Array(_, n) => Some(*n as i128),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn for_loop(
         &mut self,
         e: &Expr,
@@ -2648,6 +2749,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
     ) {
         let it_ty = self.ty(iter);
         let it_op = self.expr(iter);
+        let bounded = self.bounded_range(&it_ty, &it_op);
         let it = self.temp(it_ty.clone(), iter.span);
         self.assign(Place::local(it), Rvalue::Use(it_op), iter.span);
         // By-value `Vec` iteration: the elements move into a non-owning view
@@ -2687,6 +2789,9 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         let bodyb = self.new_block();
         let after = self.new_block();
         let exit_loop = self.new_block();
+        if bounded {
+            self.body.bounded_loops.push(head);
+        }
         self.goto(head, e.span);
         self.cur = head;
         let sp = iter.span;

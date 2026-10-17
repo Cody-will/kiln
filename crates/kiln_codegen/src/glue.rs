@@ -66,6 +66,7 @@ impl<'r, 'a> Codegen<'r, 'a> {
                 errors: vec![],
                 unsupported: vec![],
                 captures: vec![],
+                bounded_loops: vec![],
             };
             let mut cx = FnCx {
                 cg: self,
@@ -81,7 +82,7 @@ impl<'r, 'a> Codegen<'r, 'a> {
                 intr_substs: HashMap::new(),
                 cur_block: 0,
                 preempt: None,
-                no_preempt: Vec::new(),
+                preempt_edges: Vec::new(),
                 want_reg: false,
                 ret_val: None,
                 span,
