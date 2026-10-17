@@ -12,7 +12,9 @@
 
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
-use rustls::{ClientConfig, ClientConnection, Connection, RootCertStore, ServerConfig, ServerConnection};
+use rustls::{
+    ClientConfig, ClientConnection, Connection, RootCertStore, ServerConfig, ServerConnection,
+};
 use std::io::{ErrorKind, Read, Write};
 use std::sync::Arc;
 
@@ -96,7 +98,9 @@ pub unsafe extern "C" fn kn_tls_client_config(
             return std::ptr::null_mut();
         }
     }
-    let builder = match ClientConfig::builder_with_provider(provider()).with_safe_default_protocol_versions() {
+    let builder = match ClientConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+    {
         Ok(b) => b,
         Err(e) => {
             put(&e.to_string(), err, err_cap);
@@ -105,7 +109,8 @@ pub unsafe extern "C" fn kn_tls_client_config(
     };
     let mut cfg = builder.with_root_certificates(roots).with_no_client_auth();
     if insecure != 0 {
-        cfg.dangerous().set_certificate_verifier(Arc::new(NoVerify(provider())));
+        cfg.dangerous()
+            .set_certificate_verifier(Arc::new(NoVerify(provider())));
     }
     cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
     Box::into_raw(Box::new(Client { cfg: Arc::new(cfg) }))
@@ -150,7 +155,9 @@ pub unsafe extern "C" fn kn_tls_server_config(
             return std::ptr::null_mut();
         }
     };
-    let builder = match ServerConfig::builder_with_provider(provider()).with_safe_default_protocol_versions() {
+    let builder = match ServerConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+    {
         Ok(b) => b,
         Err(e) => {
             put(&e.to_string(), err, err_cap);
@@ -195,7 +202,10 @@ pub unsafe extern "C" fn kn_tls_client(
         }
     };
     match ClientConnection::new((*cfg).cfg.clone(), name) {
-        Ok(c) => Box::into_raw(Box::new(Conn { c: c.into(), err: String::new() })),
+        Ok(c) => Box::into_raw(Box::new(Conn {
+            c: c.into(),
+            err: String::new(),
+        })),
         Err(e) => {
             put(&e.to_string(), err, err_cap);
             std::ptr::null_mut()
@@ -207,7 +217,10 @@ pub unsafe extern "C" fn kn_tls_client(
 #[no_mangle]
 pub unsafe extern "C" fn kn_tls_server(cfg: *const Server) -> *mut Conn {
     match ServerConnection::new((*cfg).cfg.clone()) {
-        Ok(c) => Box::into_raw(Box::new(Conn { c: c.into(), err: String::new() })),
+        Ok(c) => Box::into_raw(Box::new(Conn {
+            c: c.into(),
+            err: String::new(),
+        })),
         Err(_) => std::ptr::null_mut(),
     }
 }

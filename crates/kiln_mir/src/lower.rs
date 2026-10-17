@@ -120,7 +120,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             errors: vec![],
             unsupported: vec![],
             captures: vec![],
-                bounded_loops: vec![],
+            bounded_loops: vec![],
         };
         let mut l = Lower {
             typed,
@@ -2691,7 +2691,13 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                         }
                         found = Some(rv);
                     }
-                    StmtKind::Assign(_, Rvalue::Ref { mutable: true, place }) if place.local == l => {
+                    StmtKind::Assign(
+                        _,
+                        Rvalue::Ref {
+                            mutable: true,
+                            place,
+                        },
+                    ) if place.local == l => {
                         return None;
                     }
                     _ => {}

@@ -200,7 +200,7 @@ impl Codegen<'_, '_> {
                 return false;
             };
             let is_arg = (1..=body.arg_count).contains(&(r.0 as usize));
-            if !(is_arg && !writes.contains_key(&r)) && !single(r) {
+            if (!is_arg || writes.contains_key(&r)) && !single(r) {
                 return false;
             }
             if !m {

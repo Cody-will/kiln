@@ -704,12 +704,10 @@ impl<'a, 'c> Fx<'a, 'c> {
 
     fn cast_int(&self, x: IntValue<'c>, to: inkwell::types::IntType<'c>) -> R<IntValue<'c>> {
         let (a, b) = (x.get_type().get_bit_width(), to.get_bit_width());
-        Ok(if a == b {
-            x
-        } else if a < b {
-            self.b.build_int_z_extend(x, to, "").map_err(e)?
-        } else {
-            self.b.build_int_truncate(x, to, "").map_err(e)?
+        Ok(match a.cmp(&b) {
+            std::cmp::Ordering::Equal => x,
+            std::cmp::Ordering::Less => self.b.build_int_z_extend(x, to, "").map_err(e)?,
+            std::cmp::Ordering::Greater => self.b.build_int_truncate(x, to, "").map_err(e)?,
         })
     }
 

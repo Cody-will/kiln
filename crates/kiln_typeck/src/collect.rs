@@ -195,7 +195,7 @@ impl<'r, 'a> Checker<'r, 'a> {
                         .iter()
                         .any(|n| self.r.prelude_type(n) == Some(*d))
                 };
-                ts.sort_by_key(|d| auto(d));
+                ts.sort_by_key(auto);
                 Ty::Dyn(ts)
             }
             TypeKind::ChanSend(x) => Ty::ChanSend(Box::new(self.lower_ty(x, self_ty, infer))),
