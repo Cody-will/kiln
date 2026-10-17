@@ -1,0 +1,1809 @@
+// The self-hosted borrow checker: a port of crates/kiln_borrowck (lib.rs,
+// body.rs, sigcheck.rs). Loan and local sets are sorted vectors (the Rust
+// `BTreeSet`s); the move state is a vector sorted by `(local, path)`.
+// `dump` prints the format of `kiln borrowck --dump`
+// (crates/kiln_borrowck/src/dump.rs); tests/borrowck_diff.rs compares them.
+
+import std::collections::{HashMap, HashSet}
+import super::ast::*
+import super::derive
+import super::lower
+import super::mir
+import super::mir::{AggKind, BodyKind, CaptureMode, DEEP_FLOW, DerefKey, LocalKind, Operand, Place, Proj, Rvalue, SpawnKind, Statement, Terminator}
+import super::mir::StmtKind as MStmt
+import super::resolve
+import super::resolve::Resolved
+import super::sig
+import super::ty::Ty
+import super::typeck
+import super::typeck::Checker
+
+@derive(Clone)
+pub struct BDiag {
+	pub message string,
+	pub span Span,
+	pub help option<string>,
+	pub notes Vec<(string, option<Span>)>,
+}
+
+fun diag(m &str, s Span) BDiag {
+	return BDiag { message: m.to_string(), span: s, help: None, notes: Vec::new() }
+}
+
+impl BDiag {
+	fun help(self, h &str) BDiag {
+		d mut := self
+		d.help = Some(h.to_string())
+		return d
+	}
+
+	fun note(self, m &str, s Span) BDiag {
+		d mut := self
+		d.notes.push((m.to_string(), Some(s)))
+		return d
+	}
+
+	fun plain(self, m &str) BDiag {
+		d mut := self
+		d.notes.push((m.to_string(), None))
+		return d
+	}
+}
+
+// ---- sorted sets ----
+
+fun sadd(s &mut Vec<usize>, x usize) bool {
+	lo mut := 0
+	hi mut := s.len()
+	while lo < hi {
+		mid := (lo + hi) / 2
+		if s[mid] < x {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	if lo < s.len() && s[lo] == x {
+		return false
+	}
+	s.insert(lo, x)
+	return true
+}
+
+fun shas(s &Vec<usize>, x usize) bool {
+	lo mut := 0
+	hi mut := s.len()
+	while lo < hi {
+		mid := (lo + hi) / 2
+		if s[mid] < x {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo < s.len() && s[lo] == x
+}
+
+fun sunion(a &mut Vec<usize>, b &Vec<usize>) bool {
+	if b.len() == 0 {
+		return false
+	}
+	if a.len() == 0 {
+		*a = b.clone()
+		return true
+	}
+	o mut := Vec::new()
+	i mut := 0
+	j mut := 0
+	while i < a.len() || j < b.len() {
+		if j >= b.len() || (i < a.len() && a[i] < b[j]) {
+			o.push(a[i])
+			i += 1
+		} else if i >= a.len() || b[j] < a[i] {
+			o.push(b[j])
+			j += 1
+		} else {
+			o.push(a[i])
+			i += 1
+			j += 1
+		}
+	}
+	changed := o.len() != a.len()
+	*a = o
+	return changed
+}
+
+fun sremove(s &mut Vec<usize>, x usize) {
+	for i in 0..s.len() {
+		if s[i] == x {
+			s.remove(i)
+			return
+		}
+	}
+}
+
+fun sets_eq(a &Vec<usize>, b &Vec<usize>) bool {
+	if a.len() != b.len() {
+		return false
+	}
+	for i in 0..a.len() {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// ---- the move state ----
+
+fun dk_rank(k DerefKey) i32 {
+	match k {
+		DerefKey::Shared => return 0,
+		DerefKey::Mut => return 1,
+		DerefKey::Ptr => return 2,
+		DerefKey::Box => return 3,
+	}
+}
+
+fun str_cmp(a &str, b &str) i32 {
+	if a < b {
+		return -1
+	}
+	if a > b {
+		return 1
+	}
+	return 0
+}
+
+fun proj_cmp(a &Proj, b &Proj) i32 {
+	match a {
+		Proj::Deref(x) => {
+			match b {
+				Proj::Deref(y) => return dk_rank(*x) - dk_rank(*y),
+				_ => return -1,
+			}
+		}
+		Proj::Field(x) => {
+			match b {
+				Proj::Deref(_) => return 1,
+				Proj::Field(y) => return str_cmp(x, y),
+				Proj::Index(_) => return -1,
+			}
+		}
+		Proj::Index(x) => {
+			match b {
+				Proj::Index(y) => {
+					if *x < *y {
+						return -1
+					}
+					if *x > *y {
+						return 1
+					}
+					return 0
+				}
+				_ => return 1,
+			}
+		}
+	}
+}
+
+fun key_cmp(l1 u32, p1 &Vec<Proj>, l2 u32, p2 &Vec<Proj>) i32 {
+	if l1 != l2 {
+		return if l1 < l2 { -1 } else { 1 }
+	}
+	i mut := 0
+	while i < p1.len() && i < p2.len() {
+		c := proj_cmp(&p1[i], &p2[i])
+		if c != 0 {
+			return c
+		}
+		i += 1
+	}
+	if p1.len() < p2.len() {
+		return -1
+	}
+	if p1.len() > p2.len() {
+		return 1
+	}
+	return 0
+}
+
+@derive(Clone)
+struct MEntry {
+	l u32,
+	path Vec<Proj>,
+	site option<(usize, usize)>,
+}
+
+type MoveState = Vec<MEntry>
+
+fun ms_find(st &MoveState, l u32, path &Vec<Proj>) (bool, usize) {
+	lo mut := 0
+	hi mut := st.len()
+	while lo < hi {
+		mid := (lo + hi) / 2
+		if key_cmp(st[mid].l, &st[mid].path, l, path) < 0 {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	found := lo < st.len() && key_cmp(st[lo].l, &st[lo].path, l, path) == 0
+	return (found, lo)
+}
+
+// Inserts unless present; returns whether it inserted.
+fun ms_insert(st &mut MoveState, l u32, path &Vec<Proj>, site option<(usize, usize)>) bool {
+	(found, at) := ms_find(st, l, path)
+	if found {
+		return false
+	}
+	st.insert(at, MEntry { l: l, path: path.clone(), site: site })
+	return true
+}
+
+fun starts_with(a &Vec<Proj>, b &Vec<Proj>) bool {
+	if b.len() > a.len() {
+		return false
+	}
+	for i in 0..b.len() {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+fun overlaps(a &Place, b &Place) bool {
+	if a.local != b.local {
+		return false
+	}
+	i mut := 0
+	while i < a.proj.len() && i < b.proj.len() {
+		same := a.proj[i] == b.proj[i]
+		both_index := match &a.proj[i] {
+			Proj::Index(_) => match &b.proj[i] {
+				Proj::Index(_) => true,
+				_ => false,
+			},
+			_ => false,
+		}
+		if !same && !both_index {
+			return false
+		}
+		i += 1
+	}
+	return true
+}
+
+fun is_ref_deref(p &Proj) bool {
+	match p {
+		Proj::Deref(DerefKey::Shared) | Proj::Deref(DerefKey::Mut) | Proj::Deref(DerefKey::Ptr) => return true,
+		_ => return false,
+	}
+}
+
+pub fun describe(b &mir::Body, p &Place) string {
+	s mut := match &b.locals[p.local as usize].name {
+		Some(n) => n.clone(),
+		None => return "value".to_string(),
+	}
+	for pr in &p.proj {
+		match pr {
+			Proj::Deref(_) => s = "*{s}",
+			Proj::Field(f) => {
+				f2 := match f.rfind(".") {
+					Some(k) => f[k + 1..].to_string(),
+					None => f.clone(),
+				}
+				s = "{s}.{f2}"
+			}
+			Proj::Index(_) => s = "{s}[..]",
+		}
+	}
+	return s
+}
+
+fun successors(t &Terminator) Vec<usize> {
+	o mut := Vec::new()
+	match t {
+		Terminator::Goto(b) => o.push(*b as usize),
+		Terminator::SwitchBool { t, f, .. } => {
+			o.push(*t as usize)
+			o.push(*f as usize)
+		}
+		Terminator::Branch(bs) => {
+			for b in bs {
+				o.push(*b as usize)
+			}
+		}
+		Terminator::Return | Terminator::Unreachable => {}
+		Terminator::DeferDispatch { targets, done } => {
+			for t in targets {
+				if let Some(t) = t {
+					o.push(*t as usize)
+				}
+			}
+			o.push(*done as usize)
+		}
+	}
+	return o
+}
+
+fun has_param(t &Ty) bool {
+	match t {
+		Ty::Param(_) => return true,
+		Ty::Tuple(ts) | Ty::Adt(_, ts) => {
+			for x in ts {
+				if has_param(x) {
+					return true
+				}
+			}
+			return false
+		}
+		Ty::Fn(ps, r, _) => {
+			for x in ps {
+				if has_param(x) {
+					return true
+				}
+			}
+			return has_param(r)
+		}
+		Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) | Ty::ChanSend(x) | Ty::ChanRecv(x) => return has_param(x),
+		_ => return false,
+	}
+}
+
+@derive(Clone, Copy, Eq)
+enum Access {
+	Read,
+	SharedBorrow,
+	MutBorrow,
+	Write,
+	Move,
+	Dead,
+}
+
+@derive(Clone)
+struct Loan {
+	place option<Place>,
+	mutable bool,
+	span Span,
+	param option<usize>,
+	deep bool,
+}
+
+type Holds = Vec<Vec<usize>>
+
+struct Ck<'a> {
+	b &'a mir::Body,
+	c &'a mut Checker,
+	bounds Vec<(string, u32)>,
+	errors Vec<BDiag>,
+	seen HashSet<string>,
+	reachable Vec<bool>,
+	loans Vec<Loan>,
+	loan_at HashMap<(usize, usize), usize>,
+	holds Holds,
+	hin Vec<option<Holds>>,
+	live Vec<Vec<Vec<usize>>>,
+	pinned Vec<usize>,
+	may_hold_cache Vec<bool>,
+	no_deep Vec<bool>,
+	inert Vec<Place>,
+	drop_cache Vec<bool>,
+}
+
+fun place_of(o &Operand) option<Place> {
+	return o.place()
+}
+
+impl<'a> Ck<'a> {
+	fun run(&mut self) {
+		for (msg, span) in self.b.errors.clone() {
+			d := diag(&msg, span)
+			if msg.contains("deferred call") {
+				self.report(d.help("deferred calls run when the function returns; declare the variable at the top level of the function body"))
+			} else {
+				self.report(d)
+			}
+		}
+		self.reachable = self.compute_reachable()
+		n := self.b.locals.len()
+		for i in 0..n {
+			t := self.b.locals[i].ty.clone()
+			h := self.may_hold(&t)
+			self.may_hold_cache.push(h)
+		}
+		self.inert = self.inert_places()
+		for i in 0..n {
+			nd := match self.b.locals[i].ty.clone() {
+				Ty::Ref(_, inner) => !self.may_hold(&inner),
+				_ => false,
+			}
+			self.no_deep.push(nd)
+		}
+		for i in 0..n {
+			t := self.b.locals[i].ty.clone()
+			d := self.c.has_drop_impl(&t)
+			self.drop_cache.push(d)
+		}
+		for bb in &self.b.blocks {
+			for st in &bb.stmts {
+				if let MStmt::Spawn { kind: SpawnKind::Scoped, operands, .. } = &st.kind {
+					for o in operands {
+						if let Some(p) = o.place() {
+							sadd(&mut self.pinned, p.local as usize)
+						}
+					}
+				}
+			}
+		}
+		self.compute_loans()
+		self.compute_liveness()
+		self.check_moves()
+		self.check_loans()
+		self.check_return()
+		self.check_spawns()
+	}
+
+	fun report(&mut self, d BDiag) {
+		k := "{d.span.start}..{d.span.end}:{d.message}"
+		if !self.seen.contains(&k) {
+			self.seen.insert(k)
+			self.errors.push(d)
+		}
+	}
+
+	fun compute_reachable(&self) Vec<bool> {
+		seen mut := Vec::new()
+		for _ in 0..self.b.blocks.len() {
+			seen.push(false)
+		}
+		q mut := one_us(0)
+		qi mut := 0
+		seen[0] = true
+		while qi < q.len() {
+			b := q[qi]
+			qi += 1
+			for s in successors(&self.b.blocks[b].term) {
+				if !seen[s] {
+					seen[s] = true
+					q.push(s)
+				}
+			}
+		}
+		return seen
+	}
+
+	fun may_hold(&mut self, t &Ty) bool {
+		match t {
+			Ty::Ref(_, _) | Ty::Param(_) | Ty::Fn(_, _, _) | Ty::Dyn(_) => return true,
+			Ty::Adt(d, args) => {
+				if self.c.adt_has_lifetimes(*d) {
+					return true
+				}
+				for a in args {
+					if self.may_hold(a) {
+						return true
+					}
+				}
+				return false
+			}
+			Ty::Tuple(ts) => {
+				for x in ts {
+					if self.may_hold(x) {
+						return true
+					}
+				}
+				return false
+			}
+			Ty::Array(x, _) | Ty::Slice(x) | Ty::ChanSend(x) | Ty::ChanRecv(x) => return self.may_hold(x),
+			_ => return false,
+		}
+	}
+
+	fun succ(&self, b usize) Vec<usize> {
+		return successors(&self.b.blocks[b].term)
+	}
+
+	fun empty_holds(&self) Holds {
+		h mut := Vec::new()
+		for _ in 0..2 * self.b.locals.len() {
+			h.push(Vec::new())
+		}
+		return h
+	}
+
+	fun compute_loans(&mut self) {
+		n := self.b.locals.len()
+		self.holds = self.empty_holds()
+		for i in 1..self.b.arg_count + 1 {
+			if self.may_hold_cache[i] && self.b.kind == BodyKind::Fn {
+				id := self.loans.len()
+				self.loans.push(Loan { place: None, mutable: false, span: self.b.locals[i].span, param: Some(i - 1), deep: false })
+				sadd(&mut self.holds[i], id)
+				if !self.no_deep[i] {
+					deep := self.loans.len()
+					self.loans.push(Loan { place: None, mutable: false, span: self.b.locals[i].span, param: Some(i - 1), deep: true })
+					sadd(&mut self.holds[n + i], deep)
+				}
+			}
+		}
+		for bi in 0..self.b.blocks.len() {
+			if !self.reachable[bi] {
+				continue
+			}
+			for si in 0..self.b.blocks[bi].stmts.len() {
+				s := &self.b.blocks[bi].stmts[si]
+				if let MStmt::Assign(_, Rvalue::Ref { mutable, place }) = &s.kind {
+					self.loan_at.insert((bi, si), self.loans.len())
+					self.loans.push(Loan { place: Some(place.clone()), mutable: *mutable, span: s.span, param: None, deep: false })
+				}
+			}
+		}
+		nb := self.b.blocks.len()
+		hin mut := Vec::new()
+		for _ in 0..nb {
+			hin.push(None)
+		}
+		hin[0] = Some(self.holds.clone())
+		work mut := one_us(0)
+		while work.len() > 0 {
+			bi := work.remove(0)
+			st mut := hin[bi].clone().unwrap()
+			for si in 0..self.b.blocks[bi].stmts.len() {
+				self.holds_transfer(&mut st, (bi, si))
+			}
+			for sb in self.succ(bi) {
+				changed mut := false
+				if hin[sb].is_none() {
+					hin[sb] = Some(st.clone())
+					changed = true
+				} else {
+					e mut := hin[sb].clone().unwrap()
+					for k in 0..e.len() {
+						if sunion(&mut e[k], &st[k]) {
+							changed = true
+						}
+					}
+					hin[sb] = Some(e)
+				}
+				if changed && !work.contains(&sb) {
+					work.push(sb)
+				}
+			}
+		}
+		for h in &hin {
+			if let Some(st) = h {
+				for k in 0..self.holds.len() {
+					sunion(&mut self.holds[k], &st[k])
+				}
+			}
+		}
+		for bi in 0..nb {
+			if let Some(h) = &hin[bi] {
+				st mut := h.clone()
+				for si in 0..self.b.blocks[bi].stmts.len() {
+					self.holds_transfer(&mut st, (bi, si))
+					for k in 0..self.holds.len() {
+						sunion(&mut self.holds[k], &st[k])
+					}
+				}
+			}
+		}
+		self.hin = hin
+	}
+
+	fun is_inert(&self, p &Place) bool {
+		for x in &self.inert {
+			if x == p {
+				return true
+			}
+		}
+		return false
+	}
+
+	fun op_holds_in(&self, st &Holds, o &Operand) Vec<usize> {
+		p := match o.place() {
+			Some(p) => p,
+			None => return Vec::new(),
+		}
+		if self.is_inert(&p) {
+			return Vec::new()
+		}
+		l := p.local as usize
+		if p.through_ref() {
+			n := self.b.locals.len()
+			s mut := st[n + l].clone()
+			for id in &st[l] {
+				if self.loans[*id].param.is_none() {
+					sadd(&mut s, *id)
+				}
+			}
+			return s
+		}
+		return st[l].clone()
+	}
+
+	fun deep_of(&self, st &Holds, o &Operand) Vec<usize> {
+		p := match o.place() {
+			Some(p) => p,
+			None => return Vec::new(),
+		}
+		if p.proj.len() == 0 && self.no_deep[p.local as usize] {
+			return Vec::new()
+		}
+		if self.is_inert(&p) {
+			return Vec::new()
+		}
+		return st[self.b.locals.len() + p.local as usize].clone()
+	}
+
+	fun inert_places(&mut self) Vec<Place> {
+		places mut := Vec::new()
+		for bb in &self.b.blocks {
+			for st in &bb.stmts {
+				if let MStmt::Assign(_, rv) = &st.kind {
+					for o in rv.operands() {
+						if let Some(p) = o.place() {
+							if p.proj.len() > 0 {
+								places.push(p)
+							}
+						}
+					}
+				}
+			}
+		}
+		out mut := Vec::new()
+		for p in places {
+			t mut := self.b.locals[p.local as usize].ty.clone()
+			for x in &p.proj {
+				t = match x {
+					Proj::Deref(_) => match t {
+						Ty::Ref(_, inner) => *inner,
+						_ => Ty::Unknown,
+					},
+					Proj::Field(f) => self.c.field_ty(&t, f),
+					_ => Ty::Unknown,
+				}
+			}
+			unknown := match t {
+				Ty::Unknown | Ty::Var(_) => true,
+				_ => false,
+			}
+			if !unknown && !self.may_hold(&t) {
+				dup mut := false
+				for q in &out {
+					if *q == p {
+						dup = true
+					}
+				}
+				if !dup {
+					out.push(p)
+				}
+			}
+		}
+		return out
+	}
+
+	fun holds_transfer(&self, st &mut Holds, loc (usize, usize)) {
+		n := self.b.locals.len()
+		s := &self.b.blocks[loc.0].stmts[loc.1]
+		match &s.kind {
+			MStmt::Assign(dest, rv) => {
+				root := dest.local as usize
+				if !self.may_hold_cache[root] {
+					return
+				}
+				add mut := Vec::new()
+				deep mut := Vec::new()
+				match rv {
+					Rvalue::Use(o) | Rvalue::Coerce(o, _) => {
+						add = self.op_holds_in(st, o)
+						deep = self.deep_of(st, o)
+					}
+					Rvalue::Ref { place, .. } => {
+						base := place.local as usize
+						sadd(&mut add, *self.loan_at.get(&loc).unwrap())
+						deep = st[base].clone()
+						derefs mut := 0
+						for x in &place.proj {
+							if let Proj::Deref(_) = x {
+								derefs += 1
+							}
+						}
+						if derefs >= 2 {
+							sunion(&mut add, &st[n + base])
+							for id in &st[base] {
+								if self.loans[*id].param.is_none() {
+									sadd(&mut add, *id)
+								}
+							}
+							sunion(&mut deep, &st[n + base])
+						} else if place.through_ref() {
+							sunion(&mut add, &st[base])
+							kept mut := Vec::new()
+							for id in &deep {
+								if self.loans[*id].param.is_none() {
+									kept.push(*id)
+								}
+							}
+							deep = kept
+							sunion(&mut deep, &st[n + base])
+						}
+					}
+					Rvalue::Aggregate(_, ops) => {
+						for o in ops {
+							sunion(&mut add, &self.op_holds_in(st, o))
+							sunion(&mut deep, &self.deep_of(st, o))
+						}
+					}
+					Rvalue::Call { args, flows, .. } => {
+						for f in flows {
+							k := *f & (DEEP_FLOW - 1)
+							if k >= args.len() {
+								continue
+							}
+							o := &args[k]
+							inner := self.deep_of(st, o)
+							if *f & DEEP_FLOW == 0 {
+								sunion(&mut add, &self.op_holds_in(st, o))
+							} else {
+								sunion(&mut add, &inner)
+							}
+							sunion(&mut deep, &inner)
+						}
+					}
+					Rvalue::Pure(_, _) => {}
+				}
+				if dest.proj.len() == 0 {
+					st[root] = add
+					st[n + root] = deep
+				} else {
+					sunion(&mut st[root], &add)
+					sunion(&mut st[n + root], &deep)
+				}
+			}
+			MStmt::StorageDead(l) => {
+				if !shas(&self.pinned, *l as usize) {
+					st[*l as usize] = Vec::new()
+					st[n + *l as usize] = Vec::new()
+				}
+			}
+			_ => {}
+		}
+	}
+
+	fun holds_before(&self, bi usize, si usize) Holds {
+		st mut := match &self.hin[bi] {
+			Some(h) => h.clone(),
+			None => self.empty_holds(),
+		}
+		for i in 0..si {
+			self.holds_transfer(&mut st, (bi, i))
+		}
+		return st
+	}
+
+	fun holders(&self, l usize) Vec<usize> {
+		n := self.b.locals.len()
+		out mut := Vec::new()
+		for i in 0..self.holds.len() {
+			if shas(&self.holds[i], l) {
+				sadd(&mut out, i % n)
+			}
+		}
+		return out
+	}
+
+	fun rv_uses(rv &Rvalue, uses &mut Vec<usize>) {
+		for o in rv.operands() {
+			if let Some(p) = o.place() {
+				uses.push(p.local as usize)
+			}
+		}
+		if let Rvalue::Ref { place, .. } = rv {
+			uses.push(place.local as usize)
+		}
+	}
+
+	fun uses_defs(&self, s &Statement) (Vec<usize>, option<usize>) {
+		uses mut := Vec::new()
+		def mut := None
+		match &s.kind {
+			MStmt::Assign(dest, rv) => {
+				Ck::rv_uses(rv, &mut uses)
+				if dest.proj.len() == 0 {
+					def = Some(dest.local as usize)
+				} else {
+					uses.push(dest.local as usize)
+				}
+			}
+			MStmt::Read(p) => uses.push(p.local as usize),
+			MStmt::DeferPush(_, _) | MStmt::DeferLoad(_) => {}
+			MStmt::Eval(rv) => Ck::rv_uses(rv, &mut uses),
+			MStmt::StorageDead(l) => {
+				if self.drop_cache[*l as usize] {
+					uses.push(*l as usize)
+				}
+			}
+			MStmt::Spawn { operands, .. } => {
+				for o in operands {
+					if let Some(p) = o.place() {
+						uses.push(p.local as usize)
+					}
+				}
+			}
+		}
+		return (uses, def)
+	}
+
+	fun compute_liveness(&mut self) {
+		nb := self.b.blocks.len()
+		live_in mut := Vec::new()
+		for _ in 0..nb {
+			live_in.push(Vec::new())
+		}
+		loop {
+			changed mut := false
+			bi mut := nb
+			while bi > 0 {
+				bi -= 1
+				if !self.reachable[bi] {
+					continue
+				}
+				live mut := self.block_live_out(bi, &live_in)
+				k mut := self.b.blocks[bi].stmts.len()
+				while k > 0 {
+					k -= 1
+					(uses, def) := self.uses_defs(&self.b.blocks[bi].stmts[k])
+					if let Some(d) = def {
+						sremove(&mut live, d)
+					}
+					for u in uses {
+						sadd(&mut live, u)
+					}
+				}
+				if !sets_eq(&live, &live_in[bi]) {
+					live_in[bi] = live
+					changed = true
+				}
+			}
+			if !changed {
+				break
+			}
+		}
+		for bi in 0..nb {
+			n := self.b.blocks[bi].stmts.len()
+			out mut := Vec::new()
+			for _ in 0..n + 1 {
+				out.push(Vec::new())
+			}
+			live mut := self.block_live_out(bi, &live_in)
+			out[n] = live.clone()
+			k mut := n
+			while k > 0 {
+				k -= 1
+				out[k] = live.clone()
+				(uses, def) := self.uses_defs(&self.b.blocks[bi].stmts[k])
+				if let Some(d) = def {
+					sremove(&mut live, d)
+				}
+				for u in uses {
+					sadd(&mut live, u)
+				}
+			}
+			self.live.push(out)
+		}
+	}
+
+	fun block_live_out(&self, bi usize, live_in &Vec<Vec<usize>>) Vec<usize> {
+		live mut := Vec::new()
+		for s in self.succ(bi) {
+			sunion(&mut live, &live_in[s])
+		}
+		if let Terminator::Return = self.b.blocks[bi].term {
+			sadd(&mut live, 0)
+			sunion(&mut live, &self.pinned)
+		}
+		return live
+	}
+
+	fun next_use(&self, loc (usize, usize), locals &Vec<usize>) option<(Span, option<usize>)> {
+		seen mut := HashSet::new()
+		q mut := Vec::new()
+		q.push((loc.0, loc.1 + 1))
+		qi mut := 0
+		while qi < q.len() {
+			(b, start) := q[qi]
+			qi += 1
+			bb := &self.b.blocks[b]
+			from := if start < bb.stmts.len() { start } else { bb.stmts.len() }
+			for k in from..bb.stmts.len() {
+				s := &bb.stmts[k]
+				(uses, _) := self.uses_defs(s)
+				for u in &uses {
+					if locals.contains(u) {
+						via := match s.kind {
+							MStmt::StorageDead(_) => Some(*u),
+							_ => None,
+						}
+						return Some((s.span, via))
+					}
+				}
+			}
+			if let Terminator::Return = bb.term {
+				if locals.contains(&0) {
+					return Some((bb.term_span, None))
+				}
+			}
+			for s in self.succ(b) {
+				if !seen.contains(&s) {
+					seen.insert(s)
+					q.push((s, 0))
+				}
+			}
+		}
+		return None
+	}
+
+	fun entry_state(&self) MoveState {
+		st mut := Vec::new()
+		for (i, l) in self.b.locals.iter().enumerate() {
+			match l.kind {
+				LocalKind::User | LocalKind::Temp | LocalKind::Return => {
+					ms_insert(&mut st, i as u32, &Vec::new(), None)
+				}
+				_ => {}
+			}
+		}
+		return st
+	}
+
+	fun check_moves(&mut self) {
+		nb := self.b.blocks.len()
+		entry mut := Vec::new()
+		for _ in 0..nb {
+			entry.push(None)
+		}
+		entry[0] = Some(self.entry_state())
+		work mut := one_us(0)
+		while work.len() > 0 {
+			bi := work.remove(0)
+			st mut := entry[bi].clone().unwrap()
+			for si in 0..self.b.blocks[bi].stmts.len() {
+				self.move_transfer(&mut st, (bi, si), false)
+			}
+			for s in self.succ(bi) {
+				changed mut := false
+				if entry[s].is_none() {
+					entry[s] = Some(st.clone())
+					changed = true
+				} else {
+					e mut := entry[s].clone().unwrap()
+					for x in &st {
+						if ms_insert(&mut e, x.l, &x.path, x.site) {
+							changed = true
+						}
+					}
+					entry[s] = Some(e)
+				}
+				if changed && !work.contains(&s) {
+					work.push(s)
+				}
+			}
+		}
+		for bi in 0..nb {
+			if let Some(e) = &entry[bi] {
+				st mut := e.clone()
+				for si in 0..self.b.blocks[bi].stmts.len() {
+					self.move_transfer(&mut st, (bi, si), true)
+				}
+			}
+		}
+	}
+
+	fun move_transfer(&mut self, st &mut MoveState, loc (usize, usize), report bool) {
+		s := self.b.blocks[loc.0].stmts[loc.1].clone()
+		uses mut := Vec::new()
+		borrow mut := None
+		match &s.kind {
+			MStmt::Assign(_, rv) | MStmt::Eval(rv) => {
+				for o in rv.operands() {
+					uses.push(o)
+				}
+				if let Rvalue::Ref { place, .. } = rv {
+					borrow = Some(place.clone())
+				}
+			}
+			MStmt::Spawn { operands, .. } => {
+				for o in operands {
+					uses.push(o.clone())
+				}
+			}
+			MStmt::Read(p) => {
+				if report {
+					self.check_init(st, p, false, s.span, loc)
+				}
+			}
+			MStmt::StorageDead(_) | MStmt::DeferPush(_, _) => {}
+			MStmt::DeferLoad(l) => {
+				kept mut := Vec::new()
+				for x in st.iter() {
+					if x.l != *l {
+						kept.push(x.clone())
+					}
+				}
+				*st = kept
+			}
+		}
+		if report {
+			for o in &uses {
+				if let Some(p) = o.place() {
+					self.check_init(st, &p, false, s.span, loc)
+				}
+			}
+			if let Some(p) = &borrow {
+				self.check_init(st, p, true, s.span, loc)
+			}
+		}
+		for o in &uses {
+			if let Operand::Move(p) = o {
+				self.apply_move(st, p, s.span, report)
+			}
+		}
+		if let MStmt::Assign(dest, _) = &s.kind {
+			decl := self.b.locals[dest.local as usize].clone()
+			if report && dest.proj.len() == 0 && decl.kind == LocalKind::User && !decl.mutable {
+				(found, _) := ms_find(st, dest.local, &Vec::new())
+				if !found {
+					name := match &decl.name {
+						Some(n) => n.clone(),
+						None => string::new(),
+					}
+					self.report(diag("cannot assign twice to immutable variable `{name}`", s.span).note("first assigned here", decl.span).help("declare it with `let mut {name}` (or `{name} mut := ...`) to allow reassignment"))
+				}
+			}
+			if !dest.through_ref() {
+				kept mut := Vec::new()
+				for x in st.iter() {
+					if !(x.l == dest.local && starts_with(&x.path, &dest.proj)) {
+						kept.push(x.clone())
+					}
+				}
+				*st = kept
+			}
+		}
+	}
+
+	fun check_init(&mut self, st &MoveState, p &Place, is_borrow bool, span Span, loc (usize, usize)) {
+		owned_len mut := p.proj.len()
+		for (i, x) in p.proj.iter().enumerate() {
+			if is_ref_deref(x) {
+				owned_len = i
+				break
+			}
+		}
+		path mut := Vec::new()
+		for i in 0..owned_len {
+			path.push(p.proj[i].clone())
+		}
+		whole := Place { local: p.local, proj: path.clone() }
+		for x in st.iter() {
+			if x.l != p.local {
+				continue
+			}
+			ancestor := starts_with(&path, &x.path)
+			partial := !ancestor && starts_with(&x.path, &path)
+			if !ancestor && !partial {
+				continue
+			}
+			decl := self.b.locals[p.local as usize].clone()
+			if decl.kind == LocalKind::Temp || decl.kind == LocalKind::Return {
+				return
+			}
+			name := describe(self.b, &whole)
+			moved_name := describe(self.b, &Place { local: x.l, proj: x.path.clone() })
+			ty := self.c.fmt_ty(&decl.ty)
+			dname := match &decl.name {
+				Some(n) => n.clone(),
+				None => string::new(),
+			}
+			d := match x.site {
+				None => diag("used binding `{dname}` isn't initialized", span).note("binding declared here but left uninitialized", decl.span),
+				Some((ms, me)) => {
+					what := if partial {
+						if is_borrow { "borrow of partially moved value" } else { "use of partially moved value" }
+					} else {
+						if is_borrow { "borrow of moved value" } else { "use of moved value" }
+					}
+					move_span := Span::new(ms, me)
+					cur := self.b.blocks[loc.0].stmts[loc.1].span
+					same_cur := cur.start == move_span.start && cur.end == move_span.end
+					same_span := move_span.start == span.start && move_span.end == span.end
+					in_loop := (ms >= span.start && !same_cur) || same_span
+					note := if partial {
+						"value partially moved here (`{moved_name}`)"
+					} else if in_loop {
+						"value moved here, in a previous iteration of the loop".to_string()
+					} else {
+						"value moved here".to_string()
+					}
+					diag("{what}: `{name}`", span).note(&note, move_span).plain("move occurs because `{moved_name}` has type `{ty}`, which does not implement the `Copy` trait").help("borrow it with `&{moved_name}` or call `.clone()` before moving it")
+				}
+			}
+			self.report(d)
+			return
+		}
+	}
+
+	fun apply_move(&mut self, st &mut MoveState, p &Place, span Span, report bool) {
+		decl := self.b.locals[p.local as usize].clone()
+		for x in &p.proj {
+			if is_ref_deref(x) {
+				if report {
+					kind := match x {
+						Proj::Deref(DerefKey::Mut) => "a mutable reference",
+						Proj::Deref(DerefKey::Ptr) => "a raw pointer",
+						_ => "a shared reference",
+					}
+					name := describe(self.b, p)
+					self.report(diag("cannot move out of `{name}`, which is behind {kind}", span).help("borrow the value instead, or call `.clone()` to get an owned copy"))
+				}
+				return
+			}
+		}
+		for x in &p.proj {
+			if let Proj::Index(_) = x {
+				if report {
+					name := describe(self.b, p)
+					self.report(diag("cannot move out of index of `{name}`", span).help("borrow the element with `&`, call `.clone()`, or remove it from the collection"))
+				}
+				return
+			}
+		}
+		if p.proj.len() > 0 && self.drop_cache[p.local as usize] {
+			if report {
+				t := self.c.fmt_ty(&decl.ty)
+				self.report(diag("cannot move out of type `{t}`, which implements the `Drop` trait", span).help("fields of a type with a destructor can only be borrowed or cloned"))
+			}
+			return
+		}
+		ms_insert(st, p.local, &p.proj, Some((span.start, span.end)))
+	}
+
+	fun op_access(rv &Rvalue, out &mut Vec<(Place, Access)>) {
+		for o in rv.operands() {
+			match o {
+				Operand::Copy(p) => out.push((p, Access::Read)),
+				Operand::Move(p) => out.push((p, Access::Move)),
+				Operand::Const(_) => {}
+			}
+		}
+		if let Rvalue::Ref { mutable, place } = rv {
+			out.push((place.clone(), if *mutable { Access::MutBorrow } else { Access::SharedBorrow }))
+		}
+	}
+
+	fun accesses(s &Statement) Vec<(Place, Access)> {
+		out mut := Vec::new()
+		match &s.kind {
+			MStmt::Assign(dest, rv) => {
+				Ck::op_access(rv, &mut out)
+				out.push((dest.clone(), Access::Write))
+			}
+			MStmt::Eval(rv) => Ck::op_access(rv, &mut out),
+			MStmt::Read(p) => out.push((p.clone(), Access::Read)),
+			MStmt::DeferPush(_, _) | MStmt::DeferLoad(_) => {}
+			MStmt::StorageDead(l) => out.push((Place::local(*l), Access::Dead)),
+			MStmt::Spawn { operands, .. } => {
+				for o in operands {
+					match o {
+						Operand::Copy(p) => out.push((p.clone(), Access::Read)),
+						Operand::Move(p) => out.push((p.clone(), Access::Move)),
+						Operand::Const(_) => {}
+					}
+				}
+			}
+		}
+		return out
+	}
+
+	fun through_deref_of(lp &Place, p &Place) bool {
+		if lp.local != p.local || lp.proj.len() <= p.proj.len() {
+			return false
+		}
+		for i in 0..p.proj.len() {
+			if lp.proj[i] != p.proj[i] {
+				return false
+			}
+		}
+		match &lp.proj[p.proj.len()] {
+			Proj::Deref(DerefKey::Shared) | Proj::Deref(DerefKey::Mut) => return true,
+			_ => return false,
+		}
+	}
+
+	fun check_loans(&mut self) {
+		for bi in 0..self.b.blocks.len() {
+			if !self.reachable[bi] {
+				continue
+			}
+			st mut := self.holds_before(bi, 0)
+			for si in 0..self.b.blocks[bi].stmts.len() {
+				s := self.b.blocks[bi].stmts[si].clone()
+				created := match self.loan_at.get(&(bi, si)) {
+					Some(x) => Some(*x),
+					None => None,
+				}
+				live_after := self.live[bi][si].clone()
+				self.holds_transfer(&mut st, (bi, si))
+				for (p, acc) in Ck::accesses(&s) {
+					live_loans mut := Vec::new()
+					for l in &live_after {
+						if acc == Access::Dead && *l == 0 {
+							continue
+						}
+						sunion(&mut live_loans, &st[*l])
+						sunion(&mut live_loans, &st[self.b.locals.len() + *l])
+					}
+					for li in live_loans {
+						if Some(li) == created {
+							continue
+						}
+						loan := self.loans[li].clone()
+						lp := match &loan.place {
+							Some(lp) => lp.clone(),
+							None => continue,
+						}
+						conflict := match acc {
+							Access::Dead => lp.local == p.local && !lp.through_ref(),
+							Access::Read | Access::SharedBorrow => loan.mutable && overlaps(&lp, &p),
+							Access::Write => !Ck::through_deref_of(&lp, &p) && overlaps(&lp, &p),
+							_ => overlaps(&lp, &p),
+						}
+						if conflict && !(acc == Access::Write && p.through_ref()) {
+							self.loan_conflict(&loan, li, &p, acc, (bi, si), s.span)
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	fun later_note(&self, d BDiag, later &option<(Span, option<usize>)>, what &str) BDiag {
+		match later {
+			Some((sp, Some(dropped))) => {
+				dn := describe(self.b, &Place::local(*dropped as u32))
+				return d.note("{what} might be used here, when `{dn}` is dropped", *sp)
+			}
+			Some((sp, None)) => return d.note("{what} later used here", *sp),
+			None => return d,
+		}
+	}
+
+	fun loan_conflict(&mut self, loan &Loan, li usize, p &Place, acc Access, loc (usize, usize), span Span) {
+		holders mut := Vec::new()
+		for l in self.holders(li) {
+			if acc != Access::Dead || l != 0 {
+				holders.push(l)
+			}
+		}
+		later := self.next_use(loc, &holders)
+		lp := loan.place.clone().unwrap()
+		name := describe(self.b, &lp)
+		pd := describe(self.b, p)
+		d := match acc {
+			Access::Dead => {
+				msg := if self.b.locals[lp.local as usize].kind == LocalKind::Temp { "temporary value dropped while borrowed".to_string() } else { "`{name}` does not live long enough" }
+				self.later_note(diag(&msg, loan.span).note("`{name}` dropped here while still borrowed", span), &later, "borrow")
+			}
+			Access::Read | Access::SharedBorrow => {
+				msg := if acc == Access::Read { "cannot use `{pd}` because it was mutably borrowed" } else { "cannot borrow `{pd}` as immutable because it is also borrowed as mutable" }
+				self.later_note(diag(&msg, span).note("mutable borrow of `{name}` occurs here", loan.span), &later, "mutable borrow")
+			}
+			Access::MutBorrow => {
+				if loan.mutable {
+					self.later_note(diag("cannot borrow `{pd}` as mutable more than once at a time", span).note("first mutable borrow occurs here", loan.span), &later, "first borrow")
+				} else {
+					self.later_note(diag("cannot borrow `{pd}` as mutable because it is also borrowed as immutable", span).note("immutable borrow occurs here", loan.span), &later, "immutable borrow")
+				}
+			}
+			Access::Write => self.later_note(diag("cannot assign to `{pd}` because it is borrowed", span).note("`{name}` is borrowed here", loan.span), &later, "borrow"),
+			Access::Move => self.later_note(diag("cannot move out of `{pd}` because it is borrowed", span).note("`{name}` is borrowed here", loan.span), &later, "borrow"),
+		}
+		self.report(d)
+	}
+
+	fun local_name(&self, i usize) string {
+		match &self.b.locals[i].name {
+			Some(n) => return n.clone(),
+			None => return string::new(),
+		}
+	}
+
+	fun check_return(&mut self) {
+		if self.b.kind != BodyKind::Fn {
+			return
+		}
+		held mut := Vec::new()
+		for bi in 0..self.b.blocks.len() {
+			is_ret := match self.b.blocks[bi].term {
+				Terminator::Return => true,
+				_ => false,
+			}
+			if self.reachable[bi] && is_ret {
+				st := self.holds_before(bi, self.b.blocks[bi].stmts.len())
+				sunion(&mut held, &st[0])
+			}
+		}
+		for li in held {
+			loan := self.loans[li].clone()
+			if let Some(lp) = &loan.place {
+				if !lp.through_ref() {
+					decl := self.b.locals[lp.local as usize].clone()
+					name := match &decl.name {
+						Some(n) => n.clone(),
+						None => string::new(),
+					}
+					msg := match decl.kind {
+						LocalKind::User => "cannot return reference to local variable `{name}`",
+						LocalKind::Arg => "cannot return reference to function parameter `{name}`",
+						_ => "cannot return reference to a temporary value".to_string(),
+					}
+					self.report(diag(&msg, loan.span).plain("returns a value referencing data owned by the current function, which is dropped when it returns").help("return an owned value instead (e.g. `string` rather than `&str`)"))
+				}
+				continue
+			}
+			idx := match loan.param {
+				Some(i) => i,
+				None => continue,
+			}
+			flows := match &self.b.return_flows {
+				Some(f) => f.clone(),
+				None => Vec::new(),
+			}
+			generic_ret := has_param(&self.b.locals[0].ty)
+			ok := flows.contains(&idx) || ((loan.deep || generic_ret) && flows.contains(&(idx | DEEP_FLOW)))
+			if ok {
+				continue
+			}
+			pname := match &self.b.locals[idx + 1].name {
+				Some(n) => n.clone(),
+				None => "parameter {idx + 1}",
+			}
+			tied := if flows.len() == 0 {
+				"the signature does not tie the result to any parameter".to_string()
+			} else {
+				names mut := string::new()
+				for (k, f) in flows.iter().enumerate() {
+					if k > 0 {
+						names.push(" and ")
+					}
+					i := *f & (DEEP_FLOW - 1)
+					names.push("`{self.local_name(i + 1)}`")
+				}
+				"the signature ties the result to {names} only"
+			}
+			self.report(diag("lifetime may not live long enough: the returned value borrows from `{pname}`", self.b.locals[idx + 1].span).plain(&tied).help("give `{pname}` and the return type the same lifetime, e.g. `<'a>` with `{pname} &'a T` and the return type `&'a U`"))
+		}
+	}
+
+	fun implements(&mut self, t &Ty, tr &str) bool {
+		bounds := self.bounds.clone()
+		return self.c.implements_named(t, tr, &bounds)
+	}
+
+	fun check_spawns(&mut self) {
+		for bi in 0..self.b.blocks.len() {
+			if !self.reachable[bi] {
+				continue
+			}
+			for si in 0..self.b.blocks[bi].stmts.len() {
+				s := self.b.blocks[bi].stmts[si].clone()
+				match &s.kind {
+					MStmt::Spawn { kind, operands, captures, .. } => {
+						match kind {
+							SpawnKind::GoCall => {
+								for o in operands {
+									held := self.op_holds_in(&self.holds_before(bi, si), o)
+									self.check_static(&held, s.span, "argument to `spawn`")
+									if let Some(p) = o.place() {
+										if p.proj.len() == 0 {
+											t := self.b.locals[p.local as usize].ty.clone()
+											self.check_send(&t, s.span, None)
+										}
+									}
+								}
+							}
+							SpawnKind::GoBlock { .. } => {
+								for (k, c) in captures.iter().enumerate() {
+									if k >= operands.len() {
+										break
+									}
+									if c.mode != CaptureMode::Move {
+										self.report(diag("`spawn` block may outlive the current function, but it borrows `{c.name}`", s.span).note("`{c.name}` is used here", c.span).help("use `spawn move { ... }` to move captured values into the task (clone them first if you still need them)"))
+										continue
+									}
+									held := self.op_holds_in(&self.holds_before(bi, si), &operands[k])
+									self.check_static(&held, s.span, "`spawn` block capture")
+									self.check_send(&c.ty, s.span, Some(c.name.clone()))
+								}
+							}
+							SpawnKind::Scoped => {
+								for c in captures {
+									match c.mode {
+										CaptureMode::Ref => {
+											if !self.implements(&c.ty, "Sync") {
+												t := self.c.fmt_ty(&c.ty)
+												self.report(diag("`{t}` cannot be shared between tasks safely", s.span).note("`{c.name}` is borrowed by the task here", c.span).help("the task borrows `{c.name}`, so its type must implement `Sync`"))
+											}
+										}
+										_ => self.check_send(&c.ty, s.span, Some(c.name.clone())),
+									}
+								}
+							}
+						}
+					}
+					_ => {}
+				}
+			}
+		}
+	}
+
+	fun check_static(&mut self, held &Vec<usize>, span Span, what &str) {
+		if held.len() == 0 {
+			return
+		}
+		loan := self.loans[held[0]].clone()
+		src := match &loan.place {
+			Some(p) => "`{describe(self.b, p)}`",
+			None => match loan.param {
+				Some(i) => "parameter `{self.local_name(i + 1)}`",
+				None => "a local".to_string(),
+			},
+		}
+		d mut := diag("{what} borrows {src}, which may not live as long as the task", span).help("tasks started with `spawn` may outlive the current function: pass an owned value (e.g. `.clone()`), or use `scope(|s| { s.spawn(...) })` for tasks that borrow")
+		if loan.place.is_some() {
+			d = d.note("borrowed here", loan.span)
+		}
+		self.report(d)
+	}
+
+	fun check_send(&mut self, t &Ty, span Span, name option<string>) {
+		if !self.implements(t, "Send") {
+			tn := self.c.fmt_ty(t)
+			d mut := diag("`{tn}` cannot be sent between tasks safely", span).help("only `Send` types may move into another task; a type is `Send` when all of its fields are (raw pointers are not)")
+			if let Some(n) = name {
+				d = d.plain("the task captures `{n}` of type `{tn}`")
+			}
+			self.report(d)
+		}
+	}
+}
+
+fun one_us(x usize) Vec<usize> {
+	v mut := Vec::new()
+	v.push(x)
+	return v
+}
+
+// ---- signature checks (sigcheck.rs) ----
+
+fun lifetime_names(g &Generics) Vec<string> {
+	o mut := Vec::new()
+	for p in &g.params {
+		if let GenericParam::Lifetime { name, .. } = p {
+			o.push(name.name.clone())
+		}
+	}
+	return o
+}
+
+fun used_lifetimes(t &Type, out &mut Vec<(string, Span)>) {
+	match &t.kind {
+		TypeKind::Ref { lifetime, inner, .. } => {
+			if let Some(l) = lifetime {
+				out.push((l.name.clone(), l.span))
+			}
+			used_lifetimes(inner, out)
+		}
+		TypeKind::Path(p) => {
+			for seg in &p.segments {
+				for a in &seg.args {
+					match a {
+						GenericArg::Lifetime(l) => out.push((l.name.clone(), l.span)),
+						GenericArg::Type(t) => used_lifetimes(t, out),
+						GenericArg::Binding { ty, .. } => used_lifetimes(ty, out),
+					}
+				}
+			}
+		}
+		TypeKind::Ptr { inner, .. } => used_lifetimes(inner, out),
+		TypeKind::Slice(inner) | TypeKind::ChanSend(inner) | TypeKind::ChanRecv(inner) => used_lifetimes(inner, out),
+		TypeKind::Array(inner, _) => used_lifetimes(inner, out),
+		TypeKind::Tuple(ts) => {
+			for x in ts {
+				used_lifetimes(x, out)
+			}
+		}
+		TypeKind::Fn { params, ret, .. } => {
+			for x in params {
+				used_lifetimes(x, out)
+			}
+			if let Some(r) = ret {
+				used_lifetimes(r, out)
+			}
+		}
+		TypeKind::Dyn(bs) | TypeKind::Impl(bs) => {
+			for b in bs {
+				if let Bound::Lifetime(l) = b {
+					out.push((l.name.clone(), l.span))
+				}
+			}
+		}
+		_ => {}
+	}
+}
+
+fun undeclared(name &str, span Span) BDiag {
+	return diag("use of undeclared lifetime name `'{name}`", span).help("declare it in the generic parameters: `<'{name}>`")
+}
+
+fun check_declared(types &Vec<Type>, declared &Vec<string>, errors &mut Vec<BDiag>) {
+	used mut := Vec::new()
+	for t in types {
+		used_lifetimes(t, &mut used)
+	}
+	for (name, span) in used {
+		if name != "static" && !declared.contains(&name) {
+			errors.push(undeclared(&name, span))
+		}
+	}
+}
+
+fun check_bound_names(gs &Vec<Generics>, declared &Vec<string>, errors &mut Vec<BDiag>) {
+	names mut := Vec::new()
+	for g in gs {
+		for p in &g.params {
+			if let GenericParam::Lifetime { bounds, .. } = p {
+				for b in bounds {
+					names.push(b.clone())
+				}
+			}
+		}
+		for w in &g.where_clause {
+			if let Some(l) = &w.lifetime {
+				names.push(l.clone())
+				for b in &w.bounds {
+					if let Bound::Lifetime(x) = b {
+						names.push(x.clone())
+					}
+				}
+			}
+		}
+	}
+	for n in names {
+		if n.name != "static" && !declared.contains(&n.name) {
+			errors.push(undeclared(&n.name, n.span))
+		}
+	}
+}
+
+fun param_name(decl &FnDecl, j usize) string {
+	match &decl.params[j].pat.kind {
+		PatternKind::Ident { name, .. } => return name.name.clone(),
+		_ => return "parameter {j + 1}",
+	}
+}
+
+fun check_fn(decl &FnDecl, outer &Generics, outer_types &Vec<string>, r &Resolved, errors &mut Vec<BDiag>) {
+	declared mut := lifetime_names(outer)
+	for n in lifetime_names(&decl.generics) {
+		declared.push(n)
+	}
+	types mut := Vec::new()
+	for p in &decl.params {
+		types.push(p.ty.clone())
+	}
+	if let Some(t) = &decl.ret {
+		types.push(t.clone())
+	}
+	check_declared(&types, &declared, errors)
+	gs mut := Vec::new()
+	gs.push(outer.clone())
+	gs.push(decl.generics.clone())
+	check_bound_names(&gs, &declared, errors)
+	if let Some(SelfParam::Ref { lifetime: Some(l), .. }) = &decl.self_param {
+		if l.name != "static" && !declared.contains(&l.name) {
+			errors.push(diag("use of undeclared lifetime name `'{l.name}`", l.span))
+		}
+	}
+	ret_ty := match &decl.ret {
+		Some(t) => t,
+		None => return,
+	}
+	(params, ret) := sig::fn_lifetimes(decl, outer_types, r)
+	ref_self := match &decl.self_param {
+		Some(SelfParam::Ref { .. }) => true,
+		_ => false,
+	}
+	if !ret.elided || ref_self {
+		return
+	}
+	offset := if decl.self_param.is_some() { 1 } else { 0 }
+	with mut := Vec::new()
+	for (i, p) in params.iter().enumerate() {
+		if p.has_lifetimes() {
+			if i >= offset {
+				with.push(param_name(decl, i - offset))
+			} else {
+				with.push("self".to_string())
+			}
+		}
+	}
+	if with.len() == 1 {
+		return
+	}
+	help := if with.len() == 0 {
+		"the return type contains a borrowed value, but there is no parameter for it to be borrowed from; return an owned value (e.g. `string`) or use `'static`".to_string()
+	} else {
+		names mut := string::new()
+		for (k, n) in with.iter().enumerate() {
+			if k > 0 {
+				names.push(" or ")
+			}
+			names.push("`{n}`")
+		}
+		"the return type contains a borrowed value, but the signature does not say whether it is borrowed from {names}; add a lifetime parameter, e.g. `fun {decl.name.name}<'a>(..) &'a T`"
+	}
+	errors.push(diag("missing lifetime specifier", ret_ty.span).help(&help))
+}
+
+fun field_types(f &Fields, out &mut Vec<Type>) {
+	match f {
+		Fields::Unit => {}
+		Fields::Tuple(ts) => {
+			for t in ts {
+				out.push(t.clone())
+			}
+		}
+		Fields::Named(fs) => {
+			for fd in fs {
+				out.push(fd.ty.clone())
+			}
+		}
+	}
+}
+
+fun check_fields(tys &Vec<Type>, generics &Generics, r &Resolved, errors &mut Vec<BDiag>) {
+	declared := lifetime_names(generics)
+	check_declared(tys, &declared, errors)
+	types := sig::type_param_names(generics)
+	for t in tys {
+		if sig::ty_lifetimes(t, &types, r).elided {
+			errors.push(diag("missing lifetime specifier", t.span).help("a struct that holds a reference needs a lifetime parameter: `struct S<'a> { field: &'a T }`"))
+		}
+	}
+}
+
+fun check_items(r &Resolved, errors &mut Vec<BDiag>) {
+	for def in &r.defs {
+		if def.is_prelude {
+			continue
+		}
+		if let Some(item) = &def.item {
+			match &item.kind {
+				ItemKind::Struct(s) => {
+					ts mut := Vec::new()
+					field_types(&s.fields, &mut ts)
+					check_fields(&ts, &s.generics, r, errors)
+				}
+				ItemKind::Enum(e) => {
+					ts mut := Vec::new()
+					for v in &e.variants {
+						field_types(&v.fields, &mut ts)
+					}
+					check_fields(&ts, &e.generics, r, errors)
+				}
+				_ => {}
+			}
+		}
+	}
+}
+
+// ---- entry point (lib.rs) ----
+
+pub fun check(c &mut Checker) Vec<BDiag> {
+	errors mut := Vec::new()
+	check_items(&c.r, &mut errors)
+	for i in 0..c.r.fns.len() {
+		f := &c.r.fns[i]
+		if f.is_prelude {
+			continue
+		}
+		(outer, outer_types) := match f.impl_idx {
+			Some(idx) => (c.r.impls[idx].decl.generics.clone(), sig::type_param_names(&c.r.impls[idx].decl.generics)),
+			None => (Generics::empty(), Vec::new()),
+		}
+		check_fn(&f.decl, &outer, &outer_types, &c.r, &mut errors)
+	}
+	if errors.len() > 0 {
+		return errors
+	}
+	lowered := lower::lower_all(c)
+	for (i, bodies) in &lowered {
+		bounds := match &c.results[*i] {
+			Some(res) => res.bounds.clone(),
+			None => Vec::new(),
+		}
+		for b in bodies {
+			ck mut := Ck {
+				b: b,
+				c: &mut *c,
+				bounds: bounds.clone(),
+				errors: Vec::new(),
+				seen: HashSet::new(),
+				reachable: Vec::new(),
+				loans: Vec::new(),
+				loan_at: HashMap::new(),
+				holds: Vec::new(),
+				hin: Vec::new(),
+				live: Vec::new(),
+				pinned: Vec::new(),
+				may_hold_cache: Vec::new(),
+				no_deep: Vec::new(),
+				inert: Vec::new(),
+				drop_cache: Vec::new(),
+			}
+			ck.run()
+			for e in ck.errors {
+				errors.push(e)
+			}
+		}
+	}
+	// Stable sort by start.
+	k mut := 1
+	while k < errors.len() {
+		j mut := k
+		while j > 0 && errors[j - 1].span.start > errors[j].span.start {
+			errors.swap(j - 1, j)
+			j -= 1
+		}
+		k += 1
+	}
+	return errors
+}
+
+pub fun dump(src &str, dir &str) string {
+	next mut := derive::DERIVE_BASE
+	user := resolve::parse_at(src, 0, &mut next)
+	if user.errors.len() > 0 {
+		return "parse errors {user.errors.len()}\n"
+	}
+	pre := resolve::parse_at(&resolve::builtin_text(dir), resolve::BUILTIN_BASE, &mut next)
+	r := resolve::resolve(&user.file, &pre.file)
+	if r.errors.len() > 0 {
+		return "resolve errors {r.errors.len()}\n"
+	}
+	c mut := typeck::typeck(r)
+	if c.errors.len() > 0 {
+		return "type errors {c.errors.len()}\n"
+	}
+	o mut := string::new()
+	for d in check(&mut c) {
+		o.push("error {d.span.start}..{d.span.end}: {d.message}\n")
+		for (m, s) in &d.notes {
+			match s {
+				Some(s) => o.push("  note {s.start}..{s.end}: {m}\n"),
+				None => o.push("  note -: {m}\n"),
+			}
+		}
+		if let Some(h) = &d.help {
+			o.push("  help: {h}\n")
+		}
+	}
+	return o
+}
