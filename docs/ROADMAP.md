@@ -13,6 +13,7 @@ Status key: ✅ done · 🚧 in progress · ⬜ not started
 | **M6: Tooling** | `kiln fmt` (gofmt-style, tabs, trailing commas), `kiln-ls` MVP (diagnostics, hover, go-to-def, completion) | ✅ `kiln fmt` (token-based, self-verifying, idempotence-tested over the repo) and `kiln lsp` (single-file: diagnostics, hover, definition, references, rename, completion, symbols, formatting, inlay hints; VS Code client). Next: multi-file workspaces, semantic tokens, code actions, incremental analysis |
 | **M7: Backend-ready** | `std::net::http`, JSON, testing framework; dogfood a real service | ⬜ |
 | **M8: 1.0 hardening** | Compiler fuzzing, conformance suite, performance, docs, stability guarantees | ⬜ |
+| **Self-hosting** | Rewrite the compiler in Kiln stage by stage, each diffed against the Rust stage (docs/SELF_HOSTING.md) | 🚧 lexer ported (`compiler/`), identical to `kiln_lexer` on every `.kn` file in the repo; parser next |
 
 ## Next up
 
@@ -23,7 +24,8 @@ Status key: ✅ done · 🚧 in progress · ⬜ not started
 5. **Codegen gaps:** `static` items, unwinding (destructors on panic, `recover`), and debug info beyond line tables (variables, types) and for LLVM builds. Done: the optimizing LLVM backend for release builds (`crates/kiln_llvm`, docs/LLVM.md), slice patterns, `|` patterns with bindings, `defer` on panic (Unix), and DWARF line tables in Cranelift debug builds (Linux).
 6. **Lossless CST decision:** choose whether to build a lossless syntax tree (in the rowan style) before the formatter and language server depend on the AST.
 7. **Borrow checker refinements:** lifetime variance, higher-ranked lifetimes; reading a `&'t` field through `&self` should keep lifetime `'t` (today it borrows `self`).
-8. **Parser:** `Vec<chan<- T>>` fails to parse (the `>>` after a channel type); use a `type` alias for now.
+8. **Self-hosting:** port the parser to `compiler/` with a canonical `kiln parse --dump`; fix the gaps the lexer port found (u128 constants, formatting and checked ops; Unicode `Alphabetic` for identifiers); see docs/SELF_HOSTING.md.
+9. **Parser:** `Vec<chan<- T>>` fails to parse (the `>>` after a channel type); use a `type` alias for now.
 
 ## Known parser gaps
 

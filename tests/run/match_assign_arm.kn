@@ -1,0 +1,11 @@
+fun main() {
+	v mut := 0
+	n mut := 1
+	for x in [Some(3), None, Some(4)] {
+		match x {
+			Some(k) => v += k,
+			None => n = 10,
+		}
+	}
+	println("{v} {n}")
+}

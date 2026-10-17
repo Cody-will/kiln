@@ -2331,7 +2331,28 @@ impl<'s> Parser<'s> {
                     None
                 };
                 p.expect(&T::FatArrow)?;
-                let body = p.parse_expr()?;
+                let mut body = p.parse_expr()?;
+                // `pat => x = v,`: an assignment arm is a one-statement block.
+                if let Some(op) = assign_op(p.peek()) {
+                    p.bump();
+                    let value = p.parse_expr()?;
+                    let span = body.span.to(value.span);
+                    let stmt = Stmt {
+                        kind: StmtKind::Assign {
+                            target: body,
+                            op,
+                            value,
+                        },
+                        span,
+                    };
+                    body = Expr {
+                        kind: ExprKind::Block(Block {
+                            stmts: vec![stmt],
+                            span,
+                        }),
+                        span,
+                    };
+                }
                 Ok(MatchArm {
                     span: pat.span.to(body.span),
                     pat,

@@ -707,7 +707,7 @@ Resolved in this revision: explicit `return`, the canonical formatter, the `.kn`
 4. **Task cancellation**: Go-style `Context` passed explicitly, or structured cancellation tied to `scope`?
 5. **Panic policy**: unwind (recoverable at task boundaries) or abort by default?
 6. **Runtime in `no_std`**: should embedded targets get a minimal single-threaded scheduler?
-7. **Bootstrapping**: should the compiler eventually self-host in Kiln?
+7. **Bootstrapping**: should the compiler eventually self-host in Kiln? *In progress:* the lexer is ported (`compiler/`, see docs/SELF_HOSTING.md).
 8. **License and governance**: MIT/Apache-2.0 dual license?
 
 ## 10. Canonical Formatting: `kiln fmt` (decided)
