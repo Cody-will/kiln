@@ -1,0 +1,1715 @@
+// The canonical AST dump: Rust's pretty `{:#?}` format of the AST, with
+// spans written `start..end` on one line (see crates/kiln_parser/src/dump.rs).
+
+import super::ast::*
+
+pub struct W {
+	pub out string,
+	ind usize,
+}
+
+impl W {
+	pub fun new() W {
+		return W { out: string::new(), ind: 0 }
+	}
+
+	fun raw(&mut self, s &str) {
+		self.out.push(s)
+	}
+
+	fun pad(&mut self) {
+		i mut := 0
+		while i < self.ind {
+			self.out.push("    ")
+			i += 1
+		}
+	}
+
+	// `Name {` ... `}`.
+	fun sopen(&mut self, name &str) {
+		self.raw(name)
+		self.raw(" {{\n")
+		self.ind += 1
+	}
+
+	fun f(&mut self, name &str) {
+		self.pad()
+		self.raw(name)
+		self.raw(": ")
+	}
+
+	fun e(&mut self) {
+		self.raw(",\n")
+	}
+
+	fun sclose(&mut self) {
+		self.ind -= 1
+		self.pad()
+		self.raw("}}")
+	}
+
+	// `Name(` ... `)`.
+	fun topen(&mut self, name &str) {
+		self.raw(name)
+		self.raw("(\n")
+		self.ind += 1
+	}
+
+	fun tclose(&mut self) {
+		self.ind -= 1
+		self.pad()
+		self.raw(")")
+	}
+
+	fun lopen(&mut self) {
+		self.raw("[\n")
+		self.ind += 1
+	}
+
+	fun lclose(&mut self) {
+		self.ind -= 1
+		self.pad()
+		self.raw("]")
+	}
+
+	fun span(&mut self, s Span) {
+		self.raw("{s.start}..{s.end}")
+	}
+
+	fun spanf(&mut self, s Span) {
+		self.f("span")
+		self.span(s)
+		self.e()
+	}
+
+	fun bool(&mut self, b bool) {
+		self.raw(if b { "true" } else { "false" })
+	}
+
+	fun boolf(&mut self, name &str, b bool) {
+		self.f(name)
+		self.bool(b)
+		self.e()
+	}
+
+	fun str(&mut self, s &str) {
+		self.out.push_char('"')
+		for c in s.chars() {
+			esc_char(&mut self.out, c, '"')
+		}
+		self.out.push_char('"')
+	}
+
+	fun ch(&mut self, c char) {
+		self.out.push_char('\'')
+		esc_char(&mut self.out, c, '\'')
+		self.out.push_char('\'')
+	}
+
+	fun none(&mut self) {
+		self.raw("None")
+	}
+
+	// Opens `Some(` and pads its single element.
+	fun some(&mut self) {
+		self.topen("Some")
+		self.pad()
+	}
+
+	fun some_close(&mut self) {
+		self.e()
+		self.tclose()
+	}
+
+	fun opt_str(&mut self, s &option<string>) {
+		match s {
+			Some(x) => {
+				self.some()
+				self.str(x)
+				self.some_close()
+			}
+			None => self.none(),
+		}
+	}
+
+	fun opt_usize(&mut self, v option<usize>) {
+		match v {
+			Some(x) => {
+				self.some()
+				self.raw("{x}")
+				self.some_close()
+			}
+			None => self.none(),
+		}
+	}
+
+	// A unit-like enum variant or a one-field tuple variant opening.
+	fun tuple1_open(&mut self, name &str) {
+		self.topen(name)
+		self.pad()
+	}
+
+	fun tuple1_close(&mut self) {
+		self.e()
+		self.tclose()
+	}
+
+	// Element separator inside a tuple variant or list.
+	fun next(&mut self) {
+		self.e()
+		self.pad()
+	}
+}
+
+fun hex(c u32) string {
+	return "{c:x}"
+}
+
+// Rust's `char::escape_debug`, as used by `{:?}` on strings and chars.
+fun esc_char(out &mut string, c char, quote char) {
+	if c == quote || c == '\\' {
+		out.push_char('\\')
+		out.push_char(c)
+		return
+	}
+	match c {
+		'\n' => out.push("\\n"),
+		'\r' => out.push("\\r"),
+		'\t' => out.push("\\t"),
+		'\0' => out.push("\\0"),
+		_ => {
+			if printable(c) {
+				out.push_char(c)
+			} else {
+				out.push("\\u{{{hex(c as u32)}}}")
+			}
+		},
+	}
+}
+
+// An approximation of Rust's `is_printable` (core::unicode::printable)
+// covering the characters that occur in practice.
+fun printable(c char) bool {
+	v := c as u32
+	if v < 0x20 || (v >= 0x7f && v < 0xa0) || v == 0xad {
+		return false
+	}
+	if (v >= 0x200b && v <= 0x200f) || (v >= 0x2028 && v <= 0x202e) || (v >= 0x2060 && v <= 0x206f) {
+		return false
+	}
+	if v == 0xfeff || (v >= 0xfff0 && v <= 0xfffb) || (v >= 0xe000 && v <= 0xf8ff) {
+		return false
+	}
+	return true
+}
+
+pub fun dump_file(file &File) string {
+	w mut := W::new()
+	w.sopen("File")
+	w.f("items")
+	items(&mut w, &file.items)
+	w.e()
+	w.sclose()
+	w.raw("\n")
+	return w.out
+}
+
+fun ident(w &mut W, i &Ident) {
+	w.sopen("Ident")
+	w.f("name")
+	w.str(&i.name)
+	w.e()
+	w.spanf(i.span)
+	w.sclose()
+}
+
+fun opt_ident(w &mut W, i &option<Ident>) {
+	match i {
+		Some(x) => {
+			w.some()
+			ident(w, x)
+			w.some_close()
+		}
+		None => w.none(),
+	}
+}
+
+fun idents(w &mut W, v &Vec<Ident>) {
+	if v.is_empty() {
+		w.raw("[]")
+		return
+	}
+	w.lopen()
+	for x in v {
+		w.pad()
+		ident(w, x)
+		w.e()
+	}
+	w.lclose()
+}
+
+fun items(w &mut W, v &Vec<Item>) {
+	if v.is_empty() {
+		w.raw("[]")
+		return
+	}
+	w.lopen()
+	for x in v {
+		w.pad()
+		item(w, x)
+		w.e()
+	}
+	w.lclose()
+}
+
+fun vis(w &mut W, v Visibility) {
+	match v {
+		Visibility::Private => w.raw("Private"),
+		Visibility::Public => w.raw("Public"),
+		Visibility::Package => w.raw("Package"),
+	}
+}
+
+fun item(w &mut W, it &Item) {
+	w.sopen("Item")
+	w.f("kind")
+	item_kind(w, &it.kind)
+	w.e()
+	w.f("vis")
+	vis(w, it.vis)
+	w.e()
+	w.f("attrs")
+	if it.attrs.is_empty() {
+		w.raw("[]")
+	} else {
+		w.lopen()
+		for a in &it.attrs {
+			w.pad()
+			w.sopen("Attribute")
+			w.f("name")
+			ident(w, &a.name)
+			w.e()
+			w.f("args")
+			w.opt_str(&a.args)
+			w.e()
+			w.spanf(a.span)
+			w.sclose()
+			w.e()
+		}
+		w.lclose()
+	}
+	w.e()
+	w.f("doc")
+	w.opt_str(&it.doc)
+	w.e()
+	w.spanf(it.span)
+	w.sclose()
+}
+
+fun item_kind(w &mut W, k &ItemKind) {
+	match k {
+		ItemKind::Fn(f) => {
+			w.tuple1_open("Fn")
+			fn_decl(w, f)
+			w.tuple1_close()
+		}
+		ItemKind::Struct(s) => {
+			w.tuple1_open("Struct")
+			w.sopen("StructDecl")
+			w.f("name")
+			ident(w, &s.name)
+			w.e()
+			w.f("generics")
+			generics(w, &s.generics)
+			w.e()
+			w.f("fields")
+			fields(w, &s.fields)
+			w.e()
+			w.sclose()
+			w.tuple1_close()
+		}
+		ItemKind::Enum(en) => {
+			w.tuple1_open("Enum")
+			w.sopen("EnumDecl")
+			w.f("name")
+			ident(w, &en.name)
+			w.e()
+			w.f("generics")
+			generics(w, &en.generics)
+			w.e()
+			w.f("variants")
+			if en.variants.is_empty() {
+				w.raw("[]")
+			} else {
+				w.lopen()
+				for v in &en.variants {
+					w.pad()
+					w.sopen("Variant")
+					w.f("name")
+					ident(w, &v.name)
+					w.e()
+					w.f("fields")
+					fields(w, &v.fields)
+					w.e()
+					w.f("discriminant")
+					opt_expr(w, &v.discriminant)
+					w.e()
+					w.spanf(v.span)
+					w.sclose()
+					w.e()
+				}
+				w.lclose()
+			}
+			w.e()
+			w.sclose()
+			w.tuple1_close()
+		}
+		ItemKind::Trait(t) => {
+			w.tuple1_open("Trait")
+			w.sopen("TraitDecl")
+			w.boolf("is_unsafe", t.is_unsafe)
+			w.f("name")
+			ident(w, &t.name)
+			w.e()
+			w.f("generics")
+			generics(w, &t.generics)
+			w.e()
+			w.f("supertraits")
+			bounds(w, &t.supertraits)
+			w.e()
+			w.f("items")
+			items(w, &t.items)
+			w.e()
+			w.sclose()
+			w.tuple1_close()
+		}
+		ItemKind::Impl(i) => {
+			w.tuple1_open("Impl")
+			w.sopen("ImplDecl")
+			w.boolf("is_unsafe", i.is_unsafe)
+			w.f("generics")
+			generics(w, &i.generics)
+			w.e()
+			w.f("trait_ref")
+			match &i.trait_ref {
+				Some(p) => {
+					w.some()
+					path(w, p)
+					w.some_close()
+				}
+				None => w.none(),
+			}
+			w.e()
+			w.f("self_ty")
+			ty(w, &i.self_ty)
+			w.e()
+			w.f("items")
+			items(w, &i.items)
+			w.e()
+			w.sclose()
+			w.tuple1_close()
+		}
+		ItemKind::Import(t) => {
+			w.tuple1_open("Import")
+			import_tree(w, t)
+			w.tuple1_close()
+		}
+		ItemKind::Const { name, ty: t, value } => {
+			w.sopen("Const")
+			w.f("name")
+			ident(w, name)
+			w.e()
+			w.f("ty")
+			ty(w, t)
+			w.e()
+			w.f("value")
+			opt_expr(w, value)
+			w.e()
+			w.sclose()
+		}
+		ItemKind::Static { name, mutable, ty: t, value } => {
+			w.sopen("Static")
+			w.f("name")
+			ident(w, name)
+			w.e()
+			w.boolf("mutable", *mutable)
+			w.f("ty")
+			ty(w, t)
+			w.e()
+			w.f("value")
+			expr(w, value)
+			w.e()
+			w.sclose()
+		}
+		ItemKind::TypeAlias { name, generics: g, ty: t } => {
+			w.sopen("TypeAlias")
+			w.f("name")
+			ident(w, name)
+			w.e()
+			w.f("generics")
+			generics(w, g)
+			w.e()
+			w.f("ty")
+			opt_ty(w, t)
+			w.e()
+			w.sclose()
+		}
+		ItemKind::Mod { name, items: its } => {
+			w.sopen("Mod")
+			w.f("name")
+			ident(w, name)
+			w.e()
+			w.f("items")
+			match its {
+				Some(v) => {
+					w.some()
+					items(w, v)
+					w.some_close()
+				}
+				None => w.none(),
+			}
+			w.e()
+			w.sclose()
+		}
+	}
+}
+
+fun import_tree(w &mut W, t &ImportTree) {
+	match t {
+		ImportTree::Path { path: p, alias } => {
+			w.sopen("Path")
+			w.f("path")
+			idents(w, p)
+			w.e()
+			w.f("alias")
+			opt_ident(w, alias)
+			w.e()
+			w.sclose()
+		}
+		ImportTree::Glob { prefix } => {
+			w.sopen("Glob")
+			w.f("prefix")
+			idents(w, prefix)
+			w.e()
+			w.sclose()
+		}
+		ImportTree::Group { prefix, items: its } => {
+			w.sopen("Group")
+			w.f("prefix")
+			idents(w, prefix)
+			w.e()
+			w.f("items")
+			if its.is_empty() {
+				w.raw("[]")
+			} else {
+				w.lopen()
+				for x in its {
+					w.pad()
+					import_tree(w, x)
+					w.e()
+				}
+				w.lclose()
+			}
+			w.e()
+			w.sclose()
+		}
+	}
+}
+
+fun fn_decl(w &mut W, f &FnDecl) {
+	w.sopen("FnDecl")
+	w.f("name")
+	ident(w, &f.name)
+	w.e()
+	w.boolf("is_unsafe", f.is_unsafe)
+	w.f("generics")
+	generics(w, &f.generics)
+	w.e()
+	w.f("self_param")
+	match &f.self_param {
+		Some(sp) => {
+			w.some()
+			match sp {
+				SelfParam::Value { mutable } => {
+					w.sopen("Value")
+					w.boolf("mutable", *mutable)
+					w.sclose()
+				}
+				SelfParam::Ref { lifetime, mutable } => {
+					w.sopen("Ref")
+					w.f("lifetime")
+					opt_ident(w, lifetime)
+					w.e()
+					w.boolf("mutable", *mutable)
+					w.sclose()
+				}
+			}
+			w.some_close()
+		}
+		None => w.none(),
+	}
+	w.e()
+	w.f("params")
+	if f.params.is_empty() {
+		w.raw("[]")
+	} else {
+		w.lopen()
+		for p in &f.params {
+			w.pad()
+			w.sopen("Param")
+			w.f("pat")
+			pattern(w, &p.pat)
+			w.e()
+			w.f("ty")
+			ty(w, &p.ty)
+			w.e()
+			w.spanf(p.span)
+			w.sclose()
+			w.e()
+		}
+		w.lclose()
+	}
+	w.e()
+	w.f("ret")
+	opt_ty(w, &f.ret)
+	w.e()
+	w.f("body")
+	match &f.body {
+		Some(b) => {
+			w.some()
+			block(w, b)
+			w.some_close()
+		}
+		None => w.none(),
+	}
+	w.e()
+	w.sclose()
+}
+
+fun generics(w &mut W, g &Generics) {
+	w.sopen("Generics")
+	w.f("params")
+	if g.params.is_empty() {
+		w.raw("[]")
+	} else {
+		w.lopen()
+		for p in &g.params {
+			w.pad()
+			match p {
+				GenericParam::Lifetime { name, bounds: bs } => {
+					w.sopen("Lifetime")
+					w.f("name")
+					ident(w, name)
+					w.e()
+					w.f("bounds")
+					idents(w, bs)
+					w.e()
+					w.sclose()
+				}
+				GenericParam::Type { name, bounds: bs, default } => {
+					w.sopen("Type")
+					w.f("name")
+					ident(w, name)
+					w.e()
+					w.f("bounds")
+					bounds(w, bs)
+					w.e()
+					w.f("default")
+					opt_ty(w, default)
+					w.e()
+					w.sclose()
+				}
+				GenericParam::Const { name, ty: t } => {
+					w.sopen("Const")
+					w.f("name")
+					ident(w, name)
+					w.e()
+					w.f("ty")
+					ty(w, t)
+					w.e()
+					w.sclose()
+				}
+			}
+			w.e()
+		}
+		w.lclose()
+	}
+	w.e()
+	w.f("where_clause")
+	if g.where_clause.is_empty() {
+		w.raw("[]")
+	} else {
+		w.lopen()
+		for p in &g.where_clause {
+			w.pad()
+			w.sopen("WherePredicate")
+			w.f("lifetime")
+			opt_ident(w, &p.lifetime)
+			w.e()
+			w.f("ty")
+			ty(w, &p.ty)
+			w.e()
+			w.f("bounds")
+			bounds(w, &p.bounds)
+			w.e()
+			w.spanf(p.span)
+			w.sclose()
+			w.e()
+		}
+		w.lclose()
+	}
+	w.e()
+	w.sclose()
+}
+
+fun bounds(w &mut W, v &Vec<Bound>) {
+	if v.is_empty() {
+		w.raw("[]")
+		return
+	}
+	w.lopen()
+	for b in v {
+		w.pad()
+		match b {
+			Bound::Trait { path: p, maybe } => {
+				w.sopen("Trait")
+				w.f("path")
+				path(w, p)
+				w.e()
+				w.boolf("maybe", *maybe)
+				w.sclose()
+			}
+			Bound::Lifetime(i) => {
+				w.tuple1_open("Lifetime")
+				ident(w, i)
+				w.tuple1_close()
+			}
+		}
+		w.e()
+	}
+	w.lclose()
+}
+
+fun fields(w &mut W, f &Fields) {
+	match f {
+		Fields::Unit => w.raw("Unit"),
+		Fields::Tuple(ts) => {
+			w.tuple1_open("Tuple")
+			tys(w, ts)
+			w.tuple1_close()
+		}
+		Fields::Named(fs) => {
+			w.tuple1_open("Named")
+			if fs.is_empty() {
+				w.raw("[]")
+			} else {
+				w.lopen()
+				for fd in fs {
+					w.pad()
+					w.sopen("FieldDecl")
+					w.f("vis")
+					vis(w, fd.vis)
+					w.e()
+					w.f("name")
+					ident(w, &fd.name)
+					w.e()
+					w.f("ty")
+					ty(w, &fd.ty)
+					w.e()
+					w.spanf(fd.span)
+					w.sclose()
+					w.e()
+				}
+				w.lclose()
+			}
+			w.tuple1_close()
+		}
+	}
+}
+
+fun path(w &mut W, p &Path) {
+	w.sopen("Path")
+	w.f("segments")
+	if p.segments.is_empty() {
+		w.raw("[]")
+	} else {
+		w.lopen()
+		for s in &p.segments {
+			w.pad()
+			w.sopen("PathSegment")
+			w.f("ident")
+			ident(w, &s.ident)
+			w.e()
+			w.f("args")
+			generic_args(w, &s.args)
+			w.e()
+			w.sclose()
+			w.e()
+		}
+		w.lclose()
+	}
+	w.e()
+	w.spanf(p.span)
+	w.sclose()
+}
+
+fun generic_args(w &mut W, v &Vec<GenericArg>) {
+	if v.is_empty() {
+		w.raw("[]")
+		return
+	}
+	w.lopen()
+	for a in v {
+		w.pad()
+		match a {
+			GenericArg::Type(t) => {
+				w.tuple1_open("Type")
+				ty(w, t)
+				w.tuple1_close()
+			}
+			GenericArg::Lifetime(i) => {
+				w.tuple1_open("Lifetime")
+				ident(w, i)
+				w.tuple1_close()
+			}
+			GenericArg::Binding { name, ty: t } => {
+				w.sopen("Binding")
+				w.f("name")
+				ident(w, name)
+				w.e()
+				w.f("ty")
+				ty(w, t)
+				w.e()
+				w.sclose()
+			}
+		}
+		w.e()
+	}
+	w.lclose()
+}
+
+fun opt_ty(w &mut W, t &option<Type>) {
+	match t {
+		Some(x) => {
+			w.some()
+			ty(w, x)
+			w.some_close()
+		}
+		None => w.none(),
+	}
+}
+
+fun tys(w &mut W, v &Vec<Type>) {
+	if v.is_empty() {
+		w.raw("[]")
+		return
+	}
+	w.lopen()
+	for t in v {
+		w.pad()
+		ty(w, t)
+		w.e()
+	}
+	w.lclose()
+}
+
+fun ty(w &mut W, t &Type) {
+	w.sopen("Type")
+	w.f("kind")
+	match &t.kind {
+		TypeKind::Path(p) => {
+			w.tuple1_open("Path")
+			path(w, p)
+			w.tuple1_close()
+		}
+		TypeKind::Ref { lifetime, mutable, inner } => {
+			w.sopen("Ref")
+			w.f("lifetime")
+			opt_ident(w, lifetime)
+			w.e()
+			w.boolf("mutable", *mutable)
+			w.f("inner")
+			ty(w, inner)
+			w.e()
+			w.sclose()
+		}
+		TypeKind::Ptr { mutable, inner } => {
+			w.sopen("Ptr")
+			w.boolf("mutable", *mutable)
+			w.f("inner")
+			ty(w, inner)
+			w.e()
+			w.sclose()
+		}
+		TypeKind::Slice(x) => {
+			w.tuple1_open("Slice")
+			ty(w, x)
+			w.tuple1_close()
+		}
+		TypeKind::Array(x, n) => {
+			w.tuple1_open("Array")
+			ty(w, x)
+			w.next()
+			expr(w, n)
+			w.tuple1_close()
+		}
+		TypeKind::Tuple(ts) => {
+			w.tuple1_open("Tuple")
+			tys(w, ts)
+			w.tuple1_close()
+		}
+		TypeKind::Fn { params, ret, is_mut } => {
+			w.sopen("Fn")
+			w.f("params")
+			tys(w, params)
+			w.e()
+			w.f("ret")
+			match ret {
+				Some(r) => {
+					w.some()
+					ty(w, r)
+					w.some_close()
+				}
+				None => w.none(),
+			}
+			w.e()
+			w.boolf("is_mut", *is_mut)
+			w.sclose()
+		}
+		TypeKind::Dyn(bs) => {
+			w.tuple1_open("Dyn")
+			bounds(w, bs)
+			w.tuple1_close()
+		}
+		TypeKind::Impl(bs) => {
+			w.tuple1_open("Impl")
+			bounds(w, bs)
+			w.tuple1_close()
+		}
+		TypeKind::ChanSend(x) => {
+			w.tuple1_open("ChanSend")
+			ty(w, x)
+			w.tuple1_close()
+		}
+		TypeKind::ChanRecv(x) => {
+			w.tuple1_open("ChanRecv")
+			ty(w, x)
+			w.tuple1_close()
+		}
+		TypeKind::Never => w.raw("Never"),
+		TypeKind::Infer => w.raw("Infer"),
+	}
+	w.e()
+	w.spanf(t.span)
+	w.sclose()
+}
+
+fun patterns(w &mut W, v &Vec<Pattern>) {
+	if v.is_empty() {
+		w.raw("[]")
+		return
+	}
+	w.lopen()
+	for p in v {
+		w.pad()
+		pattern(w, p)
+		w.e()
+	}
+	w.lclose()
+}
+
+fun pattern(w &mut W, p &Pattern) {
+	w.sopen("Pattern")
+	w.f("kind")
+	match &p.kind {
+		PatternKind::Wild => w.raw("Wild"),
+		PatternKind::Rest => w.raw("Rest"),
+		PatternKind::Ident { name, mutable, sub } => {
+			w.sopen("Ident")
+			w.f("name")
+			ident(w, name)
+			w.e()
+			w.boolf("mutable", *mutable)
+			w.f("sub")
+			match sub {
+				Some(s) => {
+					w.some()
+					pattern(w, s)
+					w.some_close()
+				}
+				None => w.none(),
+			}
+			w.e()
+			w.sclose()
+		}
+		PatternKind::Lit(l) => {
+			w.tuple1_open("Lit")
+			lit(w, l)
+			w.tuple1_close()
+		}
+		PatternKind::Range { lo, hi, inclusive } => {
+			w.sopen("Range")
+			w.f("lo")
+			pattern(w, lo)
+			w.e()
+			w.f("hi")
+			pattern(w, hi)
+			w.e()
+			w.boolf("inclusive", *inclusive)
+			w.sclose()
+		}
+		PatternKind::Tuple(ps) => {
+			w.tuple1_open("Tuple")
+			patterns(w, ps)
+			w.tuple1_close()
+		}
+		PatternKind::Slice(ps) => {
+			w.tuple1_open("Slice")
+			patterns(w, ps)
+			w.tuple1_close()
+		}
+		PatternKind::Path(pa) => {
+			w.tuple1_open("Path")
+			path(w, pa)
+			w.tuple1_close()
+		}
+		PatternKind::TupleStruct(pa, ps) => {
+			w.tuple1_open("TupleStruct")
+			path(w, pa)
+			w.next()
+			patterns(w, ps)
+			w.tuple1_close()
+		}
+		PatternKind::Struct { path: pa, fields: fs, rest } => {
+			w.sopen("Struct")
+			w.f("path")
+			path(w, pa)
+			w.e()
+			w.f("fields")
+			if fs.is_empty() {
+				w.raw("[]")
+			} else {
+				w.lopen()
+				for fp in fs {
+					w.pad()
+					w.sopen("FieldPat")
+					w.f("name")
+					ident(w, &fp.name)
+					w.e()
+					w.f("pat")
+					pattern(w, &fp.pat)
+					w.e()
+					w.sclose()
+					w.e()
+				}
+				w.lclose()
+			}
+			w.e()
+			w.boolf("rest", *rest)
+			w.sclose()
+		}
+		PatternKind::Ref { mutable, inner } => {
+			w.sopen("Ref")
+			w.boolf("mutable", *mutable)
+			w.f("inner")
+			pattern(w, inner)
+			w.e()
+			w.sclose()
+		}
+		PatternKind::Or(ps) => {
+			w.tuple1_open("Or")
+			patterns(w, ps)
+			w.tuple1_close()
+		}
+	}
+	w.e()
+	w.spanf(p.span)
+	w.sclose()
+}
+
+fun lit(w &mut W, l &Lit) {
+	match l {
+		Lit::Int { value, suffix, negative } => {
+			w.sopen("Int")
+			w.f("value")
+			w.raw(&value.to_decimal())
+			w.e()
+			w.f("suffix")
+			w.opt_str(suffix)
+			w.e()
+			w.boolf("negative", *negative)
+			w.sclose()
+		}
+		Lit::Float { value, suffix } => {
+			w.sopen("Float")
+			w.f("value")
+			v := *value
+			w.raw("{v:?}")
+			w.e()
+			w.f("suffix")
+			w.opt_str(suffix)
+			w.e()
+			w.sclose()
+		}
+		Lit::Str(s) => {
+			w.tuple1_open("Str")
+			w.str(s)
+			w.tuple1_close()
+		}
+		Lit::ByteStr(b) => {
+			w.tuple1_open("ByteStr")
+			if b.is_empty() {
+				w.raw("[]")
+			} else {
+				w.lopen()
+				for x in b {
+					w.pad()
+					w.raw("{*x}")
+					w.e()
+				}
+				w.lclose()
+			}
+			w.tuple1_close()
+		}
+		Lit::Char(c) => {
+			w.tuple1_open("Char")
+			w.ch(*c)
+			w.tuple1_close()
+		}
+		Lit::Bool(b) => {
+			w.tuple1_open("Bool")
+			w.bool(*b)
+			w.tuple1_close()
+		}
+	}
+}
+
+fun block(w &mut W, b &Block) {
+	w.sopen("Block")
+	w.f("stmts")
+	if b.stmts.is_empty() {
+		w.raw("[]")
+	} else {
+		w.lopen()
+		for s in &b.stmts {
+			w.pad()
+			stmt(w, s)
+			w.e()
+		}
+		w.lclose()
+	}
+	w.e()
+	w.spanf(b.span)
+	w.sclose()
+}
+
+fun short_name(w &mut W, n &ShortName) {
+	w.sopen("ShortName")
+	w.f("name")
+	opt_ident(w, &n.name)
+	w.e()
+	w.boolf("mutable", n.mutable)
+	w.sclose()
+}
+
+fun binop_name(op BinOp) &'static str {
+	match op {
+		BinOp::Add => return "Add",
+		BinOp::Sub => return "Sub",
+		BinOp::Mul => return "Mul",
+		BinOp::Div => return "Div",
+		BinOp::Rem => return "Rem",
+		BinOp::And => return "And",
+		BinOp::Or => return "Or",
+		BinOp::BitAnd => return "BitAnd",
+		BinOp::BitOr => return "BitOr",
+		BinOp::BitXor => return "BitXor",
+		BinOp::Shl => return "Shl",
+		BinOp::Shr => return "Shr",
+		BinOp::Eq => return "Eq",
+		BinOp::Ne => return "Ne",
+		BinOp::Lt => return "Lt",
+		BinOp::Le => return "Le",
+		BinOp::Gt => return "Gt",
+		BinOp::Ge => return "Ge",
+	}
+}
+
+fun unop_name(op UnOp) &'static str {
+	match op {
+		UnOp::Neg => return "Neg",
+		UnOp::Not => return "Not",
+		UnOp::Deref => return "Deref",
+		UnOp::Ref => return "Ref",
+		UnOp::RefMut => return "RefMut",
+		UnOp::Recv => return "Recv",
+	}
+}
+
+fun stmt(w &mut W, s &Stmt) {
+	w.sopen("Stmt")
+	w.f("kind")
+	match &s.kind {
+		StmtKind::Let { pat, ty: t, init } => {
+			w.sopen("Let")
+			w.f("pat")
+			pattern(w, pat)
+			w.e()
+			w.f("ty")
+			opt_ty(w, t)
+			w.e()
+			w.f("init")
+			opt_expr(w, init)
+			w.e()
+			w.sclose()
+		}
+		StmtKind::ShortDecl { names, tuple, init } => {
+			w.sopen("ShortDecl")
+			w.f("names")
+			if names.is_empty() {
+				w.raw("[]")
+			} else {
+				w.lopen()
+				for n in names {
+					w.pad()
+					short_name(w, n)
+					w.e()
+				}
+				w.lclose()
+			}
+			w.e()
+			w.boolf("tuple", *tuple)
+			w.f("init")
+			expr(w, init)
+			w.e()
+			w.sclose()
+		}
+		StmtKind::Assign { target, op, value } => {
+			w.sopen("Assign")
+			w.f("target")
+			expr(w, target)
+			w.e()
+			w.f("op")
+			match op {
+				Some(o) => {
+					w.some()
+					w.raw(binop_name(*o))
+					w.some_close()
+				}
+				None => w.none(),
+			}
+			w.e()
+			w.f("value")
+			expr(w, value)
+			w.e()
+			w.sclose()
+		}
+		StmtKind::Send { ch, value } => {
+			w.sopen("Send")
+			w.f("chan")
+			expr(w, ch)
+			w.e()
+			w.f("value")
+			expr(w, value)
+			w.e()
+			w.sclose()
+		}
+		StmtKind::Defer(e) => {
+			w.tuple1_open("Defer")
+			expr(w, e)
+			w.tuple1_close()
+		}
+		StmtKind::Expr(e) => {
+			w.tuple1_open("Expr")
+			expr(w, e)
+			w.tuple1_close()
+		}
+		StmtKind::Item(i) => {
+			w.tuple1_open("Item")
+			item(w, i)
+			w.tuple1_close()
+		}
+	}
+	w.e()
+	w.spanf(s.span)
+	w.sclose()
+}
+
+fun opt_expr(w &mut W, e &option<Expr>) {
+	match e {
+		Some(x) => {
+			w.some()
+			expr(w, x)
+			w.some_close()
+		}
+		None => w.none(),
+	}
+}
+
+fun opt_box_expr(w &mut W, e &option<Box<Expr>>) {
+	match e {
+		Some(x) => {
+			w.some()
+			expr(w, x)
+			w.some_close()
+		}
+		None => w.none(),
+	}
+}
+
+fun exprs(w &mut W, v &Vec<Expr>) {
+	if v.is_empty() {
+		w.raw("[]")
+		return
+	}
+	w.lopen()
+	for e in v {
+		w.pad()
+		expr(w, e)
+		w.e()
+	}
+	w.lclose()
+}
+
+fun fmt_spec(w &mut W, f &FmtSpec) {
+	w.sopen("FmtSpec")
+	w.f("fill")
+	match f.fill {
+		Some(c) => {
+			w.some()
+			w.ch(c)
+			w.some_close()
+		}
+		None => w.none(),
+	}
+	w.e()
+	w.f("align")
+	match &f.align {
+		Some(a) => {
+			w.some()
+			w.raw(a)
+			w.some_close()
+		}
+		None => w.none(),
+	}
+	w.e()
+	w.boolf("plus", f.plus)
+	w.boolf("alt", f.alt)
+	w.boolf("zero", f.zero)
+	w.f("width")
+	w.opt_usize(f.width)
+	w.e()
+	w.f("precision")
+	w.opt_usize(f.precision)
+	w.e()
+	w.f("kind")
+	w.raw(&f.kind)
+	w.e()
+	w.sclose()
+}
+
+fun labelf(w &mut W, l &option<Ident>) {
+	w.f("label")
+	opt_ident(w, l)
+	w.e()
+}
+
+fun blockf(w &mut W, name &str, b &Block) {
+	w.f(name)
+	block(w, b)
+	w.e()
+}
+
+fun exprf(w &mut W, name &str, e &Expr) {
+	w.f(name)
+	expr(w, e)
+	w.e()
+}
+
+pub fun expr(w &mut W, e &Expr) {
+	w.sopen("Expr")
+	w.f("kind")
+	expr_kind(w, &e.kind)
+	w.e()
+	w.spanf(e.span)
+	w.sclose()
+}
+
+fun expr_kind(w &mut W, k &ExprKind) {
+	match k {
+		ExprKind::Lit(l) => {
+			w.tuple1_open("Lit")
+			lit(w, l)
+			w.tuple1_close()
+		}
+		ExprKind::Interp(parts) => {
+			w.tuple1_open("Interp")
+			if parts.is_empty() {
+				w.raw("[]")
+			} else {
+				w.lopen()
+				for p in parts {
+					w.pad()
+					match p {
+						InterpPart::Text(s) => {
+							w.tuple1_open("Text")
+							w.str(s)
+							w.tuple1_close()
+						}
+						InterpPart::Expr(x, spec) => {
+							w.tuple1_open("Expr")
+							expr(w, x)
+							w.next()
+							match spec {
+								Some(f) => {
+									w.some()
+									fmt_spec(w, f)
+									w.some_close()
+								}
+								None => w.none(),
+							}
+							w.tuple1_close()
+						}
+					}
+					w.e()
+				}
+				w.lclose()
+			}
+			w.tuple1_close()
+		}
+		ExprKind::Path(p) => {
+			w.tuple1_open("Path")
+			path(w, p)
+			w.tuple1_close()
+		}
+		ExprKind::Unary(op, x) => {
+			w.tuple1_open("Unary")
+			w.raw(unop_name(*op))
+			w.next()
+			expr(w, x)
+			w.tuple1_close()
+		}
+		ExprKind::Binary(op, a, b) => {
+			w.tuple1_open("Binary")
+			w.raw(binop_name(*op))
+			w.next()
+			expr(w, a)
+			w.next()
+			expr(w, b)
+			w.tuple1_close()
+		}
+		ExprKind::Cast(x, t) => {
+			w.tuple1_open("Cast")
+			expr(w, x)
+			w.next()
+			ty(w, t)
+			w.tuple1_close()
+		}
+		ExprKind::Call(f, args) => {
+			w.tuple1_open("Call")
+			expr(w, f)
+			w.next()
+			exprs(w, args)
+			w.tuple1_close()
+		}
+		ExprKind::MethodCall { receiver, method, generic_args: ga, args } => {
+			w.sopen("MethodCall")
+			exprf(w, "receiver", receiver)
+			w.f("method")
+			ident(w, method)
+			w.e()
+			w.f("generic_args")
+			generic_args(w, ga)
+			w.e()
+			w.f("args")
+			exprs(w, args)
+			w.e()
+			w.sclose()
+		}
+		ExprKind::Field(x, name) => {
+			w.tuple1_open("Field")
+			expr(w, x)
+			w.next()
+			ident(w, name)
+			w.tuple1_close()
+		}
+		ExprKind::TupleIndex(x, i) => {
+			w.tuple1_open("TupleIndex")
+			expr(w, x)
+			w.next()
+			w.raw("{*i}")
+			w.tuple1_close()
+		}
+		ExprKind::Index(x, i) => {
+			w.tuple1_open("Index")
+			expr(w, x)
+			w.next()
+			expr(w, i)
+			w.tuple1_close()
+		}
+		ExprKind::Try(x) => {
+			w.tuple1_open("Try")
+			expr(w, x)
+			w.tuple1_close()
+		}
+		ExprKind::Range { start, end, inclusive } => {
+			w.sopen("Range")
+			w.f("start")
+			opt_box_expr(w, start)
+			w.e()
+			w.f("end")
+			opt_box_expr(w, end)
+			w.e()
+			w.boolf("inclusive", *inclusive)
+			w.sclose()
+		}
+		ExprKind::StructLit { path: p, fields: fs, base } => {
+			w.sopen("StructLit")
+			w.f("path")
+			path(w, p)
+			w.e()
+			w.f("fields")
+			if fs.is_empty() {
+				w.raw("[]")
+			} else {
+				w.lopen()
+				for fi in fs {
+					w.pad()
+					w.sopen("FieldInit")
+					w.f("name")
+					ident(w, &fi.name)
+					w.e()
+					exprf(w, "value", &fi.value)
+					w.sclose()
+					w.e()
+				}
+				w.lclose()
+			}
+			w.e()
+			w.f("base")
+			opt_box_expr(w, base)
+			w.e()
+			w.sclose()
+		}
+		ExprKind::Tuple(xs) => {
+			w.tuple1_open("Tuple")
+			exprs(w, xs)
+			w.tuple1_close()
+		}
+		ExprKind::Paren(x) => {
+			w.tuple1_open("Paren")
+			expr(w, x)
+			w.tuple1_close()
+		}
+		ExprKind::Array(xs) => {
+			w.tuple1_open("Array")
+			exprs(w, xs)
+			w.tuple1_close()
+		}
+		ExprKind::ArrayRepeat(x, n) => {
+			w.tuple1_open("ArrayRepeat")
+			expr(w, x)
+			w.next()
+			expr(w, n)
+			w.tuple1_close()
+		}
+		ExprKind::Block(b) => {
+			w.tuple1_open("Block")
+			block(w, b)
+			w.tuple1_close()
+		}
+		ExprKind::Unsafe(b) => {
+			w.tuple1_open("Unsafe")
+			block(w, b)
+			w.tuple1_close()
+		}
+		ExprKind::Spawn(t) => {
+			w.tuple1_open("Spawn")
+			match &**t {
+				SpawnTarget::Call(x) => {
+					w.tuple1_open("Call")
+					expr(w, x)
+					w.tuple1_close()
+				}
+				SpawnTarget::Block { is_move, body } => {
+					w.sopen("Block")
+					w.boolf("is_move", *is_move)
+					blockf(w, "body", body)
+					w.sclose()
+				}
+			}
+			w.tuple1_close()
+		}
+		ExprKind::If { cond, then, els } => {
+			w.sopen("If")
+			exprf(w, "cond", cond)
+			blockf(w, "then", then)
+			w.f("els")
+			opt_box_expr(w, els)
+			w.e()
+			w.sclose()
+		}
+		ExprKind::IfLet { pat, expr: x, then, els } => {
+			w.sopen("IfLet")
+			w.f("pat")
+			pattern(w, pat)
+			w.e()
+			exprf(w, "expr", x)
+			blockf(w, "then", then)
+			w.f("els")
+			opt_box_expr(w, els)
+			w.e()
+			w.sclose()
+		}
+		ExprKind::Match(x, arms) => {
+			w.tuple1_open("Match")
+			expr(w, x)
+			w.next()
+			if arms.is_empty() {
+				w.raw("[]")
+			} else {
+				w.lopen()
+				for a in arms {
+					w.pad()
+					w.sopen("MatchArm")
+					w.f("pat")
+					pattern(w, &a.pat)
+					w.e()
+					w.f("guard")
+					opt_expr(w, &a.guard)
+					w.e()
+					exprf(w, "body", &a.body)
+					w.spanf(a.span)
+					w.sclose()
+					w.e()
+				}
+				w.lclose()
+			}
+			w.tuple1_close()
+		}
+		ExprKind::Select(arms) => {
+			w.tuple1_open("Select")
+			if arms.is_empty() {
+				w.raw("[]")
+			} else {
+				w.lopen()
+				for a in arms {
+					w.pad()
+					w.sopen("SelectArm")
+					w.f("op")
+					match &a.op {
+						SelectOp::Recv { bind, ch } => {
+							w.sopen("Recv")
+							w.f("bind")
+							match bind {
+								Some(b) => {
+									w.some()
+									short_name(w, b)
+									w.some_close()
+								}
+								None => w.none(),
+							}
+							w.e()
+							exprf(w, "chan", ch)
+							w.sclose()
+						}
+						SelectOp::Send { ch, value } => {
+							w.sopen("Send")
+							exprf(w, "chan", ch)
+							exprf(w, "value", value)
+							w.sclose()
+						}
+						SelectOp::Default => w.raw("Default"),
+					}
+					w.e()
+					exprf(w, "body", &a.body)
+					w.spanf(a.span)
+					w.sclose()
+					w.e()
+				}
+				w.lclose()
+			}
+			w.tuple1_close()
+		}
+		ExprKind::For { label, pat, iter, body } => {
+			w.sopen("For")
+			labelf(w, label)
+			w.f("pat")
+			pattern(w, pat)
+			w.e()
+			exprf(w, "iter", iter)
+			blockf(w, "body", body)
+			w.sclose()
+		}
+		ExprKind::While { label, cond, body } => {
+			w.sopen("While")
+			labelf(w, label)
+			exprf(w, "cond", cond)
+			blockf(w, "body", body)
+			w.sclose()
+		}
+		ExprKind::WhileLet { label, pat, expr: x, body } => {
+			w.sopen("WhileLet")
+			labelf(w, label)
+			w.f("pat")
+			pattern(w, pat)
+			w.e()
+			exprf(w, "expr", x)
+			blockf(w, "body", body)
+			w.sclose()
+		}
+		ExprKind::Loop { label, body } => {
+			w.sopen("Loop")
+			labelf(w, label)
+			blockf(w, "body", body)
+			w.sclose()
+		}
+		ExprKind::Break(l, v) => {
+			w.tuple1_open("Break")
+			opt_ident(w, l)
+			w.next()
+			opt_box_expr(w, v)
+			w.tuple1_close()
+		}
+		ExprKind::Continue(l) => {
+			w.tuple1_open("Continue")
+			opt_ident(w, l)
+			w.tuple1_close()
+		}
+		ExprKind::Return(v) => {
+			w.tuple1_open("Return")
+			opt_box_expr(w, v)
+			w.tuple1_close()
+		}
+		ExprKind::Closure { is_move, params, ret, body } => {
+			w.sopen("Closure")
+			w.boolf("is_move", *is_move)
+			w.f("params")
+			if params.is_empty() {
+				w.raw("[]")
+			} else {
+				w.lopen()
+				for p in params {
+					w.pad()
+					w.sopen("ClosureParam")
+					w.f("pat")
+					pattern(w, &p.pat)
+					w.e()
+					w.f("ty")
+					opt_ty(w, &p.ty)
+					w.e()
+					w.sclose()
+					w.e()
+				}
+				w.lclose()
+			}
+			w.e()
+			w.f("ret")
+			opt_ty(w, ret)
+			w.e()
+			exprf(w, "body", body)
+			w.sclose()
+		}
+		ExprKind::Error => w.raw("Error"),
+	}
+}

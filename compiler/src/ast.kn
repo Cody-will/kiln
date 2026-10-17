@@ -1,0 +1,465 @@
+// The abstract syntax tree: a port of crates/kiln_parser/src/ast.rs.
+//
+// The shapes (names, field order, variants) mirror the Rust AST exactly,
+// so that `debug.kn` can print the same canonical dump as
+// `kiln parse --dump` (crates/kiln_parser/src/dump.rs).
+//
+// (`chan` is a keyword, so fields the Rust AST calls `chan` are `ch` here.)
+
+import super::token::U128
+
+@derive(Clone, Copy)
+pub struct Span {
+	pub start usize,
+	pub end usize,
+}
+
+impl Span {
+	pub fun new(start usize, end usize) Span {
+		return Span { start: start, end: end }
+	}
+
+	// The smallest span covering both.
+	pub fun to(self, o Span) Span {
+		s := if self.start < o.start { self.start } else { o.start }
+		e := if self.end > o.end { self.end } else { o.end }
+		return Span { start: s, end: e }
+	}
+}
+
+@derive(Clone)
+pub struct Ident {
+	pub name string,
+	pub span Span,
+}
+
+pub struct File {
+	pub items Vec<Item>,
+}
+
+@derive(Clone, Copy)
+pub enum Visibility {
+	Private,
+	Public,
+	Package,
+}
+
+@derive(Clone)
+pub struct Attribute {
+	pub name Ident,
+	pub args option<string>,
+	pub span Span,
+}
+
+@derive(Clone)
+pub struct Item {
+	pub kind ItemKind,
+	pub vis Visibility,
+	pub attrs Vec<Attribute>,
+	pub doc option<string>,
+	pub span Span,
+}
+
+@derive(Clone)
+pub enum ItemKind {
+	Fn(FnDecl),
+	Struct(StructDecl),
+	Enum(EnumDecl),
+	Trait(TraitDecl),
+	Impl(ImplDecl),
+	Import(ImportTree),
+	Const { name Ident, ty Type, value option<Expr> },
+	Static { name Ident, mutable bool, ty Type, value Expr },
+	TypeAlias { name Ident, generics Generics, ty option<Type> },
+	Mod { name Ident, items option<Vec<Item>> },
+}
+
+@derive(Clone)
+pub struct Generics {
+	pub params Vec<GenericParam>,
+	pub where_clause Vec<WherePredicate>,
+}
+
+impl Generics {
+	pub fun empty() Generics {
+		return Generics { params: Vec::new(), where_clause: Vec::new() }
+	}
+}
+
+@derive(Clone)
+pub enum GenericParam {
+	Lifetime { name Ident, bounds Vec<Ident> },
+	Type { name Ident, bounds Vec<Bound>, default option<Type> },
+	Const { name Ident, ty Type },
+}
+
+@derive(Clone)
+pub enum Bound {
+	Trait { path Path, maybe bool },
+	Lifetime(Ident),
+}
+
+@derive(Clone)
+pub struct WherePredicate {
+	pub lifetime option<Ident>,
+	pub ty Type,
+	pub bounds Vec<Bound>,
+	pub span Span,
+}
+
+@derive(Clone)
+pub enum SelfParam {
+	Value { mutable bool },
+	Ref { lifetime option<Ident>, mutable bool },
+}
+
+@derive(Clone)
+pub struct Param {
+	pub pat Pattern,
+	pub ty Type,
+	pub span Span,
+}
+
+@derive(Clone)
+pub struct FnDecl {
+	pub name Ident,
+	pub is_unsafe bool,
+	pub generics Generics,
+	pub self_param option<SelfParam>,
+	pub params Vec<Param>,
+	pub ret option<Type>,
+	pub body option<Block>,
+}
+
+@derive(Clone)
+pub struct FieldDecl {
+	pub vis Visibility,
+	pub name Ident,
+	pub ty Type,
+	pub span Span,
+}
+
+@derive(Clone)
+pub enum Fields {
+	Unit,
+	Tuple(Vec<Type>),
+	Named(Vec<FieldDecl>),
+}
+
+@derive(Clone)
+pub struct StructDecl {
+	pub name Ident,
+	pub generics Generics,
+	pub fields Fields,
+}
+
+@derive(Clone)
+pub struct Variant {
+	pub name Ident,
+	pub fields Fields,
+	pub discriminant option<Expr>,
+	pub span Span,
+}
+
+@derive(Clone)
+pub struct EnumDecl {
+	pub name Ident,
+	pub generics Generics,
+	pub variants Vec<Variant>,
+}
+
+@derive(Clone)
+pub struct TraitDecl {
+	pub is_unsafe bool,
+	pub name Ident,
+	pub generics Generics,
+	pub supertraits Vec<Bound>,
+	pub items Vec<Item>,
+}
+
+@derive(Clone)
+pub struct ImplDecl {
+	pub is_unsafe bool,
+	pub generics Generics,
+	pub trait_ref option<Path>,
+	pub self_ty Type,
+	pub items Vec<Item>,
+}
+
+@derive(Clone)
+pub enum ImportTree {
+	Path { path Vec<Ident>, alias option<Ident> },
+	Glob { prefix Vec<Ident> },
+	Group { prefix Vec<Ident>, items Vec<ImportTree> },
+}
+
+@derive(Clone)
+pub struct Path {
+	pub segments Vec<PathSegment>,
+	pub span Span,
+}
+
+impl Path {
+	pub fun single(ident Ident) Path {
+		span := ident.span
+		segs mut := Vec::new()
+		segs.push(PathSegment { ident: ident, args: Vec::new() })
+		return Path { segments: segs, span: span }
+	}
+
+	// A single segment without generic arguments named `name`.
+	pub fun is_name(&self, name &str) bool {
+		return self.segments.len() == 1 && self.segments[0].ident.name == name
+	}
+}
+
+@derive(Clone)
+pub struct PathSegment {
+	pub ident Ident,
+	pub args Vec<GenericArg>,
+}
+
+@derive(Clone)
+pub enum GenericArg {
+	Type(Type),
+	Lifetime(Ident),
+	Binding { name Ident, ty Type },
+}
+
+@derive(Clone)
+pub struct Type {
+	pub kind TypeKind,
+	pub span Span,
+}
+
+@derive(Clone)
+pub enum TypeKind {
+	Path(Path),
+	Ref { lifetime option<Ident>, mutable bool, inner Box<Type> },
+	Ptr { mutable bool, inner Box<Type> },
+	Slice(Box<Type>),
+	Array(Box<Type>, Box<Expr>),
+	Tuple(Vec<Type>),
+	Fn { params Vec<Type>, ret option<Box<Type>>, is_mut bool },
+	Dyn(Vec<Bound>),
+	Impl(Vec<Bound>),
+	ChanSend(Box<Type>),
+	ChanRecv(Box<Type>),
+	Never,
+	Infer,
+}
+
+@derive(Clone)
+pub struct Pattern {
+	pub kind PatternKind,
+	pub span Span,
+}
+
+@derive(Clone)
+pub enum PatternKind {
+	Wild,
+	Rest,
+	Ident { name Ident, mutable bool, sub option<Box<Pattern>> },
+	Lit(Lit),
+	Range { lo Box<Pattern>, hi Box<Pattern>, inclusive bool },
+	Tuple(Vec<Pattern>),
+	Slice(Vec<Pattern>),
+	Path(Path),
+	TupleStruct(Path, Vec<Pattern>),
+	Struct { path Path, fields Vec<FieldPat>, rest bool },
+	Ref { mutable bool, inner Box<Pattern> },
+	Or(Vec<Pattern>),
+}
+
+@derive(Clone)
+pub struct FieldPat {
+	pub name Ident,
+	pub pat Pattern,
+}
+
+@derive(Clone)
+pub struct Block {
+	pub stmts Vec<Stmt>,
+	pub span Span,
+}
+
+@derive(Clone)
+pub struct Stmt {
+	pub kind StmtKind,
+	pub span Span,
+}
+
+@derive(Clone)
+pub struct ShortName {
+	pub name option<Ident>,
+	pub mutable bool,
+}
+
+@derive(Clone)
+pub enum SpawnTarget {
+	Call(Expr),
+	Block { is_move bool, body Block },
+}
+
+@derive(Clone)
+pub enum StmtKind {
+	Let { pat Pattern, ty option<Type>, init option<Expr> },
+	ShortDecl { names Vec<ShortName>, tuple bool, init Expr },
+	Assign { target Expr, op option<BinOp>, value Expr },
+	Send { ch Expr, value Expr },
+	Defer(Expr),
+	Expr(Expr),
+	Item(Box<Item>),
+}
+
+@derive(Clone)
+pub struct Expr {
+	pub kind ExprKind,
+	pub span Span,
+}
+
+impl Expr {
+	// Whether the expression ends with a block, so it can stand as a
+	// statement without a terminator.
+	pub fun is_block_like(&self) bool {
+		match &self.kind {
+			ExprKind::Block(_) | ExprKind::Unsafe(_) | ExprKind::If { .. } | ExprKind::IfLet { .. } => return true,
+			ExprKind::Match(_, _) | ExprKind::Select(_) | ExprKind::For { .. } | ExprKind::While { .. } => return true,
+			ExprKind::WhileLet { .. } | ExprKind::Loop { .. } | ExprKind::Spawn(_) => return true,
+			_ => return false,
+		}
+	}
+}
+
+@derive(Clone)
+pub enum Lit {
+	Int { value U128, suffix option<string>, negative bool },
+	Float { value f64, suffix option<string> },
+	Str(string),
+	ByteStr(Vec<u8>),
+	Char(char),
+	Bool(bool),
+}
+
+@derive(Clone)
+pub enum InterpPart {
+	Text(string),
+	Expr(Expr, option<FmtSpec>),
+}
+
+@derive(Clone)
+pub struct FmtSpec {
+	pub fill option<char>,
+	pub align option<string>,
+	pub plus bool,
+	pub alt bool,
+	pub zero bool,
+	pub width option<usize>,
+	pub precision option<usize>,
+	// The `FmtKind` variant name (`Display`, `Debug`, `LowerHex`, ...).
+	pub kind string,
+}
+
+@derive(Clone, Copy)
+pub enum BinOp {
+	Add,
+	Sub,
+	Mul,
+	Div,
+	Rem,
+	And,
+	Or,
+	BitAnd,
+	BitOr,
+	BitXor,
+	Shl,
+	Shr,
+	Eq,
+	Ne,
+	Lt,
+	Le,
+	Gt,
+	Ge,
+}
+
+@derive(Clone, Copy)
+pub enum UnOp {
+	Neg,
+	Not,
+	Deref,
+	Ref,
+	RefMut,
+	Recv,
+}
+
+@derive(Clone)
+pub struct ClosureParam {
+	pub pat Pattern,
+	pub ty option<Type>,
+}
+
+@derive(Clone)
+pub struct MatchArm {
+	pub pat Pattern,
+	pub guard option<Expr>,
+	pub body Expr,
+	pub span Span,
+}
+
+@derive(Clone)
+pub enum SelectOp {
+	Recv { bind option<ShortName>, ch Expr },
+	Send { ch Expr, value Expr },
+	Default,
+}
+
+@derive(Clone)
+pub struct SelectArm {
+	pub op SelectOp,
+	pub body Expr,
+	pub span Span,
+}
+
+@derive(Clone)
+pub struct FieldInit {
+	pub name Ident,
+	pub value Expr,
+}
+
+@derive(Clone)
+pub enum ExprKind {
+	Lit(Lit),
+	Interp(Vec<InterpPart>),
+	Path(Path),
+	Unary(UnOp, Box<Expr>),
+	Binary(BinOp, Box<Expr>, Box<Expr>),
+	Cast(Box<Expr>, Type),
+	Call(Box<Expr>, Vec<Expr>),
+	MethodCall { receiver Box<Expr>, method Ident, generic_args Vec<GenericArg>, args Vec<Expr> },
+	Field(Box<Expr>, Ident),
+	TupleIndex(Box<Expr>, u32),
+	Index(Box<Expr>, Box<Expr>),
+	Try(Box<Expr>),
+	Range { start option<Box<Expr>>, end option<Box<Expr>>, inclusive bool },
+	StructLit { path Path, fields Vec<FieldInit>, base option<Box<Expr>> },
+	Tuple(Vec<Expr>),
+	Paren(Box<Expr>),
+	Array(Vec<Expr>),
+	ArrayRepeat(Box<Expr>, Box<Expr>),
+	Block(Block),
+	Unsafe(Block),
+	Spawn(Box<SpawnTarget>),
+	If { cond Box<Expr>, then Block, els option<Box<Expr>> },
+	IfLet { pat Pattern, expr Box<Expr>, then Block, els option<Box<Expr>> },
+	Match(Box<Expr>, Vec<MatchArm>),
+	Select(Vec<SelectArm>),
+	For { label option<Ident>, pat Pattern, iter Box<Expr>, body Block },
+	While { label option<Ident>, cond Box<Expr>, body Block },
+	WhileLet { label option<Ident>, pat Pattern, expr Box<Expr>, body Block },
+	Loop { label option<Ident>, body Block },
+	Break(option<Ident>, option<Box<Expr>>),
+	Continue(option<Ident>),
+	Return(option<Box<Expr>>),
+	Closure { is_move bool, params Vec<ClosureParam>, ret option<Type>, body Box<Expr> },
+	Error,
+}

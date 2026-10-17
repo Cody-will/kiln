@@ -7,6 +7,8 @@
 
 mod token
 mod lexer
+mod ast
+mod debug
 
 import std::fs
 import std::os
