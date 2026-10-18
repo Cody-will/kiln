@@ -1717,6 +1717,12 @@ fun check_items(r &Resolved, errors &mut Vec<BDiag>) {
 // ---- entry point (lib.rs) ----
 
 pub fun check(c &mut Checker) Vec<BDiag> {
+	keep mut := Vec::new()
+	return check_keep(c, &mut keep)
+}
+
+// `check`, also handing back the lowered bodies (for code generation).
+pub fun check_keep(c &mut Checker, keep &mut Vec<(usize, Vec<mir::Body>)>) Vec<BDiag> {
 	errors mut := Vec::new()
 	check_items(&c.r, &mut errors)
 	for i in 0..c.r.fns.len() {
@@ -1774,6 +1780,7 @@ pub fun check(c &mut Checker) Vec<BDiag> {
 		}
 		k += 1
 	}
+	*keep = lowered
 	return errors
 }
 

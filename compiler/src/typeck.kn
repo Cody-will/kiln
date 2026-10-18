@@ -1277,6 +1277,15 @@ impl Checker {
 		}
 	}
 
+	// Checks function `i` now if `typeck_lazy` skipped it.
+	pub fun ensure_checked(&mut self, i usize) {
+		if self.results[i].is_none() && self.r.fns[i].decl.body.is_some() {
+			saved := std::mem::replace(&mut self.b, Body::new(Vec::new()))
+			self.check_fn(i)
+			self.b = saved
+		}
+	}
+
 	fun check_fn(&mut self, i usize) {
 		decl := self.r.fns[i].decl.clone()
 		impl_idx := self.r.fns[i].impl_idx
@@ -5762,6 +5771,24 @@ pub fun typeck(r Resolved) Checker {
 	c.collect()
 	c.check_ffi()
 	c.check_bodies()
+	return c
+}
+
+// `typeck` for building: the standard library's function bodies are only
+// checked when code generation needs them (`ensure_checked`).
+pub fun typeck_lazy(r Resolved) Checker {
+	c mut := Checker::new(r)
+	c.collect()
+	c.check_ffi()
+	i mut := 0
+	while i < c.r.fns.len() {
+		if c.r.fns[i].decl.body.is_some() && !c.r.fns[i].is_prelude {
+			c.check_fn(i)
+		}
+		i += 1
+	}
+	c.check_main()
+	c.check_statics()
 	return c
 }
 

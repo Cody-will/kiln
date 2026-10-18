@@ -27,6 +27,7 @@ mod codegen
 
 import std::fs
 import std::os
+import std::time::Instant
 import ast::{Item, ItemKind}
 import token::{StrPart, TokenKind}
 
@@ -205,7 +206,17 @@ fun dir_of(path &str) string {
 }
 
 // Front end plus code generation: the program's LLVM IR, or its errors.
-fun emit_llvm(path &str, dir &str, release bool) result<string, string> {
+// `--time-passes`: prints the time since `t` for pass `name`, then restarts it.
+fun pass_done(tp bool, t &mut Instant, name &str) {
+	if tp {
+		ms := t.elapsed().as_secs_f64() * 1000.0
+		eprintln("time: {name:<12} {ms:>9.1} ms")
+	}
+	*t = Instant::now()
+}
+
+fun emit_llvm(path &str, dir &str, release bool, tp bool) result<codegen::Module, string> {
+	t mut := Instant::now()
 	text := match fs::read_to_string(path) {
 		Ok(s) => s,
 		Err(e) => return Err("error: cannot read {path}: {e}\n"),
@@ -218,22 +229,30 @@ fun emit_llvm(path &str, dir &str, release bool) result<string, string> {
 	}
 	user := ast::File { items: items }
 	pre := resolve::parse_at(&resolve::builtin_text(dir), resolve::BUILTIN_BASE, &mut l.next)
+	pass_done(tp, &mut t, "parse")
 	r := resolve::resolve(&user, &pre.file)
 	if r.errors.len() > 0 {
 		e := &r.errors[0]
 		return Err("resolve error at {e.span.start}..{e.span.end}: {e.message}")
 	}
-	c mut := typeck::typeck(r)
+	pass_done(tp, &mut t, "resolve")
+	c mut := typeck::typeck_lazy(r)
+	pass_done(tp, &mut t, "typeck")
 	if c.errors.len() > 0 {
 		e := &c.errors[0]
 		return Err("type error at {e.span.start}..{e.span.end}: {e.message}")
 	}
-	ds := borrowck::check(&mut c)
+	lowered mut := Vec::new()
+	ds := borrowck::check_keep(&mut c, &mut lowered)
+	pass_done(tp, &mut t, "borrowck")
 	if ds.len() > 0 {
 		return Err("borrow error at {ds[0].span.start}..{ds[0].span.end}: {ds[0].message}")
 	}
-	match codegen::compile(c, !release) {
-		Ok(ir) => return Ok(ir),
+	match codegen::compile(c, !release, lowered) {
+		Ok(ir) => {
+			pass_done(tp, &mut t, "codegen")
+			return Ok(ir)
+		},
 		Err(es) => {
 			o mut := string::new()
 			for (m, s) in &es {
@@ -245,54 +264,132 @@ fun emit_llvm(path &str, dir &str, release bool) result<string, string> {
 }
 
 // `kilnc --build <file.kn> -o <out>`: writes `<out>.ll` and links with clang.
-fun build(path &str, out &str, dir &str, release bool) {
-	ir := match emit_llvm(path, dir, release) {
-		Ok(ir) => ir,
+fun fail(msg string) {
+	eprintln("error: {msg}")
+	os::exit(1)
+}
+
+fun write_file(path &str, text &str) {
+	if let Err(e) = fs::write(path, text.as_bytes()) {
+		fail("cannot write {path}: {e}")
+	}
+}
+
+fun digits(s &str) usize {
+	n mut := 0
+	for b in s.as_bytes() {
+		if *b < 48 || *b > 57 {
+			return 0
+		}
+		n = n * 10 + (*b - 48) as usize
+	}
+	return n
+}
+
+// Parallel clang jobs for debug builds: `KILNC_JOBS`, else the CPU count.
+fun jobs() usize {
+	if let Some(j) = os::getenv("KILNC_JOBS") {
+		n := digits(&j)
+		return if n == 0 { 1 } else { n }
+	}
+	match os::Command::new("nproc").output() {
+		Ok(o) => {
+			n := digits(o.stdout_text().trim())
+			return if n == 0 { 4 } else { n }
+		},
+		Err(_) => return 4,
+	}
+}
+
+fun sh_quote(s &str) string {
+	return "'{s.replace("'", "'\\''")}'"
+}
+
+// `kilnc --build <file.kn> -o <out>`. A debug build splits the program into
+// one LLVM module per job and compiles them at `-O0` in parallel; a release
+// build compiles it as one module at `-O2`. The IR goes next to `out`.
+fun build(path &str, out &str, dir &str, release bool, tp bool) {
+	m := match emit_llvm(path, dir, release, tp) {
+		Ok(m) => m,
 		Err(e) => {
 			eprint("{e}")
 			os::exit(1)
 		},
 	}
-	ll := "{out}.ll"
-	if let Err(e) = fs::write(&ll, ir.as_bytes()) {
-		eprintln("error: cannot write {ll}: {e}")
-		os::exit(1)
-	}
+	t mut := Instant::now()
 	rt := match os::getenv("KILN_RT") {
 		Some(r) => r,
 		None => {
-			eprintln("error: set KILN_RT to the path of libkiln_rt.a")
-			os::exit(1)
+			fail("set KILN_RT to the path of libkiln_rt.a".to_string())
+			return
 		},
 	}
 	cc := match os::getenv("KILN_CLANG") {
 		Some(c) => c,
 		None => "clang".to_string(),
 	}
-	cmd mut := os::Command::new(&cc)
-	cmd = cmd.arg(if release { "-O2" } else { "-O1" }).arg("-w").arg(&ll).arg(&rt)
-	if ir.contains("@kn_tls_") {
+	libs mut := " {sh_quote(&rt)}"
+	if m.decls.contains("@kn_tls_") {
 		// The TLS library sits next to the runtime library.
 		dir_end := match rt.find("libkiln_rt.a") {
 			Some(i) => i,
 			None => 0,
 		}
-		cmd = cmd.arg("{&rt[..dir_end]}libkiln_tls.a").arg("-lpthread").arg("-ldl").arg("-lrt").arg("-lutil").arg("-lgcc_s")
+		libs.push(" {sh_quote("{&rt[..dir_end]}libkiln_tls.a")} -lpthread -ldl -lrt -lutil -lgcc_s")
 	}
-	cmd = cmd.arg("-o").arg(out).arg("-lm").arg("-lpthread")
-	st := cmd.status()
-	match st {
-		Ok(code) => {
-			if code != 0 {
-				eprintln("error: clang failed")
-				os::exit(1)
+	libs.push(" -lm -lpthread")
+	script mut := "set -e\n".to_string()
+	if release {
+		ll := "{out}.ll"
+		write_file(&ll, &m.single())
+		script.push("{sh_quote(&cc)} -O2 -w {sh_quote(&ll)}{libs} -o {sh_quote(out)}\n")
+	} else {
+		// Several shards per job, so an edit recompiles little; a shard whose
+		// IR is unchanged since the last build keeps its object.
+		n0 := jobs() * 4
+		n := if m.funcs.len() / 64 + 1 < n0 { m.funcs.len() / 64 + 1 } else { n0 }
+		objs mut := string::new()
+		running mut := Vec::new()
+		for (k, text) in m.shards(n).iter().enumerate() {
+			ll := "{out}.{k}.ll"
+			o := "{out}.{k}.o"
+			objs.push(" {sh_quote(&o)}")
+			same := match fs::read_to_string(&ll) {
+				Ok(old) => old == *text && fs::is_file(&o),
+				Err(_) => false,
+			}
+			if same {
+				continue
+			}
+			// Remove a stale object first, so a failed build can't reuse it.
+			script.push("rm -f {sh_quote(&o)}\n")
+			write_file(&ll, text)
+			script.push("{sh_quote(&cc)} -O0 -w -c {sh_quote(&ll)} -o {sh_quote(&o)} & p{k}=$!\n")
+			running.push(k)
+			if running.len() >= jobs() {
+				for r in &running {
+					script.push("wait $p{r}\n")
+				}
+				running = Vec::new()
 			}
 		}
-		Err(e) => {
-			eprintln("error: cannot run {cc}: {e}")
-			os::exit(1)
-		},
+		for r in &running {
+			script.push("wait $p{r}\n")
+		}
+		script.push("{sh_quote(&cc)}{objs}{libs} -o {sh_quote(out)}\n")
 	}
+	sh_path := "{out}.build.sh"
+	write_file(&sh_path, &script)
+	pass_done(tp, &mut t, "write-ir")
+	match os::Command::new("sh").arg(&sh_path).status() {
+		Ok(code) => {
+			if code != 0 {
+				fail("clang failed".to_string())
+			}
+		},
+		Err(e) => fail("cannot run sh: {e}"),
+	}
+	pass_done(tp, &mut t, "clang")
 }
 
 fun main() {
@@ -308,12 +405,15 @@ fun main() {
 		}
 		if args[1] == "--build" {
 			release mut := false
+			tp mut := false
 			out mut := "a.out".to_string()
 			file mut := string::new()
 			j mut := 2
 			while j < args.len() {
 				if args[j] == "--release" {
 					release = true
+				} else if args[j] == "--time-passes" {
+					tp = true
 				} else if args[j] == "-o" && j + 1 < args.len() {
 					out = args[j + 1].clone()
 					j += 1
@@ -322,11 +422,11 @@ fun main() {
 				}
 				j += 1
 			}
-			build(&file, &out, &dir, release)
+			build(&file, &out, &dir, release, tp)
 			return
 		}
-		match emit_llvm(&args[2], &dir, false) {
-			Ok(ir) => print("{ir}"),
+		match emit_llvm(&args[2], &dir, false, false) {
+			Ok(m) => print("{m.single()}"),
 			Err(e) => {
 				eprint("{e}")
 				os::exit(1)

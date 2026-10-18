@@ -1,0 +1,32 @@
+{
+ "hello": {
+  "kiln (Cranelift, debug)": {
+   "clean": 0.34387956299906364,
+   "incremental": 0.32986148000054527
+  },
+  "kiln (LLVM, release)": {
+   "clean": 0.2929836160001287,
+   "incremental": 0.313846619999822
+  },
+  "kilnc (debug)": {
+   "clean": 0.42758494499867084,
+   "incremental": 0.4388111560001562
+  },
+  "kilnc (release)": {
+   "clean": 0.4131530569975439,
+   "incremental": 0.4187971409992315
+  },
+  "go build": {
+   "clean": 0.13366095300079905,
+   "incremental": 0.13268681000045035
+  },
+  "cargo build (debug)": {
+   "clean": 0.19951903599940124,
+   "incremental": 0.20936975800213986
+  },
+  "cargo build (release)": {
+   "clean": 0.1366381480002019,
+   "incremental": 0.15853671100194333
+  }
+ }
+}
