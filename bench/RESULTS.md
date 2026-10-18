@@ -179,3 +179,28 @@ Rust, the same as before. A second SLP round after O3 does pack those
 (`opt -O3` on the dumped IR gives `llvm.sqrt.v2f64`), but it measured no
 faster (221 ms), so it was not kept. Next to try: noalias/escape (the
 `energy(&b)` call stops SROA from promoting the array to registers).
+
+## kilnc release round (Oct 18, 2026)
+
+`kilnc --build --release` is the self-hosted compiler: ThinLTO at `-O3`. It now passes Kiln's guarantees to LLVM the way the Rust LLVM backend does:
+- Addresses are typed `ptr` (slots, references, Box), with GEP address arithmetic and `inbounds` after bounds checks.
+- A register ABI: a `.v` body takes small and fat-reference arguments by value and returns small results by value, behind an always-inlined slot wrapper.
+- `noalias` on argument slots, on `&mut T`, and on `&T` of freeze types.
+- `nounwind` on every function and `inlinehint` on small ones.
+- `cold noreturn` on panics and `nocapture` on runtime pointer parameters.
+
+One `bench/run.py` run, median of 5, in seconds:
+
+| Benchmark | Kiln Cranelift | Kiln LLVM | **kilnc** | Go | Rust |
+|---|---:|---:|---:|---:|---:|
+| fib(35) | 0.057 | 0.003 | **0.021** | 0.041 | 0.021 |
+| nbody | 0.671 | 0.216 | **0.211** | 0.249 | 0.171 |
+| binary-trees | 2.291 | 1.253 | **1.209** | 0.999 | 0.970 |
+| spectral-norm | 0.358 | 0.177 | **0.184** | 0.176 | 0.178 |
+| fannkuch-redux | 0.326 | 0.187 | **0.187** | 0.189 | 0.192 |
+| JSON | 0.547 | 0.193 | **0.214** | 0.472 | 0.148 |
+| hashmap | 0.284 | 0.199 | **0.223** | 0.239 | 0.240 |
+| pingpong | 0.111 | 0.107 | **0.108** | 0.158 | 3.903 |
+| workerpool | 0.072 | 0.080 | **0.078** | 0.082 | 0.170 |
+
+kilnc matches the Rust LLVM backend within noise, except JSON and hashmap (about 10% behind) and fib. On fib the Rust backend's pipeline folds the recursion further; kilnc matches rustc there.

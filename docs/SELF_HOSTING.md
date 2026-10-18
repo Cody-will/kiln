@@ -224,3 +224,6 @@ the Rust build depends on `compiler/`.
 
 ## Build pipeline performance
 Debug builds split the IR into hidden-linkage shards, compiled with `clang -O0` in parallel. Unchanged shards are reused. Release builds use ThinLTO shards plus lld when available, and fall back to one `-O2` module. Std bodies are type-checked lazily. Use `--time-passes` for a per-pass breakdown, and set `KILNC_JOBS` to control parallelism. See bench/COMPILE.md.
+
+## Release code generation
+With `--release`, kilnc emits LLVM attributes for Kiln's guarantees (codegen.kn `end_release_fn`). Every function `f` gets an `f.v` body that takes small scalar arguments, thin references and `(ptr, len)` fat references by value, and returns 1/2/4/8/16-byte results by value. `f` itself keeps the uniform slot signature (function pointers and vtables still use it) as an always-inlined wrapper. See bench/RESULTS.md for the numbers.
