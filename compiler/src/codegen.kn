@@ -219,6 +219,8 @@ pub struct Cg {
 	// Instruction text, entry allocas, value and block counters.
 	fb string,
 	allocas string,
+	// Bytes of stack slots in the function being built.
+	frame u64,
 	nv usize,
 	nb u32,
 	open bool,
@@ -954,6 +956,7 @@ impl Cg {
 	fun begin_fn(&mut self) {
 		self.fb = string::new()
 		self.allocas = string::new()
+		self.frame = 0
 		self.nv = 0
 		self.nb = 0
 		self.open = false
@@ -966,6 +969,12 @@ impl Cg {
 		if self.open {
 			self.emit("unreachable".to_string())
 			self.open = false
+		}
+		// Goroutine stacks are 8 MiB: a frame needing half of that is
+		// almost certainly a large local array (as the Rust backend checks).
+		if self.frame > (4u64 << 20) {
+			tenths := self.frame * 10 / 1048576
+			self.error("this function needs {tenths / 10}.{tenths % 10} MiB of stack, more than half of a goroutine's 8 MiB stack (keep large arrays on the heap: a `Vec` (`v.resize(n, 0)`) or a `Box`)")
 		}
 		f mut := header
 		f.push(" {{\nentry:\n")
@@ -1109,6 +1118,7 @@ impl Cg {
 		n := if size == 0 { 1 } else { size }
 		a := if align == 0 { 1 } else { align }
 		self.allocas.push("  {s} = alloca [{n} x i8], align {a}\n")
+		self.frame += n as u64
 		return val(s, "ptr")
 	}
 
@@ -5905,6 +5915,7 @@ impl Cg {
 			cur_block: 0,
 			fb: string::new(),
 			allocas: string::new(),
+			frame: 0,
 			nv: 0,
 			nb: 0,
 			open: false,
