@@ -1265,23 +1265,46 @@ impl Cg {
 				return lv.clone()
 			}
 		}
-		return self.inst(t, "load {t}, ptr {p}, align 1")
+		a := natural_align(t)
+		return self.inst(t, "load {t}, ptr {p}, align {a}")
 	}
 
 	fun store(&mut self, v &V, addr &V, off i64) {
+		self.store_al(v, addr, off, natural_align(&v.t))
+	}
+
+	// A store with explicit alignment (`copy` moves aggregates through
+	// integers, which may be less aligned than the integer type).
+	fun store_al(&mut self, v &V, addr &V, off i64, a u32) {
 		p := self.ptr_of(addr, off)
-		self.emit("store {v.t} {v.n}, ptr {p}, align 1")
+		self.emit("store {v.t} {v.n}, ptr {p}, align {a}")
 		self.last_store = Some((p, v.t.clone(), v.clone()))
 	}
 
+	fun load_al(&mut self, t &str, addr &V, off i64, a u32) V {
+		p := self.ptr_of(addr, off)
+		if let Some((lp, lt, lv)) = &self.last_store {
+			if *lp == p && *lt == t {
+				return lv.clone()
+			}
+		}
+		return self.inst(t, "load {t}, ptr {p}, align {a}")
+	}
+
 	fun copy(&mut self, dst &V, src &V, size u32) {
+		self.copy_al(dst, src, size, 1)
+	}
+
+	// `copy` for places known to be aligned to `align`.
+	fun copy_al(&mut self, dst &V, src &V, size u32, align u32) {
 		if size == 0 {
 			return
 		}
 		if size == 1 || size == 2 || size == 4 || size == 8 {
 			t := int_of_bits(size * 8)
-			v := self.load(&t, src, 0)
-			self.store(&v, dst, 0)
+			a := if align < size { align } else { size }
+			v := self.load_al(&t, src, 0, a)
+			self.store_al(&v, dst, 0, a)
 			return
 		}
 		self.declare("llvm.memmove.p0.p0.i64", "declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)".to_string())
@@ -1729,6 +1752,16 @@ fun place_mentions(p &Place, l u32) bool {
 		}
 	}
 	return false
+}
+
+// The alignment of a scalar LLVM type, as kiln lays it out (at most 8).
+fun natural_align(t &str) u32 {
+	return match t {
+		"i1" | "i8" => 1,
+		"i16" => 2,
+		"i32" | "float" => 4,
+		_ => 8,
+	}
 }
 
 fun vec2(a V, b V) Vec<V> {
@@ -2574,7 +2607,7 @@ impl Cg {
 				self.when_end(w)
 			}
 		}
-		self.copy(&dest, &scratch, l.size)
+		self.copy_al(&dest, &scratch, l.size, l.align)
 		if p.proj.len() == 0 {
 			if let Some(f) = self.locals[p.local as usize].flag.clone() {
 				self.set_flag(&f, 1)
@@ -6640,9 +6673,13 @@ fun shard_text(k usize, g &Vec<usize>, funcs &Vec<string>, decls &string, files 
 			o.push("declare hidden void @{name}{params[i]}\n")
 		}
 	}
+	// A shard holding the whole program keeps internal linkage, so LLVM
+	// knows every caller (dead wrappers go away and a function's last
+	// call site gets the inliner's bonus).
+	whole := g.len() == funcs.len()
 	for i in g {
 		f := &funcs[*i]
-		if f.starts_with("define internal ") {
+		if !whole && f.starts_with("define internal ") {
 			o.push("define hidden ")
 			o.push(&f[16..])
 		} else {
