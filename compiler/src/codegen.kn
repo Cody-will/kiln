@@ -6177,7 +6177,16 @@ fun hex2(v u32) string {
 // on a define line, `!@L<line>.<col>` on its instructions) with numbered
 // metadata, and adds the compile unit and module flags.
 fun number_debug(text string, files &[string]) string {
-	if text.find(" !dbg !@S").is_none() {
+	// Only placeholders on `define` lines count: global data (kilnc's own
+	// string constants, say) may hold the same text.
+	has mut := false
+	for line in text.split("\n") {
+		if line.starts_with("define ") && line.find(" !dbg !@S").is_some() {
+			has = true
+			break
+		}
+	}
+	if !has {
 		return text
 	}
 	o mut := string::new()

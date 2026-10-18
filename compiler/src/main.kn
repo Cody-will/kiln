@@ -245,8 +245,11 @@ fun bck_keys(r &resolve::Resolved, texts &Vec<string>, builtin &str) Vec<u64> {
 	}
 	h mut := Hasher::with_seed(0x6b696c6e63)
 	h.write(builtin.as_bytes())
-	if let Ok(exe) = fs::read("/proc/self/exe") {
-		h.write(&exe)
+	// The compiler binary, by size and modification time (reading all of it
+	// cost tens of milliseconds per build).
+	if let Ok(m) = fs::metadata("/proc/self/exe") {
+		h.write_u64(m.len())
+		h.write_u64(m.modified().unix_nanos() as u64)
 	}
 	for k in 0..texts.len() {
 		sp mut := spans[k].clone()
