@@ -1,92 +1,92 @@
 {
  "hello": {
   "kiln (Cranelift, debug)": {
-   "clean": 0.2527059989988629,
-   "incremental": 0.2548623080001562
+   "clean": 0.35050316299748374,
+   "incremental": 0.3306942889976199
   },
   "kiln (LLVM, release)": {
-   "clean": 0.2662413129983179,
-   "incremental": 0.2548165879998123
+   "clean": 0.34539927000150783,
+   "incremental": 0.32592894000117667
   },
   "kilnc (debug)": {
-   "clean": 0.19521646400244208,
-   "incremental": 0.1968795749999117
+   "clean": 0.18847744000231614,
+   "incremental": 0.1827119869994931
   },
   "kilnc (release)": {
-   "clean": 0.24499041799936094,
-   "incremental": 0.24523747399871354
+   "clean": 0.23871169199992437,
+   "incremental": 0.23046315000101458
   },
   "go build": {
-   "clean": 0.1386757949985622,
-   "incremental": 0.1253951299986511
+   "clean": 0.1292543379968265,
+   "incremental": 0.130376150002121
   },
   "cargo build (debug)": {
-   "clean": 0.19698560800316045,
-   "incremental": 0.19400527899779263
+   "clean": 0.19663303799461573,
+   "incremental": 0.20145359200250823
   },
   "cargo build (release)": {
-   "clean": 0.1217971949990897,
-   "incremental": 0.1230949229975522
+   "clean": 0.13284195499727502,
+   "incremental": 0.13773679700534558
   }
  },
  "mid": {
   "kiln (Cranelift, debug)": {
-   "clean": 0.4193634459988971,
-   "incremental": 0.4110620209976332
+   "clean": 0.5297383569995873,
+   "incremental": 0.5276759980042698
   },
   "kiln (LLVM, release)": {
-   "clean": 1.232733441000164,
-   "incremental": 1.27959411700067
+   "clean": 1.3958734880070551,
+   "incremental": 1.3708238350009196
   },
   "kilnc (debug)": {
-   "clean": 0.38942207600121037,
-   "incremental": 0.36957272400104557
+   "clean": 0.36256301699904725,
+   "incremental": 0.32755841899779625
   },
   "kilnc (release)": {
-   "clean": 1.028078170002118,
-   "incremental": 1.0022186940004758
+   "clean": 0.9382292079972103,
+   "incremental": 0.8773521339971921
   },
   "go build": {
-   "clean": 0.1597008190001361,
-   "incremental": 0.1668945840028755
+   "clean": 0.15366736800206127,
+   "incremental": 0.14839703399775317
   },
   "cargo build (debug)": {
-   "clean": 0.4533217290008906,
-   "incremental": 0.2856524039998476
+   "clean": 0.4176411829976132,
+   "incremental": 0.28416005599865457
   },
   "cargo build (release)": {
-   "clean": 0.7236576130017056,
-   "incremental": 0.7262467810032831
+   "clean": 0.7933697720000055,
+   "incremental": 0.7548967690017889
   }
  },
  "big": {
   "kiln (Cranelift, debug)": {
-   "clean": 4.456039167998824,
-   "incremental": 4.504903672001092
+   "clean": 4.51395848300308,
+   "incremental": 4.413185505000001
   },
   "kiln (LLVM, release)": {
-   "clean": 18.358305625999492,
-   "incremental": 18.62586124399968
+   "clean": 18.514393438999832,
+   "incremental": 19.00939787799871
   },
   "kilnc (debug)": {
-   "clean": 2.884120234997681,
-   "incremental": 1.663475229001051
+   "clean": 3.094422976995702,
+   "incremental": 1.9173906130017713
   },
   "kilnc (release)": {
-   "clean": 12.77336878099959,
-   "incremental": 11.24245975300073
+   "clean": 11.517600172002858,
+   "incremental": 9.804473385003803
   },
   "go build": {
-   "clean": 1.2158469360001618,
-   "incremental": 1.3315922700021474
+   "clean": 1.223832185001811,
+   "incremental": 1.1909816190018319
   },
   "cargo build (debug)": {
-   "clean": 5.301256704999105,
-   "incremental": 1.274654412001837
+   "clean": 5.714507983000658,
+   "incremental": 1.1721036969975103
   },
   "cargo build (release)": {
-   "clean": 7.477426697998453,
-   "incremental": 7.420626037997863
+   "clean": 8.537897201000305,
+   "incremental": 8.492346562998137
   }
  }
 }
