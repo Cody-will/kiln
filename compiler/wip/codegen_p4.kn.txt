@@ -1,0 +1,669 @@
+
+	// ---- operators ----
+
+	// A scalar operand, looking through references (match ergonomics).
+	fun scalar_through_refs(&mut self, o &Operand) (V, Ty) {
+		t mut := self.op_ty(o)
+		v mut := self.op_scalar(o)
+		while true {
+			inner := match &t {
+				Ty::Ref(_, x) => (**x).clone(),
+				_ => break,
+			}
+			if self.is_fat(&t) {
+				break
+			}
+			match self.scalar(&inner) {
+				Some(st) => {
+					v = self.load(&st, &v, 0)
+					t = inner
+				}
+				None => break,
+			}
+		}
+		return (v, t)
+	}
+
+	fun is_str_like(&self, t &Ty) bool {
+		match t {
+			Ty::Prim(p) => return p == "Str",
+			Ty::Ref(_, x) => return self.is_str_like(x),
+			_ => return self.is_lang(t, "string"),
+		}
+	}
+
+	// `(ptr, len)` of a string-like value stored at `addr` with type `t`.
+	fun str_at(&mut self, addr &V, t &Ty) (V, V) {
+		match t {
+			Ty::Ref(_, x) => {
+				if is_prim(x, "Str") {
+					return (self.load("i64", addr, 0), self.load("i64", addr, 8))
+				}
+				p := self.load("i64", addr, 0)
+				return self.str_at(&p, x)
+			}
+			_ => return (self.load("i64", addr, 0), self.load("i64", addr, 16)),
+		}
+	}
+
+	fun str_of(&mut self, o &Operand) (V, V) {
+		t := self.op_ty(o)
+		a := self.op_addr(o)
+		return self.str_at(&a, &t)
+	}
+
+	fun pure(&mut self, op &Op, ops &Vec<Operand>, dest &V, dt &Ty) {
+		match op {
+			Op::Bin(b) => {
+				if let Some(v) = self.binary(*b, &ops[0], &ops[1]) {
+					self.store(&v, dest, 0)
+				}
+			}
+			Op::Neg => {
+				(v, t) := self.scalar_through_refs(&ops[0])
+				r := if is_float_ty(&t) {
+					self.fneg(&v)
+				} else if self.checked && is_signed(&t) {
+					z := self.iconst_t(&v.t, 0)
+					self.checked_arith(BinOp::Sub, &z, &v, true)
+				} else {
+					self.ineg(&v)
+				}
+				self.store(&r, dest, 0)
+			}
+			Op::Not => {
+				(v, t) := self.scalar_through_refs(&ops[0])
+				r := if is_prim(&t, "Bool") { self.icmp_imm("eq", &v, 0) } else { self.bnot(&v) }
+				self.store(&r, dest, 0)
+			}
+			Op::Cast(to) => {
+				to := self.subst(to)
+				ot := self.op_ty(&ops[0])
+				is_ptr_to := match &to {
+					Ty::Ptr(_, _) => true,
+					_ => false,
+				}
+				is_ptr_from := match &ot {
+					Ty::Ptr(_, _) => true,
+					_ => false,
+				}
+				(v, from) := if is_ptr_to || is_ptr_from {
+					a := self.op_addr(&ops[0])
+					(self.load("i64", &a, 0), prim("Usize"))
+				} else {
+					self.scalar_through_refs(&ops[0])
+				}
+				to_s := if is_ptr_to { prim("Usize") } else { to.clone() }
+				r := self.cast(&v, &from, &to_s)
+				self.store(&r, dest, 0)
+			}
+			Op::Discriminant => {
+				a := self.op_addr(&ops[0])
+				tag := self.load("i32", &a, 0)
+				t := self.uextend("i64", &tag)
+				self.store(&t, dest, 0)
+			}
+			Op::Print { newline, stderr } => {
+				t := self.op_ty(&ops[0])
+				nl := val(if *newline { "1".to_string() } else { "0".to_string() }, "i32")
+				se := val(if *stderr { "1".to_string() } else { "0".to_string() }, "i32")
+				if self.is_str_like(&t) {
+					(p, n) := self.str_of(&ops[0])
+					self.call_rt("kn_print", &vec4(p, n, se, nl))
+				} else {
+					s := self.new_string()
+					a := self.op_addr(&ops[0])
+					self.fmt_into(&s, &a, &t)
+					p := self.load("i64", &s, 0)
+					n := self.load("i64", &s, 16)
+					self.call_rt("kn_print", &vec4(p, n, se, nl))
+					self.free_string(&s)
+				}
+			}
+			Op::Interp(segs) => {
+				self.init_string(dest)
+				for seg in segs {
+					match seg {
+						InterpSeg::Text(t) => {
+							(p, n) := self.str_lit(t)
+							self.call_rt("kn_string_push", &vec3(dest.clone(), p, n))
+						}
+						InterpSeg::Arg(i, spec) => {
+							t := self.op_ty(&ops[*i])
+							a := self.op_addr(&ops[*i])
+							match spec {
+								None => self.fmt_into(dest, &a, &t),
+								Some(sp) => self.fmt_spec_into(dest, &a, &t, sp),
+							}
+						}
+					}
+				}
+			}
+			Op::Touch => {}
+			Op::Unsupported(what) => self.error("code generation does not support {what}"),
+		}
+	}
+
+	fun init_string(&mut self, s &V) {
+		o := self.iconst(1)
+		z := self.iconst(0)
+		self.store(&o, s, 0)
+		self.store(&z, s, 8)
+		self.store(&z, s, 16)
+	}
+
+	fun new_string(&mut self) V {
+		s := self.slot(24, 8)
+		self.init_string(&s)
+		return s
+	}
+
+	fun free_string(&mut self, s &V) {
+		o := self.iconst(1)
+		self.call_rt("kn_vec_free", &vec3(s.clone(), o.clone(), o))
+	}
+
+	fun push_str_of(&mut self, s &V, tmp &V) {
+		p := self.load("i64", tmp, 0)
+		n := self.load("i64", tmp, 16)
+		self.call_rt("kn_string_push", &vec3(s.clone(), p, n))
+	}
+
+	// Appends the `Display` form of the value at `addr` (type `t`) to String `s`.
+	fun fmt_into(&mut self, s &V, addr &V, t &Ty) {
+		if self.is_str_like(t) {
+			(p, n) := self.str_at(addr, t)
+			self.call_rt("kn_string_push", &vec3(s.clone(), p, n))
+			return
+		}
+		pointee := match t {
+			Ty::Ref(_, x) => Some((**x).clone()),
+			Ty::Adt(_, a) => {
+				if self.is_lang(t, "Box") && a.len() > 0 {
+					Some(a[0].clone())
+				} else {
+					None
+				}
+			}
+			_ => None,
+		}
+		if let Some(Ty::Dyn(traits)) = &pointee {
+			k mut := None
+			if let Some(disp) = self.c.r.prelude_type("Display") {
+				ms := self.c.trait_methods(disp)
+				if ms.len() > 0 && traits.len() > 0 {
+					for (j, x) in self.c.dyn_methods(traits[0]).iter().enumerate() {
+						if *x == ms[0] && k.is_none() {
+							k = Some(j)
+						}
+					}
+				}
+			}
+			k := match k {
+				Some(k) => k,
+				None => {
+					n := self.fmt_ty(t)
+					return self.error("cannot format a value of type `{n}`: its trait does not have `Display` as a supertrait")
+				}
+			}
+			data := self.load("i64", addr, 0)
+			vt := self.load("i64", addr, 8)
+			code := self.load("i64", &vt, 24 + 8 * k as i64)
+			self_slot := self.slot(8, 8)
+			self.store(&data, &self_slot, 0)
+			tmp := self.slot(24, 8)
+			self.call_indirect(&code, &vec2(tmp.clone(), self_slot))
+			self.push_str_of(s, &tmp)
+			self.free_string(&tmp)
+			return
+		}
+		is_box := self.is_lang(t, "Box")
+		match t {
+			Ty::Ref(_, x) => {
+				p := self.load("i64", addr, 0)
+				return self.fmt_into(s, &p, x)
+			}
+			Ty::Adt(_, a) => {
+				if is_box {
+					p := self.load("i64", addr, 0)
+					return self.fmt_into(s, &p, &a[0])
+				}
+				disp := match self.c.r.prelude_type("Display") {
+					Some(d) => d,
+					None => return,
+				}
+				ms := self.c.trait_methods(disp)
+				if ms.len() == 0 {
+					return self.error("`Display` has no `to_string` method".to_string())
+				}
+				substs mut := HashMap::new()
+				substs.insert("Self".to_string(), t.clone())
+				match self.resolve(ms[0], substs) {
+					Target::Direct(id) => {
+						tmp := self.slot(24, 8)
+						r := self.slot(8, 8)
+						self.store(addr, &r, 0)
+						self.call_fn(&id, &vec2(tmp.clone(), r))
+						self.push_str_of(s, &tmp)
+						self.free_string(&tmp)
+					}
+					_ => {
+						n := self.fmt_ty(t)
+						self.error("cannot format a value of type `{n}`: implement `Display` (with `fun to_string(&self) string`)")
+					}
+				}
+			}
+			Ty::Prim(p) => {
+				st := match self.scalar(t) {
+					Some(x) => x,
+					None => "i64".to_string(),
+				}
+				v := self.load(&st, addr, 0)
+				if p == "Bool" {
+					w := self.uextend("i32", &v)
+					self.call_rt("kn_fmt_bool", &vec2(s.clone(), w))
+				} else if p == "Char" {
+					self.call_rt("kn_fmt_char", &vec2(s.clone(), v))
+				} else if p == "F32" || p == "F64" {
+					w := self.fpromote(&v)
+					self.call_rt("kn_fmt_f64", &vec2(s.clone(), w))
+				} else if st == "i128" {
+					(lo, hi) := self.isplit(&v)
+					f := if is_signed(t) { "kn_fmt_i128" } else { "kn_fmt_u128" }
+					self.call_rt(f, &vec3(s.clone(), lo, hi))
+				} else if is_signed(t) {
+					w := self.sextend("i64", &v)
+					self.call_rt("kn_fmt_i64", &vec2(s.clone(), w))
+				} else {
+					w := self.uextend("i64", &v)
+					self.call_rt("kn_fmt_u64", &vec2(s.clone(), w))
+				}
+			}
+			Ty::Unit => {
+				(p, n) := self.str_lit("()")
+				self.call_rt("kn_string_push", &vec3(s.clone(), p, n))
+			}
+			_ => {
+				n := self.fmt_ty(t)
+				self.error("code generation cannot format a value of type `{n}` yet")
+			}
+		}
+	}
+
+	fun cast(&mut self, v &V, from &Ty, to &Ty) V {
+		fs := self.scalar(from)
+		ts := self.scalar(to)
+		if fs.is_none() || ts.is_none() {
+			self.error("unsupported cast".to_string())
+			return v.clone()
+		}
+		fs := fs.unwrap()
+		ts := ts.unwrap()
+		ff := is_float_t(&fs)
+		tf := is_float_t(&ts)
+		if !ff && !tf {
+			if bits(&fs) == bits(&ts) {
+				return v.clone()
+			}
+			if bits(&fs) > bits(&ts) {
+				return self.ireduce(&ts, v)
+			}
+			if is_signed(from) {
+				return self.sextend(&ts, v)
+			}
+			return self.uextend(&ts, v)
+		}
+		if !ff && tf {
+			op := if is_signed(from) { "sitofp" } else { "uitofp" }
+			return self.inst(&ts, "{op} {v.t} {v.n} to {ts}")
+		}
+		if ff && !tf {
+			s := if is_signed(to) { "fptosi" } else { "fptoui" }
+			name := "llvm.{s}.sat.{ts}.{Cg::intr_suffix(&fs)}"
+			return self.llvm_intr(&name, &ts, &one(v.clone()))
+		}
+		if bits(&fs) < bits(&ts) {
+			return self.fpromote(v)
+		}
+		if bits(&fs) > bits(&ts) {
+			return self.fdemote(v)
+		}
+		return v.clone()
+	}
+
+	// `a op b` for `+`, `-`, `*` on integers, panicking on overflow (debug builds).
+	fun checked_arith(&mut self, op BinOp, a &V, b &V, signed bool) V {
+		what := match op {
+			BinOp::Add => "add",
+			BinOp::Sub => "subtract",
+			_ => "multiply",
+		}
+		msg := "attempt to {what} with overflow"
+		opn := match op {
+			BinOp::Add => "add",
+			BinOp::Sub => "sub",
+			_ => "mul",
+		}
+		ws := if signed { "s" } else { "u" }
+		name := "llvm.{ws}{opn}.with.overflow.{a.t}"
+		self.declare(&name, "declare {{{a.t}, i1}} @{name}({a.t}, {a.t})")
+		pr := self.tmp()
+		self.emit("{pr} = call {{{a.t}, i1}} @{name}({a.t} {a.n}, {b.t} {b.n})")
+		r := self.inst(&a.t, "extractvalue {{{a.t}, i1}} {pr}, 0")
+		o := self.tmp()
+		self.emit("{o} = extractvalue {{{a.t}, i1}} {pr}, 1")
+		ov := self.bool8(&o)
+		ok := self.fail_begin(&ov)
+		self.panic_msg(&msg)
+		self.fail_end(ok)
+		return r
+	}
+
+	fun op_name(op BinOp) &'static str {
+		match op {
+			BinOp::Lt => return "lt",
+			BinOp::Le => return "le",
+			BinOp::Gt => return "gt",
+			_ => return "ge",
+		}
+	}
+
+	fun deref_pair(&mut self, l &Operand, r &Operand) (V, V, Ty) {
+		t mut := self.op_ty(l)
+		pa mut := self.op_addr(l)
+		pb mut := self.op_addr(r)
+		while true {
+			inner := match &t {
+				Ty::Ref(_, x) => (**x).clone(),
+				_ => break,
+			}
+			if self.is_fat(&t) {
+				break
+			}
+			pa = self.load("i64", &pa, 0)
+			pb = self.load("i64", &pb, 0)
+			t = inner
+		}
+		return (pa, pb, t)
+	}
+
+	fun binary(&mut self, op BinOp, l &Operand, r &Operand) option<V> {
+		lt := self.op_ty(l)
+		is_add := match op {
+			BinOp::Add => true,
+			_ => false,
+		}
+		if self.is_str_like(&lt) && !is_add {
+			(a, an) := self.str_of(l)
+			(b, bn) := self.str_of(r)
+			match op {
+				BinOp::Eq | BinOp::Ne => {
+					e := self.call_rt("kn_str_eq", &vec4(a, an, b, bn)).unwrap()
+					cc := match op {
+						BinOp::Eq => "ne",
+						_ => "eq",
+					}
+					return Some(self.icmp_imm(cc, &e, 0))
+				}
+				_ => {
+					c := self.call_rt("kn_str_cmp", &vec4(a, an, b, bn)).unwrap()
+					return Some(self.icmp_imm("s{Cg::op_name(op)}", &c, 0))
+				}
+			}
+		}
+		(a, t) := self.scalar_through_refs(l)
+		(b, _) := self.scalar_through_refs(r)
+		if let Ty::Unit = &t {
+			yes := match op {
+				BinOp::Eq | BinOp::Le | BinOp::Ge => "1",
+				_ => "0",
+			}
+			return Some(val(yes.to_string(), "i8"))
+		}
+		base mut := self.op_ty(l)
+		while true {
+			inner := match &base {
+				Ty::Ref(_, x) => (**x).clone(),
+				_ => break,
+			}
+			if self.is_fat(&base) {
+				break
+			}
+			base = inner
+		}
+		structural := self.scalar(&base).is_none() || self.is_lang(&base, "Box")
+		if self.scalar(&t).is_none() || structural {
+			match op {
+				BinOp::Eq | BinOp::Ne => {
+					(pa, pb, tt) := self.deref_pair(l, r)
+					e := self.eq_at(&pa, &pb, &tt)
+					if let BinOp::Eq = op {
+						return Some(e)
+					}
+					return Some(self.bxor_imm(&e, 1))
+				}
+				BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+					(pa, pb, tt) := self.deref_pair(l, r)
+					c := self.cmp_at(&pa, &pb, &tt)
+					return Some(self.icmp_imm("s{Cg::op_name(op)}", &c, 0))
+				}
+				_ => {}
+			}
+			n := self.fmt_ty(&t)
+			self.error("code generation does not support comparing or combining values of type `{n}` yet")
+			return None
+		}
+		if is_float_ty(&t) {
+			match op {
+				BinOp::Add => return Some(self.fbin("fadd", &a, &b)),
+				BinOp::Sub => return Some(self.fbin("fsub", &a, &b)),
+				BinOp::Mul => return Some(self.fbin("fmul", &a, &b)),
+				BinOp::Div => return Some(self.fbin("fdiv", &a, &b)),
+				BinOp::Rem => {
+					x := self.fpromote(&a)
+					y := self.fpromote(&b)
+					m := self.call_rt("kn_fmod", &vec2(x, y)).unwrap()
+					if a.t == "float" {
+						return Some(self.fdemote(&m))
+					}
+					return Some(m)
+				}
+				BinOp::Eq => return Some(self.fcmp("oeq", &a, &b)),
+				BinOp::Ne => return Some(self.fcmp("une", &a, &b)),
+				BinOp::Lt => return Some(self.fcmp("olt", &a, &b)),
+				BinOp::Le => return Some(self.fcmp("ole", &a, &b)),
+				BinOp::Gt => return Some(self.fcmp("ogt", &a, &b)),
+				BinOp::Ge => return Some(self.fcmp("oge", &a, &b)),
+				_ => {
+					self.error("invalid float operation".to_string())
+					return None
+				}
+			}
+		}
+		signed := is_signed(&t)
+		sp := if signed { "s" } else { "u" }
+		match op {
+			BinOp::Add | BinOp::Sub | BinOp::Mul => {
+				if self.checked {
+					return Some(self.checked_arith(op, &a, &b, signed))
+				}
+				opn := match op {
+					BinOp::Add => "add",
+					BinOp::Sub => "sub",
+					_ => "mul",
+				}
+				return Some(self.bin(opn, &a, &b))
+			}
+			BinOp::Div | BinOp::Rem => {
+				is_div := match op {
+					BinOp::Div => true,
+					_ => false,
+				}
+				zero := self.icmp_imm("eq", &b, 0)
+				msg := if is_div { "attempt to divide by zero" } else { "attempt to calculate the remainder with a divisor of zero" }
+				ok := self.fail_begin(&zero)
+				self.panic_msg(msg)
+				self.fail_end(ok)
+				if signed {
+					bw := bits(&a.t)
+					min := if bw >= 128 { "-170141183460469231731687303715884105728".to_string() } else { "{-(1i128 << ((bw - 1) as i128))}" }
+					neg1 := self.icmp_imm("eq", &b, -1)
+					c := self.tmp()
+					self.emit("{c} = icmp eq {a.t} {a.n}, {min}")
+					is_min := self.bool8(&c)
+					both := self.band(&neg1, &is_min)
+					m2 := if is_div { "attempt to divide with overflow" } else { "attempt to calculate the remainder with overflow" }
+					ok2 := self.fail_begin(&both)
+					self.panic_msg(m2)
+					self.fail_end(ok2)
+				}
+				opn := if is_div { "{sp}div" } else { "{sp}rem" }
+				return Some(self.bin(&opn, &a, &b))
+			}
+			BinOp::BitAnd | BinOp::And => return Some(self.band(&a, &b)),
+			BinOp::BitOr | BinOp::Or => return Some(self.bor(&a, &b)),
+			BinOp::BitXor => return Some(self.bxor(&a, &b)),
+			BinOp::Shl => return Some(self.shift("shl", &a, &b)),
+			BinOp::Shr => return Some(self.shift(if signed { "ashr" } else { "lshr" }, &a, &b)),
+			BinOp::Eq => return Some(self.icmp("eq", &a, &b)),
+			BinOp::Ne => return Some(self.icmp("ne", &a, &b)),
+			_ => return Some(self.icmp("{sp}{Cg::op_name(op)}", &a, &b)),
+		}
+	}
+
+	// Appends the value at `a` (type `t`) formatted by `spec` to String `s`.
+	fun fmt_spec_into(&mut self, s &V, a &V, t &Ty, spec &FmtSpec) {
+		base mut := t.clone()
+		addr mut := a.clone()
+		while true {
+			inner := match &base {
+				Ty::Ref(_, x) => (**x).clone(),
+				_ => break,
+			}
+			if self.is_fat(&base) {
+				break
+			}
+			addr = self.load("i64", &addr, 0)
+			base = inner
+		}
+		float := is_float_ty(&base)
+		int := match &base {
+			Ty::Prim(p) => typeck::prim_name(p).starts_with("i") || typeck::prim_name(p).starts_with("u"),
+			_ => false,
+		}
+		numeric := float || int
+		tmp := self.new_string()
+		match spec.kind.as_str() {
+			"Display" => {
+				if float && spec.precision.is_some() {
+					v := self.as_f64(&base, &addr)
+					p := self.iconst(spec.precision.unwrap() as i64)
+					self.call_rt("kn_fmt_f64_fixed", &vec3(tmp.clone(), v, p))
+				} else {
+					self.fmt_into(&tmp, a, t)
+				}
+			}
+			"Debug" => {
+				f := self.slot(40, 8)
+				self.init_string(&f)
+				z := self.iconst(0)
+				self.store(&z, &f, 24)
+				pretty := val(if spec.alt { "1".to_string() } else { "0".to_string() }, "i8")
+				self.store(&pretty, &f, 32)
+				self.debug_into(&f, a, t)
+				self.free_string(&tmp)
+				return self.fmt_pad(s, &f, spec, numeric, true)
+			}
+			"LowerHex" | "UpperHex" | "Octal" | "Binary" => {
+				st := match self.scalar(&base) {
+					Some(x) => x,
+					None => "i64".to_string(),
+				}
+				v0 := self.load(&st, &addr, 0)
+				v := self.resize(&v0, "i64")
+				radix := match spec.kind.as_str() {
+					"LowerHex" | "UpperHex" => 16,
+					"Octal" => 8,
+					_ => 2,
+				}
+				r := val("{radix}", "i32")
+				up := val(if spec.kind == "UpperHex" { "1".to_string() } else { "0".to_string() }, "i32")
+				alt := val(if spec.alt { "1".to_string() } else { "0".to_string() }, "i32")
+				args mut := vec4(tmp.clone(), v, r, up)
+				args.push(alt)
+				self.call_rt("kn_fmt_radix", &args)
+			}
+			_ => {
+				v := self.as_f64(&base, &addr)
+				p := self.iconst(match spec.precision {
+					Some(p) => p as i64,
+					None => -1,
+				})
+				up := val(if spec.kind == "UpperExp" { "1".to_string() } else { "0".to_string() }, "i32")
+				self.call_rt("kn_fmt_f64_exp", &vec4(tmp.clone(), v, p, up))
+			}
+		}
+		self.fmt_pad(s, &tmp, spec, numeric, false)
+	}
+
+	fun as_f64(&mut self, base &Ty, addr &V) V {
+		st := match self.scalar(base) {
+			Some(x) => x,
+			None => "i64".to_string(),
+		}
+		v := self.load(&st, addr, 0)
+		if st == "double" {
+			return v
+		}
+		if st == "float" {
+			return self.fpromote(&v)
+		}
+		op := if is_signed(base) { "sitofp" } else { "uitofp" }
+		return self.inst("double", "{op} {v.t} {v.n} to double")
+	}
+
+	// Appends String `tmp` to `s` with `spec`'s width, alignment, and fill, then frees `tmp`.
+	fun fmt_pad(&mut self, s &V, tmp &V, spec &FmtSpec, numeric bool, debug bool) {
+		p := self.load("i64", tmp, 0)
+		n := self.load("i64", tmp, 16)
+		width := self.iconst(match spec.width {
+			Some(w) => w as i64,
+			None => -1,
+		})
+		fill := val("{match spec.fill {
+			Some(c) => c as u32,
+			None => 32,
+		}}", "i32")
+		al := match &spec.align {
+			None => 0,
+			Some(a) => match a.as_str() {
+				"Left" => 1,
+				"Center" => 2,
+				_ => 3,
+			},
+		}
+		align := val("{al}", "i32")
+		fl mut := 0
+		if spec.plus {
+			fl += 1
+		}
+		if spec.zero {
+			fl += 2
+		}
+		if numeric {
+			fl += 4
+		}
+		flags := val("{fl}", "i32")
+		prec := match spec.precision {
+			Some(x) => if numeric || debug { -1 } else { x as i64 },
+			None => -1,
+		}
+		pv := self.iconst(prec)
+		args mut := vec4(s.clone(), p, n, width)
+		args.push(fill)
+		args.push(align)
+		args.push(flags)
+		args.push(pv)
+		self.call_rt("kn_fmt_pad", &args)
+		self.free_string(tmp)
+	}

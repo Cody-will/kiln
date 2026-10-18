@@ -5547,6 +5547,124 @@ impl Checker {
 		return None
 	}
 
+	pub fun signature(&self, i usize) (Vec<Ty>, Ty) {
+		return (self.sigs[i].params.clone(), self.sigs[i].ret.clone())
+	}
+
+	pub fun fn_generics(&self, i usize) (Vec<string>, Vec<string>) {
+		return (self.sigs[i].generics.clone(), self.sigs[i].outer_generics.clone())
+	}
+
+	pub fun has_body(&self, i usize) bool {
+		return self.sigs[i].has_body
+	}
+
+	// The methods in a `dyn principal` vtable, in slot order: the trait's own
+	// methods, then each supertrait's (transitively, without repeats).
+	pub fun dyn_methods(&self, principal u32) Vec<usize> {
+		traits mut := Vec::new()
+		traits.push(principal)
+		i mut := 0
+		while i < traits.len() {
+			if let Some(info) = self.traits.get(&traits[i]) {
+				for s in &info.supertraits {
+					if !traits.contains(s) {
+						traits.push(*s)
+					}
+				}
+			}
+			i += 1
+		}
+		o mut := Vec::new()
+		for t in &traits {
+			for m in self.trait_methods(*t) {
+				o.push(m)
+			}
+		}
+		return o
+	}
+
+	// Resolves trait method `trait_fn` for the concrete types in `substs`
+	// (which must contain `Self` and the trait's generic parameters): the
+	// implementing function and its substitution, or the trait's default.
+	pub fun resolve_trait_method(&mut self, trait_fn usize, substs &HashMap<string, Ty>) option<(usize, HashMap<string, Ty>)> {
+		tr := match self.r.fns[trait_fn].trait_def {
+			Some(t) => t,
+			None => return None,
+		}
+		name := self.r.fns[trait_fn].decl.name.name.clone()
+		self_ty := match substs.get("Self") {
+			Some(t) => t.clone(),
+			None => return None,
+		}
+		tgen := match self.traits.get(&tr) {
+			Some(t) => t.generics.clone(),
+			None => Vec::new(),
+		}
+		targs mut := Vec::new()
+		for g in &tgen {
+			match substs.get(g) {
+				Some(t) => targs.push(t.clone()),
+				None => targs.push(Ty::Unknown),
+			}
+		}
+		(own_generics, _) := self.fn_generics(trait_fn)
+		impls := self.impls.clone()
+		for imp in &impls {
+			(itr, iargs) := match &imp.trait_ref {
+				Some(x) => x,
+				None => continue,
+			}
+			if *itr != tr {
+				continue
+			}
+			snap := self.infer.snapshot()
+			map mut := HashMap::new()
+			for g in &imp.generics {
+				map.insert(g.clone(), self.infer.fresh(VarKind::General))
+			}
+			ok mut := self.infer.unify(&imp.self_ty.subst(&map), &self_ty)
+			k mut := 0
+			while ok && k < iargs.len() && k < targs.len() {
+				if let Ty::Unknown = &targs[k] {
+				} else {
+					ok = self.infer.unify(&iargs[k].subst(&map), &targs[k])
+				}
+				k += 1
+			}
+			if ok {
+				out mut := HashMap::new()
+				for (kk, v) in &map {
+					out.insert(kk.clone(), self.infer.zonk(v))
+				}
+				self.infer.restore(snap)
+				mi := match imp.methods.get(&name) {
+					Some(m) => *m,
+					None => {
+						if self.has_body(trait_fn) {
+							return Some((trait_fn, substs.clone()))
+						}
+						return None
+					}
+				}
+				(impl_own, _) := self.fn_generics(mi)
+				j mut := 0
+				while j < own_generics.len() && j < impl_own.len() {
+					if let Some(t) = substs.get(&own_generics[j]) {
+						out.insert(impl_own[j].clone(), t.clone())
+					}
+					j += 1
+				}
+				return Some((mi, out))
+			}
+			self.infer.restore(snap)
+		}
+		if self.has_body(trait_fn) {
+			return Some((trait_fn, substs.clone()))
+		}
+		return None
+	}
+
 	pub fun has_drop_impl(&mut self, t &Ty) bool {
 		tr := match self.r.prelude_type("Drop") {
 			Some(x) => x,

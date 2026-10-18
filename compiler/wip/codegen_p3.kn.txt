@@ -1,0 +1,1403 @@
+
+// The field path of a place with only field projections (`x.a.b` -> ["a", "b"]).
+fun field_path(p &Place) option<Vec<string>> {
+	o mut := Vec::new()
+	for x in &p.proj {
+		match x {
+			Proj::Field(f) => o.push(f.clone()),
+			_ => return None,
+		}
+	}
+	return Some(o)
+}
+
+fun starts_with_path(q &Vec<string>, prefix &Vec<string>) bool {
+	if q.len() < prefix.len() {
+		return false
+	}
+	for i in 0..prefix.len() {
+		if q[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
+}
+
+fun is_signed(t &Ty) bool {
+	match t {
+		Ty::Prim(p) => return p == "I8" || p == "I16" || p == "I32" || p == "I64" || p == "I128" || p == "Isize",
+		_ => return false,
+	}
+}
+
+fun is_float_ty(t &Ty) bool {
+	match t {
+		Ty::Prim(p) => return p == "F32" || p == "F64",
+		_ => return false,
+	}
+}
+
+fun is_prim(t &Ty, name &str) bool {
+	match t {
+		Ty::Prim(p) => return p == name,
+		_ => return false,
+	}
+}
+
+fun is_str_ref(t &Ty) bool {
+	match t {
+		Ty::Ref(_, x) | Ty::Ptr(_, x) => return is_prim(x, "Str"),
+		_ => return false,
+	}
+}
+
+impl Cg {
+	fun subst(&self, t &Ty) Ty {
+		return t.subst(&self.substs)
+	}
+
+	fun drop_value(&mut self, addr &V, t &Ty) {
+		if self.needs_drop(t) {
+			g := self.glue_name("drop", t)
+			self.call_fn(&g, &one(addr.clone()))
+		}
+	}
+
+	fun flag_of(&self, p &Place) option<V> {
+		if p.through_ref() {
+			return None
+		}
+		return self.locals[p.local as usize].flag.clone()
+	}
+
+	fun set_flag(&mut self, s &V, v i64) {
+		c := val("{v}", "i8")
+		self.store(&c, s, 0)
+	}
+
+	fun load_flag(&mut self, s &V) V {
+		return self.load("i8", s, 0)
+	}
+
+	fun define_fn(&mut self, name &str, fn_idx usize, body_i usize, substs HashMap<string, Ty>, abi Abi) {
+		bs := self.bodies(fn_idx)
+		if body_i >= bs.len() {
+			return
+		}
+		body := bs[body_i].clone()
+		self.span = body.span
+		if body.unsupported.len() > 0 {
+			for (what, span) in &body.unsupported {
+				self.error_at("code generation does not support {what}", *span)
+			}
+			return
+		}
+		extra := if abi == Abi::Closure { 2 } else { 1 }
+		nparams := body.arg_count + extra
+		self.body = body
+		self.substs = substs
+		self.fn_idx = fn_idx
+		self.locals = Vec::new()
+		self.blocks = Vec::new()
+		self.defer_stack = None
+		self.panic_frame = None
+		self.last_task = None
+		self.preempt = None
+		self.intr_substs = HashMap::new()
+		self.begin_fn()
+		self.translate(abi)
+		self.end_fn("define internal void @{name}({ptr_params(nparams)})")
+	}
+
+	fun define_shim(&mut self, name &str, target &str, nargs usize) {
+		self.begin_fn()
+		args mut := Vec::new()
+		args.push(val("%p0".to_string(), "i64"))
+		for i in 0..nargs {
+			args.push(val("%p{i + 2}", "i64"))
+		}
+		self.call_fn(target, &args)
+		self.ret_void()
+		self.end_fn("define internal void @{name}({ptr_params(nargs + 2)})")
+	}
+
+	fun define_glue(&mut self, name &str, kind &str, t &Ty) {
+		n := match kind {
+			"drop" => 1,
+			"eq" | "cmp" => 3,
+			_ => 2,
+		}
+		self.body = empty_body(self.span)
+		self.substs = HashMap::new()
+		self.locals = Vec::new()
+		self.defer_stack = None
+		self.panic_frame = None
+		self.preempt = None
+		self.begin_fn()
+		p0 := val("%p0".to_string(), "i64")
+		p1 := val("%p1".to_string(), "i64")
+		p2 := val("%p2".to_string(), "i64")
+		match kind {
+			"drop" => self.drop_in_place(&p0, t),
+			"eq" => {
+				o := val("1".to_string(), "i8")
+				self.store(&o, &p0, 0)
+				self.eq_fields(&p1, &p2, t, &p0)
+			}
+			"cmp" => {
+				z := val("0".to_string(), "i8")
+				self.store(&z, &p0, 0)
+				self.cmp_fields(&p1, &p2, t, &p0)
+			}
+			"hash" => self.hash_fields(&p1, t, &p0),
+			"debug" => self.debug_fields(&p0, &p1, t),
+			_ => self.clone_fields(&p1, &p0, t),
+		}
+		if self.open {
+			self.ret_void()
+		}
+		self.end_fn("define internal void @{name}({ptr_params(n)})")
+	}
+
+	// The `Display::to_string` instance for the error type of `main`'s result.
+	fun main_error_display(&mut self, main_idx usize) option<string> {
+		(_, ret) := self.c.signature(main_idx)
+		if !self.is_lang(&ret, "result") {
+			return None
+		}
+		(_, et) := self.field(&ret, "Err.0")
+		if self.is_lang(&et, "string") {
+			return None
+		}
+		if let Ty::Ref(_, _) = &et {
+			return None
+		}
+		return self.display_fn(&et)
+	}
+
+	fun display_fn(&mut self, t &Ty) option<string> {
+		disp := match self.c.r.prelude_type("Display") {
+			Some(d) => d,
+			None => return None,
+		}
+		ms := self.c.trait_methods(disp)
+		if ms.len() == 0 {
+			return None
+		}
+		m := ms[0]
+		substs mut := HashMap::new()
+		substs.insert("Self".to_string(), t.clone())
+		(i, s) := match self.c.resolve_trait_method(m, &substs) {
+			Some(x) => x,
+			None => return None,
+		}
+		if i == m && self.c.r.fns[i].decl.body.is_none() {
+			return None
+		}
+		return Some(self.instance(i, 0, s, Abi::Plain))
+	}
+
+	fun define_entry(&mut self, main_idx usize, user_main &str, inits &Vec<(string, string)>) {
+		(_, ret) := self.c.signature(main_idx)
+		l := self.layout(&ret)
+		is_result := self.is_lang(&ret, "result")
+		self.body = empty_body(self.span)
+		self.locals = Vec::new()
+		self.begin_fn()
+		slot := self.slot(if l.size < 8 { 8 } else { l.size }, 8)
+		for (data, init) in inits {
+			a := self.global_addr(data)
+			self.call_fn(init, &one(a))
+		}
+		self.call_fn(user_main, &one(slot.clone()))
+		if is_result {
+			(off, et) := self.field(&ret, "Err.0")
+			tag := self.load("i32", &slot, 0)
+			okb := self.new_block()
+			errb := self.new_block()
+			self.brif(&tag, errb, okb)
+			self.switch_to(okb)
+			self.term("ret i32 0".to_string())
+			self.switch_to(errb)
+			p := self.iadd_imm(&slot, off as i64)
+			(data, len) := if self.is_lang(&et, "string") {
+				(self.load("i64", &p, 0), self.load("i64", &p, 16))
+			} else if is_str_ref(&et) {
+				(self.load("i64", &p, 0), self.load("i64", &p, 8))
+			} else if let Some(to_string) = self.entry_display.clone() {
+				out := self.slot(24, 8)
+				ra := self.slot(8, 8)
+				self.store(&p, &ra, 0)
+				self.call_fn(&to_string, &vec2(out.clone(), ra))
+				(self.load("i64", &out, 0), self.load("i64", &out, 16))
+			} else {
+				self.str_lit("main returned an error")
+			}
+			self.call_rt("kn_main_error", &vec2(data, len))
+			self.term("ret i32 1".to_string())
+		} else {
+			self.term("ret i32 0".to_string())
+		}
+		self.end_fn("define i32 @kn_main(i32 %p0, i64 %p1)")
+	}
+
+	// ---- body ----
+
+	fun translate(&mut self, abi Abi) {
+		params mut := Vec::new()
+		extra := if abi == Abi::Closure { 2 } else { 1 }
+		for i in 0..self.body.arg_count + extra {
+			params.push(val("%p{i}", "i64"))
+		}
+		// Closure environments: captures laid out in order.
+		env_offsets mut := HashMap::new()
+		if abi == Abi::Closure {
+			caps := self.body.captures.clone()
+			ls mut := Vec::new()
+			for (l, m) in &caps {
+				t := self.subst(&self.body.locals[*l as usize].ty)
+				if *m == CaptureMode::Move {
+					ls.push(self.layout(&t))
+				} else {
+					ls.push(lay(8, 8))
+				}
+			}
+			(offs, _) := sequential(&ls)
+			for (k, (l, m)) in caps.iter().enumerate() {
+				env_offsets.insert(*l, (offs[k], *m))
+			}
+		}
+		// Field paths moved out of each local (partial moves).
+		moved_paths mut := HashMap::new()
+		for blk in &self.body.blocks {
+			for st in &blk.stmts {
+				ops := match &st.kind {
+					StmtKind::Assign(_, rv) => rv.operands(),
+					StmtKind::Eval(rv) => rv.operands(),
+					StmtKind::Spawn { operands, .. } => operands.clone(),
+					_ => Vec::new(),
+				}
+				for o in &ops {
+					if let Operand::Move(p) = o {
+						if let Some(path) = field_path(p) {
+							if path.len() > 0 {
+								if !moved_paths.contains_key(&p.local) {
+									moved_paths.insert(p.local, Vec::new())
+								}
+								e := moved_paths.get_mut(&p.local).unwrap()
+								if !e.contains(&path) {
+									e.push(path)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		for i in 0..self.body.locals.len() {
+			decl := self.body.locals[i].clone()
+			ty := self.subst(&decl.ty)
+			addr := match decl.kind {
+				LocalKind::Return => params[0].clone(),
+				LocalKind::Arg => params[extra + i - 1].clone(),
+				LocalKind::Upvar => match env_offsets.get(&(i as u32)) {
+					Some((off, m)) => {
+						if *m == CaptureMode::Move {
+							self.iadd_imm(&params[1], *off as i64)
+						} else {
+							self.load("i64", &params[1], *off as i64)
+						}
+					}
+					None => self.slot_for(&ty),
+				},
+				_ => self.slot_for(&ty),
+			}
+			owned_upvar := decl.kind == LocalKind::Upvar && self.body.kind == BodyKind::GoBlock && match env_offsets.get(&(i as u32)) {
+				Some((_, m)) => *m == CaptureMode::Move,
+				None => false,
+			}
+			no_flag := ((decl.kind == LocalKind::Return || decl.kind == LocalKind::Upvar) && !owned_upvar) || !self.needs_drop(&ty)
+			flag := if no_flag {
+				None
+			} else {
+				s := self.slot(1, 1)
+				v := if decl.kind == LocalKind::Arg || owned_upvar { 1 } else { 0 }
+				self.set_flag(&s, v)
+				Some(s)
+			}
+			paths mut := Vec::new()
+			if flag.is_some() {
+				if let Some(ps) = moved_paths.get(&(i as u32)) {
+					for path in ps {
+						s := self.slot(1, 1)
+						self.set_flag(&s, 1)
+						paths.push((path.clone(), s))
+					}
+				}
+			}
+			self.locals.push(LocalInfo { addr: addr, ty: ty, flag: flag, paths: paths })
+		}
+		uses_defer mut := false
+		for b in &self.body.blocks {
+			if let Terminator::DeferDispatch { targets, .. } = &b.term {
+				if targets.len() > 0 {
+					uses_defer = true
+				}
+			}
+		}
+		if uses_defer {
+			s := self.slot(32, 8)
+			z := self.iconst(0)
+			for off in [0i64, 8, 16, 24] {
+				self.store(&z, &s, off)
+			}
+			self.defer_stack = Some(s)
+		}
+		nblocks := self.body.blocks.len()
+		for _ in 0..nblocks {
+			b := self.new_block()
+			self.blocks.push(b)
+		}
+		has_loop mut := false
+		for (i, b) in self.body.blocks.iter().enumerate() {
+			if let Terminator::Goto(t) = &b.term {
+				if (*t as usize) <= i {
+					has_loop = true
+				}
+			}
+		}
+		if has_loop {
+			s := self.slot(8, 8)
+			n := self.iconst(1024)
+			self.store(&n, &s, 0)
+			self.preempt = Some(s)
+		}
+		first := self.blocks[0]
+		// Functions with `defer` run them on panic too: register a frame and setjmp.
+		exit mut := None
+		best mut := 0usize
+		for (i, b) in self.body.blocks.iter().enumerate() {
+			if let Terminator::DeferDispatch { targets, .. } = &b.term {
+				all mut := targets.len() > 0
+				for t in targets {
+					if t.is_none() {
+						all = false
+					}
+				}
+				if all && (exit.is_none() || targets.len() >= best) {
+					best = targets.len()
+					exit = Some(i)
+				}
+			}
+		}
+		match exit {
+			Some(ex) => {
+				if self.defer_stack.is_some() {
+					s := self.slot(16 + 512, 16)
+					self.panic_frame = Some(s.clone())
+					jb := self.call_rt("kn_frame_enter", &one(s)).unwrap()
+					r := self.call_rt("_setjmp", &one(jb)).unwrap()
+					land := self.blocks[ex]
+					self.brif(&r, land, first)
+				} else {
+					self.jump(first)
+				}
+			}
+			None => self.jump(first),
+		}
+		for bi in 0..nblocks {
+			self.cur_block = bi
+			blk := self.blocks[bi]
+			self.switch_to(blk)
+			stmts := self.body.blocks[bi].stmts.clone()
+			for s in &stmts {
+				self.span = s.span
+				self.stmt(&s.kind)
+			}
+			term := self.body.blocks[bi].term.clone()
+			self.span = self.body.blocks[bi].term_span
+			self.terminator(&term)
+		}
+	}
+
+	fun stmt(&mut self, s &StmtKind) {
+		match s {
+			StmtKind::Assign(p, rv) => self.assign(p, rv),
+			StmtKind::Eval(rv) => {
+				t := self.rvalue_ty(rv)
+				scratch := self.slot_for(&t)
+				self.rvalue(rv, &scratch, &t)
+				is_copy := match rv {
+					Rvalue::Use(Operand::Copy(_)) => true,
+					_ => false,
+				}
+				if !is_copy {
+					self.drop_value(&scratch, &t)
+				}
+			}
+			StmtKind::Read(_) => {}
+			StmtKind::StorageDead(l) => {
+				li := *l as usize
+				if let Some(f) = self.locals[li].flag.clone() {
+					addr := self.locals[li].addr.clone()
+					ty := self.locals[li].ty.clone()
+					v := self.load_flag(&f)
+					w := self.when_begin(&v)
+					self.drop_elab(&addr, &ty, li, &Vec::new())
+					self.when_end(w)
+					self.set_flag(&f, 0)
+				}
+			}
+			StmtKind::DeferPush(n, rec) => {
+				s := self.defer_stack.clone().unwrap()
+				args := match rec {
+					Some(r) => {
+						ri := *r as usize
+						addr := self.locals[ri].addr.clone()
+						ty := self.locals[ri].ty.clone()
+						l := self.layout(&ty)
+						sz := self.iconst(if l.size == 0 { 1 } else { l.size as i64 })
+						al := self.iconst(l.align as i64)
+						p := self.call_rt("kn_alloc", &vec2(sz, al)).unwrap()
+						self.copy(&p, &addr, l.size)
+						if let Some(f) = self.locals[ri].flag.clone() {
+							self.set_flag(&f, 0)
+						}
+						p
+					}
+					None => self.iconst(0),
+				}
+				id := val("{*n}", "i32")
+				self.call_rt("kn_defer_push", &vec3(s, id, args))
+			}
+			StmtKind::DeferLoad(r) => {
+				s := self.defer_stack.clone().unwrap()
+				p := self.load("i64", &s, 24)
+				li := *r as usize
+				addr := self.locals[li].addr.clone()
+				ty := self.locals[li].ty.clone()
+				flag := self.locals[li].flag.clone()
+				paths mut := Vec::new()
+				for (_, ps) in &self.locals[li].paths {
+					paths.push(ps.clone())
+				}
+				l := self.layout(&ty)
+				if let Some(f) = flag {
+					v := self.load_flag(&f)
+					w := self.when_begin(&v)
+					self.drop_elab(&addr, &ty, li, &Vec::new())
+					self.when_end(w)
+					self.set_flag(&f, 1)
+				}
+				for ps in &paths {
+					self.set_flag(ps, 1)
+				}
+				self.copy(&addr, &p, l.size)
+				sz := self.iconst(if l.size == 0 { 1 } else { l.size as i64 })
+				al := self.iconst(l.align as i64)
+				self.call_rt("kn_free", &vec3(p, sz, al))
+			}
+			StmtKind::Spawn { kind, operands, body, .. } => {
+				if *kind != SpawnKind::Scoped {
+					self.spawn(operands, *body)
+				}
+			}
+		}
+	}
+
+	fun find_body(&mut self, kind BodyKind, span Span) option<usize> {
+		bs := self.bodies(self.fn_idx)
+		for (i, b) in bs.iter().enumerate() {
+			if b.kind == kind && b.span.start == span.start && b.span.end == span.end {
+				return Some(i)
+			}
+		}
+		return None
+	}
+
+	fun spawn(&mut self, ops &Vec<Operand>, body Span) {
+		bi := match self.find_body(BodyKind::GoBlock, body) {
+			Some(b) => b,
+			None => return self.error("internal error: task body not found".to_string()),
+		}
+		bs := self.bodies(self.fn_idx)
+		ret_ty := self.subst(&bs[bi].locals[0].ty)
+		id := self.instance(self.fn_idx, bi, self.substs.clone(), Abi::Closure)
+		tys mut := Vec::new()
+		for o in ops {
+			tys.push(self.op_ty(o))
+		}
+		ls := self.layouts_of(&tys)
+		(offs, l) := sequential(&ls)
+		size := self.iconst(l.size as i64)
+		align := self.iconst(l.align as i64)
+		env := self.call_rt("kn_alloc", &vec2(size.clone(), align)).unwrap()
+		for (k, o) in ops.iter().enumerate() {
+			a := self.iadd_imm(&env, offs[k] as i64)
+			self.store_op(o, &a)
+		}
+		code := self.func_addr(&id)
+		rs := self.layout(&ret_ty).size
+		ret_size := self.iconst(rs as i64)
+		drop := self.drop_fn_ptr(&ret_ty)
+		args mut := vec4(code, env, size, ret_size)
+		args.push(drop)
+		h := self.call_rt("kn_go", &args).unwrap()
+		if self.last_task.is_none() {
+			self.last_task = Some(self.slot(8, 8))
+		}
+		s := self.last_task.clone().unwrap()
+		self.store(&h, &s, 0)
+	}
+
+	fun drop_fn_ptr(&mut self, t &Ty) V {
+		if !self.needs_drop(t) {
+			return self.iconst(0)
+		}
+		g := self.glue_name("drop", t)
+		return self.func_addr(&g)
+	}
+
+	fun assign(&mut self, p &Place, rv &Rvalue) {
+		pty := self.place_ty(p)
+		l := self.layout(&pty)
+		scratch := self.slot(l.size, l.align)
+		self.rvalue(rv, &scratch, &pty)
+		(dest, _) := self.place_addr(p)
+		if self.needs_drop(&pty) {
+			has_deref mut := false
+			for x in &p.proj {
+				match x {
+					Proj::Deref(_) | Proj::Index(_) => has_deref = true,
+					_ => {}
+				}
+			}
+			if has_deref {
+				self.drop_value(&dest, &pty)
+			} else if let Some(f) = self.flag_of(p) {
+				v := self.load_flag(&f)
+				li := p.local as usize
+				path := match field_path(p) {
+					Some(x) => x,
+					None => Vec::new(),
+				}
+				w := self.when_begin(&v)
+				self.drop_elab(&dest, &pty, li, &path)
+				self.when_end(w)
+			}
+		}
+		self.copy(&dest, &scratch, l.size)
+		if p.proj.len() == 0 {
+			if let Some(f) = self.locals[p.local as usize].flag.clone() {
+				self.set_flag(&f, 1)
+			}
+		}
+		if let Some(path) = field_path(p) {
+			restored mut := Vec::new()
+			for (q, s) in &self.locals[p.local as usize].paths {
+				if starts_with_path(q, &path) {
+					restored.push(s.clone())
+				}
+			}
+			for s in &restored {
+				self.set_flag(s, 1)
+			}
+		}
+	}
+
+	fun terminator(&mut self, t &Terminator) {
+		match t {
+			Terminator::Goto(b) => {
+				blk := self.blocks[*b as usize]
+				back := (*b as usize) <= self.cur_block && !self.body.bounded_loops.contains(b)
+				match self.preempt.clone() {
+					Some(s) => {
+						if back {
+							c := self.load("i64", &s, 0)
+							c1 := self.iadd_imm(&c, -1)
+							self.store(&c1, &s, 0)
+							check := self.new_block()
+							self.brif(&c1, blk, check)
+							self.switch_to(check)
+							n := self.iconst(1024)
+							self.store(&n, &s, 0)
+							self.call_rt("kn_maybe_yield", &Vec::new())
+							self.jump(blk)
+						} else {
+							self.jump(blk)
+						}
+					}
+					None => self.jump(blk),
+				}
+			}
+			Terminator::SwitchBool { cond, t, f } => {
+				c := self.op_scalar(cond)
+				self.brif(&c, self.blocks[*t as usize], self.blocks[*f as usize])
+			}
+			Terminator::Return => self.ret_void(),
+			Terminator::Unreachable => self.trap(),
+			Terminator::Branch(_) => {
+				self.error("code generation does not support `select` yet".to_string())
+				self.trap()
+			}
+			Terminator::DeferDispatch { targets, done } => {
+				doneb := self.blocks[*done as usize]
+				s := match self.defer_stack.clone() {
+					Some(s) => s,
+					None => return self.jump(doneb),
+				}
+				id := self.call_rt("kn_defer_pop", &one(s)).unwrap()
+				bad := self.new_block()
+				neg := self.icmp_imm("slt", &id, 0)
+				dispatch := self.new_block()
+				match self.panic_frame.clone() {
+					Some(pf) => {
+						leave := self.new_block()
+						self.brif(&neg, leave, dispatch)
+						self.switch_to(leave)
+						self.call_rt("kn_frame_leave", &one(pf))
+						self.jump(doneb)
+					}
+					None => self.brif(&neg, doneb, dispatch),
+				}
+				self.switch_to(dispatch)
+				cases mut := string::new()
+				for (i, t) in targets.iter().enumerate() {
+					if let Some(t) = t {
+						cases.push(" i64 {i}, label %b{self.blocks[*t as usize]}")
+					}
+				}
+				self.term("switch i64 {id.n}, label %b{bad} [{cases} ]")
+				self.switch_to(bad)
+				self.trap()
+			}
+		}
+	}
+
+	// ---- places ----
+
+	fun place_ty(&mut self, p &Place) Ty {
+		t mut := self.locals[p.local as usize].ty.clone()
+		for pr in &p.proj {
+			t = match pr {
+				Proj::Deref(_) => match self.pointee(&t) {
+					Some(x) => x,
+					None => Ty::Unit,
+				},
+				Proj::Field(n) => {
+					(_, ft) := self.field(&t, n)
+					ft
+				}
+				Proj::Index(_) => self.elem_of(&t),
+			}
+		}
+		return t
+	}
+
+	fun elem_of(&self, t &Ty) Ty {
+		match t {
+			Ty::Adt(_, a) => {
+				if self.is_lang(t, "Vec") {
+					return a[0].clone()
+				}
+				return Ty::Unit
+			}
+			Ty::Slice(x) => return (**x).clone(),
+			Ty::Array(x, _) => return (**x).clone(),
+			_ => return Ty::Unit,
+		}
+	}
+
+	// Address (and fat-pointer metadata for unsized places) of a place.
+	fun place_addr(&mut self, p &Place) (V, option<V>) {
+		addr mut := self.locals[p.local as usize].addr.clone()
+		t mut := self.locals[p.local as usize].ty.clone()
+		meta mut := None
+		for pr in &p.proj {
+			match pr {
+				Proj::Deref(_) => {
+					inner := match self.pointee(&t) {
+						Some(x) => x,
+						None => Ty::Unit,
+					}
+					fat := self.is_unsized(&inner)
+					data := self.load("i64", &addr, 0)
+					meta = if fat { Some(self.load("i64", &addr, 8)) } else { None }
+					addr = data
+					t = inner
+				}
+				Proj::Field(n) => {
+					(off, ft) := self.field(&t, n)
+					addr = self.iadd_imm(&addr, off as i64)
+					t = ft
+					meta = None
+				}
+				Proj::Index(l) => {
+					ia := self.locals[*l as usize].addr.clone()
+					it := self.locals[*l as usize].ty.clone()
+					st := match self.scalar(&it) {
+						Some(s) => s,
+						None => "i64".to_string(),
+					}
+					i0 := self.load(&st, &ia, 0)
+					i := self.uextend("i64", &i0)
+					elem := self.elem_of(&t)
+					(data, len) := if self.is_lang(&t, "Vec") {
+						(self.load("i64", &addr, 0), self.load("i64", &addr, 16))
+					} else if let Ty::Array(_, n) = &t {
+						(addr.clone(), self.iconst(*n as i64))
+					} else if let Ty::Slice(_) = &t {
+						match meta.clone() {
+							Some(m) => (addr.clone(), m),
+							None => (addr.clone(), self.iconst(0)),
+						}
+					} else {
+						self.error("code generation does not support indexing this type yet".to_string())
+						(addr.clone(), self.iconst(0))
+					}
+					oob := self.icmp("uge", &i, &len)
+					ok := self.fail_begin(&oob)
+					self.call_rt("kn_panic_bounds", &vec2(i.clone(), len))
+					self.fail_end(ok)
+					size := self.layout(&elem).size
+					off := self.imul_imm(&i, size as i64)
+					addr = self.iadd(&data, &off)
+					t = elem
+					meta = None
+				}
+			}
+		}
+		return (addr, meta)
+	}
+
+	// ---- operands ----
+
+	fun op_ty(&mut self, o &Operand) Ty {
+		match o {
+			Operand::Copy(p) | Operand::Move(p) => return self.place_ty(p),
+			Operand::Const(c) => return self.subst(&c.ty),
+		}
+	}
+
+	fun moved(&mut self, p &Place) {
+		if p.through_ref() {
+			return
+		}
+		path := match field_path(p) {
+			Some(x) => x,
+			None => Vec::new(),
+		}
+		if path.len() > 0 {
+			s mut := None
+			for (q, f) in &self.locals[p.local as usize].paths {
+				if *q == path {
+					s = Some(f.clone())
+				}
+			}
+			if let Some(s) = s {
+				self.set_flag(&s, 0)
+			}
+			return
+		}
+		if let Some(f) = self.flag_of(p) {
+			self.set_flag(&f, 0)
+		}
+	}
+
+	// Drops the part of local `l` at field path `prefix`, skipping moved-out parts.
+	fun drop_elab(&mut self, addr &V, t &Ty, l usize, prefix &Vec<string>) {
+		own mut := None
+		for (q, s) in &self.locals[l].paths {
+			if q == prefix {
+				own = Some(s.clone())
+			}
+		}
+		match own {
+			Some(f) => {
+				v := self.load_flag(&f)
+				w := self.when_begin(&v)
+				self.drop_elab_children(addr, t, l, prefix)
+				self.when_end(w)
+			}
+			None => self.drop_elab_children(addr, t, l, prefix),
+		}
+	}
+
+	fun drop_elab_children(&mut self, addr &V, t &Ty, l usize, prefix &Vec<string>) {
+		deeper mut := false
+		for (q, _) in &self.locals[l].paths {
+			if q.len() > prefix.len() && starts_with_path(q, prefix) {
+				deeper = true
+			}
+		}
+		if !deeper {
+			self.drop_value(addr, t)
+			return
+		}
+		match t {
+			Ty::Tuple(ts) => {
+				for (i, et) in ts.iter().enumerate() {
+					(off, _) := self.field(t, &"{i}")
+					a := self.iadd_imm(addr, off as i64)
+					sub mut := prefix.clone()
+					sub.push("{i}")
+					self.drop_elab(&a, et, l, &sub)
+				}
+			}
+			Ty::Adt(_, _) => {
+				variants := self.variants_of(t)
+				is_enum := variants.len() > 0 && variants[0].is_some()
+				for (vi, v) in variants.iter().enumerate() {
+					fields := self.c.adt_fields(t, *v)
+					pfx := match v {
+						Some(v) => "{self.c.r.def(*v).name}.",
+						None => string::new(),
+					}
+					w mut := None
+					if is_enum {
+						tag := self.load("i32", addr, 0)
+						is := self.icmp_imm("eq", &tag, vi as i64)
+						w = Some(self.when_begin(&is))
+					}
+					for (n, ft) in &fields {
+						name := "{pfx}{n}"
+						(off, _) := self.field(t, &name)
+						a := self.iadd_imm(addr, off as i64)
+						sub mut := prefix.clone()
+						sub.push(name)
+						self.drop_elab(&a, ft, l, &sub)
+					}
+					if let Some(w) = w {
+						self.when_end(w)
+					}
+				}
+			}
+			_ => self.drop_value(addr, t),
+		}
+	}
+
+	// Writes the operand's value to `dest`.
+	fun store_op(&mut self, o &Operand, dest &V) {
+		match o {
+			Operand::Copy(p) | Operand::Move(p) => {
+				t := self.place_ty(p)
+				(src, _) := self.place_addr(p)
+				size := self.layout(&t).size
+				self.copy(dest, &src, size)
+				if let Operand::Move(_) = o {
+					self.moved(p)
+				}
+			}
+			Operand::Const(c) => self.store_const(c, dest),
+		}
+	}
+
+	// Address of the operand's value (constants are spilled to a slot).
+	fun op_addr(&mut self, o &Operand) V {
+		match o {
+			Operand::Copy(p) | Operand::Move(p) => {
+				(a, _) := self.place_addr(p)
+				if let Operand::Move(_) = o {
+					self.moved(p)
+				}
+				return a
+			}
+			Operand::Const(c) => {
+				t := self.subst(&c.ty)
+				s := self.slot_for(&t)
+				self.store_const(c, &s)
+				return s
+			}
+		}
+	}
+
+	fun op_scalar(&mut self, o &Operand) V {
+		t := self.op_ty(o)
+		if let Operand::Const(c) = o {
+			if let Some(st) = self.scalar(&t) {
+				if let Some(v) = self.const_scalar(c, &st) {
+					return v
+				}
+			}
+		}
+		a := self.op_addr(o)
+		st := match self.scalar(&t) {
+			Some(s) => s,
+			None => "i64".to_string(),
+		}
+		return self.load(&st, &a, 0)
+	}
+
+	fun const_scalar(&mut self, c &Constant, st &str) option<V> {
+		match &c.kind {
+			ConstKind::Int(v) => {
+				if st == "double" || st == "float" {
+					return Some(val(f64_lit(if st == "float" { (*v as f32) as f64 } else { *v as f64 }), st))
+				}
+				return Some(self.iconst_t(st, *v))
+			}
+			ConstKind::Float(v) => {
+				if st == "double" {
+					return Some(val(f64_lit(*v), st))
+				}
+				if st == "float" {
+					return Some(val(f64_lit((*v as f32) as f64), st))
+				}
+				return None
+			}
+			ConstKind::Bool(v) => return Some(val(if *v { "1".to_string() } else { "0".to_string() }, "i8")),
+			ConstKind::Char(v) => return Some(val("{*v as u32}", "i32")),
+			_ => return None,
+		}
+	}
+
+	fun store_const(&mut self, c &Constant, dest &V) {
+		t := self.subst(&c.ty)
+		match &c.kind {
+			ConstKind::Unit => {}
+			ConstKind::Str(s) => {
+				(p, n) := self.str_lit(s)
+				self.store(&p, dest, 0)
+				self.store(&n, dest, 8)
+			}
+			ConstKind::Bytes(b) => {
+				g := self.bytes_data(b)
+				p := self.global_addr(&g)
+				n := self.iconst(b.len() as i64)
+				self.store(&p, dest, 0)
+				self.store(&n, dest, 8)
+			}
+			ConstKind::Fn(i, substs) => {
+				s mut := HashMap::new()
+				for (k, v) in substs {
+					s.insert(k.clone(), self.subst(v))
+				}
+				match self.resolve(*i, s) {
+					Target::Direct(id) => {
+						nargs := match &t {
+							Ty::Fn(ps, _, _) => ps.len(),
+							_ => 0,
+						}
+						sh := self.shim(&id, nargs)
+						code := self.func_addr(&sh)
+						z := self.iconst(0)
+						self.store(&code, dest, 0)
+						self.store(&z, dest, 8)
+					}
+					_ => self.error("code generation does not support using this function as a value yet".to_string()),
+				}
+			}
+			_ => match self.scalar(&t) {
+				Some(st) => match self.const_scalar(c, &st) {
+					Some(v) => self.store(&v, dest, 0),
+					None => self.error("code generation does not support this constant yet".to_string()),
+				},
+				None => self.error("code generation does not support this constant yet".to_string()),
+			},
+		}
+	}
+
+	// ---- rvalues ----
+
+	fun rvalue_ty(&mut self, rv &Rvalue) Ty {
+		match rv {
+			Rvalue::Use(o) => return self.op_ty(o),
+			Rvalue::Coerce(_, t) => return self.subst(t),
+			Rvalue::Call { callee, args, .. } => return self.call_ret_ty(callee, args),
+			_ => return Ty::Unit,
+		}
+	}
+
+	fun rvalue(&mut self, rv &Rvalue, dest &V, dt &Ty) {
+		match rv {
+			Rvalue::Use(o) => self.store_op(o, dest),
+			Rvalue::Ref { place, .. } => {
+				(a, meta) := self.place_addr(place)
+				self.store(&a, dest, 0)
+				if let Some(m) = meta {
+					self.store(&m, dest, 8)
+				}
+			}
+			Rvalue::Aggregate(kind, ops) => self.aggregate(kind, ops, dest, dt),
+			Rvalue::Call { callee, args, .. } => self.call(callee, args, dest, dt),
+			Rvalue::Pure(op, ops) => self.pure(op, ops, dest, dt),
+			Rvalue::Coerce(o, target) => {
+				tt := self.subst(target)
+				self.coerce(o, &tt, dest)
+			}
+		}
+	}
+
+	fun store_at(&mut self, o &Operand, dest &V, off u32) {
+		a := self.iadd_imm(dest, off as i64)
+		self.store_op(o, &a)
+	}
+
+	fun aggregate(&mut self, kind &AggKind, ops &Vec<Operand>, dest &V, dt &Ty) {
+		match kind {
+			AggKind::Tuple => {
+				for (i, o) in ops.iter().enumerate() {
+					(off, _) := self.field(dt, &"{i}")
+					self.store_at(o, dest, off)
+				}
+			}
+			AggKind::Struct(_, names) => {
+				for (k, n) in names.iter().enumerate() {
+					(off, _) := self.field(dt, n)
+					self.store_at(&ops[k], dest, off)
+				}
+			}
+			AggKind::Variant { def, index, fields } => {
+				tag := val("{*index}", "i32")
+				self.store(&tag, dest, 0)
+				vname := self.c.r.def(self.c.r.variants(*def)[*index]).name.clone()
+				for (k, n) in fields.iter().enumerate() {
+					(off, _) := self.field(dt, &"{vname}.{n}")
+					self.store_at(&ops[k], dest, off)
+				}
+			}
+			AggKind::Range { has_start, has_end, inclusive } => {
+				if *has_start && *has_end {
+					(o0, _) := self.field(dt, "start")
+					self.store_at(&ops[0], dest, o0)
+					(o1, _) := self.field(dt, "end")
+					self.store_at(&ops[1], dest, o1)
+					(oi, _) := self.field(dt, "incl")
+					v := val(if *inclusive { "1".to_string() } else { "0".to_string() }, "i8")
+					self.store(&v, dest, oi as i64)
+				} else {
+					self.error("code generation supports only `a..b` and `a..=b` ranges".to_string())
+				}
+			}
+			AggKind::Array => {
+				et := self.elem_of(dt)
+				size := self.layout(&et).size
+				for (i, o) in ops.iter().enumerate() {
+					self.store_at(o, dest, (i as u32) * size)
+				}
+			}
+			AggKind::ArrayRepeat(n) => {
+				et := self.elem_of(dt)
+				size := self.layout(&et).size
+				t := self.slot_for(&et)
+				self.store_op(&ops[0], &t)
+				if *n <= 4 {
+					for i in 0..*n {
+						e := self.iadd_imm(dest, (i * size as u64) as i64)
+						self.copy(&e, &t, size)
+					}
+				} else {
+					nv := self.iconst(*n as i64)
+					(ic, iv, head, done) := self.loop_begin(&nv)
+					off := self.imul_imm(&iv, size as i64)
+					e := self.iadd(dest, &off)
+					self.copy(&e, &t, size)
+					self.loop_end(&ic, &iv, head, done)
+				}
+				if *n == 0 {
+					self.drop_value(&t, &et)
+				}
+			}
+			AggKind::Closure(span) => {
+				bi := match self.find_body(BodyKind::Closure, *span) {
+					Some(b) => b,
+					None => return self.error("internal error: closure body not found".to_string()),
+				}
+				id := self.instance(self.fn_idx, bi, self.substs.clone(), Abi::Closure)
+				tys mut := Vec::new()
+				for o in ops {
+					tys.push(self.op_ty(o))
+				}
+				ls := self.layouts_of(&tys)
+				(offs, l) := sequential(&ls)
+				size := self.iconst(l.size as i64)
+				align := self.iconst(l.align as i64)
+				env := self.call_rt("kn_alloc", &vec2(size, align)).unwrap()
+				for (k, o) in ops.iter().enumerate() {
+					self.store_at(o, &env, offs[k])
+				}
+				code := self.func_addr(&id)
+				self.store(&code, dest, 0)
+				self.store(&env, dest, 8)
+			}
+		}
+	}
+
+	fun coerce(&mut self, o &Operand, target &Ty, dest &V) {
+		src_ty := self.op_ty(o)
+		from := self.pointee(&src_ty)
+		to := self.pointee(target)
+		if from.is_none() || to.is_none() {
+			return self.store_op(o, dest)
+		}
+		from := from.unwrap()
+		to := to.unwrap()
+		p := self.op_scalar_or_first_word(o, &src_ty)
+		if let Ty::Dyn(traits) = &to {
+			if let Ty::Dyn(_) = &from {
+			} else {
+				tr := if traits.len() > 0 { Some(traits[0]) } else { None }
+				vt := self.vtable(&from, tr)
+				v := self.global_addr(&vt)
+				self.store(&p, dest, 0)
+				self.store(&v, dest, 8)
+				return
+			}
+		}
+		if is_prim(&to, "Str") && self.is_lang(&from, "string") {
+			d := self.load("i64", &p, 0)
+			n := self.load("i64", &p, 16)
+			self.store(&d, dest, 0)
+			self.store(&n, dest, 8)
+			return
+		}
+		if let Ty::Slice(_) = &to {
+			if let Ty::Array(_, n) = &from {
+				nv := self.iconst(*n as i64)
+				self.store(&p, dest, 0)
+				self.store(&nv, dest, 8)
+				return
+			}
+			if self.is_lang(&from, "Vec") {
+				d := self.load("i64", &p, 0)
+				n := self.load("i64", &p, 16)
+				self.store(&d, dest, 0)
+				self.store(&n, dest, 8)
+				return
+			}
+		}
+		if self.is_lang(&from, "Box") && !self.is_lang(&to, "Box") {
+			inner := self.load("i64", &p, 0)
+			self.store(&inner, dest, 0)
+			if self.is_fat(&from) {
+				m := self.load("i64", &p, 8)
+				self.store(&m, dest, 8)
+			}
+			return
+		}
+		self.store_op(o, dest)
+	}
+
+	fun op_scalar_or_first_word(&mut self, o &Operand, t &Ty) V {
+		if self.scalar(t).is_some() {
+			return self.op_scalar(o)
+		}
+		a := self.op_addr(o)
+		return self.load("i64", &a, 0)
+	}
+
+	// ---- calls ----
+
+	fun qualified_name(&self, idx usize) string {
+		f := &self.c.r.fns[idx]
+		match f.impl_idx {
+			Some(i) => {
+				ty := match &self.c.r.impls[i].decl.self_ty.kind {
+					TypeKind::Path(p) => match p.segments.last() {
+						Some(s) => s.ident.name.clone(),
+						None => string::new(),
+					},
+					_ => string::new(),
+				}
+				return "{ty}::{f.decl.name.name}"
+			}
+			None => {
+				if f.module != self.c.r.prelude {
+					return "{self.c.r.def(f.module).name}::{f.decl.name.name}"
+				}
+				return f.decl.name.name.clone()
+			}
+		}
+	}
+
+	fun resolve(&mut self, idx usize, substs HashMap<string, Ty>) Target {
+		trait_def := self.c.r.fns[idx].trait_def
+		impl_idx := self.c.r.fns[idx].impl_idx
+		if let Some(td) = trait_def {
+			if impl_idx.is_none() {
+				self_ty := match substs.get("Self") {
+					Some(t) => t.clone(),
+					None => Ty::Unit,
+				}
+				if let Ty::Dyn(traits) = &self_ty {
+					principal := if traits.len() > 0 { traits[0] } else { td }
+					ms := self.c.dyn_methods(principal)
+					k mut := 0usize
+					for (j, m) in ms.iter().enumerate() {
+						if *m == idx {
+							k = j
+							break
+						}
+					}
+					return Target::Virtual(k)
+				}
+				match self.c.resolve_trait_method(idx, &substs) {
+					Some((i2, s2)) => {
+						if i2 != idx || self.c.r.fns[i2].decl.body.is_some() {
+							if i2 == idx {
+								return Target::Direct(self.instance(i2, 0, s2, Abi::Plain))
+							}
+							s3 mut := HashMap::new()
+							for (k, v) in &s2 {
+								s3.insert(k.clone(), v.subst(&substs))
+							}
+							return self.resolve(i2, s3)
+						}
+					}
+					None => {}
+				}
+				tn := self.fmt_ty(&self_ty)
+				name := self.c.r.fns[idx].decl.name.name.clone()
+				if name == "to_string" {
+					return Target::Intrinsic("display_to_string".to_string())
+				}
+				return Target::Missing("no implementation of `{name}` for `{tn}`")
+			}
+		}
+		if self.c.r.fns[idx].decl.body.is_none() {
+			foreign mut := false
+			for a in &self.c.r.fns[idx].attrs {
+				if a.name.name == "extern" {
+					foreign = true
+				}
+			}
+			name := self.c.r.fns[idx].decl.name.name.clone()
+			if (foreign || name.starts_with("kn_")) && impl_idx.is_none() {
+				return Target::Extern(name)
+			}
+			return Target::Intrinsic(self.qualified_name(idx))
+		}
+		return Target::Direct(self.instance(idx, 0, substs, Abi::Plain))
+	}
+
+	fun call_ret_ty(&mut self, callee &Callee, args &Vec<Operand>) Ty {
+		match callee {
+			Callee::Fn(i, substs) => {
+				s mut := HashMap::new()
+				for (k, v) in substs {
+					s.insert(k.clone(), self.subst(v))
+				}
+				(_, ret) := self.c.signature(*i)
+				return ret.subst(&s)
+			}
+			Callee::Value => {
+				if args.len() > 0 {
+					if let Ty::Fn(_, r, _) = self.op_ty(&args[0]) {
+						return *r
+					}
+				}
+				return Ty::Unit
+			}
+			Callee::Intrinsic(_) => return Ty::Unit,
+		}
+	}
+
+	// Copies each argument into a fresh slot (the callee owns it).
+	fun arg_slots(&mut self, args &[Operand]) Vec<V> {
+		o mut := Vec::new()
+		for a in args {
+			t := self.op_ty(a)
+			s := self.slot_for(&t)
+			self.store_op(a, &s)
+			o.push(s)
+		}
+		return o
+	}
+
+	fun call(&mut self, callee &Callee, args &Vec<Operand>, dest &V, dt &Ty) {
+		match callee {
+			Callee::Fn(i, substs) => {
+				s mut := HashMap::new()
+				for (k, v) in substs {
+					s.insert(k.clone(), self.subst(v))
+				}
+				match self.resolve(*i, s.clone()) {
+					Target::Direct(id) => {
+						vals mut := one(dest.clone())
+						for v in self.arg_slots(&args[..]) {
+							vals.push(v)
+						}
+						self.call_fn(&id, &vals)
+					}
+					Target::Virtual(k) => {
+						a0 := self.op_addr(&args[0])
+						data := self.load("i64", &a0, 0)
+						vt := self.load("i64", &a0, 8)
+						code := self.load("i64", &vt, 24 + 8 * k as i64)
+						self_slot := self.slot(8, 8)
+						self.store(&data, &self_slot, 0)
+						vals mut := vec2(dest.clone(), self_slot)
+						for v in self.arg_slots(&args[1..]) {
+							vals.push(v)
+						}
+						self.call_indirect(&code, &vals)
+					}
+					Target::Intrinsic(name) => {
+						self.intr_substs = s
+						self.intrinsic(&name, args, dest, dt)
+					}
+					Target::Extern(name) => self.extern_call(&name, args, dest, dt),
+					Target::Missing(m) => self.error(m),
+				}
+			}
+			Callee::Value => {
+				fa := self.op_addr(&args[0])
+				code := self.load("i64", &fa, 0)
+				env := self.load("i64", &fa, 8)
+				vals mut := vec2(dest.clone(), env)
+				for v in self.arg_slots(&args[1..]) {
+					vals.push(v)
+				}
+				self.call_indirect(&code, &vals)
+			}
+			Callee::Intrinsic(name) => self.intrinsic(name, args, dest, dt),
+		}
+	}
+
+	// A runtime C function declared in `std` as a bodiless `kn_*` function.
+	fun extern_call(&mut self, name &str, args &Vec<Operand>, dest &V, dt &Ty) {
+		vals mut := Vec::new()
+		ptys mut := string::new()
+		for a in args {
+			t := self.op_ty(a)
+			if self.is_fat(&t) {
+				p := self.op_addr(a)
+				d := self.load("i64", &p, 0)
+				n := self.load("i64", &p, 8)
+				vals.push(d)
+				vals.push(n)
+			} else if let Some(_) = self.scalar(&t) {
+				vals.push(self.op_scalar(a))
+			} else {
+				tn := self.fmt_ty(&t)
+				return self.error("runtime function `{name}` cannot take a `{tn}`")
+			}
+		}
+		for (i, v) in vals.iter().enumerate() {
+			if i > 0 {
+				ptys.push(", ")
+			}
+			ptys.push(&v.t)
+		}
+		ret := match dt {
+			Ty::Unit | Ty::Never => "void".to_string(),
+			t => match self.scalar(t) {
+				Some(st) => st,
+				None => {
+					tn := self.fmt_ty(t)
+					return self.error("runtime function `{name}` cannot return a `{tn}`")
+				}
+			},
+		}
+		self.declare(name, "declare {ret} @{name}({ptys})")
+		at := Cg::args_text(&vals)
+		if ret == "void" {
+			self.emit("call void @{name}({at})")
+		} else {
+			v := self.inst(&ret, "call {ret} @{name}({at})")
+			self.store(&v, dest, 0)
+		}
+		if let Ty::Never = dt {
+			self.trap()
+		}
+	}
