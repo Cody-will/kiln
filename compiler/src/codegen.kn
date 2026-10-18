@@ -221,6 +221,7 @@ pub struct Cg {
 	last_task option<V>,
 	preempt option<V>,
 	preempt_edges Vec<(usize, usize)>,
+	last_store option<(string, string, V)>,
 	cur_block usize,
 	// Instruction text, entry allocas, value and block counters.
 	fb string,
@@ -1085,6 +1086,7 @@ fun parse_usize(s &str) option<usize> {
 impl Cg {
 	fun begin_fn(&mut self) {
 		self.fb = string::new()
+		self.last_store = None
 		self.allocas = string::new()
 		self.frame = 0
 		self.dbg_fn = -1
@@ -1153,6 +1155,7 @@ impl Cg {
 		}
 		self.fb.push("b{b}:\n")
 		self.open = true
+		self.last_store = None
 	}
 
 	fun ensure_open(&mut self) {
@@ -1160,10 +1163,12 @@ impl Cg {
 			b := self.new_block()
 			self.fb.push("b{b}:\n")
 			self.open = true
+			self.last_store = None
 		}
 	}
 
 	fun emit(&mut self, text string) {
+		self.last_store = None
 		self.ensure_open()
 		self.fb.push("  ")
 		self.fb.push(&text)
@@ -1252,12 +1257,20 @@ impl Cg {
 
 	fun load(&mut self, t &str, addr &V, off i64) V {
 		p := self.ptr_of(addr, off)
+		// A load right after a store to the same place (nothing in
+		// between) is the stored value: smaller IR for clang to chew on.
+		if let Some((lp, lt, lv)) = &self.last_store {
+			if *lp == p && *lt == t {
+				return lv.clone()
+			}
+		}
 		return self.inst(t, "load {t}, ptr {p}, align 1")
 	}
 
 	fun store(&mut self, v &V, addr &V, off i64) {
 		p := self.ptr_of(addr, off)
 		self.emit("store {v.t} {v.n}, ptr {p}, align 1")
+		self.last_store = Some((p, v.t.clone(), v.clone()))
 	}
 
 	fun copy(&mut self, dst &V, src &V, size u32) {
@@ -6168,6 +6181,7 @@ impl Cg {
 			last_task: None,
 			preempt: None,
 			preempt_edges: Vec::new(),
+			last_store: None,
 			cur_block: 0,
 			fb: string::new(),
 			allocas: string::new(),
@@ -6203,7 +6217,7 @@ pub fun compile(c Checker, checked bool, lowered Vec<(usize, Vec<Body>)>, files 
 		cg.st.cc = cc
 		// Leave scheduler workers free for codegen: a compiling worker
 		// blocks its thread in waitpid.
-		nw := if nj > 3 { nj - 2 } else { 1 }
+		nw := if nj > 2 { nj - 1 } else { 1 }
 		(tx, rx) := chan::<Job>(4096)
 		for _ in 0..nw {
 			cg.st.tasks.push(spawn shard_worker(rx.clone()))
@@ -6359,6 +6373,15 @@ fun sym_refs(f &str) Vec<string> {
 		i += 1
 	}
 	while i < b.len() {
+		// Skip string constants (c"...": an `@` there is data).
+		if b[i] == 99u8 && i + 1 < b.len() && b[i + 1] == 34u8 {
+			i += 2
+			while i < b.len() && b[i] != 34u8 {
+				i += 1
+			}
+			i += 1
+			continue
+		}
 		if b[i] != 64u8 {
 			i += 1
 			continue
