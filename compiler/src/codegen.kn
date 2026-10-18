@@ -272,12 +272,14 @@ fun ptr_params(n usize) string {
 		if i > 0 {
 			o.push(", ")
 		}
-		o.push("i64 %p{i}")
+		o.push("ptr %p{i}")
 	}
 	return o
 }
 
 // Runtime functions: name, parameter types, result type ("void" for none).
+// Parameter type `p`: a pointer the function only uses during the call
+// (`ptr nocapture`), so passing a slot's address does not make it escape.
 fun runtime_sig(name &str) option<(Vec<string>, string)> {
 	s := match name {
 		"kn_alloc" => "i64,i64:i64",
@@ -287,9 +289,9 @@ fun runtime_sig(name &str) option<(Vec<string>, string)> {
 		"kn_panic_str" => "i64:",
 		"kn_print" => "i64,i64,i32,i32:",
 		"kn_main_error" => "i64,i64:",
-		"kn_vec_reserve" => "i64,i64,i64,i64:",
-		"kn_vec_free" => "i64,i64,i64:",
-		"kn_string_push" => "i64,i64,i64:",
+		"kn_vec_reserve" => "p,i64,i64,i64:",
+		"kn_vec_free" => "p,i64,i64:",
+		"kn_string_push" => "p,p,i64:",
 		"kn_string_from" => "i64,i64,i64:",
 		"kn_fmt_i64" => "i64,i64:",
 		"kn_fmt_u64" => "i64,i64:",
@@ -299,8 +301,8 @@ fun runtime_sig(name &str) option<(Vec<string>, string)> {
 		"kn_fmt_bool" => "i64,i32:",
 		"kn_fmt_char" => "i64,i32:",
 		"kn_fmt_f64" => "i64,double:",
-		"kn_str_eq" => "i64,i64,i64,i64:i32",
-		"kn_hash_u64" => "i64,i64:",
+		"kn_str_eq" => "p,i64,p,i64:i32",
+		"kn_hash_u64" => "p,i64:",
 		"kn_fmt_debug_str" => "i64,i64,i64:",
 		"kn_fmt_debug_char" => "i64,i32:",
 		"kn_fmt_debug_f64" => "i64,double:",
@@ -311,7 +313,7 @@ fun runtime_sig(name &str) option<(Vec<string>, string)> {
 		"kn_fmt_sep" => "i64,i32,i32:",
 		"kn_fmt_end" => "i64,i64,i64,i32,i32:",
 		"kn_fmt_pad" => "i64,i64,i64,i64,i32,i32,i32,i64:",
-		"kn_hash_bytes" => "i64,i64,i64:",
+		"kn_hash_bytes" => "p,p,i64:",
 		"kn_str_cmp" => "i64,i64,i64,i64:i32",
 		"kn_str_to_upper" => "i64,i64,i64:",
 		"kn_str_to_lower" => "i64,i64,i64:",
@@ -403,9 +405,19 @@ impl Cg {
 					if i > 0 {
 						ptxt.push(", ")
 					}
-					ptxt.push(p)
+					if p == "p" {
+						ptxt.push("ptr nocapture")
+					} else {
+						ptxt.push(p)
+					}
 				}
-				attr := if name == "_setjmp" { " returns_twice" } else { "" }
+				attr := if name == "_setjmp" {
+					" returns_twice"
+				} else if name == "kn_panic" || name == "kn_panic_bounds" || name == "kn_panic_str" {
+					" cold noreturn nounwind"
+				} else {
+					""
+				}
 				self.declare(name, "declare {r} @{name}({ptxt}){attr}")
 			}
 			None => {},
@@ -509,11 +521,13 @@ impl Cg {
 				if self.is_fat(t) {
 					return None
 				}
-				return Some("i64".to_string())
+				// Addresses stay `ptr` (see `int`), which keeps LLVM's
+				// alias and escape analysis working through them.
+				return Some("ptr".to_string())
 			}
 			Ty::Adt(_, _) => {
 				if self.is_lang(t, "Box") && !self.is_fat(t) {
-					return Some("i64".to_string())
+					return Some("ptr".to_string())
 				}
 				return None
 			}
@@ -999,11 +1013,28 @@ impl Cg {
 		return val(f64_lit(x as f64), "float")
 	}
 
+	// An integer view of `v`: slot and global addresses are `ptr` values
+	// (so LLVM can promote slots) and become integers only where needed.
+	fun int(&mut self, v &V) V {
+		if v.t == "ptr" {
+			return self.inst("i64", "ptrtoint ptr {v.n} to i64")
+		}
+		return v.clone()
+	}
+
+	// `v` as a `ptr` operand.
+	fun as_ptr(&mut self, v &V) string {
+		if v.t == "ptr" {
+			return v.n.clone()
+		}
+		p := self.tmp()
+		self.emit("{p} = inttoptr i64 {v.n} to ptr")
+		return p
+	}
+
 	fun ptr_of(&mut self, addr &V, off i64) string {
 		a := if off != 0 { self.iadd_imm(addr, off) } else { addr.clone() }
-		p := self.tmp()
-		self.emit("{p} = inttoptr i64 {a.n} to ptr")
-		return p
+		return self.as_ptr(&a)
 	}
 
 	fun load(&mut self, t &str, addr &V, off i64) V {
@@ -1038,10 +1069,7 @@ impl Cg {
 		n := if size == 0 { 1 } else { size }
 		a := if align == 0 { 1 } else { align }
 		self.allocas.push("  {s} = alloca [{n} x i8], align {a}\n")
-		self.nv += 1
-		v := "%v{self.nv}"
-		self.allocas.push("  {v} = ptrtoint ptr {s} to i64\n")
-		return val(v, "i64")
+		return val(s, "ptr")
 	}
 
 	fun slot_for(&mut self, t &Ty) V {
@@ -1051,11 +1079,20 @@ impl Cg {
 
 	// ---- arithmetic ----
 
-	fun bin(&mut self, op &str, a &V, b &V) V {
+	fun bin(&mut self, op &str, a0 &V, b0 &V) V {
+		a := self.int(a0)
+		b := self.int(b0)
 		return self.inst(&a.t, "{op} {a.t} {a.n}, {b.n}")
 	}
 
 	fun iadd(&mut self, a &V, b &V) V {
+		// Address arithmetic keeps the pointer (a GEP), so LLVM still sees the slot.
+		if a.t == "ptr" && b.t != "ptr" {
+			return self.inst("ptr", "getelementptr i8, ptr {a.n}, {b.t} {b.n}")
+		}
+		if b.t == "ptr" && a.t != "ptr" {
+			return self.inst("ptr", "getelementptr i8, ptr {b.n}, {a.t} {a.n}")
+		}
 		return self.bin("add", a, b)
 	}
 
@@ -1083,66 +1120,80 @@ impl Cg {
 		if k == 0 {
 			return a.clone()
 		}
+		if a.t == "ptr" {
+			return self.inst("ptr", "getelementptr inbounds i8, ptr {a.n}, i64 {k}")
+		}
 		return self.inst(&a.t, "add {a.t} {a.n}, {k}")
 	}
 
-	fun imul_imm(&mut self, a &V, k i64) V {
+	fun imul_imm(&mut self, a0 &V, k i64) V {
+		a := self.int(a0)
 		return self.inst(&a.t, "mul {a.t} {a.n}, {k}")
 	}
 
-	fun bxor_imm(&mut self, a &V, k i64) V {
+	fun bxor_imm(&mut self, a0 &V, k i64) V {
+		a := self.int(a0)
 		return self.inst(&a.t, "xor {a.t} {a.n}, {k}")
 	}
 
-	fun ineg(&mut self, a &V) V {
+	fun ineg(&mut self, a0 &V) V {
+		a := self.int(a0)
 		return self.inst(&a.t, "sub {a.t} 0, {a.n}")
 	}
 
-	fun bnot(&mut self, a &V) V {
+	fun bnot(&mut self, a0 &V) V {
+		a := self.int(a0)
 		return self.inst(&a.t, "xor {a.t} {a.n}, -1")
 	}
 
 	// A shift amount of `a`'s type, masked to its width (as Cranelift does).
-	fun shift_amount(&mut self, a &V, b &V) V {
-		amt := self.resize(b, &a.t)
+	fun shift_amount(&mut self, a &V, b0 &V) V {
+		b := self.int(b0)
+		amt := self.resize(&b, &a.t)
 		return self.inst(&a.t, "and {a.t} {amt.n}, {bits(&a.t) - 1}")
 	}
 
-	fun shift(&mut self, op &str, a &V, b &V) V {
-		amt := self.shift_amount(a, b)
+	fun shift(&mut self, op &str, a0 &V, b &V) V {
+		a := self.int(a0)
+		amt := self.shift_amount(&a, b)
 		return self.inst(&a.t, "{op} {a.t} {a.n}, {amt.n}")
 	}
 
-	fun shift_imm(&mut self, op &str, a &V, k i64) V {
+	fun shift_imm(&mut self, op &str, a0 &V, k i64) V {
+		a := self.int(a0)
 		return self.inst(&a.t, "{op} {a.t} {a.n}, {k}")
 	}
 
 	// Zero-extends or truncates an integer to type `t`.
-	fun resize(&mut self, v &V, t &str) V {
+	fun resize(&mut self, v0 &V, t &str) V {
+		v := self.int(v0)
 		if bits(&v.t) == bits(t) {
 			return v.clone()
 		}
 		if bits(&v.t) < bits(t) {
-			return self.uextend(t, v)
+			return self.uextend(t, &v)
 		}
-		return self.ireduce(t, v)
+		return self.ireduce(t, &v)
 	}
 
-	fun uextend(&mut self, t &str, v &V) V {
+	fun uextend(&mut self, t &str, v0 &V) V {
+		v := self.int(v0)
 		if v.t == t {
 			return v.clone()
 		}
 		return self.inst(t, "zext {v.t} {v.n} to {t}")
 	}
 
-	fun sextend(&mut self, t &str, v &V) V {
+	fun sextend(&mut self, t &str, v0 &V) V {
+		v := self.int(v0)
 		if v.t == t {
 			return v.clone()
 		}
 		return self.inst(t, "sext {v.t} {v.n} to {t}")
 	}
 
-	fun ireduce(&mut self, t &str, v &V) V {
+	fun ireduce(&mut self, t &str, v0 &V) V {
+		v := self.int(v0)
 		if v.t == t {
 			return v.clone()
 		}
@@ -1154,13 +1205,16 @@ impl Cg {
 	}
 
 	// `cc`: eq, ne, slt, sle, sgt, sge, ult, ule, ugt, uge. The result is an i8 0/1.
-	fun icmp(&mut self, cc &str, a &V, b &V) V {
+	fun icmp(&mut self, cc &str, a0 &V, b0 &V) V {
+		a := self.int(a0)
+		b := self.int(b0)
 		c := self.tmp()
 		self.emit("{c} = icmp {cc} {a.t} {a.n}, {b.n}")
 		return self.bool8(&c)
 	}
 
-	fun icmp_imm(&mut self, cc &str, a &V, k i64) V {
+	fun icmp_imm(&mut self, cc &str, a0 &V, k i64) V {
+		a := self.int(a0)
 		c := self.tmp()
 		self.emit("{c} = icmp {cc} {a.t} {a.n}, {k}")
 		return self.bool8(&c)
@@ -1173,14 +1227,17 @@ impl Cg {
 		return self.bool8(&c)
 	}
 
-	fun truthy(&mut self, c &V) string {
+	fun truthy(&mut self, c0 &V) string {
+		c := self.int(c0)
 		n := self.tmp()
 		self.emit("{n} = icmp ne {c.t} {c.n}, 0")
 		return n
 	}
 
-	fun select(&mut self, c &V, a &V, b &V) V {
+	fun select(&mut self, c &V, a0 &V, b0 &V) V {
 		k := self.truthy(c)
+		a := self.int(a0)
+		b := self.int(b0)
 		return self.inst(&a.t, "select i1 {k}, {a.t} {a.n}, {a.t} {b.n}")
 	}
 
@@ -1206,7 +1263,8 @@ impl Cg {
 		return self.inst("float", "fptrunc double {v.n} to float")
 	}
 
-	fun bitcast(&mut self, t &str, v &V) V {
+	fun bitcast(&mut self, t &str, v0 &V) V {
+		v := self.int(v0)
 		return self.inst(t, "bitcast {v.t} {v.n} to {t}")
 	}
 
@@ -1354,7 +1412,11 @@ impl Cg {
 		vals mut := Vec::new()
 		for (i, a) in args.iter().enumerate() {
 			p := &ps[i]
-			if a.t == *p || is_float_t(p) {
+			if *p == "p" {
+				vals.push(val(self.as_ptr(a), "ptr"))
+			} else if a.t == "ptr" && *p == "i64" {
+				vals.push(self.int(a))
+			} else if a.t == *p || is_float_t(p) {
 				vals.push(a.clone())
 			} else {
 				vals.push(self.resize(a, p))
@@ -1368,15 +1430,26 @@ impl Cg {
 		return Some(self.inst(&r, "call {r} @{name}({at})"))
 	}
 
+	fun ptr_args(&mut self, args &Vec<V>) string {
+		o mut := string::new()
+		for (i, a) in args.iter().enumerate() {
+			if i > 0 {
+				o.push(", ")
+			}
+			p := self.as_ptr(a)
+			o.push("ptr {p}")
+		}
+		return o
+	}
+
 	fun call_fn(&mut self, f &str, args &Vec<V>) {
-		at := Cg::args_text(args)
+		at := self.ptr_args(args)
 		self.emit("call void @{f}({at})")
 	}
 
 	fun call_indirect(&mut self, code &V, args &Vec<V>) {
-		p := self.tmp()
-		self.emit("{p} = inttoptr i64 {code.n} to ptr")
-		at := Cg::args_text(args)
+		p := self.as_ptr(code)
+		at := self.ptr_args(args)
 		self.emit("call void {p}({at})")
 	}
 
@@ -1385,7 +1458,7 @@ impl Cg {
 	}
 
 	fun global_addr(&mut self, g &str) V {
-		return self.inst("i64", "ptrtoint ptr @{g} to i64")
+		return val("@{g}", "ptr")
 	}
 
 	fun str_lit(&mut self, s &str) (V, V) {
@@ -1527,15 +1600,137 @@ impl Cg {
 		self.intr_substs = HashMap::new()
 		self.begin_fn()
 		self.translate(abi)
-		self.end_fn("define internal void @{name}({ptr_params(nparams)})")
+		if self.checked {
+			self.end_fn("define internal void @{name}({ptr_params(nparams)})")
+			return
+		}
+		self.end_release_fn(name, nparams, abi)
+	}
+
+	// Release builds pass Kiln's guarantees on to LLVM, as the Rust LLVM
+	// backend does (crates/kiln_llvm): every function is `nounwind` (a panic
+	// never unwinds through Kiln frames), argument slots are fresh for the
+	// call (`noalias`) and valid for their size, so LLVM's argument promotion
+	// turns them into registers; and a function with a 1/2/4/8/16-byte result
+	// becomes an always-inlined wrapper around `{name}.v`, which returns the
+	// result by value instead of through the return slot.
+	fun end_release_fn(&mut self, name &str, nparams usize, abi Abi) {
+		extra := if abi == Abi::Closure { 2 } else { 1 }
+		attrs mut := Vec::new()
+		sizes mut := Vec::new()
+		// Per by-value argument: its LLVM type ("ptr" for thin references and
+		// raw pointers, so LLVM can see they are not captured) and attributes.
+		vtys mut := Vec::new()
+		vattrs mut := Vec::new()
+		for _ in 0..nparams {
+			attrs.push(string::new())
+			sizes.push(0u32)
+			vtys.push(string::new())
+			vattrs.push(string::new())
+		}
+		ret_size mut := 0u32
+		for i in 0..self.body.locals.len() {
+			kind := self.body.locals[i].kind
+			if kind != LocalKind::Arg && kind != LocalKind::Return {
+				continue
+			}
+			t := self.subst(&self.body.locals[i].ty.clone())
+			l := self.layout(&t)
+			if kind == LocalKind::Return {
+				ret_size = l.size
+				if l.size > 0 {
+					attrs[0] = " nonnull dereferenceable({l.size})"
+				}
+			} else if extra + i - 1 < nparams && l.size > 0 {
+				k := extra + i - 1
+				attrs[k] = " noalias nonnull dereferenceable({l.size}) align {l.align}"
+				sizes[k] = l.size
+				match &t {
+					Ty::Ref(m, inner) => {
+						if !self.is_unsized(inner) {
+							vtys[k] = "ptr".to_string()
+							il := self.layout(inner)
+							deref := if il.size > 0 { " dereferenceable({il.size})" } else { string::new() }
+							// `&mut T` is unique for the call, as in rustc.
+							vattrs[k] = if *m { " noalias nonnull{deref}" } else { " nonnull{deref}" }
+						}
+					},
+					Ty::Ptr(_, _) => vtys[k] = "ptr".to_string(),
+					_ => {},
+				}
+			}
+		}
+		promote := abi == Abi::Plain && nparams > 0 && (ret_size == 1 || ret_size == 2 || ret_size == 4 || ret_size == 8 || ret_size == 16)
+		// Register arguments: small argument slots pass by value to `.v`.
+		by_val mut := Vec::new()
+		any_val mut := false
+		for i in 0..nparams {
+			sz := sizes[i]
+			v := sz == 1 || sz == 2 || sz == 4 || sz == 8
+			by_val.push(v)
+			if v {
+				any_val = true
+			}
+		}
+		ps mut := string::new()
+		for i in 0..nparams {
+			if i > 0 {
+				ps.push(", ")
+			}
+			ps.push("ptr{attrs[i]} %p{i}")
+		}
+		if !promote && !any_val {
+			self.end_fn("define internal void @{name}({ps}) nounwind")
+			return
+		}
+		rt := if promote { int_of_bits(ret_size * 8) } else { "void".to_string() }
+		// `{name}.v`: by-value arguments and (if promoted) the return slot
+		// become locals; every `ret void` jumps to one exit.
+		ps_v mut := string::new()
+		wpre mut := string::new()
+		args mut := string::new()
+		for i in 0..nparams {
+			if i > 0 {
+				ps_v.push(", ")
+				args.push(", ")
+			}
+			if i == 0 && promote {
+				ps_v.push("ptr %p0.unused")
+				args.push("ptr %p0")
+			} else if by_val[i] {
+				it := if vtys[i].len() > 0 { vtys[i].clone() } else { int_of_bits(sizes[i] * 8) }
+				ps_v.push("{it}{vattrs[i]} %a{i}")
+				self.allocas.push("  %p{i} = alloca [{sizes[i]} x i8], align 8\n  store {it} %a{i}, ptr %p{i}, align 8\n")
+				wpre.push("  %w{i} = load {it}, ptr %p{i}, align 1\n")
+				args.push("{it} %w{i}")
+			} else {
+				ps_v.push("ptr{attrs[i]} %p{i}")
+				args.push("ptr %p{i}")
+			}
+		}
+		if self.open {
+			self.emit("unreachable".to_string())
+			self.open = false
+		}
+		w mut := "define internal void @{name}({ps}) alwaysinline nounwind {{\nentry:\n{wpre}".to_string()
+		if promote {
+			self.allocas.push("  %p0 = alloca [{ret_size} x i8], align 8\n")
+			self.fb = self.fb.replace("  ret void\n", "  br label %ret.exit\n")
+			self.fb.push("ret.exit:\n  %ret.v = load {rt}, ptr %p0, align 8\n  ret {rt} %ret.v\n")
+			w.push("  %r = call {rt} @{name}.v({args})\n  store {rt} %r, ptr %p0, align 1\n  ret void\n}}\n\n")
+		} else {
+			w.push("  call void @{name}.v({args})\n  ret void\n}}\n\n")
+		}
+		self.end_fn("define internal {rt} @{name}.v({ps_v}) nounwind")
+		self.funcs.push(w)
 	}
 
 	fun define_shim(&mut self, name &str, target &str, nargs usize) {
 		self.begin_fn()
 		args mut := Vec::new()
-		args.push(val("%p0".to_string(), "i64"))
+		args.push(val("%p0".to_string(), "ptr"))
 		for i in 0..nargs {
-			args.push(val("%p{i + 2}", "i64"))
+			args.push(val("%p{i + 2}", "ptr"))
 		}
 		self.call_fn(target, &args)
 		self.ret_void()
@@ -1555,9 +1750,9 @@ impl Cg {
 		self.panic_frame = None
 		self.preempt = None
 		self.begin_fn()
-		p0 := val("%p0".to_string(), "i64")
-		p1 := val("%p1".to_string(), "i64")
-		p2 := val("%p2".to_string(), "i64")
+		p0 := val("%p0".to_string(), "ptr")
+		p1 := val("%p1".to_string(), "ptr")
+		p2 := val("%p2".to_string(), "ptr")
 		match kind {
 			"drop" => self.drop_in_place(&p0, t),
 			"eq" => {
@@ -1668,7 +1863,7 @@ impl Cg {
 		params mut := Vec::new()
 		extra := if abi == Abi::Closure { 2 } else { 1 }
 		for i in 0..self.body.arg_count + extra {
-			params.push(val("%p{i}", "i64"))
+			params.push(val("%p{i}", "ptr"))
 		}
 		// Closure environments: captures laid out in order.
 		env_offsets mut := HashMap::new()
@@ -2142,7 +2337,7 @@ impl Cg {
 						None => Ty::Unit,
 					}
 					fat := self.is_unsized(&inner)
-					data := self.load("i64", &addr, 0)
+					data := self.load("ptr", &addr, 0)
 					meta = if fat { Some(self.load("i64", &addr, 8)) } else { None }
 					addr = data
 					t = inner
@@ -2164,7 +2359,7 @@ impl Cg {
 					i := self.uextend("i64", &i0)
 					elem := self.elem_of(&t)
 					(data, len) := if self.is_lang(&t, "Vec") {
-						(self.load("i64", &addr, 0), self.load("i64", &addr, 16))
+						(self.load("ptr", &addr, 0), self.load("i64", &addr, 16))
 					} else if let Ty::Array(_, n) = &t {
 						(addr.clone(), self.iconst(*n as i64))
 					} else if let Ty::Slice(_) = &t {
@@ -2182,7 +2377,9 @@ impl Cg {
 					self.fail_end(ok)
 					size := self.layout(&elem).size
 					off := self.imul_imm(&i, size as i64)
-					addr = self.iadd(&data, &off)
+					// In bounds: checked above.
+					dp := self.as_ptr(&data)
+					addr = self.inst("ptr", "getelementptr inbounds i8, ptr {dp}, i64 {off.n}")
 					t = elem
 					meta = None
 				},
@@ -5807,8 +6004,36 @@ impl Module {
 			gdecls.push("@{name} = external hidden global {&line[lb..rb + 1]}\n")
 		}
 		names mut := Vec::new()
+		params mut := Vec::new()
 		for f in &self.funcs {
 			names.push(symbol_of(f))
+			// The parameter list of the `define` line, for declarations.
+			line := match f.find("\n") {
+				Some(e) => &f[..e],
+				None => &f[..],
+			}
+			ps := match line.find("(") {
+				Some(a) => {
+					// The matching `)` (attributes like `dereferenceable(8)` nest).
+					bs := line.as_bytes()
+					depth mut := 0
+					end mut := a
+					for k in a..bs.len() {
+						if bs[k] == 40 {
+							depth += 1
+						} else if bs[k] == 41 {
+							depth -= 1
+							if depth == 0 {
+								end = k
+								break
+							}
+						}
+					}
+					line[a..end + 1].to_string()
+				},
+				None => "()".to_string(),
+			}
+			params.push(ps)
 		}
 		out mut := Vec::new()
 		for (k, g) in groups.iter().enumerate() {
@@ -5823,7 +6048,7 @@ impl Module {
 			}
 			for (i, name) in names.iter().enumerate() {
 				if !mine.contains(&i) && name != "kn_main" {
-					o.push("declare hidden void @{name}()\n")
+					o.push("declare hidden void @{name}{params[i]}\n")
 				}
 			}
 			for i in g {

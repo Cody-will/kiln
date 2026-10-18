@@ -382,7 +382,7 @@ fun sh_quote(s &str) string {
 
 // `kilnc --build <file.kn> -o <out>`. A debug build splits the program into
 // one LLVM module per job and compiles them at `-O0` in parallel; a release
-// build compiles it as one module at `-O2`. The IR goes next to `out`.
+// build compiles it as one module at `-O3`. The IR goes next to `out`.
 fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string>) {
 	m := match emit_llvm(path, dir, release, tp, "{out}.bck") {
 		Ok(m) => m,
@@ -424,7 +424,7 @@ fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string
 	}
 	script mut := "set -e\n{cobjs}"
 	// Release: ThinLTO over parallel shards when lld is installed (cross-shard
-	// inlining is kept), else one module at -O2.
+	// inlining is kept), else one module at -O3.
 	thin := release && match os::Command::new(&cc).arg("-print-prog-name=ld.lld").output() {
 		Ok(o) => fs::is_file(o.stdout_text().trim()),
 		Err(_) => false,
@@ -432,11 +432,11 @@ fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string
 	if release && !thin {
 		ll := "{out}.ll"
 		write_file(&ll, &m.single())
-		script.push("{sh_quote(&cc)} -O2 -w {sh_quote(&ll)}{libs} -o {sh_quote(out)}\n")
+		script.push("{sh_quote(&cc)} -O3 -w {sh_quote(&ll)}{libs} -o {sh_quote(out)}\n")
 	} else {
 		// Several shards per job, so an edit recompiles little; a shard whose
 		// IR is unchanged since the last build keeps its object.
-		(opt, ext) := if thin { ("-O2 -flto=thin", "bc") } else { ("-O0", "o") }
+		(opt, ext) := if thin { ("-O3 -flto=thin", "bc") } else { ("-O0", "o") }
 		n0 := jobs() * 4
 		n := if m.funcs.len() / 64 + 1 < n0 { m.funcs.len() / 64 + 1 } else { n0 }
 		objs mut := string::new()
@@ -467,7 +467,7 @@ fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string
 		for r in &running {
 			script.push("wait $p{r}\n")
 		}
-		lto := if thin { " -O2 -flto=thin -fuse-ld=lld -Wl,--thinlto-jobs={jobs()}" } else { string::new() }
+		lto := if thin { " -O3 -flto=thin -fuse-ld=lld -Wl,--thinlto-jobs={jobs()}" } else { string::new() }
 		script.push("{sh_quote(&cc)}{lto}{objs}{libs} -o {sh_quote(out)}\n")
 	}
 	sh_path := "{out}.build.sh"
