@@ -1,0 +1,13 @@
+import std::sync::Arc
+
+fun main() {
+	o mut := Vec::new()
+	o.push(5)
+	o.push(6)
+	v := Arc::new(o)
+	println("{v[1]} {v.len()}")
+	s := &v[..]
+	println("{s.len()}")
+	w := &v[0..1]
+	println("{w.len()} {w[0]}")
+}

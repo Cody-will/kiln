@@ -1212,14 +1212,15 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         let flags = end.is_some() as i128 | ((inclusive as i128) << 1);
         let bt = self.ty(base);
         let bp = self.place_or_temp(base);
-        // Strip references (but not String/Vec, which the intrinsic understands).
-        let mut n = 0;
-        let mut t = bt.clone();
-        while let Ty::Ref(_, inner) = t {
-            t = *inner;
-            n += 1;
-        }
-        let (p, pt) = self.autoderef(bp, bt, n);
+        // Look through references and `Deref` (`Arc<Vec<T>>`) to what the
+        // intrinsic understands: arrays, slices, `str`, `string` and `Vec`.
+        let saved = std::mem::replace(&mut self.want_mut, mutable);
+        let (p, pt) = self.autoderef_until(bp, bt, span, |s, t| match t {
+            Ty::Array(..) | Ty::Slice(_) | Ty::Prim(kiln_resolve::PrimTy::Str) => true,
+            Ty::Adt(d, _) => s.lang(*d, "Vec") || s.lang(*d, "string"),
+            _ => false,
+        });
+        self.want_mut = saved;
         let rt = Ty::Ref(mutable, Box::new(pt));
         let r = self.temp_of(rt, Rvalue::Ref { mutable, place: p }, span);
         let rv = Rvalue::Call {

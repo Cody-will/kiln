@@ -1170,14 +1170,25 @@ impl<'a> Lower<'a> {
 			flags = flags | 2
 		}
 		bt := self.ty(base)
-		bp := self.place_or_temp(base)
-		n mut := 0
-		t mut := bt.clone()
-		while let Ty::Ref(_, inner) = t {
-			t = *inner
-			n += 1
+		// Look through references and `Deref` (`Arc<Vec<T>>`) to what the
+		// intrinsic understands: arrays, slices, `str`, `string` and `Vec`.
+		p mut := self.place_or_temp(base)
+		pt mut := bt
+		saved := self.want_mut
+		self.want_mut = mutable
+		for _ in 0..8 {
+			if self.index_target(&pt) || pt.is_prim("Str") {
+				break
+			}
+			match self.deref_once(p.clone(), &pt, span) {
+				Some((np, nt)) => {
+					p = np
+					pt = nt
+				},
+				None => break,
+			}
 		}
-		(p, pt) := self.autoderef(bp, bt, n)
+		self.want_mut = saved
 		rt := Ty::Ref(mutable, Box::new(pt))
 		r := self.temp_of(rt, Rvalue::Ref { mutable: mutable, place: p }, span)
 		args mut := one(r)
