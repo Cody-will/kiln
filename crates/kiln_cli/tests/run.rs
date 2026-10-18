@@ -5,12 +5,47 @@
 //! `[exit N]` when the exit status is not 0. A first line `// flags: ...` passes
 //! extra `kiln build` flags (e.g. `--release`); `KILN_RUN_FLAGS` adds flags to every program. Set `KILN_BLESS=1` to rewrite the
 //! expected files from the actual output.
+//!
+//! The programs are built by kilnc (the default compiler), which these tests
+//! first build from `compiler/` with the `kiln` under test, so a stale kilnc
+//! can't be picked up. `KILNC` set by the caller is used as is.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn kiln() -> &'static str {
+    static KILNC: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    KILNC.get_or_init(|| {
+        if std::env::var_os("KILNC").is_none() {
+            let path = build_kilnc();
+            // Set before any test runs a command (they all come through here).
+            std::env::set_var("KILNC", path);
+        }
+    });
     env!("CARGO_BIN_EXE_kiln")
+}
+
+/// Builds kilnc from `compiler/` with the Rust compiler of the `kiln` under
+/// test (release when the tests are), like stage 1 of the bootstrap.
+fn build_kilnc() -> PathBuf {
+    let release = !cfg!(debug_assertions);
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_kiln"));
+    cmd.arg("build")
+        .current_dir(root().join("compiler"))
+        .env("KILN_COMPILER", "rust")
+        .env_remove("KILN_RUN_FLAGS");
+    if release {
+        cmd.arg("--release");
+    }
+    let out = cmd.output().expect("run kiln build for kilnc");
+    assert!(
+        out.status.success(),
+        "building kilnc failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let profile = if release { "release" } else { "debug" };
+    root().join("compiler/target").join(profile).join("kilnc")
 }
 
 fn root() -> PathBuf {
