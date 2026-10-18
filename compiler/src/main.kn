@@ -445,11 +445,15 @@ fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string
 		// Several shards per job, so an edit recompiles little; a shard whose
 		// IR is unchanged since the last build keeps its object.
 		(opt, ext) := if thin { ("-O3 -flto=thin", "bc") } else { ("-O0", "o") }
-		n0 := jobs() * 4
+		// One `nproc` run per build (it forks this large process).
+		nj := jobs()
+		n0 := nj * 4
 		n := if m.funcs.len() / 64 + 1 < n0 { m.funcs.len() / 64 + 1 } else { n0 }
 		objs mut := string::new()
 		running mut := Vec::new()
-		for (k, text) in m.shards(n).iter().enumerate() {
+		texts := m.shards(n)
+		pass_done(tp, &mut t, "shard-text")
+		for (k, text) in texts.iter().enumerate() {
 			ll := "{out}.{k}.ll"
 			o := "{out}.{k}.{ext}"
 			objs.push(" {sh_quote(&o)}")
@@ -465,17 +469,18 @@ fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string
 			write_file(&ll, text)
 			script.push("{sh_quote(&cc)} {opt} -w -c {sh_quote(&ll)} -o {sh_quote(&o)} & p{k}=$!\n")
 			running.push(k)
-			if running.len() >= jobs() {
+			if running.len() >= nj {
 				for r in &running {
 					script.push("wait $p{r}\n")
 				}
 				running = Vec::new()
 			}
 		}
+		pass_done(tp, &mut t, "shard-files")
 		for r in &running {
 			script.push("wait $p{r}\n")
 		}
-		lto := if thin { " -O3 -flto=thin -fuse-ld=lld -Wl,--thinlto-jobs={jobs()}" } else { string::new() }
+		lto := if thin { " -O3 -flto=thin -fuse-ld=lld -Wl,--thinlto-jobs={nj}" } else { string::new() }
 		script.push("{sh_quote(&cc)}{lto}{objs}{libs} -o {sh_quote(out)}\n")
 	}
 	sh_path := "{out}.build.sh"
