@@ -323,7 +323,11 @@ fun emit_llvm(path &str, dir &str, release bool, tp bool, cache &str) result<cod
 	if ds.len() > 0 {
 		return Err("borrow error at {ds[0].span.start}..{ds[0].span.end}: {ds[0].message}")
 	}
-	match codegen::compile(c, !release, lowered) {
+	files mut := Vec::new()
+	for i in 0..l.files.len() {
+		files.push((abs_path(&l.files[i]), l.texts[i].clone()))
+	}
+	match codegen::compile(c, !release, lowered, files) {
 		Ok(ir) => {
 			pass_done(tp, &mut t, "codegen")
 			return Ok(ir)
@@ -580,5 +584,16 @@ fun main() {
 			},
 		}
 		i += 1
+	}
+}
+
+// `p` made absolute against the working directory (for debug info).
+fun abs_path(p &str) string {
+	if p.starts_with("/") {
+		return p.to_string()
+	}
+	match os::current_dir() {
+		Ok(d) => return "{d}/{p}",
+		Err(_) => return p.to_string(),
 	}
 }

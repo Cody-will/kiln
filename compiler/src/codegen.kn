@@ -219,6 +219,12 @@ pub struct Cg {
 	// Instruction text, entry allocas, value and block counters.
 	fb string,
 	allocas string,
+	// Debug line tables (debug builds): the user files' names and line
+	// starts, and the file of the function being built (-1: none).
+	dbg_files Vec<string>,
+	dbg_lines Vec<Vec<usize>>,
+	dbg_fn i64,
+	dbg_fn_line usize,
 	// Bytes of stack slots in the function being built.
 	frame u64,
 	nv usize,
@@ -957,6 +963,7 @@ impl Cg {
 		self.fb = string::new()
 		self.allocas = string::new()
 		self.frame = 0
+		self.dbg_fn = -1
 		self.nv = 0
 		self.nb = 0
 		self.open = false
@@ -977,12 +984,37 @@ impl Cg {
 			self.error("this function needs {tenths / 10}.{tenths % 10} MiB of stack, more than half of a goroutine's 8 MiB stack (keep large arrays on the heap: a `Vec` (`v.resize(n, 0)`) or a `Box`)")
 		}
 		f mut := header
+		if self.dbg_fn >= 0 {
+			f.push(" !dbg !@S{self.dbg_fn}.{self.dbg_fn_line}")
+		}
 		f.push(" {{\nentry:\n")
 		f.push(&self.allocas)
 		f.push("  br label %b0\n")
 		f.push(&self.fb)
 		f.push("}}\n\n")
 		self.funcs.push(f)
+	}
+
+	// The (file, line, column) of a span offset; file -1 outside the
+	// user's files.
+	fun line_of(&self, at usize) (i64, usize, usize) {
+		k := at >> 32
+		if k >= self.dbg_lines.len() {
+			return (-1, 0, 0)
+		}
+		off := at & 4294967295
+		ls := &self.dbg_lines[k]
+		lo mut := 0
+		hi mut := ls.len()
+		while hi - lo > 1 {
+			mid := (lo + hi) / 2
+			if ls[mid] <= off {
+				lo = mid
+			} else {
+				hi = mid
+			}
+		}
+		return (k as i64, lo + 1, off - ls[lo] + 1)
 	}
 
 	fun new_block(&mut self) u32 {
@@ -1011,6 +1043,14 @@ impl Cg {
 		self.ensure_open()
 		self.fb.push("  ")
 		self.fb.push(&text)
+		if self.dbg_fn >= 0 {
+			(f, line, col) := self.line_of(self.span.start)
+			if f == self.dbg_fn {
+				self.fb.push(", !dbg !@L{line}.{col}")
+			} else {
+				self.fb.push(", !dbg !@L{self.dbg_fn_line}.1")
+			}
+		}
 		self.fb.push("\n")
 	}
 
@@ -1649,6 +1689,11 @@ impl Cg {
 		self.preempt = None
 		self.intr_substs = HashMap::new()
 		self.begin_fn()
+		if self.checked {
+			(f, line, _) := self.line_of(self.body.span.start)
+			self.dbg_fn = f
+			self.dbg_fn_line = line
+		}
 		self.translate(abi)
 		if self.checked {
 			self.end_fn("define internal void @{name}({ptr_params(nparams)})")
@@ -5915,6 +5960,10 @@ impl Cg {
 			cur_block: 0,
 			fb: string::new(),
 			allocas: string::new(),
+			dbg_files: Vec::new(),
+			dbg_lines: Vec::new(),
+			dbg_fn: -1,
+			dbg_fn_line: 0,
 			frame: 0,
 			nv: 0,
 			nb: 0,
@@ -5924,7 +5973,7 @@ impl Cg {
 }
 
 // Compiles a type-checked program to LLVM IR text, or returns its errors.
-pub fun compile(c Checker, checked bool, lowered Vec<(usize, Vec<Body>)>) result<Module, Vec<(string, Span)>> {
+pub fun compile(c Checker, checked bool, lowered Vec<(usize, Vec<Body>)>, files Vec<(string, string)>) result<Module, Vec<(string, Span)>> {
 	main_idx mut := None
 	for i in 0..c.r.fns.len() {
 		f := &c.r.fns[i]
@@ -5937,6 +5986,20 @@ pub fun compile(c Checker, checked bool, lowered Vec<(usize, Vec<Body>)>) result
 		None => return Err(one(("no `main` function to build".to_string(), Span { start: 0, end: 0 }))),
 	}
 	cg mut := Cg::new(c, checked)
+	if checked {
+		for (path, text) in &files {
+			cg.dbg_files.push(path.clone())
+			ls mut := Vec::new()
+			ls.push(0)
+			b := text.as_bytes()
+			for i in 0..b.len() {
+				if b[i] == 10u8 {
+					ls.push(i + 1)
+				}
+			}
+			cg.dbg_lines.push(ls)
+		}
+	}
 	for (i, b) in lowered {
 		cg.bodies.insert(i, b)
 	}
@@ -5980,7 +6043,7 @@ pub fun compile(c Checker, checked bool, lowered Vec<(usize, Vec<Body>)>) result
 		}
 		return Err(errs)
 	}
-	return Ok(Module { decls: cg.decls, globals: cg.globals, funcs: cg.funcs })
+	return Ok(Module { decls: cg.decls, globals: cg.globals, funcs: cg.funcs, files: cg.dbg_files })
 }
 
 // A compiled program: runtime and intrinsic declarations, global data, and
@@ -5989,6 +6052,118 @@ pub struct Module {
 	decls string,
 	globals string,
 	funcs Vec<string>,
+	// The user's files, for debug info.
+	files Vec<string>,
+}
+
+fun digits(s &str) usize {
+	v mut := 0
+	for b in s.as_bytes() {
+		v = v * 10 + (*b - 48u8) as usize
+	}
+	return v
+}
+
+fun md_escape(s &str) string {
+	o mut := string::new()
+	for c in s.chars() {
+		if c == '"' || c == '\\' {
+			o.push("\\{hex2(c as u32)}")
+		} else {
+			o.push_char(c)
+		}
+	}
+	return o
+}
+
+fun hex2(v u32) string {
+	d := "0123456789ABCDEF".as_bytes()
+	o mut := string::new()
+	o.push_char(d[((v >> 4) & 15) as usize] as char)
+	o.push_char(d[(v & 15) as usize] as char)
+	return o
+}
+
+// Replaces the debug-info placeholders in a module's text (`!@S<file>.<line>`
+// on a define line, `!@L<line>.<col>` on its instructions) with numbered
+// metadata, and adds the compile unit and module flags.
+fun number_debug(text string, files &[string]) string {
+	if text.find("!@S").is_none() {
+		return text
+	}
+	o mut := string::new()
+	md mut := string::new()
+	// !0 compile unit, !1 empty subroutine type, !2.. files.
+	next mut := 2 + files.len()
+	sp mut := 0
+	let mut locs HashMap<string, usize> = HashMap::new()
+	for line in text.split("\n") {
+		if line.starts_with("define ") {
+			locs = HashMap::new()
+			if let Some(i) = line.find(" !dbg !@S") {
+				rest := &line[i + 9..]
+				end := match rest.find(" ") {
+					Some(e) => e,
+					None => rest.len(),
+				}
+				spec := &rest[..end]
+				dot := spec.find(".").unwrap()
+				f := digits(&spec[..dot])
+				ln := digits(&spec[dot + 1..])
+				sp = next
+				next += 1
+				name := symbol_of(line)
+				md.push("!{sp} = distinct !DISubprogram(name: \"{name}\", scope: !{2 + f}, file: !{2 + f}, line: {ln}, type: !1, scopeLine: {ln}, spFlags: DISPFlagDefinition, unit: !0)\n")
+				o.push(&line[..i])
+				o.push(" !dbg !{sp}")
+				o.push(&rest[end..])
+				o.push("\n")
+				continue
+			}
+		}
+		if let Some(i) = line.find(", !dbg !@L") {
+			key := line[i + 10..].to_string()
+			id := match locs.get(&key) {
+				Some(id) => *id,
+				None => {
+					dot := key.find(".").unwrap()
+					id := next
+					next += 1
+					md.push("!{id} = !DILocation(line: {&key[..dot]}, column: {&key[dot + 1..]}, scope: !{sp})\n")
+					locs.insert(key.clone(), id)
+					id
+				},
+			}
+			o.push(&line[..i])
+			o.push(", !dbg !{id}\n")
+			continue
+		}
+		o.push(line)
+		o.push("\n")
+	}
+	o.push("\n!llvm.dbg.cu = !{{!0}}\n!llvm.module.flags = !{{!{next}, !{next + 1}}}\n")
+	o.push("!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !2, producer: \"kilnc\", isOptimized: false, runtimeVersion: 0, emissionKind: LineTablesOnly)\n")
+	o.push("!1 = !DISubroutineType(types: !{{}})\n")
+	for (k, f) in files.iter().enumerate() {
+		slash mut := -1
+		fb := f.as_bytes()
+		for j in 0..fb.len() {
+			if fb[j] == 47u8 {
+				slash = j as i64
+			}
+		}
+		dir mut := ".".to_string()
+		base mut := f.clone()
+		if slash >= 0 {
+			dir = f[..slash as usize].to_string()
+			base = f[slash as usize + 1..].to_string()
+		}
+		o.push("!{2 + k} = !DIFile(filename: \"{md_escape(&base)}\", directory: \"{md_escape(&dir)}\")\n")
+	}
+	o.push(&md)
+	o.push("!{next} = !{{i32 7, !\"Dwarf Version\", i32 5}}\n")
+	o.push("!{next + 1} = !{{i32 2, !\"Debug Info Version\", i32 3}}\n")
+	return o
 }
 
 const HEADER &str = "; generated by kilnc\nsource_filename = \"kiln\"\n"
@@ -6018,7 +6193,7 @@ impl Module {
 		for f in &self.funcs {
 			o.push(f)
 		}
-		return o
+		return number_debug(o, &self.files)
 	}
 
 	// The program split into `n` modules that can be compiled in parallel:
@@ -6126,7 +6301,7 @@ impl Module {
 					o.push(f)
 				}
 			}
-			out.push(o)
+			out.push(number_debug(o, &self.files))
 		}
 		return out
 	}
