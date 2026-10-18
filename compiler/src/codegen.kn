@@ -730,6 +730,46 @@ impl Cg {
 		return o
 	}
 
+	// Whether a value of type `t` is never written through a shared
+	// reference (no interior mutability in its own bytes): atomics and
+	// `Once` update their fields through `&self`; whatever sits behind a
+	// pointer is outside the value. As in crates/kiln_codegen.
+	fun is_freeze(&mut self, t &Ty, depth u32) bool {
+		if depth > 16 {
+			return false
+		}
+		match t {
+			Ty::Prim(_) | Ty::Ref(_, _) | Ty::Ptr(_, _) | Ty::Fn(_, _, _) | Ty::ChanSend(_) | Ty::ChanRecv(_) => return true,
+			Ty::Tuple(ts) => {
+				for x in ts {
+					if !self.is_freeze(x, depth + 1) {
+						return false
+					}
+				}
+				return true
+			}
+			Ty::Array(x, _) | Ty::Slice(x) => return self.is_freeze(x, depth + 1),
+			Ty::Adt(d, _) => {
+				if self.is_lang(t, "string") || self.is_lang(t, "Vec") || self.is_lang(t, "Box") || self.is_lang(t, "Range") {
+					return true
+				}
+				name := self.c.r.def(*d).name.clone()
+				if name.starts_with("Atomic") || name == "Once" {
+					return false
+				}
+				for v in self.variants_of(t) {
+					for (_, ft) in self.c.adt_fields(t, v) {
+						if !self.is_freeze(&ft, depth + 1) {
+							return false
+						}
+					}
+				}
+				return true
+			}
+			_ => return false,
+		}
+	}
+
 	// Whether dropping a `t` runs any code.
 	fun needs_drop(&mut self, t &Ty) bool {
 		key := ty_key(t)
@@ -1647,12 +1687,16 @@ impl Cg {
 				sizes[k] = l.size
 				match &t {
 					Ty::Ref(m, inner) => {
-						if !self.is_unsized(inner) {
+						if self.is_unsized(inner) && l.size == 16 {
+							// `&str`, `&[T]`, `&dyn T`: (data, metadata) in two registers.
+							vtys[k] = "fat".to_string()
+						} else if !self.is_unsized(inner) {
 							vtys[k] = "ptr".to_string()
 							il := self.layout(inner)
 							deref := if il.size > 0 { " dereferenceable({il.size})" } else { string::new() }
 							// `&mut T` is unique for the call, as in rustc.
-							vattrs[k] = if *m { " noalias nonnull{deref}" } else { " nonnull{deref}" }
+							// `&T` of a freeze type: nothing writes the target during the call.
+							vattrs[k] = if *m || self.is_freeze(inner, 0) { " noalias nonnull{deref}" } else { " nonnull{deref}" }
 						}
 					},
 					Ty::Ptr(_, _) => vtys[k] = "ptr".to_string(),
@@ -1666,7 +1710,7 @@ impl Cg {
 		any_val mut := false
 		for i in 0..nparams {
 			sz := sizes[i]
-			v := sz == 1 || sz == 2 || sz == 4 || sz == 8
+			v := sz == 1 || sz == 2 || sz == 4 || sz == 8 || vtys[i] == "fat"
 			by_val.push(v)
 			if v {
 				any_val = true
@@ -1679,8 +1723,14 @@ impl Cg {
 			}
 			ps.push("ptr{attrs[i]} %p{i}")
 		}
+		// Small bodies are worth inlining (the Rust backend's rule).
+		stmts mut := 0
+		for blk in &self.body.blocks {
+			stmts += blk.stmts.len() + 1
+		}
+		fattr := if stmts <= 12 { " nounwind inlinehint" } else { " nounwind" }
 		if !promote && !any_val {
-			self.end_fn("define internal void @{name}({ps}) nounwind")
+			self.end_fn("define internal void @{name}({ps}){fattr}")
 			return
 		}
 		rt := if promote { int_of_bits(ret_size * 8) } else { "void".to_string() }
@@ -1697,6 +1747,11 @@ impl Cg {
 			if i == 0 && promote {
 				ps_v.push("ptr %p0.unused")
 				args.push("ptr %p0")
+			} else if by_val[i] && vtys[i] == "fat" {
+				ps_v.push("ptr %a{i}, i64 %m{i}")
+				self.allocas.push("  %p{i} = alloca [16 x i8], align 8\n  store ptr %a{i}, ptr %p{i}, align 8\n  %p{i}.m = getelementptr inbounds i8, ptr %p{i}, i64 8\n  store i64 %m{i}, ptr %p{i}.m, align 8\n")
+				wpre.push("  %w{i} = load ptr, ptr %p{i}, align 1\n  %w{i}.a = getelementptr inbounds i8, ptr %p{i}, i64 8\n  %w{i}.m = load i64, ptr %w{i}.a, align 1\n")
+				args.push("ptr %w{i}, i64 %w{i}.m")
 			} else if by_val[i] {
 				it := if vtys[i].len() > 0 { vtys[i].clone() } else { int_of_bits(sizes[i] * 8) }
 				ps_v.push("{it}{vattrs[i]} %a{i}")
@@ -1721,7 +1776,7 @@ impl Cg {
 		} else {
 			w.push("  call void @{name}.v({args})\n  ret void\n}}\n\n")
 		}
-		self.end_fn("define internal {rt} @{name}.v({ps_v}) nounwind")
+		self.end_fn("define internal {rt} @{name}.v({ps_v}){fattr}")
 		self.funcs.push(w)
 	}
 
