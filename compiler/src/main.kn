@@ -26,6 +26,7 @@ mod lower
 mod codegen
 
 import std::fs
+import std::hash::Hasher
 import std::os
 import std::time::Instant
 import ast::{Item, ItemKind}
@@ -140,6 +141,7 @@ fun dump_derive(src &str) string {
 // base `k << 32`.
 struct Loader {
 	files Vec<string>,
+	texts Vec<string>,
 	errors Vec<string>,
 	next usize,
 }
@@ -148,6 +150,7 @@ impl Loader {
 	fun parse_file(&mut self, path &str, text &str) Vec<Item> {
 		base := self.files.len() << 32
 		self.files.push(path.to_string())
+		self.texts.push(text.to_string())
 		p := resolve::parse_at(text, base, &mut self.next)
 		for e in &p.errors {
 			self.errors.push("{path}: parse error at {e.start - base}..{e.end - base}: {e.message}")
@@ -215,20 +218,91 @@ fun pass_done(tp bool, t &mut Instant, name &str) {
 	*t = Instant::now()
 }
 
-fun emit_llvm(path &str, dir &str, release bool, tp bool) result<codegen::Module, string> {
+// Borrow-check cache keys, one per function (0: not cached). A key covers
+// the function's body text and the program's interface: every source file
+// with the function bodies cut out, the std text, and the kilnc binary. A
+// body edit therefore re-checks only that function; any change outside
+// bodies (a signature, a type, a const) re-checks everything.
+fun bck_keys(r &resolve::Resolved, texts &Vec<string>, builtin &str) Vec<u64> {
+	// Body spans per file, in order.
+	spans mut := Vec::new()
+	for _ in texts {
+		spans.push(Vec::new())
+	}
+	for f in &r.fns {
+		if f.is_prelude {
+			continue
+		}
+		if let Some(b) = &f.decl.body {
+			if b.span.start < resolve::BUILTIN_BASE {
+				k := b.span.start >> 32
+				if k < spans.len() {
+					spans[k].push((b.span.start & 0xffffffff, b.span.end & 0xffffffff))
+				}
+			}
+		}
+	}
+	h mut := Hasher::with_seed(0x6b696c6e63)
+	h.write(builtin.as_bytes())
+	if let Ok(exe) = fs::read("/proc/self/exe") {
+		h.write(&exe)
+	}
+	for k in 0..texts.len() {
+		sp mut := spans[k].clone()
+		sp.sort()
+		t := texts[k].as_bytes()
+		at mut := 0
+		for (a, b) in &sp {
+			if *a >= at && *b <= t.len() {
+				h.write(&t[at..*a])
+				h.write_u64(0xb0d1)
+				at = *b
+			}
+		}
+		h.write(&t[at..])
+		h.write_u64(0xf11e)
+	}
+	iface := h.finish()
+	keys mut := Vec::new()
+	for i in 0..r.fns.len() {
+		f := &r.fns[i]
+		key mut := 0 as u64
+		if !f.is_prelude {
+			if let Some(b) = &f.decl.body {
+				k := b.span.start >> 32
+				if b.span.start < resolve::BUILTIN_BASE && k < texts.len() {
+					t := texts[k].as_bytes()
+					a := b.span.start & 0xffffffff
+					e := b.span.end & 0xffffffff
+					if a <= e && e <= t.len() {
+						fh mut := Hasher::with_seed(iface)
+						fh.write_u64(i as u64)
+						fh.write(&t[a..e])
+						key = fh.finish() | 1
+					}
+				}
+			}
+		}
+		keys.push(key)
+	}
+	return keys
+}
+
+fun emit_llvm(path &str, dir &str, release bool, tp bool, cache &str) result<codegen::Module, string> {
 	t mut := Instant::now()
 	text := match fs::read_to_string(path) {
 		Ok(s) => s,
 		Err(e) => return Err("error: cannot read {path}: {e}\n"),
 	}
-	l mut := Loader { files: Vec::new(), errors: Vec::new(), next: derive::DERIVE_BASE }
+	l mut := Loader { files: Vec::new(), texts: Vec::new(), errors: Vec::new(), next: derive::DERIVE_BASE }
 	items mut := l.parse_file(path, &text)
 	l.expand(&mut items, &dir_of(path))
 	if l.errors.len() > 0 {
 		return Err("{l.errors[0]}\n")
 	}
 	user := ast::File { items: items }
-	pre := resolve::parse_at(&resolve::builtin_text(dir), resolve::BUILTIN_BASE, &mut l.next)
+	builtin := resolve::builtin_text(dir)
+	pre := resolve::parse_at(&builtin, resolve::BUILTIN_BASE, &mut l.next)
 	pass_done(tp, &mut t, "parse")
 	r := resolve::resolve(&user, &pre.file)
 	if r.errors.len() > 0 {
@@ -242,8 +316,9 @@ fun emit_llvm(path &str, dir &str, release bool, tp bool) result<codegen::Module
 		e := &c.errors[0]
 		return Err("type error at {e.span.start}..{e.span.end}: {e.message}")
 	}
+	keys := if cache.len() > 0 { bck_keys(&c.r, &l.texts, &builtin) } else { Vec::new() }
 	lowered mut := Vec::new()
-	ds := borrowck::check_keep(&mut c, &mut lowered)
+	ds := borrowck::check_cached(&mut c, &mut lowered, &keys, cache)
 	pass_done(tp, &mut t, "borrowck")
 	if ds.len() > 0 {
 		return Err("borrow error at {ds[0].span.start}..{ds[0].span.end}: {ds[0].message}")
@@ -308,8 +383,8 @@ fun sh_quote(s &str) string {
 // `kilnc --build <file.kn> -o <out>`. A debug build splits the program into
 // one LLVM module per job and compiles them at `-O0` in parallel; a release
 // build compiles it as one module at `-O2`. The IR goes next to `out`.
-fun build(path &str, out &str, dir &str, release bool, tp bool) {
-	m := match emit_llvm(path, dir, release, tp) {
+fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string>) {
+	m := match emit_llvm(path, dir, release, tp, "{out}.bck") {
 		Ok(m) => m,
 		Err(e) => {
 			eprint("{e}")
@@ -338,7 +413,16 @@ fun build(path &str, out &str, dir &str, release bool, tp bool) {
 		libs.push(" {sh_quote("{&rt[..dir_end]}libkiln_tls.a")} -lpthread -ldl -lrt -lutil -lgcc_s")
 	}
 	libs.push(" -lm -lpthread")
-	script mut := "set -e\n".to_string()
+	// `--c-source` files: compiled at -O2 and linked in (kilnc's own allocator).
+	cobjs mut := string::new()
+	ci mut := 0
+	for c in csrc {
+		co := "{out}.c{ci}.o"
+		cobjs.push("{sh_quote(&cc)} -O2 -w -c {sh_quote(c)} -o {sh_quote(&co)}\n")
+		libs = " {sh_quote(&co)}{libs}"
+		ci += 1
+	}
+	script mut := "set -e\n{cobjs}"
 	// Release: ThinLTO over parallel shards when lld is installed (cross-shard
 	// inlining is kept), else one module at -O2.
 	thin := release && match os::Command::new(&cc).arg("-print-prog-name=ld.lld").output() {
@@ -416,12 +500,16 @@ fun main() {
 			tp mut := false
 			out mut := "a.out".to_string()
 			file mut := string::new()
+			csrc mut := Vec::new()
 			j mut := 2
 			while j < args.len() {
 				if args[j] == "--release" {
 					release = true
 				} else if args[j] == "--time-passes" {
 					tp = true
+				} else if args[j] == "--c-source" && j + 1 < args.len() {
+					csrc.push(args[j + 1].clone())
+					j += 1
 				} else if args[j] == "-o" && j + 1 < args.len() {
 					out = args[j + 1].clone()
 					j += 1
@@ -430,10 +518,10 @@ fun main() {
 				}
 				j += 1
 			}
-			build(&file, &out, &dir, release, tp)
+			build(&file, &out, &dir, release, tp, &csrc)
 			return
 		}
-		match emit_llvm(&args[2], &dir, false, false) {
+		match emit_llvm(&args[2], &dir, false, false, "") {
 			Ok(m) => print("{m.single()}"),
 			Err(e) => {
 				eprint("{e}")

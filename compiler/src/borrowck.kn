@@ -5,6 +5,7 @@
 // (crates/kiln_borrowck/src/dump.rs); tests/borrowck_diff.rs compares them.
 
 import std::collections::{HashMap, HashSet}
+import std::fs
 import super::ast::*
 import super::derive
 import super::lower
@@ -1723,6 +1724,23 @@ pub fun check(c &mut Checker) Vec<BDiag> {
 
 // `check`, also handing back the lowered bodies (for code generation).
 pub fun check_keep(c &mut Checker, keep &mut Vec<(usize, Vec<mir::Body>)>) Vec<BDiag> {
+	return check_cached(c, keep, &Vec::new(), "")
+}
+
+// `check_keep` with a cache of functions that passed before: `keys[i]` is
+// function i's key (0: not cacheable) and `cache` the file of passing keys
+// (empty: no cache). Lowering still runs for every function (codegen needs
+// the bodies); only the dataflow checks are skipped.
+pub fun check_cached(c &mut Checker, keep &mut Vec<(usize, Vec<mir::Body>)>, keys &Vec<u64>, cache &str) Vec<BDiag> {
+	passed mut := HashSet::new()
+	if cache.len() > 0 {
+		if let Ok(t) = fs::read_to_string(cache) {
+			for line in t.lines() {
+				passed.insert(line.to_string())
+			}
+		}
+	}
+	ok mut := string::new()
 	errors mut := Vec::new()
 	check_items(&c.r, &mut errors)
 	for i in 0..c.r.fns.len() {
@@ -1741,6 +1759,13 @@ pub fun check_keep(c &mut Checker, keep &mut Vec<(usize, Vec<mir::Body>)>) Vec<B
 	}
 	lowered := lower::lower_all(c)
 	for (i, bodies) in &lowered {
+		key := if *i < keys.len() { keys[*i] } else { 0 as u64 }
+		ks := "{key}"
+		if key != 0 && passed.contains(&ks) {
+			ok.push("{ks}\n")
+			continue
+		}
+		nerr := errors.len()
 		bounds := match &c.results[*i] {
 			Some(res) => res.bounds.clone(),
 			None => Vec::new(),
@@ -1768,6 +1793,14 @@ pub fun check_keep(c &mut Checker, keep &mut Vec<(usize, Vec<mir::Body>)>) Vec<B
 			for e in ck.errors {
 				errors.push(e)
 			}
+		}
+		if key != 0 && errors.len() == nerr {
+			ok.push("{ks}\n")
+		}
+	}
+	if cache.len() > 0 {
+		// Best effort: a missing cache only costs time.
+		if let Err(_) = fs::write(cache, ok.as_bytes()) {
 		}
 	}
 	// Stable sort by start.
