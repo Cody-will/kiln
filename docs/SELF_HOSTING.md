@@ -21,8 +21,15 @@ compiler) until the Kiln one can build itself.
   points Rust's `{:?}` writes as `\u{..}`, so string and char payloads
   in the dump are escaped the same way.
 - `src/derive.kn`: derive expansion (port of `kiln_parser/src/derive.rs`).
+- `src/codegen.kn`: native code generation (port of `crates/kiln_codegen`),
+  writing LLVM IR text.
 - `src/main.kn`: the driver. `kilnc <file.kn>...` prints the canonical
   token dump; `kilnc --ast <file.kn>...` prints the canonical AST dump.
+  `kilnc --emit-llvm <file.kn>` prints a program's LLVM IR and
+  `kilnc --build [--release] <file.kn> -o <out>` compiles it to an
+  executable (see "Code generation and bootstrap" below). Both load
+  multi-file packages: `mod name` reads `name.kn` or `name/mod.kn`, as
+  `kiln_parser::package` does.
 
 Build it with `kiln build` in `compiler/`.
 
@@ -117,6 +124,40 @@ diagnostic with its span, notes and help; `crates/kiln_cli/tests/borrowck_diff.r
 checks that `kilnc --borrowck` prints the same thing for the same inputs as
 `mir_diff.rs`.
 
+## Code generation and bootstrap
+
+`compiler/src/codegen.kn` ports `kiln_codegen`'s Cranelift lowering one to
+one, but writes LLVM IR as text, which `clang` (version 15 or later, for
+opaque pointers) compiles and links with the runtime library. Every MIR
+local lives in an `alloca` slot and values move through memory; addresses
+are `i64` values, as in Cranelift IR, converted with `inttoptr` at each
+load and store. Kiln functions are `void @f(i64 ret, i64 args...)`
+(closures take an environment pointer after `ret`), the entry point is
+`@kn_main`, and the layouts, drop flags, panic frames, `defer`, preemption
+checks on loop back-edges, glue (drop, clone, eq, cmp, hash, debug),
+vtables and intrinsics follow the Rust backend. The release-only
+optimizations (register ABI, inlining, slot promotion, bounds-check
+elimination) and debug info are left out; clang runs with `-O1` (`-O2` for
+`--release`). Integer division, 128-bit arithmetic and casts use native
+LLVM instructions, like the Rust backend's LLVM path.
+
+`kilnc --build` needs `KILN_RT`, the path of `libkiln_rt.a` (write it with
+`kiln runtime --write <dir>`; `libkiln_tls.a` goes next to it and is linked
+when a program uses TLS), and `KILNC_RESOLVE_DIR` (the
+`crates/kiln_resolve` directory with the standard library sources).
+`KILN_CLANG` picks the compiler (default `clang`).
+
+`crates/kiln_cli/tests/codegen_diff.rs` builds every `tests/run/*.kn`
+program with `kilnc --build`, runs it, and compares stdout, stderr and the
+exit status with the `.out` file `kiln build` is held to (all 83 match). It
+skips itself when `clang` is missing.
+
+`make bootstrap` builds `kilnc` with the Rust `kiln` (stage 1), stage 1
+builds `compiler/` (stage 2), and stage 2 builds it again (stage 3). The
+target fails unless stage 2 and stage 3 are byte-identical, both the
+generated IR and the linked executable. Run it on a machine with `clang`
+and `make`; it takes about three minutes.
+
 ## Stages
 
 | Stage | Rust crate | Kiln | Status |
@@ -128,12 +169,11 @@ checks that `kilnc --borrowck` prints the same thing for the same inputs as
 | 4. Type checking | `kiln_typeck` | `compiler/src/typeck.kn`, `ty.kn` | ✅ ported; identical results and errors on 163 files and 127 unit-test snippets |
 | 5. MIR lowering | `kiln_mir` | `compiler/src/mir.kn`, `sig.kn`, `lower.kn` | ✅ ported; identical MIR on 163 files (116 that type-check) and the unit-test snippets |
 | 5b. Borrow checking | `kiln_borrowck` | `compiler/src/borrowck.kn` | ✅ ported; identical diagnostics on every `.kn` file and the unit-test snippets |
-| 6. Codegen | `kiln_codegen` | | ⬜. Emit C or LLVM IR text first (no Cranelift bindings from Kiln) |
-| 7. Bootstrap | | | ⬜ `kilnc` builds `kilnc`; the stage-2 binary must reproduce stage 1 |
+| 6. Codegen | `kiln_codegen` | `compiler/src/codegen.kn` | ✅ ported (LLVM IR text + clang); all 83 `tests/run` programs give the expected output |
+| 7. Bootstrap | | `make bootstrap` | ✅ `kilnc` builds `kilnc`; stage 2 and stage 3 are byte-identical |
 
-Until stage 6, the Kiln stages feed their output back to the Rust
-compiler through dumps only. Nothing in the Rust build depends on
-`compiler/`.
+The Rust compiler is still the reference and builds stage 1. Nothing in
+the Rust build depends on `compiler/`.
 
 ## Gaps the parser port hit
 

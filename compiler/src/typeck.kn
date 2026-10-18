@@ -5645,7 +5645,7 @@ impl Checker {
 							return Some((trait_fn, substs.clone()))
 						}
 						return None
-					}
+					},
 				}
 				(impl_own, _) := self.fn_generics(mi)
 				j mut := 0

@@ -408,7 +408,7 @@ impl Cg {
 				attr := if name == "_setjmp" { " returns_twice" } else { "" }
 				self.declare(name, "declare {r} @{name}({ptxt}){attr}")
 			}
-			None => {}
+			None => {},
 		}
 	}
 
@@ -600,7 +600,7 @@ impl Cg {
 				name := self.fmt_ty(t)
 				self.fatal("code generation does not support values of type `{name}` yet")
 				return lay(8, 8)
-			}
+			},
 		}
 	}
 
@@ -692,7 +692,7 @@ impl Cg {
 							return (offs[0], fields[0].1.clone())
 						}
 						return (0, Ty::Unit)
-					}
+					},
 				}
 			}
 			_ => return (0, Ty::Unit),
@@ -710,7 +710,7 @@ impl Cg {
 					return o
 				}
 			}
-			_ => {}
+			_ => {},
 		}
 		o.push(None)
 		return o
@@ -847,7 +847,7 @@ impl Cg {
 			_ => {
 				self.clone_glue.insert(key, name.clone())
 				self.queue.push(Work::Clone(name.clone(), t.clone()))
-			}
+			},
 		}
 		return name
 	}
@@ -1921,7 +1921,7 @@ impl Cg {
 				if *kind != SpawnKind::Scoped {
 					self.spawn(operands, *body)
 				}
-			}
+			},
 		}
 	}
 
@@ -1989,7 +1989,7 @@ impl Cg {
 			for x in &p.proj {
 				match x {
 					Proj::Deref(_) | Proj::Index(_) => has_deref = true,
-					_ => {}
+					_ => {},
 				}
 			}
 			if has_deref {
@@ -2090,7 +2090,7 @@ impl Cg {
 				self.term("switch i64 {id.n}, label %b{bad} [{cases} ]")
 				self.switch_to(bad)
 				self.trap()
-			}
+			},
 		}
 	}
 
@@ -2184,7 +2184,7 @@ impl Cg {
 					addr = self.iadd(&data, &off)
 					t = elem
 					meta = None
-				}
+				},
 			}
 		}
 		return (addr, meta)
@@ -2327,7 +2327,7 @@ impl Cg {
 				s := self.slot_for(&t)
 				self.store_const(c, &s)
 				return s
-			}
+			},
 		}
 	}
 
@@ -2444,7 +2444,7 @@ impl Cg {
 			Rvalue::Coerce(o, target) => {
 				tt := self.subst(target)
 				self.coerce(o, &tt, dest)
-			}
+			},
 		}
 	}
 
@@ -2539,7 +2539,7 @@ impl Cg {
 				code := self.func_addr(&id)
 				self.store(&code, dest, 0)
 				self.store(&env, dest, 8)
-			}
+			},
 		}
 	}
 
@@ -2626,7 +2626,7 @@ impl Cg {
 					return "{self.c.r.def(f.module).name}::{f.decl.name.name}"
 				}
 				return f.decl.name.name.clone()
-			}
+			},
 		}
 	}
 
@@ -2664,7 +2664,7 @@ impl Cg {
 							return self.resolve(i2, s3)
 						}
 					}
-					None => {}
+					None => {},
 				}
 				tn := self.fmt_ty(&self_ty)
 				name := self.c.r.fns[idx].decl.name.name.clone()
@@ -2806,7 +2806,7 @@ impl Cg {
 				None => {
 					tn := self.fmt_ty(t)
 					return self.error("runtime function `{name}` cannot return a `{tn}`")
-				}
+				},
 			},
 		}
 		self.declare(name, "declare {ret} @{name}({ptys})")
@@ -2958,7 +2958,7 @@ impl Cg {
 								None => self.fmt_into(dest, &a, &t),
 								Some(sp) => self.fmt_spec_into(dest, &a, &t, sp),
 							}
-						}
+						},
 					}
 				}
 			}
@@ -3027,7 +3027,7 @@ impl Cg {
 				None => {
 					n := self.fmt_ty(t)
 					return self.error("cannot format a value of type `{n}`: its trait does not have `Display` as a supertrait")
-				}
+				},
 			}
 			data := self.load("i64", addr, 0)
 			vt := self.load("i64", addr, 8)
@@ -3073,7 +3073,7 @@ impl Cg {
 					_ => {
 						n := self.fmt_ty(t)
 						self.error("cannot format a value of type `{n}`: implement `Display` (with `fun to_string(&self) string`)")
-					}
+					},
 				}
 			}
 			Ty::Prim(p) => {
@@ -3109,7 +3109,7 @@ impl Cg {
 			_ => {
 				n := self.fmt_ty(t)
 				self.error("code generation cannot format a value of type `{n}` yet")
-			}
+			},
 		}
 	}
 
@@ -3231,7 +3231,7 @@ impl Cg {
 				_ => {
 					c := self.call_rt("kn_str_cmp", &vec4(a, an, b, bn)).unwrap()
 					return Some(self.icmp_imm("s{Cg::op_name(op)}", &c, 0))
-				}
+				},
 			}
 		}
 		(a, t) := self.scalar_through_refs(l)
@@ -3270,7 +3270,7 @@ impl Cg {
 					c := self.cmp_at(&pa, &pb, &tt)
 					return Some(self.icmp_imm("s{Cg::op_name(op)}", &c, 0))
 				}
-				_ => {}
+				_ => {},
 			}
 			n := self.fmt_ty(&t)
 			self.error("code generation does not support comparing or combining values of type `{n}` yet")
@@ -3300,7 +3300,7 @@ impl Cg {
 				_ => {
 					self.error("invalid float operation".to_string())
 					return None
-				}
+				},
 			}
 		}
 		signed := is_signed(&t)
@@ -3424,7 +3424,7 @@ impl Cg {
 				})
 				up := val(if spec.kind == "UpperExp" { "1".to_string() } else { "0".to_string() }, "i32")
 				self.call_rt("kn_fmt_f64_exp", &vec4(tmp.clone(), v, p, up))
-			}
+			},
 		}
 		self.fmt_pad(s, &tmp, spec, numeric, false)
 	}
@@ -3591,7 +3591,7 @@ impl Cg {
 				self.call_rt("kn_chan_drop_end", &vec2(h, s))
 				return
 			}
-			_ => {}
+			_ => {},
 		}
 		if self.is_lang(t, "Task") {
 			h := self.load("i64", p, 0)
@@ -3666,7 +3666,7 @@ impl Cg {
 					}
 				}
 			}
-			_ => {}
+			_ => {},
 		}
 	}
 
@@ -3729,7 +3729,7 @@ impl Cg {
 					return self.eq_into(&pa, &pb, inner, res)
 				}
 			}
-			_ => {}
+			_ => {},
 		}
 		if Cg::is_float_ty2(t) {
 			st := self.scalar(t).unwrap()
@@ -3801,7 +3801,7 @@ impl Cg {
 			_ => {
 				n := self.fmt_ty(t)
 				self.error("cannot compare values of type `{n}`")
-			}
+			},
 		}
 	}
 
@@ -3925,7 +3925,7 @@ impl Cg {
 			_ => {
 				l := self.layout(t)
 				self.copy(dst, src, l.size)
-			}
+			},
 		}
 	}
 
@@ -4123,7 +4123,7 @@ impl Cg {
 					return self.cmp_now(&pa, &pb, inner, res)
 				}
 			}
-			_ => {}
+			_ => {},
 		}
 		if Cg::is_float_ty2(t) {
 			st := self.scalar(t).unwrap()
@@ -4180,7 +4180,7 @@ impl Cg {
 			_ => {
 				n := self.fmt_ty(t)
 				self.error("cannot order values of type `{n}`")
-			}
+			},
 		}
 	}
 
@@ -4266,7 +4266,7 @@ impl Cg {
 					return self.hash_into(&p, inner, h)
 				}
 			}
-			_ => {}
+			_ => {},
 		}
 		if Cg::is_float_ty2(t) {
 			st := self.scalar(t).unwrap()
@@ -4323,7 +4323,7 @@ impl Cg {
 			_ => {
 				n := self.fmt_ty(t)
 				self.error("cannot hash values of type `{n}`")
-			}
+			},
 		}
 	}
 
@@ -4434,7 +4434,7 @@ impl Cg {
 					return self.debug_into(f, &p, inner)
 				}
 			}
-			_ => {}
+			_ => {},
 		}
 		if is_prim(t, "Char") {
 			v := self.load("i32", a, 0)
@@ -4500,7 +4500,7 @@ impl Cg {
 			_ => {
 				n := self.fmt_ty(t)
 				self.error("cannot Debug-format values of type `{n}`")
-			}
+			},
 		}
 	}
 
@@ -4599,7 +4599,7 @@ impl Cg {
 						self.error("no implementation of `{fname}` in the vtable for {cn}")
 					}
 					words.push("i64 0".to_string())
-				}
+				},
 			}
 		}
 		body mut := string::new()
@@ -5016,7 +5016,7 @@ impl Cg {
 					return
 				}
 			}
-			_ => {}
+			_ => {},
 		}
 		if self.mem_intrinsic(name, args, dest, dt) {
 			return
@@ -5457,7 +5457,7 @@ impl Cg {
 					_ => {
 						p := self.load("i64", &a, 0)
 						self.load("i64", &p, 16)
-					}
+					},
 				},
 				_ => self.load("i64", &a, 16),
 			}
@@ -5605,7 +5605,7 @@ impl Cg {
 				self.store(&r, dest, off0 as i64)
 				self.store(&o, dest, off1 as i64)
 				return true
-			}
+			},
 		}
 		self.store(&v, dest, 0)
 		return true

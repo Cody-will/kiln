@@ -96,7 +96,9 @@ fn kilnc_programs_match_expected_output() {
         }
         let want = std::fs::read_to_string(src.with_extension("out")).unwrap();
         if out != want {
-            failures.push(format!("{stem}: output differs:\n--- got\n{out}--- want\n{want}"));
+            failures.push(format!(
+                "{stem}: output differs:\n--- got\n{out}--- want\n{want}"
+            ));
         }
     }
     let _ = std::fs::remove_dir_all(&dir);

@@ -181,7 +181,7 @@ impl Loader {
 				Err(e) => {
 					self.errors.push("cannot read `{path}`: {e}")
 					continue
-				}
+				},
 			}
 			sub mut := self.parse_file(&path, &text)
 			self.expand(&mut sub, "{dir}/{name}")
@@ -240,7 +240,7 @@ fun emit_llvm(path &str, dir &str, release bool) result<string, string> {
 				o.push("error at {s.start}..{s.end}: {m}\n")
 			}
 			return Err(o)
-		}
+		},
 	}
 }
 
@@ -251,7 +251,7 @@ fun build(path &str, out &str, dir &str, release bool) {
 		Err(e) => {
 			eprint("{e}")
 			os::exit(1)
-		}
+		},
 	}
 	ll := "{out}.ll"
 	if let Err(e) = fs::write(&ll, ir.as_bytes()) {
@@ -263,7 +263,7 @@ fun build(path &str, out &str, dir &str, release bool) {
 		None => {
 			eprintln("error: set KILN_RT to the path of libkiln_rt.a")
 			os::exit(1)
-		}
+		},
 	}
 	cc := match os::getenv("KILN_CLANG") {
 		Some(c) => c,
@@ -291,7 +291,7 @@ fun build(path &str, out &str, dir &str, release bool) {
 		Err(e) => {
 			eprintln("error: cannot run {cc}: {e}")
 			os::exit(1)
-		}
+		},
 	}
 }
 
@@ -330,7 +330,7 @@ fun main() {
 			Err(e) => {
 				eprint("{e}")
 				os::exit(1)
-			}
+			},
 		}
 		return
 	}
