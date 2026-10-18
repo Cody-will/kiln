@@ -3,7 +3,7 @@
 against Go and Rust on equivalent programs. Writes results.json and
 prints a Markdown table (see COMPILE.md).
 
-usage: python3 bench/compile/run.py [--runs N] [--only hello,mid,big]
+usage: python3 bench/compile/run.py [--runs N] [--only hello,mid,big] [--compilers SUBSTRING]
 
 Programs:
   hello  hello world
@@ -70,9 +70,12 @@ def setup():
     subprocess.run([sys.executable, f"{HERE}/gen.py", f"{WORK}/big", "50", "40"], check=True)
     # A Go build cache holding only the standard library: copied fresh for
     # each clean Go build.
+    # (built from a separate program, so none of the measured packages are in it).
     env = dict(os.environ, GOCACHE=f"{WORK}/gocache-std")
-    subprocess.run(["go", "build", "-o", f"{WORK}/x", "."], cwd=f"{WORK}/mid/go", env=env, check=True)
-    subprocess.run(["go", "build", "-o", f"{WORK}/x", "."], cwd=f"{WORK}/hello/go", env=env, check=True)
+    write(f"{WORK}/warm/main.go", 'package main\n\nimport (\n\t"encoding/json"\n\t"fmt"\n)\n\n'
+          'func main() {\n\tb, _ := json.Marshal([]int{1})\n\tfmt.Println(string(b))\n}\n')
+    write(f"{WORK}/warm/go.mod", "module warm\n\ngo 1.22\n")
+    subprocess.run(["go", "build", "-o", f"{WORK}/x", "."], cwd=f"{WORK}/warm", env=env, check=True)
     # Cargo dependencies built once, in both profiles.
     for prof in [[], ["--release"]]:
         subprocess.run(["cargo", "build", "-q"] + prof, cwd=f"{WORK}/mid/rs", check=True)
@@ -99,6 +102,9 @@ def compilers(prog):
         return f
 
     def go_clean():
+        # `go build -o` skips linking when the output is already up to date.
+        if os.path.exists(f"{out}-go"):
+            os.remove(f"{out}-go")
         shutil.rmtree(f"{WORK}/gocache", ignore_errors=True)
         shutil.copytree(f"{WORK}/gocache-std", f"{WORK}/gocache")
 
@@ -147,10 +153,18 @@ def main():
         runs = int(args[args.index("--runs") + 1])
     if "--only" in args:
         only = args[args.index("--only") + 1].split(",")
+    pick = None
+    if "--compilers" in args:
+        pick = args[args.index("--compilers") + 1]
+    old = {}
+    if pick and os.path.exists(f"{HERE}/results.json"):
+        old = json.load(open(f"{HERE}/results.json"))
     setup()
-    results = {}
+    results = old
     for prog in only:
         for label, lang, clean, cmd, cwd in compilers(prog):
+            if pick and pick not in label:
+                continue
             cl, inc = [], []
             for _ in range(runs):
                 clean()

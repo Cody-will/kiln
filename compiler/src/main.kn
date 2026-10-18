@@ -339,20 +339,27 @@ fun build(path &str, out &str, dir &str, release bool, tp bool) {
 	}
 	libs.push(" -lm -lpthread")
 	script mut := "set -e\n".to_string()
-	if release {
+	// Release: ThinLTO over parallel shards when lld is installed (cross-shard
+	// inlining is kept), else one module at -O2.
+	thin := release && match os::Command::new(&cc).arg("-print-prog-name=ld.lld").output() {
+		Ok(o) => fs::is_file(o.stdout_text().trim()),
+		Err(_) => false,
+	}
+	if release && !thin {
 		ll := "{out}.ll"
 		write_file(&ll, &m.single())
 		script.push("{sh_quote(&cc)} -O2 -w {sh_quote(&ll)}{libs} -o {sh_quote(out)}\n")
 	} else {
 		// Several shards per job, so an edit recompiles little; a shard whose
 		// IR is unchanged since the last build keeps its object.
+		(opt, ext) := if thin { ("-O2 -flto=thin", "bc") } else { ("-O0", "o") }
 		n0 := jobs() * 4
 		n := if m.funcs.len() / 64 + 1 < n0 { m.funcs.len() / 64 + 1 } else { n0 }
 		objs mut := string::new()
 		running mut := Vec::new()
 		for (k, text) in m.shards(n).iter().enumerate() {
 			ll := "{out}.{k}.ll"
-			o := "{out}.{k}.o"
+			o := "{out}.{k}.{ext}"
 			objs.push(" {sh_quote(&o)}")
 			same := match fs::read_to_string(&ll) {
 				Ok(old) => old == *text && fs::is_file(&o),
@@ -364,7 +371,7 @@ fun build(path &str, out &str, dir &str, release bool, tp bool) {
 			// Remove a stale object first, so a failed build can't reuse it.
 			script.push("rm -f {sh_quote(&o)}\n")
 			write_file(&ll, text)
-			script.push("{sh_quote(&cc)} -O0 -w -c {sh_quote(&ll)} -o {sh_quote(&o)} & p{k}=$!\n")
+			script.push("{sh_quote(&cc)} {opt} -w -c {sh_quote(&ll)} -o {sh_quote(&o)} & p{k}=$!\n")
 			running.push(k)
 			if running.len() >= jobs() {
 				for r in &running {
@@ -376,7 +383,8 @@ fun build(path &str, out &str, dir &str, release bool, tp bool) {
 		for r in &running {
 			script.push("wait $p{r}\n")
 		}
-		script.push("{sh_quote(&cc)}{objs}{libs} -o {sh_quote(out)}\n")
+		lto := if thin { " -O2 -flto=thin -fuse-ld=lld -Wl,--thinlto-jobs={jobs()}" } else { string::new() }
+		script.push("{sh_quote(&cc)}{lto}{objs}{libs} -o {sh_quote(out)}\n")
 	}
 	sh_path := "{out}.build.sh"
 	write_file(&sh_path, &script)

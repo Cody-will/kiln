@@ -221,3 +221,6 @@ the Rust build depends on `compiler/`.
   differently. *Fixed:* `char::is_alphabetic`/`is_alphanumeric` now use
   generated UCD tables and match Rust on every code point
   (`tests/run/unicode_alphabetic.kn`).
+
+## Build pipeline performance
+Debug builds split the IR into hidden-linkage shards, compiled with `clang -O0` in parallel. Unchanged shards are reused. Release builds use ThinLTO shards plus lld when available, and fall back to one `-O2` module. Std bodies are type-checked lazily. Use `--time-passes` for a per-pass breakdown, and set `KILNC_JOBS` to control parallelism. See bench/COMPILE.md.

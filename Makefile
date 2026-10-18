@@ -21,6 +21,7 @@ KILN := target/debug/kiln
 bootstrap:
 	cargo build -p kiln_cli
 	cd compiler && KILN_RUN_FLAGS= ../$(KILN) build
+	rm -rf $(BOOT)
 	mkdir -p $(BOOT)
 	cp compiler/target/debug/kilnc $(BOOT)/stage1
 	$(KILN) runtime --write $(BOOT)/rt
@@ -28,7 +29,7 @@ bootstrap:
 		$(BOOT)/stage1 --build compiler/src/main.kn -o $(BOOT)/stage2
 	KILN_RT=$(BOOT)/rt/libkiln_rt.a KILNC_RESOLVE_DIR=crates/kiln_resolve \
 		$(BOOT)/stage2 --build compiler/src/main.kn -o $(BOOT)/stage3
-	cmp $(BOOT)/stage2.ll $(BOOT)/stage3.ll
+	cd $(BOOT) && for f in stage2.*.ll; do cmp $$f stage3.$${f#stage2.}; done
 	cmp $(BOOT)/stage2 $(BOOT)/stage3
 	@echo "bootstrap OK: stage2 and stage3 are identical"
 

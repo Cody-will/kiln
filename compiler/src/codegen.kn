@@ -5785,9 +5785,16 @@ impl Module {
 				continue
 			}
 			name := symbol_of(line)
-			def mut := line.replace("= private ", "= hidden ")
-			def = def.replace("= internal ", "= hidden ")
-			gdefs.push(&def)
+			// Only the linkage right after the name changes.
+			head := "@{name} = "
+			rest := &line[head.len()..]
+			if rest.starts_with("private ") {
+				gdefs.push("{head}hidden {&rest[8..]}")
+			} else if rest.starts_with("internal ") {
+				gdefs.push("{head}hidden {&rest[9..]}")
+			} else {
+				gdefs.push(line)
+			}
 			gdefs.push("\n")
 			lb := match line.find("[") {
 				Some(x) => x,
