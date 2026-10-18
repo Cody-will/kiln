@@ -10,3 +10,26 @@ uninstall:
 	./install.sh --prefix "$(PREFIX)" --uninstall
 
 .PHONY: install uninstall
+
+# make bootstrap   build the self-hosted compiler with itself (needs clang)
+#   stage1: compiler/ built by the Rust `kiln`
+#   stage2: compiler/ built by stage1 (kilnc --build: LLVM IR, then clang)
+#   stage3: compiler/ built by stage2; must be identical to stage2
+BOOT := target/bootstrap
+KILN := target/debug/kiln
+
+bootstrap:
+	cargo build -p kiln_cli
+	cd compiler && KILN_RUN_FLAGS= ../$(KILN) build
+	mkdir -p $(BOOT)
+	cp compiler/target/debug/kilnc $(BOOT)/stage1
+	$(KILN) runtime --write $(BOOT)/rt
+	KILN_RT=$(BOOT)/rt/libkiln_rt.a KILNC_RESOLVE_DIR=crates/kiln_resolve \
+		$(BOOT)/stage1 --build compiler/src/main.kn -o $(BOOT)/stage2
+	KILN_RT=$(BOOT)/rt/libkiln_rt.a KILNC_RESOLVE_DIR=crates/kiln_resolve \
+		$(BOOT)/stage2 --build compiler/src/main.kn -o $(BOOT)/stage3
+	cmp $(BOOT)/stage2.ll $(BOOT)/stage3.ll
+	cmp $(BOOT)/stage2 $(BOOT)/stage3
+	@echo "bootstrap OK: stage2 and stage3 are identical"
+
+.PHONY: bootstrap

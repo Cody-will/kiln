@@ -27,6 +27,7 @@ mod codegen
 
 import std::fs
 import std::os
+import ast::{Item, ItemKind}
 import token::{StrPart, TokenKind}
 
 fun esc(b &[u8]) string {
@@ -132,16 +133,92 @@ fun dump_derive(src &str) string {
 	return o
 }
 
-// Front end plus code generation: the program's LLVM IR, or its errors.
-fun emit_llvm(src &str, dir &str, release bool) result<string, string> {
-	next mut := derive::DERIVE_BASE
-	user := resolve::parse_at(src, 0, &mut next)
-	if user.errors.len() > 0 {
-		e := &user.errors[0]
-		return Err("parse error at {e.start}..{e.end}: {e.message}")
+// Loads a program made of several files (see crates/kiln_parser/src/package.rs):
+// `mod name` without a body, in a file whose child modules live in `dir`,
+// loads `dir/name.kn` or `dir/name/mod.kn`. The k-th file is parsed at span
+// base `k << 32`.
+struct Loader {
+	files Vec<string>,
+	errors Vec<string>,
+	next usize,
+}
+
+impl Loader {
+	fun parse_file(&mut self, path &str, text &str) Vec<Item> {
+		base := self.files.len() << 32
+		self.files.push(path.to_string())
+		p := resolve::parse_at(text, base, &mut self.next)
+		for e in &p.errors {
+			self.errors.push("{path}: parse error at {e.start - base}..{e.end - base}: {e.message}")
+		}
+		return p.file.items
 	}
-	pre := resolve::parse_at(&resolve::builtin_text(dir), resolve::BUILTIN_BASE, &mut next)
-	r := resolve::resolve(&user.file, &pre.file)
+
+	fun expand(&mut self, items &mut Vec<Item>, dir &str) {
+		for item in items.iter_mut() {
+			(name, has_body) := match &item.kind {
+				ItemKind::Mod { name, items: body } => (name.name.clone(), body.is_some()),
+				_ => continue,
+			}
+			if has_body {
+				if let ItemKind::Mod { name: _, items: Some(inner) } = &mut item.kind {
+					self.expand(inner, "{dir}/{name}")
+				}
+				continue
+			}
+			flat := "{dir}/{name}.kn"
+			nested := "{dir}/{name}/mod.kn"
+			path := if fs::is_file(&flat) {
+				flat
+			} else if fs::is_file(&nested) {
+				nested
+			} else {
+				self.errors.push("file not found for module `{name}`")
+				continue
+			}
+			text := match fs::read_to_string(&path) {
+				Ok(t) => t,
+				Err(e) => {
+					self.errors.push("cannot read `{path}`: {e}")
+					continue
+				}
+			}
+			sub mut := self.parse_file(&path, &text)
+			self.expand(&mut sub, "{dir}/{name}")
+			if let ItemKind::Mod { name: _, items: body } = &mut item.kind {
+				*body = Some(sub)
+			}
+		}
+	}
+}
+
+fun dir_of(path &str) string {
+	b := path.as_bytes()
+	i mut := b.len()
+	while i > 0 {
+		if b[i - 1] == 47 {
+			return path[..i - 1].to_string()
+		}
+		i -= 1
+	}
+	return ".".to_string()
+}
+
+// Front end plus code generation: the program's LLVM IR, or its errors.
+fun emit_llvm(path &str, dir &str, release bool) result<string, string> {
+	text := match fs::read_to_string(path) {
+		Ok(s) => s,
+		Err(e) => return Err("error: cannot read {path}: {e}\n"),
+	}
+	l mut := Loader { files: Vec::new(), errors: Vec::new(), next: derive::DERIVE_BASE }
+	items mut := l.parse_file(path, &text)
+	l.expand(&mut items, &dir_of(path))
+	if l.errors.len() > 0 {
+		return Err("{l.errors[0]}\n")
+	}
+	user := ast::File { items: items }
+	pre := resolve::parse_at(&resolve::builtin_text(dir), resolve::BUILTIN_BASE, &mut l.next)
+	r := resolve::resolve(&user, &pre.file)
 	if r.errors.len() > 0 {
 		e := &r.errors[0]
 		return Err("resolve error at {e.span.start}..{e.span.end}: {e.message}")
@@ -169,14 +246,7 @@ fun emit_llvm(src &str, dir &str, release bool) result<string, string> {
 
 // `kilnc --build <file.kn> -o <out>`: writes `<out>.ll` and links with clang.
 fun build(path &str, out &str, dir &str, release bool) {
-	src := match fs::read_to_string(path) {
-		Ok(s) => s,
-		Err(e) => {
-			eprintln("error: cannot read {path}: {e}")
-			os::exit(1)
-		}
-	}
-	ir := match emit_llvm(&src, dir, release) {
+	ir := match emit_llvm(path, dir, release) {
 		Ok(ir) => ir,
 		Err(e) => {
 			eprint("{e}")
@@ -255,14 +325,7 @@ fun main() {
 			build(&file, &out, &dir, release)
 			return
 		}
-		src := match fs::read_to_string(&args[2]) {
-			Ok(s) => s,
-			Err(e) => {
-				eprintln("error: cannot read {args[2]}: {e}")
-				os::exit(1)
-			}
-		}
-		match emit_llvm(&src, &dir, false) {
+		match emit_llvm(&args[2], &dir, false) {
 			Ok(ir) => print("{ir}"),
 			Err(e) => {
 				eprint("{e}")

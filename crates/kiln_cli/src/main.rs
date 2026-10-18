@@ -149,6 +149,20 @@ fn main() -> ExitCode {
             print!("{}", kiln_parser::dump::dump_expanded(&src));
             ExitCode::SUCCESS
         }
+        // The runtime libraries, for linking code from the self-hosted compiler.
+        [cmd, flag, dir] if cmd == "runtime" && flag == "--write" => {
+            let dir = std::path::Path::new(dir);
+            let w = std::fs::create_dir_all(dir)
+                .and_then(|_| std::fs::write(dir.join(kiln_runtime::LIB_NAME), kiln_runtime::LIB))
+                .and_then(|_| {
+                    std::fs::write(dir.join(kiln_runtime::TLS_LIB_NAME), kiln_runtime::TLS_LIB)
+                });
+            if let Err(e) = w {
+                eprintln!("error: cannot write the runtime to {}: {e}", dir.display());
+                return ExitCode::from(1);
+            }
+            ExitCode::SUCCESS
+        }
         [cmd, flag, file] if cmd == "borrowck" && flag == "--dump" => {
             let Ok(src) = std::fs::read_to_string(file) else {
                 eprintln!("error: cannot read {file}");
