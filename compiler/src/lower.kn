@@ -221,6 +221,37 @@ impl<'a> Lower<'a> {
 		self.terminate(Terminator::SwitchBool { cond: cond, t: t, f: f }, span)
 	}
 
+	// Branches to `t` if `cond` holds and to `f` otherwise, lowering
+	// `&&` and `||` to jumps instead of a boolean temporary (LLVM would
+	// otherwise fold the temporary into a branchless select).
+	fun branch(&mut self, cond &Expr, t u32, f u32) {
+		if let ExprKind::Paren(x) = &cond.kind {
+			self.branch(x, t, f)
+			return
+		}
+		if let ExprKind::Binary(op, l, r) = &cond.kind {
+			match op {
+				BinOp::And => {
+					mid := self.new_block()
+					self.branch(l, mid, f)
+					self.cur = mid
+					self.branch(r, t, f)
+					return
+				}
+				BinOp::Or => {
+					mid := self.new_block()
+					self.branch(l, t, mid)
+					self.cur = mid
+					self.branch(r, t, f)
+					return
+				}
+				_ => {},
+			}
+		}
+		c := self.expr(cond)
+		self.switch(c, t, f, cond.span)
+	}
+
 	fun new_local(&mut self, ty Ty, name option<string>, span Span, kind LocalKind, mutable bool, source option<u32>) u32 {
 		self.body.locals.push(LocalDecl { ty: ty, name: name, span: span, kind: kind, mutable: mutable, source: source })
 		return self.body.locals.len() as u32 - 1
@@ -2297,11 +2328,10 @@ impl<'a> Lower<'a> {
 			ExprKind::Block(b) => self.block_into(b, dest),
 			ExprKind::Unsafe(b) => self.block_into(b, dest),
 			ExprKind::If { cond, then, els } => {
-				c := self.expr(cond)
 				tb := self.new_block()
 				eb := self.new_block()
 				join := self.new_block()
-				self.switch(c, tb, eb, cond.span)
+				self.branch(cond, tb, eb)
 				self.cur = tb
 				self.block_into(then, dest.clone())
 				self.goto(join, e.span)
@@ -2380,8 +2410,7 @@ impl<'a> Lower<'a> {
 				after := self.new_block()
 				self.goto(head, e.span)
 				self.cur = head
-				c := self.expr(cond)
-				self.switch(c, bodyb, after, cond.span)
+				self.branch(cond, bodyb, after)
 				self.cur = bodyb
 				lname := match label {
 					Some(l) => Some(l.name.clone()),
