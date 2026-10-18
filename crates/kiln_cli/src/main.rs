@@ -21,6 +21,7 @@
 mod fmt;
 mod install;
 mod package;
+mod selfhost;
 mod test;
 
 use kiln_lexer::{lex, Diagnostic, LineIndex, TokenKind};
@@ -32,7 +33,7 @@ kiln - the Kiln language toolchain
 USAGE:
     kiln new <name> [--lib] Create a package (kiln.toml, src/main.kn or src/lib.kn)
     kiln check [file.kn]    Resolve names, type-check, and borrow-check
-    kiln build [--release] [--backend=llvm|cranelift] [--locked] [file.kn] [-o <output>]
+    kiln build [--release] [--compiler=kilnc|rust] [--backend=llvm|cranelift] [--locked] [file.kn] [-o <output>]
                             Compile to a native executable (a package goes to
                             target/debug/<name> or target/release/<name>)
     kiln run [--release] [file.kn] [args...]
@@ -75,8 +76,11 @@ USAGE:
     Debug builds (the default) panic on integer overflow; --release builds wrap.
     Packages with dependencies get a kiln.lock (versions and checksums of
     the dependencies); --locked fails instead of updating it.
-    Release builds use LLVM when this kiln includes it (built with
-    --features llvm), Cranelift otherwise; --backend= overrides.
+    Builds use kilnc, the self-hosted compiler, when it is installed (see
+    kiln doctor); --compiler=rust or KILN_COMPILER=rust selects the built-in
+    compiler. That one's release builds use LLVM when this kiln includes it
+    (built with --features llvm), Cranelift otherwise; --backend= overrides
+    (and implies --compiler=rust).
     kiln version [-v]       Show the version (-v: where std and the runtime come from)
     kiln doctor             Check the C toolchain/linker and build a test program
     kiln help               Show this message
@@ -90,6 +94,7 @@ pub(crate) fn codegen_flag(opts: &mut kiln_codegen::Options, a: &str) -> bool {
         "--backend=cranelift" => opts.backend = kiln_codegen::Backend::Cranelift,
         "--backend=llvm" => opts.backend = kiln_codegen::Backend::Llvm,
         "--locked" => package::set_locked(),
+        _ if selfhost::flag(a) => {}
         _ => return false,
     }
     true
@@ -102,6 +107,7 @@ pub(crate) fn finish_codegen_flags(
     flags: &[String],
 ) -> Option<kiln_codegen::Options> {
     let explicit = flags.iter().any(|a| a.starts_with("--backend="));
+    selfhost::set_explicit_backend(explicit);
     if flags
         .iter()
         .any(|a| a.starts_with("--backend=") && a != "--backend=llvm" && a != "--backend=cranelift")
@@ -346,11 +352,55 @@ fn build_to(
         },
         None => Default::default(),
     };
+    let has_native =
+        !native.libs.is_empty() || !native.c_sources.is_empty() || !native.search.is_empty();
+    if let Some(kilnc) = selfhost::wanted(selfhost::explicit_backend(), has_native) {
+        let work = match out
+            .parent()
+            .filter(|d| d.ends_with("debug") || d.ends_with("release"))
+        {
+            Some(d) if p.manifest.is_some() => d.join("kilnc"),
+            _ => {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                std::fs::canonicalize(&p.root)
+                    .unwrap_or(p.root.clone())
+                    .hash(&mut h);
+                out.hash(&mut h);
+                opts.release.hash(&mut h);
+                std::env::temp_dir().join(format!("kiln-work-{:016x}", h.finish()))
+            }
+        };
+        match selfhost::build(&kilnc, &p.root, out, &work, opts.release) {
+            Ok(()) => return Ok(()),
+            Err(msg) => {
+                // Rebuild with the built-in compiler: its diagnostics are
+                // richer, and a kilnc bug should not block the build.
+                if std::env::var_os("KILN_DEBUG_KILNC").is_some() {
+                    eprint!("{msg}");
+                }
+                let r = build_to_rust(p, out, opts, &native);
+                if r.is_ok() {
+                    eprintln!("note: kilnc failed on this program; built with the built-in compiler (set KILN_DEBUG_KILNC=1 for kilnc's output)");
+                }
+                return r;
+            }
+        }
+    }
+    build_to_rust(p, out, opts, &native)
+}
+
+fn build_to_rust(
+    p: &package::Program,
+    out: &std::path::Path,
+    opts: kiln_codegen::Options,
+    native: &kiln_parser::manifest::NativeLink,
+) -> Result<(), ExitCode> {
     // Debug info names the root file (spans from 0) by its path.
     let name: &'static str = Box::leak(p.name().into_boxed_str());
     let text: &'static str = Box::leak(p.src().to_string().into_boxed_str());
     kiln_lexer::set_root_source(name, text);
-    match kiln_codegen::build_parsed_with(p.pkg.parse.clone(), out, opts, &native) {
+    match kiln_codegen::build_parsed_with(p.pkg.parse.clone(), out, opts, native) {
         Ok(()) => Ok(()),
         Err(kiln_codegen::BuildError::Diagnostics(errs)) => Err(report(&p.name(), p.src(), &errs)),
         Err(kiln_codegen::BuildError::Other(msg)) => {
@@ -386,7 +436,10 @@ fn build_program(
         _ => default_output(&p.name()),
     };
     let stamp = out.with_extension("fingerprint");
-    let fp = package::fingerprint(p, opts.release, opts.backend == kiln_codegen::Backend::Llvm);
+    let mut fp = package::fingerprint(p, opts.release, opts.backend == kiln_codegen::Backend::Llvm);
+    if selfhost::wanted(selfhost::explicit_backend(), false).is_some() {
+        fp.push_str("-kilnc");
+    }
     let cached = p.manifest.is_some()
         && out.is_file()
         && std::fs::read_to_string(&stamp).is_ok_and(|s| s == fp);

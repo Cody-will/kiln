@@ -227,3 +227,13 @@ Debug builds split the IR into hidden-linkage shards, compiled with `clang -O0` 
 
 ## Release code generation
 With `--release`, kilnc emits LLVM attributes for Kiln's guarantees (codegen.kn `end_release_fn`). Every function `f` gets an `f.v` body that takes small scalar arguments, thin references and `(ptr, len)` fat references by value, and returns 1/2/4/8/16-byte results by value. `f` itself keeps the uniform slot signature (function pointers and vtables still use it) as an always-inlined wrapper. See bench/RESULTS.md for the numbers.
+
+## kilnc as the default compiler
+`install.sh` builds kilnc with the Rust compiler (stage 1), rebuilds it with itself (stage 2), and installs stage 2 as `<prefix>/lib/kiln/kilnc`. `--no-kilnc` skips this; so does a missing `clang`, which kilnc needs. `kiln build` and `kiln run` then compile with kilnc. kiln writes kilnc's inputs (std sources and runtime libraries) once to `$TMPDIR/kiln-<version>-<hash>`. Intermediate files go to `target/<profile>/kilnc/` (packages) or `$TMPDIR/kiln-work-<hash>` (single files), so rebuilds are incremental.
+
+Programs use the built-in compiler when:
+- `--compiler=rust` or `KILN_COMPILER=rust` is set, or `--backend=` is given;
+- the package has native `[link]` settings;
+- kilnc reports an error. kiln rebuilds with the built-in compiler, which has richer diagnostics, and prints a note if that build succeeds. `KILN_DEBUG_KILNC=1` shows kilnc's output.
+
+kiln looks for kilnc in `$KILNC`, then next to the `kiln` executable, then in `<prefix>/lib/kiln/kilnc`. `kiln doctor` shows which one it found, and `--compiler=kilnc` asks for it explicitly. `kiln test`, `kiln check` and the LSP still use the built-in front end.

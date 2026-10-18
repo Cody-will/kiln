@@ -80,6 +80,11 @@ pub fn doctor() -> ExitCode {
     if have_cc {
         check("build and run hello world", hello());
     }
+    // kilnc is optional: without it kiln uses its built-in compiler.
+    match crate::selfhost::find() {
+        Some(k) => println!("ok    kilnc (default code generator): {}", k.display()),
+        None => println!("note  kilnc not installed: builds use the built-in compiler"),
+    }
     if ok {
         println!("\nkiln is ready.");
         ExitCode::SUCCESS

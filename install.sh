@@ -7,6 +7,8 @@
 #   <prefix>/bin/kiln             the toolchain (compiler, fmt, test, lsp)
 #   <prefix>/lib/kiln/std/        the standard library sources
 #   <prefix>/lib/kiln/runtime/    the runtime static libraries
+#   <prefix>/lib/kiln/kilnc       the self-hosted compiler, the default code
+#                                 generator (needs clang; --no-kilnc skips it)
 # kiln finds lib/kiln relative to its own executable, so the prefix can be
 # moved or copied anywhere. Then <prefix>/bin is added to PATH in your
 # shell's startup file (unless --no-modify-path).
@@ -20,6 +22,7 @@ prefix="${KILN_PREFIX:-$HOME/.kiln}"
 llvm=auto
 modify_path=1
 uninstall=0
+kilnc=auto
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--prefix) prefix="$2"; shift ;;
@@ -27,8 +30,9 @@ while [ $# -gt 0 ]; do
 	--no-llvm) llvm=no ;;
 	--llvm) llvm=yes ;;
 	--no-modify-path) modify_path=0 ;;
+	--no-kilnc) kilnc=no ;;
 	--uninstall) uninstall=1 ;;
-	-h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	-h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 	*) echo "install.sh: unknown option $1" >&2; exit 2 ;;
 	esac
 	shift
@@ -42,7 +46,7 @@ rc_files() {
 }
 
 if [ "$uninstall" = 1 ]; then
-	rm -f "$prefix/bin/kiln"
+	rm -f "$prefix/bin/kiln" "$prefix/lib/kiln/kilnc"
 	rm -rf "$prefix/lib/kiln"
 	rmdir "$prefix/bin" "$prefix/lib" "$prefix" 2>/dev/null || true
 	for f in $(rc_files) "$HOME/.config/fish/conf.d/kiln.fish"; do
@@ -92,6 +96,24 @@ rm -rf "$prefix/lib/kiln"
 mv "$prefix/lib/kiln.new" "$prefix/lib/kiln"
 mv "$prefix/bin/kiln.new" "$prefix/bin/kiln"
 echo "Installed $prefix/bin/kiln with std and runtime in $prefix/lib/kiln."
+
+# kilnc: built by the Rust compiler (stage 1), then by itself (stage 2, what
+# gets installed); `kiln build` uses it unless --compiler=rust is given.
+clang="${KILN_CLANG:-clang}"
+if [ "$kilnc" != no ]; then
+	if command -v "$clang" >/dev/null 2>&1; then
+		echo "Bootstrapping kilnc (the self-hosted compiler)..."
+		boot="$src/target/install-kilnc"
+		rm -rf "$boot" && mkdir -p "$boot"
+		(cd "$src/compiler" && KILN_COMPILER=rust "$prefix/bin/kiln" build --release -o "$boot/stage1" >/dev/null)
+		KILN_RT="$prefix/lib/kiln/runtime/libkiln_rt.a" KILNC_RESOLVE_DIR="$src/crates/kiln_resolve" \
+			"$boot/stage1" --build --release --c-source "$src/compiler/native/arena.c" "$src/compiler/src/main.kn" -o "$boot/stage2"
+		cp "$boot/stage2" "$prefix/lib/kiln/kilnc.new" && mv "$prefix/lib/kiln/kilnc.new" "$prefix/lib/kiln/kilnc"
+		echo "Installed $prefix/lib/kiln/kilnc (the default code generator)."
+	else
+		echo "clang not found: skipping kilnc; kiln uses its built-in compiler."
+	fi
+fi
 
 if [ "$modify_path" = 1 ]; then
 	line="export PATH=\"$prefix/bin:\$PATH\" $marker"

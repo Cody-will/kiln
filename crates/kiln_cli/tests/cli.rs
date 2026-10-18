@@ -200,3 +200,46 @@ fn version_and_installed_lib_dir() {
     assert_eq!(out, "Hello, world!\n");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn compiler_selection_and_fallback() {
+    let dir = std::env::temp_dir().join(format!("kiln_cli_compiler_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("hello");
+    let out_s = out.to_str().unwrap();
+    // The built-in compiler, explicitly.
+    let (code, _, err) = kiln(&["build", "--compiler=rust", "examples/hello.kn", "-o", out_s]);
+    assert_eq!(code, 0, "{err}");
+    // `--compiler=kilnc` without kilnc installed warns and falls back.
+    let o = Command::new(env!("CARGO_BIN_EXE_kiln"))
+        .args([
+            "build",
+            "--compiler=kilnc",
+            "examples/hello.kn",
+            "-o",
+            out_s,
+        ])
+        .env("KILNC", dir.join("no-such-kilnc"))
+        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+        .output()
+        .unwrap();
+    assert!(o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("kilnc is not installed"));
+    // A kilnc that fails: kiln rebuilds with the built-in compiler.
+    let fake = dir.join("fake-kilnc");
+    std::fs::write(&fake, "#!/bin/sh\necho broken >&2\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let o = Command::new(env!("CARGO_BIN_EXE_kiln"))
+            .args(["build", "examples/hello.kn", "-o", out_s])
+            .env("KILNC", &fake)
+            .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+            .output()
+            .unwrap();
+        assert!(o.status.success());
+        assert!(String::from_utf8_lossy(&o.stderr).contains("note: kilnc failed"));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

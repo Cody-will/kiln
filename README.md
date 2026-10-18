@@ -7,7 +7,7 @@ Kiln is a compiled systems and backend programming language with **syntax as sim
 - Traits and generics.
 - Goroutine-style tasks with `spawn`, channels using `<-`, and `select`.
 
-> **Status:** early development. The compiler type-checks and borrow-checks programs (`kiln check`) and compiles them to native executables with a Cranelift backend (`kiln build`, `kiln run`) and an optional LLVM backend for `--release` (`--backend=llvm`, see [docs/LLVM.md](docs/LLVM.md)): functions, structs, enums and `match`, generics, traits including `dyn`, closures, `result` and `?`, `defer`, `Drop`, fixed-size arrays, and Go-style concurrency (`spawn` tasks on an M:N work-stealing scheduler, channels, `select`, scoped tasks) all work. The standard library is next. There are VS Code and Tree-sitter grammars. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status:** early development. The compiler type-checks and borrow-checks programs (`kiln check`) and compiles them to native executables with a Cranelift backend (`kiln build`, `kiln run`) and an optional LLVM backend for `--release` (`--backend=llvm`, see [docs/LLVM.md](docs/LLVM.md)). The default code generator is **kilnc**, the self-hosted compiler, which `install.sh` bootstraps; `--compiler=rust` selects the built-in one (see [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)): functions, structs, enums and `match`, generics, traits including `dyn`, closures, `result` and `?`, `defer`, `Drop`, fixed-size arrays, and Go-style concurrency (`spawn` tasks on an M:N work-stealing scheduler, channels, `select`, scoped tasks) all work. The standard library is next. There are VS Code and Tree-sitter grammars. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ```kiln
 fun main() result<void, io::Error> {
