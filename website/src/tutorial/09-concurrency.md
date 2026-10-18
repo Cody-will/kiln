@@ -44,6 +44,7 @@ A task may keep running after the function that started it returns, so it must *
 
 - `spawn f(args)` moves the arguments into the task. Passing a reference to a local (`spawn f(&data)`) is an error; string literals (`&'static str`) are fine.
 - A `spawn` block that uses local variables must be `spawn move { ... }`, which moves them in. Clone first if you still need a value afterwards.
+- Function values can go into tasks: with a parameter `f fun(i64) i64`, `spawn move { tx <- f(x) }` works, because a `fun` that is passed around never borrows (see [Functions](03-functions.md)). A `fun mut` can't be sent to a task.
 - Everything moved into a task must be `Send`. Structs and enums are `Send` automatically when all their fields are; raw pointers are not.
 
 ```text

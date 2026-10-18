@@ -110,5 +110,22 @@ fun main() {
 }
 ```
 
+Because a `fun` may be kept or run on another task, a closure used as one can't hold on to borrowed data once it leaves the place it was made. Called right there, it may borrow; passed to a function or stored, it must own what it captures:
+
+```kiln
+fun keep(f fun() i64) {}
+
+fun main() {
+	v := 5
+	r := &v
+	g := || *r
+	println("{g()}") // fine: used where it was made
+	keep(|| *r) // error: this `fun` value borrows `r`, so it can't be passed on or stored
+	keep(move || v) // fine: `v` is copied into the closure
+}
+```
+
+A callback that has to borrow (like `each` above) takes `fun mut`, which never leaves the call.
+
 Any `fun` can be passed where a `fun mut` is expected. A closure that moves a captured value out (`move || drop(s)`) can only be called directly, since a second call would find the value gone.
 

@@ -28,6 +28,9 @@ Phase 2 added text and data modules: `strings`, `strconv`, `bytes`, `collections
 | [`std::net`](#stdnet) | TCP and UDP |
 | [`std::net::http`](#stdnethttp) | HTTP/1.1 server and client (HTTP and HTTPS) |
 | [`std::net::tls`](#stdnettls) | TLS streams |
+| [`std::net::http2`](#stdnethttp2) | HTTP/2 client and server (TLS with ALPN, or h2c) |
+| [`std::net::websocket`](#stdnetwebsocket) | WebSocket client and server |
+| [`std::db::postgres`](#stddbpostgres) | PostgreSQL client and connection pool |
 | [`std::log`](#stdlog) | leveled logging |
 | [`std::fmt`](#stdfmt) | `Display` and `Debug` |
 | [`std::strings`](#stdstrings) | string building and joining (most operations are `str` methods) |
@@ -490,6 +493,79 @@ fun main() result<void, io::Error> {
 	router.get("/", hello)
 	cfg := tls::ServerConfig::from_files("cert.pem", "key.pem")?
 	return router.listen_tls(":8443", cfg)
+}
+```
+
+## std::net::http2
+
+HTTP/2 with HPACK header compression, flow control and many requests on one connection, routed through the same `http::Router` as HTTP/1.1. Server push and priorities are not supported.
+
+| Item | Description |
+|---|---|
+| `Client::connect(addr, &cfg)` | TLS, offering `h2` with ALPN |
+| `Client::connect_plain(addr)` | cleartext HTTP/2 with prior knowledge (h2c) |
+| `client.send(req)`, `client.send_all(reqs)` | one request, or several at once on separate streams |
+| `serve_tls(listener, cfg, router)` | HTTPS where clients that choose `h2` get HTTP/2 and the rest HTTP/1.1 |
+| `serve_h2c(listener, router)` | cleartext HTTP/2 |
+| `tls::ClientConfig::with_alpn`, `ServerConfig::with_alpn`, `TlsStream::alpn()` | ALPN for other protocols |
+
+## std::net::websocket
+
+WebSockets (RFC 6455) over TCP or TLS. `recv` joins fragmented messages, answers pings, and completes the close handshake. Extensions and subprotocols are not supported; messages are limited to 64 MiB.
+
+| Item | Description |
+|---|---|
+| `connect(url)`, `connect_with(url, &cfg)` | `ws://` or `wss://` |
+| `accept(tcp)`, `accept_tls(stream)` | the server side of the handshake |
+| `listen(addr, handler)`, `serve(listener, handler)`, `serve_tls(listener, cfg, handler)` | one task per connection, `handler fun(WebSocket)` |
+| `ws.recv()` | `Message::Text`, `Binary`, `Ping`, `Pong`, or `Close(code, reason)` |
+| `ws.send_text(s)`, `send_binary(b)`, `ping(b)`, `close(code, reason)` | sending |
+| `ws.path()`, `ws.headers()` | the upgrade request (server) or response (client) |
+
+```kiln
+import std::net::websocket
+
+fun echo(ws websocket::WebSocket) {
+	ws mut := ws
+	loop {
+		match ws.recv() {
+			Ok(websocket::Message::Text(t)) => ws.send_text(&t).unwrap(),
+			Ok(websocket::Message::Close(_, _)) => return,
+			Err(_) => return,
+			_ => {},
+		}
+	}
+}
+
+fun main() {
+	websocket::listen("127.0.0.1:8080", echo).unwrap()
+}
+```
+
+## std::db::postgres
+
+A PostgreSQL client speaking the wire protocol directly: SCRAM-SHA-256, MD5 or password login, `$1`-style parameters, prepared statements, and a pool. Values go as text and come back as text, read with typed getters. TLS to the server (`sslmode`) is not supported yet.
+
+| Item | Description |
+|---|---|
+| `Conn::connect_url("postgres://user:pw@host:5432/db")`, `Conn::connect(&Config)` | connect and log in |
+| `db.query(sql, &[params])`, `db.execute(sql, &[params])` | rows, or the affected row count |
+| `db.prepare(sql)`, `query_prepared`, `execute_prepared`, `close_statement` | prepared statements |
+| `db.batch(sql)`, `batch_execute(sql)` | several `;`-separated statements without parameters (`BEGIN`, DDL) |
+| `postgres::text`, `int`, `float`, `boolean`, `bytes`, `null` | parameter values |
+| `row.get_str`, `get_string`, `get_i64`, `get_f64`, `get_bool`, `get_bytes`, `is_null`, `index(name)` | reading columns |
+| `Error` | `code` (SQLSTATE, e.g. `23505`), `message`, `detail` |
+| `Pool::new(cfg, max)`, `pool.get()` | up to `max` connections; a `PooledConn` derefs to `Conn` and goes back when dropped |
+
+```kiln
+import std::db::postgres
+
+fun main() {
+	db mut := postgres::Conn::connect_url("postgres://app:secret@localhost/app").unwrap()
+	db.execute("INSERT INTO notes (body) VALUES ($1)", &[postgres::text("hi")]).unwrap()
+	for row in db.query("SELECT id, body FROM notes", &[]).unwrap().rows() {
+		println("{row.get_i64(0).unwrap()} {row.get_str(1).unwrap_or("")}")
+	}
 }
 ```
 
