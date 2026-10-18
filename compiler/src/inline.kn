@@ -251,3 +251,168 @@ pub fun splice(body &mut Body, bi usize, si usize, callee &Body, substs &HashMap
 	}
 	body.blocks.push(BlockData { stmts: cs, term: orig.term.clone(), term_span: orig.term_span })
 }
+
+// The back-edges (latch, header) of natural loops that get a preemption
+// check: all except those of innermost loops nested in another loop. A port
+// of crates/kiln_codegen/src/func.rs `preempt_edges`.
+pub fun preempt_edges(b &Body) Vec<(usize, usize)> {
+	n := b.blocks.len()
+	out mut := Vec::new()
+	if n == 0 {
+		return out
+	}
+	none := usize::MAX
+	succs mut := Vec::new()
+	for blk in &b.blocks {
+		succs.push(succ(&blk.term))
+	}
+	order mut := Vec::new()
+	seen mut := Vec::new()
+	for _ in 0..n {
+		seen.push(false)
+	}
+	stack mut := Vec::new()
+	stack.push((0usize, 0usize))
+	seen[0] = true
+	while stack.len() > 0 {
+		(x, k) := stack.pop().unwrap()
+		if k < succs[x].len() {
+			stack.push((x, k + 1))
+			t := succs[x][k]
+			if !seen[t] {
+				seen[t] = true
+				stack.push((t, 0usize))
+			}
+		} else {
+			order.push(x)
+		}
+	}
+	order.reverse()
+	rpo mut := Vec::new()
+	for _ in 0..n {
+		rpo.push(none)
+	}
+	for (i, x) in order.iter().enumerate() {
+		rpo[*x] = i
+	}
+	preds mut := Vec::new()
+	for _ in 0..n {
+		preds.push(Vec::new())
+	}
+	for x in 0..n {
+		if rpo[x] != none {
+			for t in &succs[x] {
+				preds[*t].push(x)
+			}
+		}
+	}
+	idom mut := Vec::new()
+	for _ in 0..n {
+		idom.push(none)
+	}
+	idom[0] = 0usize
+	changed mut := true
+	while changed {
+		changed = false
+		for oi in 1..order.len() {
+			x := order[oi]
+			nw mut := none
+			for p in &preds[x] {
+				if idom[*p] == none {
+					continue
+				}
+				if nw == none {
+					nw = *p
+				} else {
+					a mut := *p
+					c mut := nw
+					while a != c {
+						while rpo[a] > rpo[c] {
+							a = idom[a]
+						}
+						while rpo[c] > rpo[a] {
+							c = idom[c]
+						}
+					}
+					nw = a
+				}
+			}
+			if nw != none && idom[x] != nw {
+				idom[x] = nw
+				changed = true
+			}
+		}
+	}
+	heads mut := Vec::new()
+	bodies mut := Vec::new()
+	latches mut := Vec::new()
+	for u in &order {
+		for h in &succs[*u] {
+			// does h dominate u?
+			d mut := *u
+			dom mut := false
+			loop {
+				if d == *h {
+					dom = true
+					break
+				}
+				if d == 0 || idom[d] == none {
+					break
+				}
+				d = idom[d]
+			}
+			if !dom {
+				continue
+			}
+			li mut := none
+			for (j, hh) in heads.iter().enumerate() {
+				if *hh == *h {
+					li = j
+				}
+			}
+			if li == none {
+				bv mut := Vec::new()
+				for _ in 0..n {
+					bv.push(false)
+				}
+				bv[*h] = true
+				heads.push(*h)
+				bodies.push(bv)
+				latches.push(Vec::new())
+				li = heads.len() - 1
+			}
+			latches[li].push(*u)
+			work mut := Vec::new()
+			work.push(*u)
+			while work.len() > 0 {
+				x := work.pop().unwrap()
+				if !bodies[li][x] {
+					bodies[li][x] = true
+					for p in &preds[x] {
+						work.push(*p)
+					}
+				}
+			}
+		}
+	}
+	for i in 0..heads.len() {
+		innermost mut := true
+		nested mut := false
+		for j in 0..heads.len() {
+			if j != i {
+				if bodies[i][heads[j]] {
+					innermost = false
+				}
+				if bodies[j][heads[i]] {
+					nested = true
+				}
+			}
+		}
+		if !(innermost && nested) {
+			for u in &latches[i] {
+				out.push((*u, heads[i]))
+			}
+		}
+	}
+	return out
+}

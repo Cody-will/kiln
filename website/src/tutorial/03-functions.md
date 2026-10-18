@@ -112,7 +112,7 @@ fun main() {
 
 Because a `fun` may be kept or run on another task, a closure used as one can't hold on to borrowed data once it leaves the place it was made. Called right there, it may borrow; passed to a function or stored, it must own what it captures:
 
-```kiln
+```text
 fun keep(f fun() i64) {}
 
 fun main() {

@@ -217,6 +217,7 @@ pub struct Cg {
 	panic_frame option<V>,
 	last_task option<V>,
 	preempt option<V>,
+	preempt_edges Vec<(usize, usize)>,
 	cur_block usize,
 	// Instruction text, entry allocas, value and block counters.
 	fb string,
@@ -2183,6 +2184,7 @@ impl Cg {
 			n := self.iconst(1024)
 			self.store(&n, &s, 0)
 			self.preempt = Some(s)
+			self.preempt_edges = inline::preempt_edges(&self.body)
 		}
 		first := self.blocks[0]
 		// Functions with `defer` run them on panic too: register a frame and setjmp.
@@ -2421,7 +2423,7 @@ impl Cg {
 		match t {
 			Terminator::Goto(b) => {
 				blk := self.blocks[*b as usize]
-				back := (*b as usize) <= self.cur_block && !self.body.bounded_loops.contains(b)
+				back := self.preempt_edges.contains(&(self.cur_block, *b as usize)) && !self.body.bounded_loops.contains(b)
 				match self.preempt.clone() {
 					Some(s) => {
 						if back {
@@ -6043,6 +6045,7 @@ impl Cg {
 			panic_frame: None,
 			last_task: None,
 			preempt: None,
+			preempt_edges: Vec::new(),
 			cur_block: 0,
 			fb: string::new(),
 			allocas: string::new(),
