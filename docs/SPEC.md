@@ -680,6 +680,10 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 | `std::net` | `TcpListener`, `TcpStream`, `UdpSocket`, `split_host_port` (DNS through the OS resolver); `connect_timeout`, per-socket read/write/accept timeouts (Rust's per-operation model: a wait longer than the timeout fails with `TimedOut`, the socket stays usable) | ✅ |
 | `std::net::http` | HTTP/1.1 server (`Router`, `Server` with header/read/write/idle timeouts, keep-alive, `listen_tls`/`serve_tls`) and client (`Client` with overall and connect timeouts; `get`, `post`, `send`; `http://` and `https://`) | ✅ |
 | `std::net::tls` | `ClientConfig` (Mozilla roots, extra PEM roots), `ServerConfig` (PEM chain + key), `TlsStream` (`connect`, `client`, `server`, `Read`/`Write`, `close`) over rustls | ✅ |
+| `std::net::tls` ALPN | `with_alpn`/`set_alpn` on both configs, `TlsStream::alpn()` | ✅ |
+| `std::net::http2` | HTTP/2 (HPACK with Huffman, flow control, multiplexed streams): `Client::connect` (TLS + ALPN) / `connect_plain` (h2c), `send`, `send_all`; `serve_tls` (h2 and HTTP/1.1 on one port by ALPN) and `serve_h2c` over an `http::Router`. No server push or priorities | ✅ |
+| `std::net::websocket` | RFC 6455 client (`connect`, `connect_with` for `ws://`/`wss://`) and server (`accept`, `accept_tls`, `listen`, `serve`, `serve_tls`); text/binary messages, fragmentation, masking, automatic pongs, the close handshake, 64 MiB message limit. No extensions or subprotocols | ✅ |
+| `std::db::postgres` | PostgreSQL client: wire protocol v3, SCRAM-SHA-256/MD5/password auth, `query`/`execute` with `$n` parameters, `prepare`d statements, `batch`, typed `Row` getters, SQLSTATE errors, `Pool` (bounded, returns connections on drop). Text format; no TLS (`sslmode`) yet | ✅ |
 | `std::log` | leveled logging to stderr (`KILN_LOG=debug`) | ✅ |
 | `std::fmt` | `Display`, `Debug`, `Formatter`, `fmt::debug`/`fmt::pretty`; format specs in interpolation | ✅ |
 | `std::mem`, `std::ptr` | `size_of`, `swap`, `replace`, `forget`; raw pointer operations for `unsafe` code | ✅ |

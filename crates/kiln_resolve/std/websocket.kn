@@ -1,0 +1,565 @@
+// WebSocket (RFC 6455) clients and servers over TCP or TLS.
+//
+//	ws mut := websocket::connect("ws://localhost:8080/chat")?
+//	ws.send_text("hello")?
+//	match ws.recv()? {
+//		websocket::Message::Text(t) => println(t),
+//		_ => {},
+//	}
+//	ws.close(1000, "bye")?
+//
+// A server accepts connections and upgrades them:
+//
+//	fun echo(ws websocket::WebSocket) {
+//		ws mut := ws
+//		loop {
+//			match ws.recv() {
+//				Ok(websocket::Message::Text(t)) => ws.send_text(&t).unwrap(),
+//				_ => return,
+//			}
+//		}
+//	}
+//	websocket::listen("127.0.0.1:8080", echo)?
+//
+// `recv` joins fragmented messages, answers pings with pongs, and answers
+// a close frame (after which it returns `Message::Close`). Extensions
+// (permessage-deflate) and subprotocol negotiation are not supported.
+
+import std::crypto::sha1
+import std::encoding::base64
+import std::io
+import std::io::{Read, Write}
+import std::net::{TcpListener, TcpStream}
+import std::net::http
+import std::net::tls
+import std::rand
+
+const GUID &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+// The largest message accepted (frames joined), 64 MiB.
+pub const MAX_MESSAGE usize = 67108864
+const MAX_HEADER usize = 16384
+
+const OP_CONT u8 = 0
+const OP_TEXT u8 = 1
+const OP_BINARY u8 = 2
+const OP_CLOSE u8 = 8
+const OP_PING u8 = 9
+const OP_PONG u8 = 10
+
+// A message received or sent.
+pub enum Message {
+	Text(string),
+	Binary(Vec<u8>),
+	// Pings are answered automatically; `recv` still returns them so the
+	// caller can see them. Pongs answer our `ping`.
+	Ping(Vec<u8>),
+	Pong(Vec<u8>),
+	// The peer closed the connection, with a status code (1005 if none
+	// was given) and reason.
+	Close(u16, string),
+}
+
+fun ws_error(msg &str) io::Error {
+	return io::Error::new(io::ErrorKind::InvalidData, "websocket: {msg}")
+}
+
+enum Stream {
+	Plain(TcpStream),
+	Tls(tls::TlsStream),
+}
+
+impl Stream {
+	fun read(&mut self, b &mut [u8]) result<usize, io::Error> {
+		match self {
+			Stream::Plain(s) => return s.read(b),
+			Stream::Tls(s) => return s.read(b),
+		}
+	}
+
+	fun write_all(&mut self, b &[u8]) result<void, io::Error> {
+		match self {
+			Stream::Plain(s) => return s.write_all(b),
+			Stream::Tls(s) => return s.write_all(b),
+		}
+	}
+}
+
+// One WebSocket connection.
+pub struct WebSocket {
+	s Stream,
+	client bool,
+	buf Vec<u8>,
+	at usize,
+	end usize,
+	closed_sent bool,
+	closed_recv bool,
+	path string,
+	headers http::Headers,
+}
+
+// The `Sec-WebSocket-Accept` value for a key.
+pub fun accept_key(key &str) string {
+	return base64::encode(&sha1::sum("{key}{GUID}".as_bytes()))
+}
+
+// Connects to a "ws://" URL, or a "wss://" one checked against the system
+// roots.
+pub fun connect(url &str) result<WebSocket, io::Error> {
+	return connect_with(url, &tls::ClientConfig::new()?)
+}
+
+// Connects to a "ws://" or "wss://" URL; `cfg` is used for wss.
+pub fun connect_with(url &str, cfg &tls::ClientConfig) result<WebSocket, io::Error> {
+	secure mut := false
+	rest mut := string::new()
+	if url.starts_with("ws://") {
+		rest = url[5..].to_string()
+	} else if url.starts_with("wss://") {
+		rest = url[6..].to_string()
+		secure = true
+	} else {
+		return Err(ws_error("url must start with ws:// or wss://"))
+	}
+	hostport mut := rest.clone()
+	path mut := "/".to_string()
+	if let Some(i) = rest.find("/") {
+		hostport = rest[..i].to_string()
+		path = rest[i..].to_string()
+	}
+	host mut := hostport.clone()
+	addr mut := hostport.clone()
+	if let Some(i) = hostport.find(":") {
+		host = hostport[..i].to_string()
+	} else if secure {
+		addr = "{hostport}:443"
+	} else {
+		addr = "{hostport}:80"
+	}
+	tcp := TcpStream::connect(&addr)?
+	s mut := Stream::Plain(tcp)
+	if secure {
+		match s {
+			Stream::Plain(t) => s = Stream::Tls(tls::TlsStream::client(t, &host, cfg)?),
+			Stream::Tls(_) => {},
+		}
+	}
+	return client_handshake(s, &hostport, &path)
+}
+
+fun new_ws(s Stream, client bool) WebSocket {
+	buf mut := Vec::new()
+	buf.resize(16384, 0u8)
+	return WebSocket { s: s, client: client, buf: buf, at: 0, end: 0, closed_sent: false, closed_recv: false, path: string::new(), headers: http::Headers::new() }
+}
+
+fun client_handshake(s Stream, hostport &str, path &str) result<WebSocket, io::Error> {
+	kb mut := [0u8; 16]
+	rand::secure_fill(&mut kb)
+	key := base64::encode(&kb)
+	ws mut := new_ws(s, true)
+	req := "GET {path} HTTP/1.1\r\nHost: {hostport}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+	ws.s.write_all(req.as_bytes())?
+	head := ws.read_head()?
+	lines := head.split("\r\n")
+	if lines.len() == 0 || !lines[0].starts_with("HTTP/1.1 101") {
+		status := if lines.len() > 0 { lines[0].to_string() } else { "no response".to_string() }
+		return Err(ws_error("upgrade refused: {status}"))
+	}
+	hs := parse_headers(&lines)
+	ok := match hs.get("Sec-WebSocket-Accept") {
+		Some(a) => a == accept_key(&key),
+		None => false,
+	}
+	if !ok {
+		return Err(ws_error("bad Sec-WebSocket-Accept"))
+	}
+	ws.path = path.to_string()
+	ws.headers = hs
+	return Ok(ws)
+}
+
+fun parse_headers(lines &[&str]) http::Headers {
+	h mut := http::Headers::new()
+	for i in 1..lines.len() {
+		l := lines[i]
+		if let Some(c) = l.find(":") {
+			h.add(l[..c].trim(), l[c + 1..].trim())
+		}
+	}
+	return h
+}
+
+fun has_token(v &str, tok &str) bool {
+	for p in v.split(",") {
+		if p.trim().to_lower() == tok {
+			return true
+		}
+	}
+	return false
+}
+
+// Performs the server side of the opening handshake on a new connection.
+pub fun accept(tcp TcpStream) result<WebSocket, io::Error> {
+	return server_handshake(Stream::Plain(tcp))
+}
+
+// The same for a TLS connection whose handshake is done.
+pub fun accept_tls(stream tls::TlsStream) result<WebSocket, io::Error> {
+	return server_handshake(Stream::Tls(stream))
+}
+
+fun server_handshake(s Stream) result<WebSocket, io::Error> {
+	ws mut := new_ws(s, false)
+	head := ws.read_head()?
+	lines := head.split("\r\n")
+	parts := if lines.len() > 0 { lines[0].split(" ") } else { Vec::new() }
+	if parts.len() != 3 || parts[0] != "GET" {
+		ws.refuse("400 Bad Request")
+		return Err(ws_error("not a GET request"))
+	}
+	hs := parse_headers(&lines)
+	up := hs.get("Upgrade").unwrap_or("").to_lower() == "websocket"
+	conn := has_token(hs.get("Connection").unwrap_or(""), "upgrade")
+	ver := hs.get("Sec-WebSocket-Version").unwrap_or("") == "13"
+	key := hs.get("Sec-WebSocket-Key").unwrap_or("").to_string()
+	if !up || !conn || key.len() == 0 {
+		ws.refuse("400 Bad Request")
+		return Err(ws_error("not a websocket upgrade"))
+	}
+	if !ver {
+		ws.s.write_all(b"HTTP/1.1 426 Upgrade Required\r\nSec-WebSocket-Version: 13\r\nContent-Length: 0\r\n\r\n").unwrap_or(())
+		return Err(ws_error("unsupported version"))
+	}
+	resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept_key(&key)}\r\n\r\n"
+	ws.s.write_all(resp.as_bytes())?
+	ws.path = parts[1].to_string()
+	ws.headers = hs
+	return Ok(ws)
+}
+
+struct Handler {
+	f fun(WebSocket),
+}
+
+// Serves WebSocket connections on `addr`, one task per connection.
+pub fun listen(addr &str, handler fun(WebSocket)) result<void, io::Error> {
+	return serve(TcpListener::bind(addr)?, handler)
+}
+
+pub fun serve(listener TcpListener, handler fun(WebSocket)) result<void, io::Error> {
+	hs := std::sync::Arc::new(Handler { f: handler })
+	loop {
+		conn := listener.accept()?
+		h := hs.clone()
+		spawn move {
+			if let Ok(ws) = accept(conn) {
+				(h.f)(ws)
+			}
+		}
+	}
+}
+
+// Serves wss:// connections from `listener` with the certificate in `cfg`.
+pub fun serve_tls(listener TcpListener, cfg tls::ServerConfig, handler fun(WebSocket)) result<void, io::Error> {
+	c := std::sync::Arc::new(cfg)
+	hs := std::sync::Arc::new(Handler { f: handler })
+	loop {
+		conn := listener.accept()?
+		t := c.clone()
+		h := hs.clone()
+		spawn move {
+			if let Ok(s) = tls::TlsStream::server(conn, &*t) {
+				if let Ok(ws) = accept_tls(s) {
+					(h.f)(ws)
+				}
+			}
+		}
+	}
+}
+
+impl WebSocket {
+	// The request path (and query) of the upgrade request.
+	pub fun path(&self) &str {
+		return &self.path[..]
+	}
+
+	// The upgrade request's headers on a server; the response's on a client.
+	pub fun headers(&self) &http::Headers {
+		return &self.headers
+	}
+
+	fun refuse(&mut self, status &str) {
+		self.s.write_all("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".as_bytes()).unwrap_or(())
+	}
+
+	fun fill(&mut self, n usize) result<void, io::Error> {
+		while self.end - self.at < n {
+			if self.at > 0 {
+				k := self.end - self.at
+				for i in 0..k {
+					self.buf[i] = self.buf[self.at + i]
+				}
+				self.at = 0
+				self.end = k
+			}
+			if self.buf.len() < n {
+				self.buf.resize(n, 0u8)
+			}
+			r := self.s.read(&mut self.buf[self.end..])?
+			if r == 0 {
+				return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "websocket: connection closed"))
+			}
+			self.end += r
+		}
+		return Ok(())
+	}
+
+	// Reads an HTTP head up to the blank line.
+	fun read_head(&mut self) result<string, io::Error> {
+		loop {
+			b := &self.buf[self.at..self.end]
+			if b.len() >= 4 {
+				for i in 0..b.len() - 3 {
+					if b[i] == 13u8 && b[i + 1] == 10u8 && b[i + 2] == 13u8 && b[i + 3] == 10u8 {
+						h := string::from_utf8_lossy(&b[..i])
+						self.at += i + 4
+						return Ok(h)
+					}
+				}
+			}
+			if self.end - self.at > MAX_HEADER {
+				return Err(ws_error("handshake too large"))
+			}
+			self.fill(self.end - self.at + 1)?
+		}
+	}
+
+	fun write_frame(&mut self, op u8, fin bool, payload &[u8]) result<void, io::Error> {
+		f mut := Vec::new()
+		f.push(if fin { 128u8 | op } else { op })
+		mask_bit := if self.client { 128u8 } else { 0u8 }
+		n := payload.len()
+		if n < 126 {
+			f.push(mask_bit | n as u8)
+		} else if n < 65536 {
+			f.push(mask_bit | 126u8)
+			f.push((n >> 8) as u8)
+			f.push((n & 255) as u8)
+		} else {
+			f.push(mask_bit | 127u8)
+			for i in 0..8 {
+				f.push(((n as u64 >> ((7 - i) * 8) as u64) & 255) as u8)
+			}
+		}
+		if self.client {
+			key mut := [0u8; 4]
+			rand::secure_fill(&mut key)
+			f.extend_from_slice(&key)
+			start := f.len()
+			f.extend_from_slice(payload)
+			for i in 0..n {
+				f[start + i] ^= key[i % 4]
+			}
+		} else {
+			f.extend_from_slice(payload)
+		}
+		return self.s.write_all(&f)
+	}
+
+	fun check_open(&self) result<void, io::Error> {
+		if self.closed_sent {
+			return Err(ws_error("connection closed"))
+		}
+		return Ok(())
+	}
+
+	pub fun send_text(&mut self, s &str) result<void, io::Error> {
+		self.check_open()?
+		return self.write_frame(OP_TEXT, true, s.as_bytes())
+	}
+
+	pub fun send_binary(&mut self, b &[u8]) result<void, io::Error> {
+		self.check_open()?
+		return self.write_frame(OP_BINARY, true, b)
+	}
+
+	pub fun send(&mut self, m &Message) result<void, io::Error> {
+		match m {
+			Message::Text(t) => return self.send_text(t),
+			Message::Binary(b) => return self.send_binary(b),
+			Message::Ping(b) => return self.ping(b),
+			Message::Pong(b) => {
+				self.check_open()?
+				return self.write_frame(OP_PONG, true, b)
+			},
+			Message::Close(c, r) => return self.close(*c, r),
+		}
+	}
+
+	// Sends a ping (up to 125 bytes); the pong arrives through `recv`.
+	pub fun ping(&mut self, data &[u8]) result<void, io::Error> {
+		self.check_open()?
+		if data.len() > 125 {
+			return Err(ws_error("ping payload over 125 bytes"))
+		}
+		return self.write_frame(OP_PING, true, data)
+	}
+
+	// Starts the closing handshake. Keep calling `recv` to read the
+	// peer's close (or just drop the connection).
+	pub fun close(&mut self, code u16, reason &str) result<void, io::Error> {
+		if self.closed_sent {
+			return Ok(())
+		}
+		p mut := Vec::new()
+		p.push((code >> 8) as u8)
+		p.push((code & 255) as u8)
+		r := reason.as_bytes()
+		n := if r.len() > 123 { 123 } else { r.len() }
+		p.extend_from_slice(&r[..n])
+		self.closed_sent = true
+		return self.write_frame(OP_CLOSE, true, &p)
+	}
+
+	// Reads one frame: (fin, opcode, payload).
+	fun read_frame(&mut self) result<(bool, u8, Vec<u8>), io::Error> {
+		self.fill(2)?
+		b0 := self.buf[self.at]
+		b1 := self.buf[self.at + 1]
+		if b0 & 112u8 != 0u8 {
+			self.fail(1002)
+			return Err(ws_error("reserved bits set"))
+		}
+		masked := b1 & 128u8 != 0u8
+		if masked == self.client {
+			self.fail(1002)
+			if self.client {
+				return Err(ws_error("masked frame from the server"))
+			}
+			return Err(ws_error("unmasked frame from the client"))
+		}
+		len7 := (b1 & 127u8) as usize
+		hl mut := 2
+		if len7 == 126 {
+			hl = 4
+		} else if len7 == 127 {
+			hl = 10
+		}
+		if masked {
+			hl += 4
+		}
+		self.fill(hl)?
+		n mut := len7
+		if len7 == 126 {
+			n = ((self.buf[self.at + 2] as usize) << 8) | (self.buf[self.at + 3] as usize)
+		} else if len7 == 127 {
+			n = 0
+			for i in 0..8 {
+				n = (n << 8) | (self.buf[self.at + 2 + i] as usize)
+			}
+		}
+		if n > MAX_MESSAGE {
+			self.fail(1009)
+			return Err(ws_error("frame too large"))
+		}
+		op := b0 & 15u8
+		fin := b0 & 128u8 != 0u8
+		if op >= 8u8 && (n > 125 || !fin) {
+			self.fail(1002)
+			return Err(ws_error("bad control frame"))
+		}
+		key mut := [0u8; 4]
+		if masked {
+			for i in 0..4 {
+				key[i] = self.buf[self.at + hl - 4 + i]
+			}
+		}
+		self.at += hl
+		self.fill(n)?
+		p mut := self.buf[self.at..self.at + n].to_vec()
+		self.at += n
+		if masked {
+			for i in 0..n {
+				p[i] ^= key[i % 4]
+			}
+		}
+		return Ok((fin, op, p))
+	}
+
+	// Sends a close with `code` after a protocol error.
+	fun fail(&mut self, code u16) {
+		self.close(code, "").unwrap_or(())
+	}
+
+	// The next message. Errors once the connection is closed.
+	pub fun recv(&mut self) result<Message, io::Error> {
+		if self.closed_recv {
+			return Err(ws_error("connection closed"))
+		}
+		msg mut := Vec::new()
+		msg_op mut := 0u8
+		loop {
+			(fin, op, p) := self.read_frame()?
+			if op == OP_PING {
+				if !self.closed_sent {
+					self.write_frame(OP_PONG, true, &p)?
+				}
+				return Ok(Message::Ping(p))
+			}
+			if op == OP_PONG {
+				return Ok(Message::Pong(p))
+			}
+			if op == OP_CLOSE {
+				self.closed_recv = true
+				code mut := 1005u16
+				reason mut := string::new()
+				if p.len() == 1 {
+					self.fail(1002)
+					return Err(ws_error("bad close frame"))
+				}
+				if p.len() >= 2 {
+					code = ((p[0] as u16) << 8) | (p[1] as u16)
+					reason = string::from_utf8_lossy(&p[2..])
+				}
+				if !self.closed_sent {
+					echo := if p.len() >= 2 { p[..2].to_vec() } else { Vec::new() }
+					self.closed_sent = true
+					self.write_frame(OP_CLOSE, true, &echo).unwrap_or(())
+				}
+				return Ok(Message::Close(code, reason))
+			}
+			if op == OP_CONT {
+				if msg_op == 0u8 {
+					self.fail(1002)
+					return Err(ws_error("continuation without a message"))
+				}
+			} else if op == OP_TEXT || op == OP_BINARY {
+				if msg_op != 0u8 {
+					self.fail(1002)
+					return Err(ws_error("new message inside a fragmented one"))
+				}
+				msg_op = op
+			} else {
+				self.fail(1002)
+				return Err(ws_error("unknown opcode {op}"))
+			}
+			msg.extend_from_slice(&p)
+			if msg.len() > MAX_MESSAGE {
+				self.fail(1009)
+				return Err(ws_error("message too large"))
+			}
+			if fin {
+				if msg_op == OP_TEXT {
+					match string::from_utf8(msg) {
+						Ok(s) => return Ok(Message::Text(s)),
+						Err(_) => {
+							self.fail(1007)
+							return Err(ws_error("text message is not UTF-8"))
+						},
+					}
+				}
+				return Ok(Message::Binary(msg))
+			}
+		}
+	}
+}

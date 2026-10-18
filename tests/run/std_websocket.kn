@@ -1,0 +1,83 @@
+import std::net::websocket
+
+import std::io
+import std::io::{Read, Write}
+import std::net::{TcpListener, TcpStream}
+
+fun echo(ws websocket::WebSocket) {
+	ws mut := ws
+	loop {
+		match ws.recv() {
+			Ok(websocket::Message::Text(t)) => ws.send_text("{ws.path()}: {t}").unwrap(),
+			Ok(websocket::Message::Binary(b)) => ws.send_binary(&b).unwrap(),
+			Ok(websocket::Message::Close(_, _)) => return,
+			Ok(_) => {},
+			Err(_) => return,
+		}
+	}
+}
+
+fun main() result<void, io::Error> {
+	println("accept {websocket::accept_key("dGhlIHNhbXBsZSBub25jZQ==")}")
+	l := TcpListener::bind("127.0.0.1:0")?
+	port := l.port()?
+	spawn move {
+		websocket::serve(l, echo).unwrap()
+	}
+	ws mut := websocket::connect("ws://127.0.0.1:{port}/chat")?
+	ws.send_text("hello")?
+	match ws.recv()? {
+		websocket::Message::Text(t) => println("text: {t}"),
+		_ => println("unexpected"),
+	}
+	big mut := Vec::new()
+	for i in 0..100000 {
+		big.push((i % 256) as u8)
+	}
+	ws.send_binary(&big)?
+	match ws.recv()? {
+		websocket::Message::Binary(b) => println("binary: {b.len()} {b == big}"),
+		_ => println("unexpected"),
+	}
+	ws.ping(b"p1")?
+	match ws.recv()? {
+		websocket::Message::Pong(p) => println("pong: {string::from_utf8_lossy(&p)}"),
+		_ => println("unexpected"),
+	}
+	ws.close(1000, "bye")?
+	match ws.recv()? {
+		websocket::Message::Close(c, _) => println("closed: {c}"),
+		_ => println("unexpected"),
+	}
+	// A raw client: a fragmented, masked text message.
+	t mut := TcpStream::connect("127.0.0.1:{port}")?
+	t.write_all(b"GET /raw HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: keep-alive, Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")?
+	t.write_all(&[1u8, 131u8, 0u8, 0u8, 0u8, 0u8, 97u8, 98u8, 99u8])?
+	t.write_all(&[128u8, 130u8, 1u8, 1u8, 1u8, 1u8, 101u8, 100u8])?
+	buf mut := [0u8; 512]
+	got mut := Vec::new()
+	while got.len() < 129 + 2 + 11 {
+		n := t.read(&mut buf)?
+		if n == 0 {
+			break
+		}
+		got.extend_from_slice(&buf[..n])
+	}
+	s := string::from_utf8_lossy(&got)
+	println("raw: {s.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")} {s.ends_with("/raw: abcde")}")
+	// Unmasked client frames are refused with close 1002.
+	u mut := TcpStream::connect("127.0.0.1:{port}")?
+	u.write_all(b"GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")?
+	u.write_all(&[129u8, 1u8, 97u8])?
+	all mut := Vec::new()
+	u.read_to_end(&mut all)?
+	n := all.len()
+	println("unmasked: {all[n - 4]} {(all[n - 2] as u32) * 256 + all[n - 1] as u32}")
+	// Not an upgrade.
+	h mut := TcpStream::connect("127.0.0.1:{port}")?
+	h.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")?
+	r mut := Vec::new()
+	h.read_to_end(&mut r)?
+	println("plain: {string::from_utf8_lossy(&r).starts_with("HTTP/1.1 400")}")
+	return Ok(())
+}

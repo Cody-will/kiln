@@ -17,7 +17,7 @@ Status key: ✅ done · 🚧 in progress · ⬜ not started
 
 ## Next up
 
-1. **Standard library phase 2:** ✅ done (strings through `context`, `kiln test`, net timeouts). Since done: HTTP client/server timeouts, duration parsing and flags, website sections for every phase 2 module, HTTPS via rustls (`std::net::tls`). Leftovers: DNS lookups aren't cancellable beyond connect timeouts, Unicode case folding in `regexp`, TLS client certificates (mTLS) and OS trust stores.
+1. **Standard library phase 2:** ✅ done (strings through `context`, `kiln test`, net timeouts). Since done: HTTP client/server timeouts, duration parsing and flags, website sections for every phase 2 module, HTTPS via rustls (`std::net::tls`). Backend libraries: HTTP/2 (`std::net::http2`, ALPN), WebSockets (`std::net::websocket`) and a PostgreSQL client with a pool (`std::db::postgres`). Leftovers: DNS lookups aren't cancellable beyond connect timeouts, Unicode case folding in `regexp`, TLS client certificates (mTLS) and OS trust stores.
 2. **Standard library phase 3:** `compress`, `mime`, `url`, templates.
 3. **Runtime refinements:** growable task stacks, per-task panics that `join` reports as `Err(Panic)` instead of ending the program, IOCP on Windows (stack overflow is now detected and reported; frames over 4 MiB are rejected at compile time). Codegen still copies large array temporaries (a 1 MB local array uses ~4 MB of frame).
 4. **Type checker gaps:** associated types, `impl Trait` as a distinct type, deeper exhaustiveness (nested patterns, integer ranges), method resolution on integer literals before defaulting.

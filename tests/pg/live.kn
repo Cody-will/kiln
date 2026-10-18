@@ -1,0 +1,68 @@
+import std::db::postgres
+
+import std::os
+import std::sync::Arc
+
+fun main() {
+	match run() {
+		Ok(_) => {},
+		Err(e) => println("error: {e.to_string()}"),
+	}
+}
+
+fun run() result<void, postgres::Error> {
+	url := os::getenv("KILN_TEST_PG_URL").unwrap_or("postgres://kiln:secretpw@127.0.0.1:55432/postgres".to_string())
+	db mut := postgres::Conn::connect_url(&url)?
+	println("server {db.parameter("server_version").unwrap_or("?").len() > 0}")
+	db.batch_execute("DROP TABLE IF EXISTS kt; CREATE TABLE kt (id serial PRIMARY KEY, name text NOT NULL UNIQUE, n int8, f float8, ok bool, b bytea)")?
+	ins := db.prepare("INSERT INTO kt (name, n, f, ok, b) VALUES ($1, $2, $3, $4, $5)")?
+	println("params {ins.param_types().len()} {ins.param_types()[1]}")
+	for i in 0..3 {
+		k := db.execute_prepared(&ins, &[postgres::text("row {i}"), postgres::int(i * 10), postgres::float(1.5), postgres::boolean(i % 2 == 0), postgres::bytes(&[1u8, 2u8, 255u8])])?
+		println("inserted {k}")
+	}
+	db.execute("INSERT INTO kt (name, n) VALUES ($1, $2)", &[postgres::text("it's \"quoted\""), postgres::null()])?
+	rs := db.query("SELECT id, name, n, f, ok, b FROM kt WHERE id > $1 ORDER BY id", &[postgres::int(0)])?
+	println("{rs.len()} rows, tag {rs.tag()}, cols {rs.columns()[1].name}")
+	for r in rs.rows() {
+		n := if r.is_null(2) { "NULL".to_string() } else { "{r.get_i64(2)?}" }
+		println("{r.get_i64(0)?} {r.get_str(1).unwrap_or("")} {n} {r.is_null(5) || r.get_bytes(5)?.len() == 3}")
+	}
+	match db.execute("INSERT INTO kt (name) VALUES ($1)", &[postgres::text("row 0")]) {
+		Ok(_) => println("unexpected success"),
+		Err(e) => println("dup: {e.code}"),
+	}
+	// The connection is still usable after an error.
+	println("count {db.query("SELECT count(*) FROM kt", &[])?.rows()[0].get_i64(0)?}")
+	db.batch_execute("BEGIN")?
+	db.execute("DELETE FROM kt", &[])?
+	println("in tx {db.in_transaction()}")
+	db.batch_execute("ROLLBACK")?
+	res := db.batch("SELECT 1 AS a; SELECT 'x' AS b, NULL AS c")?
+	println("batch {res.len()} {res[1].rows()[0].get_str(0).unwrap_or("")} {res[1].rows()[0].is_null(1)}")
+	bad mut := postgres::Config::parse(&url)?
+	bad.password = "wrong".to_string()
+	match postgres::Conn::connect(&bad) {
+		Ok(_) => println("unexpected login"),
+		Err(e) => println("bad password: {e.code}"),
+	}
+	cfg := postgres::Config::parse(&url)?
+	pool := Arc::new(postgres::Pool::new(cfg, 2))
+	(tx, rx) := chan::<i64>(8)
+	for t in 0..6 {
+		p := pool.clone()
+		out := tx.clone()
+		spawn move {
+			c mut := p.get().unwrap()
+			r := c.query("SELECT $1::int8 * 2, pg_backend_pid()", &[postgres::int(t)]).unwrap()
+			out <- r.rows()[0].get_i64(0).unwrap()
+		}
+	}
+	sum mut := 0
+	for _ in 0..6 {
+		sum += <-rx
+	}
+	println("pool sum {sum}")
+	db.close()
+	return Ok(())
+}

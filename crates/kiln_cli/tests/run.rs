@@ -583,3 +583,23 @@ fn debug_builds_have_line_tables() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(!bytes.windows(8).any(|w| w == b"lines.kn"));
 }
+
+/// The PostgreSQL client against a live server: set `KILN_TEST_PG_URL`
+/// (e.g. `postgres://user:pw@127.0.0.1:5432/postgres`) to run it. It creates
+/// and drops a table named `kt`.
+#[test]
+fn postgres_live() {
+    if std::env::var_os("KILN_TEST_PG_URL").is_none() {
+        eprintln!("skipped: set KILN_TEST_PG_URL to test against a live server");
+        return;
+    }
+    let src = root().join("tests/pg/live.kn");
+    let out = Command::new(kiln()).arg("run").arg(&src).output().unwrap();
+    let want = std::fs::read_to_string(root().join("tests/pg/live.out")).unwrap();
+    let got = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(got, want);
+}

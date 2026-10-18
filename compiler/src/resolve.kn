@@ -1849,7 +1849,7 @@ fun std_modules() Vec<(string, string)> {
 	for m in ["math", "collections", "regexp", "ptr", "time", "sync", "rand", "fmt", "io", "bytes", "path", "fs", "os", "context", "net"] {
 		o.push((m.to_string(), "{m}.kn"))
 	}
-	for (m, f) in [("net::http", "http"), ("net::tls", "tls"), ("net::http2", "http2"), ("log", "log")] {
+	for (m, f) in [("net::http", "http"), ("net::tls", "tls"), ("net::http2", "http2"), ("net::websocket", "websocket"), ("db::postgres", "postgres"), ("log", "log")] {
 		o.push((m.to_string(), "{f}.kn"))
 	}
 	return o

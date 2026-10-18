@@ -1,0 +1,18 @@
+import std::db::postgres
+import std::encoding::hex
+
+// Offline parts of the client; tests/pg (KILN_TEST_PG_URL) covers a live server.
+fun main() {
+	c := postgres::Config::parse("postgres://app:p%40ss@db.local:6543/shop").unwrap()
+	println("{c.user} {c.password} {c.host} {c.port} {c.database}")
+	d := postgres::Config::parse("postgresql://bob@localhost").unwrap()
+	println("{d.user} {d.password.len()} {d.host} {d.port} {d.database}")
+	println("bad: {postgres::Config::parse("mysql://x").is_err()}")
+	// RFC 7914 section 11 vectors.
+	println(hex::encode(&postgres::pbkdf2_sha256(b"password", b"salt", 1)))
+	println(hex::encode(&postgres::pbkdf2_sha256(b"password", b"salt", 4096)))
+	match postgres::Conn::connect_url("postgres://u@127.0.0.1:1/db") {
+		Ok(_) => println("unexpected"),
+		Err(e) => println("refused: {e.code.len() == 0}"),
+	}
+}

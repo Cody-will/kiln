@@ -1,0 +1,1042 @@
+// A PostgreSQL client: the version 3 wire protocol over TCP, with
+// SCRAM-SHA-256, MD5 and cleartext password authentication, simple and
+// extended (parameterized) queries, prepared statements, and a
+// connection pool.
+//
+//	db mut := postgres::Conn::connect_url("postgres://app:pw@localhost/app")?
+//	db.execute("INSERT INTO t (name, n) VALUES ($1, $2)", &[postgres::text("x"), postgres::int(7)])?
+//	for row in db.query("SELECT name, n FROM t WHERE n > $1", &[postgres::int(1)])?.rows() {
+//		println("{row.get_str(0).unwrap_or("")} {row.get_i64(1)?}")
+//	}
+//
+// Values travel in the text format: parameters are rendered as text and
+// results arrive as text, read with the typed getters on `Row`. TLS
+// (sslmode) is not supported yet; use it on trusted networks or through
+// a tunnel.
+
+import std::crypto::hmac
+import std::crypto::md5
+import std::crypto::sha256
+import std::encoding::base64
+import std::encoding::hex
+import std::io
+import std::io::{Read, Write}
+import std::net::TcpStream
+import std::rand
+import std::strconv
+import std::sync::Arc
+
+const PROTOCOL u32 = 196608
+
+// A database error: `code` is the SQLSTATE ("23505" for a unique
+// violation; "" for client-side errors such as a lost connection).
+pub struct Error {
+	pub code string,
+	pub message string,
+	pub detail string,
+}
+
+impl Error {
+	fun client(msg &str) Error {
+		return Error { code: "".to_string(), message: msg.to_string(), detail: "".to_string() }
+	}
+
+	pub fun to_string(&self) string {
+		if self.code.len() == 0 {
+			return "postgres: {self.message}"
+		}
+		if self.detail.len() > 0 {
+			return "postgres: {self.message} (SQLSTATE {self.code}): {self.detail}"
+		}
+		return "postgres: {self.message} (SQLSTATE {self.code})"
+	}
+}
+
+impl From<io::Error> for Error {
+	fun from(e io::Error) Error {
+		return Error::client(&e.to_string())
+	}
+}
+
+// Connection settings.
+pub struct Config {
+	pub host string,
+	pub port u16,
+	pub user string,
+	pub password string,
+	pub database string,
+}
+
+impl Config {
+	pub fun new(host &str, port u16, user &str, password &str, database &str) Config {
+		return Config { host: host.to_string(), port: port, user: user.to_string(), password: password.to_string(), database: database.to_string() }
+	}
+
+	// Parses "postgres://user:password@host:port/database" (the
+	// password, port and database are optional; the database defaults
+	// to the user name).
+	pub fun parse(url &str) result<Config, Error> {
+		rest mut := url.to_string()
+		if rest.starts_with("postgres://") {
+			rest = rest[11..].to_string()
+		} else if rest.starts_with("postgresql://") {
+			rest = rest[13..].to_string()
+		} else {
+			return Err(Error::client("url must start with postgres://"))
+		}
+		if let Some(q) = rest.find("?") {
+			rest = rest[..q].to_string()
+		}
+		cfg mut := Config::new("localhost", 5432, "postgres", "", "")
+		if let Some(at) = rest.find("@") {
+			auth := rest[..at].to_string()
+			rest = rest[at + 1..].to_string()
+			match auth.find(":") {
+				Some(c) => {
+					cfg.user = percent_decode(&auth[..c])
+					cfg.password = percent_decode(&auth[c + 1..])
+				},
+				None => cfg.user = percent_decode(&auth),
+			}
+		}
+		hostport mut := rest.clone()
+		if let Some(s) = rest.find("/") {
+			hostport = rest[..s].to_string()
+			cfg.database = percent_decode(&rest[s + 1..])
+		}
+		if let Some(c) = hostport.find(":") {
+			cfg.port = match strconv::parse_uint(&hostport[c + 1..]) {
+				Ok(p) => p as u16,
+				Err(_) => return Err(Error::client("bad port in url")),
+			}
+			hostport = hostport[..c].to_string()
+		}
+		if hostport.len() > 0 {
+			cfg.host = hostport
+		}
+		if cfg.database.len() == 0 {
+			cfg.database = cfg.user.clone()
+		}
+		return Ok(cfg)
+	}
+}
+
+fun percent_decode(s &str) string {
+	b := s.as_bytes()
+	o mut := Vec::new()
+	i mut := 0
+	while i < b.len() {
+		if b[i] == 37u8 && i + 2 < b.len() {
+			if let Ok(v) = hex::decode(&s[i + 1..i + 3]) {
+				o.push(v[0])
+				i += 3
+				continue
+			}
+		}
+		o.push(b[i])
+		i += 1
+	}
+	return string::from_utf8_lossy(&o)
+}
+
+// A query parameter, sent in the text format.
+pub enum Value {
+	Null,
+	Text(string),
+}
+
+pub fun null() Value {
+	return Value::Null
+}
+
+pub fun text(s &str) Value {
+	return Value::Text(s.to_string())
+}
+
+pub fun int(v i64) Value {
+	return Value::Text("{v}")
+}
+
+pub fun float(v f64) Value {
+	return Value::Text("{v}")
+}
+
+pub fun boolean(v bool) Value {
+	if v {
+		return Value::Text("t".to_string())
+	}
+	return Value::Text("f".to_string())
+}
+
+// A `bytea` parameter (sent in the hex form).
+pub fun bytes(b &[u8]) Value {
+	return Value::Text("\\x{hex::encode(b)}")
+}
+
+// A result column.
+pub struct Column {
+	pub name string,
+	// The type's OID (23 int4, 20 int8, 25 text, 16 bool, 701 float8, ...).
+	pub type_oid u32,
+}
+
+// A result row; values are in the text format (`None` is SQL NULL).
+pub struct Row {
+	values Vec<option<string>>,
+	columns Arc<Vec<Column>>,
+}
+
+impl Row {
+	pub fun len(&self) usize {
+		return self.values.len()
+	}
+
+	pub fun columns(&self) &[Column] {
+		return self.columns.as_slice()
+	}
+
+	// The index of the column called `name`.
+	pub fun index(&self, name &str) option<usize> {
+		for i in 0..self.columns.len() {
+			if self.columns.as_slice()[i].name == name {
+				return Some(i)
+			}
+		}
+		return None
+	}
+
+	pub fun is_null(&self, i usize) bool {
+		return self.values[i].is_none()
+	}
+
+	// The text of column `i`, or None for NULL.
+	pub fun get_str(&self, i usize) option<&str> {
+		match &self.values[i] {
+			Some(s) => return Some(&s[..]),
+			None => return None,
+		}
+	}
+
+	fun need(&self, i usize) result<&str, Error> {
+		if i >= self.values.len() {
+			return Err(Error::client("column index {i} out of range"))
+		}
+		match &self.values[i] {
+			Some(s) => return Ok(&s[..]),
+			None => return Err(Error::client("column {self.columns.as_slice()[i].name} is NULL")),
+		}
+	}
+
+	pub fun get_string(&self, i usize) result<string, Error> {
+		return Ok(self.need(i)?.to_string())
+	}
+
+	pub fun get_i64(&self, i usize) result<i64, Error> {
+		s := self.need(i)?
+		match strconv::parse_int(s) {
+			Ok(v) => return Ok(v),
+			Err(_) => return Err(Error::client("column {self.columns.as_slice()[i].name}: not an integer: {s}")),
+		}
+	}
+
+	pub fun get_f64(&self, i usize) result<f64, Error> {
+		s := self.need(i)?
+		match strconv::parse_float(s) {
+			Ok(v) => return Ok(v),
+			Err(_) => return Err(Error::client("column {self.columns.as_slice()[i].name}: not a number: {s}")),
+		}
+	}
+
+	pub fun get_bool(&self, i usize) result<bool, Error> {
+		s := self.need(i)?
+		if s == "t" || s == "true" {
+			return Ok(true)
+		}
+		if s == "f" || s == "false" {
+			return Ok(false)
+		}
+		return Err(Error::client("column {self.columns.as_slice()[i].name}: not a boolean: {s}"))
+	}
+
+	// A `bytea` column (hex output format).
+	pub fun get_bytes(&self, i usize) result<Vec<u8>, Error> {
+		s := self.need(i)?
+		if !s.starts_with("\\x") {
+			return Err(Error::client("column {self.columns.as_slice()[i].name}: not hex bytea"))
+		}
+		match hex::decode(&s[2..]) {
+			Ok(v) => return Ok(v),
+			Err(_) => return Err(Error::client("column {self.columns.as_slice()[i].name}: bad bytea")),
+		}
+	}
+}
+
+// The result of one statement.
+pub struct Rows {
+	columns Arc<Vec<Column>>,
+	rows Vec<Row>,
+	tag string,
+}
+
+impl Rows {
+	fun empty() Rows {
+		return Rows { columns: Arc::new(Vec::new()), rows: Vec::new(), tag: string::new() }
+	}
+
+	pub fun columns(&self) &[Column] {
+		return self.columns.as_slice()
+	}
+
+	pub fun rows(&self) &[Row] {
+		return &self.rows[..]
+	}
+
+	pub fun len(&self) usize {
+		return self.rows.len()
+	}
+
+	// The command tag, such as "INSERT 0 3" or "SELECT 2".
+	pub fun tag(&self) &str {
+		return &self.tag[..]
+	}
+
+	// The row count in the command tag (rows inserted, updated, ...).
+	pub fun affected(&self) u64 {
+		return tag_count(&self.tag)
+	}
+}
+
+fun tag_count(tag &str) u64 {
+	parts := tag.split(" ")
+	if parts.len() == 0 {
+		return 0
+	}
+	match strconv::parse_uint(parts[parts.len() - 1]) {
+		Ok(v) => return v,
+		Err(_) => return 0,
+	}
+}
+
+// A statement prepared on a connection with `Conn::prepare`.
+pub struct Statement {
+	name string,
+	params Vec<u32>,
+	columns Arc<Vec<Column>>,
+}
+
+impl Statement {
+	// The parameter type OIDs the server inferred.
+	pub fun param_types(&self) &[u32] {
+		return &self.params[..]
+	}
+
+	pub fun columns(&self) &[Column] {
+		return self.columns.as_slice()
+	}
+}
+
+// A backend message.
+struct Msg {
+	kind u8,
+	body Vec<u8>,
+}
+
+// Reads fields out of a message body.
+struct Cursor<'a> {
+	b &'a [u8],
+	at usize,
+}
+
+impl<'a> Cursor<'a> {
+	fun u8(&mut self) result<u8, Error> {
+		if self.at + 1 > self.b.len() {
+			return Err(Error::client("short message"))
+		}
+		v := self.b[self.at]
+		self.at += 1
+		return Ok(v)
+	}
+
+	fun i16(&mut self) result<i64, Error> {
+		if self.at + 2 > self.b.len() {
+			return Err(Error::client("short message"))
+		}
+		v := ((self.b[self.at] as u16) << 8) | (self.b[self.at + 1] as u16)
+		self.at += 2
+		return Ok(v as i16 as i64)
+	}
+
+	fun i32(&mut self) result<i64, Error> {
+		if self.at + 4 > self.b.len() {
+			return Err(Error::client("short message"))
+		}
+		v := ((self.b[self.at] as u32) << 24) | ((self.b[self.at + 1] as u32) << 16) | ((self.b[self.at + 2] as u32) << 8) | (self.b[self.at + 3] as u32)
+		self.at += 4
+		return Ok(v as i32 as i64)
+	}
+
+	fun cstr(&mut self) result<string, Error> {
+		start := self.at
+		while self.at < self.b.len() && self.b[self.at] != 0u8 {
+			self.at += 1
+		}
+		if self.at >= self.b.len() {
+			return Err(Error::client("unterminated string"))
+		}
+		s := string::from_utf8_lossy(&self.b[start..self.at])
+		self.at += 1
+		return Ok(s)
+	}
+
+	fun take(&mut self, n usize) result<&'a [u8], Error> {
+		if self.at + n > self.b.len() {
+			return Err(Error::client("short message"))
+		}
+		s := &self.b[self.at..self.at + n]
+		self.at += n
+		return Ok(s)
+	}
+}
+
+fun put_i16(o &mut Vec<u8>, v i64) {
+	o.push(((v >> 8) & 255) as u8)
+	o.push((v & 255) as u8)
+}
+
+fun put_i32(o &mut Vec<u8>, v i64) {
+	o.push(((v >> 24) & 255) as u8)
+	o.push(((v >> 16) & 255) as u8)
+	o.push(((v >> 8) & 255) as u8)
+	o.push((v & 255) as u8)
+}
+
+fun put_cstr(o &mut Vec<u8>, s &str) {
+	o.extend_from_slice(s.as_bytes())
+	o.push(0u8)
+}
+
+fun server_error(body &[u8]) Error {
+	e mut := Error { code: string::new(), message: string::new(), detail: string::new() }
+	c mut := Cursor { b: body, at: 0 }
+	loop {
+		f := match c.u8() {
+			Ok(f) => f,
+			Err(_) => break,
+		}
+		if f == 0u8 {
+			break
+		}
+		v := match c.cstr() {
+			Ok(v) => v,
+			Err(_) => break,
+		}
+		if f == 67u8 {
+			e.code = v
+		} else if f == 77u8 {
+			e.message = v
+		} else if f == 68u8 {
+			e.detail = v
+		}
+	}
+	return e
+}
+
+// PBKDF2-HMAC-SHA256 with a 32-byte output (RFC 8018), as SCRAM uses.
+pub fun pbkdf2_sha256(password &[u8], salt &[u8], iterations u32) [u8; 32] {
+	s mut := Vec::new()
+	s.extend_from_slice(salt)
+	s.extend_from_slice(&[0u8, 0u8, 0u8, 1u8])
+	u mut := hmac::sha256(password, &s)
+	out mut := u
+	for _ in 1..iterations {
+		u = hmac::sha256(password, &u)
+		for k in 0..32 {
+			out[k] ^= u[k]
+		}
+	}
+	return out
+}
+
+// A connection to one database.
+pub struct Conn {
+	tcp TcpStream,
+	buf Vec<u8>,
+	at usize,
+	end usize,
+	// The transaction status from the last ReadyForQuery: 'I' idle,
+	// 'T' in a transaction, 'E' in a failed transaction.
+	status u8,
+	broken bool,
+	params Vec<(string, string)>,
+	next_stmt u64,
+}
+
+impl Conn {
+	pub fun connect_url(url &str) result<Conn, Error> {
+		return Conn::connect(&Config::parse(url)?)
+	}
+
+	pub fun connect(cfg &Config) result<Conn, Error> {
+		tcp := TcpStream::connect("{cfg.host}:{cfg.port}")?
+		buf mut := Vec::new()
+		buf.resize(16384, 0u8)
+		c mut := Conn { tcp: tcp, buf: buf, at: 0, end: 0, status: 73u8, broken: false, params: Vec::new(), next_stmt: 0 }
+		c.startup(cfg)?
+		return Ok(c)
+	}
+
+	// A server parameter reported at startup (server_version, TimeZone, ...).
+	pub fun parameter(&self, name &str) option<&str> {
+		for (k, v) in &self.params {
+			if k == name {
+				return Some(&v[..])
+			}
+		}
+		return None
+	}
+
+	// True inside a transaction block (after BEGIN).
+	pub fun in_transaction(&self) bool {
+		return self.status != 73u8
+	}
+
+	// False once the connection failed and can't be used.
+	pub fun is_ok(&self) bool {
+		return !self.broken
+	}
+
+	fun send(&mut self, kind u8, body &[u8]) result<void, Error> {
+		m mut := Vec::new()
+		m.push(kind)
+		put_i32(&mut m, body.len() as i64 + 4)
+		m.extend_from_slice(body)
+		return self.write(&m)
+	}
+
+	fun write(&mut self, b &[u8]) result<void, Error> {
+		match self.tcp.write_all(b) {
+			Ok(_) => return Ok(()),
+			Err(e) => {
+				self.broken = true
+				return Err(Error::from(e))
+			},
+		}
+	}
+
+	fun fill(&mut self, n usize) result<void, Error> {
+		while self.end - self.at < n {
+			if self.at > 0 {
+				k := self.end - self.at
+				for i in 0..k {
+					self.buf[i] = self.buf[self.at + i]
+				}
+				self.at = 0
+				self.end = k
+			}
+			if self.buf.len() < n {
+				self.buf.resize(n, 0u8)
+			}
+			r := match self.tcp.read(&mut self.buf[self.end..]) {
+				Ok(r) => r,
+				Err(e) => {
+					self.broken = true
+					return Err(Error::from(e))
+				},
+			}
+			if r == 0 {
+				self.broken = true
+				return Err(Error::client("connection closed by the server"))
+			}
+			self.end += r
+		}
+		return Ok(())
+	}
+
+	fun recv(&mut self) result<Msg, Error> {
+		loop {
+			self.fill(5)?
+			kind := self.buf[self.at]
+			b := &self.buf[self.at + 1..self.at + 5]
+			n := (((b[0] as u32) << 24) | ((b[1] as u32) << 16) | ((b[2] as u32) << 8) | (b[3] as u32)) as usize
+			if n < 4 {
+				self.broken = true
+				return Err(Error::client("bad message length"))
+			}
+			self.fill(1 + n)?
+			body := self.buf[self.at + 5..self.at + 1 + n].to_vec()
+			self.at += 1 + n
+			// Notices and notifications are dropped; parameter changes kept.
+			if kind == 78u8 || kind == 65u8 {
+				continue
+			}
+			if kind == 83u8 {
+				c mut := Cursor { b: &body, at: 0 }
+				k := c.cstr()?
+				v := c.cstr()?
+				self.set_param(k, v)
+				continue
+			}
+			return Ok(Msg { kind: kind, body: body })
+		}
+	}
+
+	fun set_param(&mut self, k string, v string) {
+		for i in 0..self.params.len() {
+			if self.params[i].0 == k {
+				self.params[i].1 = v
+				return
+			}
+		}
+		self.params.push((k, v))
+	}
+
+	fun startup(&mut self, cfg &Config) result<void, Error> {
+		b mut := Vec::new()
+		put_i32(&mut b, 0)
+		put_i32(&mut b, PROTOCOL as i64)
+		put_cstr(&mut b, "user")
+		put_cstr(&mut b, &cfg.user)
+		put_cstr(&mut b, "database")
+		put_cstr(&mut b, &cfg.database)
+		put_cstr(&mut b, "client_encoding")
+		put_cstr(&mut b, "UTF8")
+		b.push(0u8)
+		n := b.len() as i64
+		b[0] = ((n >> 24) & 255) as u8
+		b[1] = ((n >> 16) & 255) as u8
+		b[2] = ((n >> 8) & 255) as u8
+		b[3] = (n & 255) as u8
+		self.write(&b)?
+		loop {
+			m := self.recv()?
+			if m.kind == 69u8 {
+				self.broken = true
+				return Err(server_error(&m.body))
+			}
+			if m.kind == 82u8 {
+				c mut := Cursor { b: &m.body, at: 0 }
+				code := c.i32()?
+				if code == 0 {
+					continue
+				} else if code == 3 {
+					p mut := Vec::new()
+					put_cstr(&mut p, &cfg.password)
+					self.send(112u8, &p)?
+				} else if code == 5 {
+					salt := c.take(4)?
+					inner := md5::hex("{cfg.password}{cfg.user}".as_bytes())
+					s mut := inner.as_bytes().to_vec()
+					s.extend_from_slice(salt)
+					p mut := Vec::new()
+					put_cstr(&mut p, "md5{md5::hex(&s)}")
+					self.send(112u8, &p)?
+				} else if code == 10 {
+					mechs mut := Vec::new()
+					loop {
+						s := c.cstr()?
+						if s.len() == 0 {
+							break
+						}
+						mechs.push(s)
+					}
+					if !mechs.contains(&"SCRAM-SHA-256".to_string()) {
+						self.broken = true
+						return Err(Error::client("no supported SASL mechanism"))
+					}
+					self.scram(&cfg.password)?
+				} else {
+					self.broken = true
+					return Err(Error::client("unsupported authentication method {code}"))
+				}
+			} else if m.kind == 75u8 {
+				continue
+			} else if m.kind == 90u8 {
+				self.status = m.body[0]
+				return Ok(())
+			} else {
+				self.broken = true
+				return Err(Error::client("unexpected message during startup"))
+			}
+		}
+	}
+
+	// SCRAM-SHA-256 (RFC 5802 / 7677) without channel binding.
+	fun scram(&mut self, password &str) result<void, Error> {
+		nb mut := [0u8; 18]
+		rand::secure_fill(&mut nb)
+		nonce := base64::encode(&nb)
+		first_bare := "n=,r={nonce}"
+		p mut := Vec::new()
+		put_cstr(&mut p, "SCRAM-SHA-256")
+		cf := "n,,{first_bare}"
+		put_i32(&mut p, cf.len() as i64)
+		p.extend_from_slice(cf.as_bytes())
+		self.send(112u8, &p)?
+		m := self.auth_msg(11)?
+		server_first := string::from_utf8_lossy(&m)
+		snonce mut := string::new()
+		salt mut := Vec::new()
+		iters mut := 0u32
+		for part in server_first.split(",") {
+			if part.starts_with("r=") {
+				snonce = part[2..].to_string()
+			} else if part.starts_with("s=") {
+				salt = match base64::decode(&part[2..]) {
+					Ok(s) => s,
+					Err(_) => return Err(Error::client("bad SCRAM salt")),
+				}
+			} else if part.starts_with("i=") {
+				iters = match strconv::parse_uint(&part[2..]) {
+					Ok(i) => i as u32,
+					Err(_) => return Err(Error::client("bad SCRAM iteration count")),
+				}
+			}
+		}
+		if !snonce.starts_with(&nonce) || iters == 0 {
+			self.broken = true
+			return Err(Error::client("bad SCRAM server-first message"))
+		}
+		salted := pbkdf2_sha256(password.as_bytes(), &salt, iters)
+		client_key := hmac::sha256(&salted, b"Client Key")
+		stored := sha256::sum(&client_key)
+		without_proof := "c=biws,r={snonce}"
+		auth := "{first_bare},{server_first},{without_proof}"
+		sig := hmac::sha256(&stored, auth.as_bytes())
+		proof mut := client_key
+		for i in 0..32 {
+			proof[i] ^= sig[i]
+		}
+		fin := "{without_proof},p={base64::encode(&proof)}"
+		self.send(112u8, fin.as_bytes())?
+		last := string::from_utf8_lossy(&self.auth_msg(12)?)
+		server_key := hmac::sha256(&salted, b"Server Key")
+		want := "v={base64::encode(&hmac::sha256(&server_key, auth.as_bytes()))}"
+		if last != want {
+			self.broken = true
+			return Err(Error::client("SCRAM server signature mismatch"))
+		}
+		return Ok(())
+	}
+
+	// The data of the next Authentication message, which must have `code`.
+	fun auth_msg(&mut self, code i64) result<Vec<u8>, Error> {
+		m := self.recv()?
+		if m.kind == 69u8 {
+			self.broken = true
+			return Err(server_error(&m.body))
+		}
+		c mut := Cursor { b: &m.body, at: 0 }
+		if m.kind != 82u8 || c.i32()? != code {
+			self.broken = true
+			return Err(Error::client("unexpected SASL message"))
+		}
+		return Ok(m.body[4..].to_vec())
+	}
+
+	// Runs one or more `;`-separated statements without parameters
+	// (the simple query protocol) and returns each statement's result.
+	pub fun batch(&mut self, sql &str) result<Vec<Rows>, Error> {
+		p mut := Vec::new()
+		put_cstr(&mut p, sql)
+		self.send(81u8, &p)?
+		out mut := Vec::new()
+		cur mut := Rows::empty()
+		let mut err option<Error> = None
+		loop {
+			m := self.recv()?
+			if m.kind == 84u8 {
+				cur.columns = Arc::new(parse_columns(&m.body)?)
+			} else if m.kind == 68u8 {
+				cur.rows.push(parse_row(&m.body, &cur.columns)?)
+			} else if m.kind == 67u8 {
+				c mut := Cursor { b: &m.body, at: 0 }
+				cur.tag = c.cstr()?
+				out.push(cur)
+				cur = Rows::empty()
+			} else if m.kind == 73u8 {
+				out.push(cur)
+				cur = Rows::empty()
+			} else if m.kind == 69u8 {
+				err = Some(server_error(&m.body))
+			} else if m.kind == 90u8 {
+				self.status = m.body[0]
+				break
+			}
+		}
+		if let Some(e) = err {
+			return Err(e)
+		}
+		return Ok(out)
+	}
+
+	// Runs `;`-separated statements, discarding results.
+	pub fun batch_execute(&mut self, sql &str) result<void, Error> {
+		self.batch(sql)?
+		return Ok(())
+	}
+
+	// Prepares `sql` as a named statement for repeated use.
+	pub fun prepare(&mut self, sql &str) result<Statement, Error> {
+		name := "kn_s{self.next_stmt}"
+		self.next_stmt += 1
+		p mut := Vec::new()
+		put_cstr(&mut p, &name)
+		put_cstr(&mut p, sql)
+		put_i16(&mut p, 0)
+		self.send(80u8, &p)?
+		d mut := Vec::new()
+		d.push(83u8)
+		put_cstr(&mut d, &name)
+		self.send(68u8, &d)?
+		self.send(83u8, &[])?
+		let mut err option<Error> = None
+		params mut := Vec::new()
+		cols mut := Vec::new()
+		loop {
+			m := self.recv()?
+			if m.kind == 116u8 {
+				c mut := Cursor { b: &m.body, at: 0 }
+				n := c.i16()?
+				for _ in 0..n {
+					params.push(c.i32()? as u32)
+				}
+			} else if m.kind == 84u8 {
+				cols = parse_columns(&m.body)?
+			} else if m.kind == 69u8 {
+				err = Some(server_error(&m.body))
+			} else if m.kind == 90u8 {
+				self.status = m.body[0]
+				break
+			}
+		}
+		if let Some(e) = err {
+			return Err(e)
+		}
+		return Ok(Statement { name: name, params: params, columns: Arc::new(cols) })
+	}
+
+	// Frees a prepared statement on the server.
+	pub fun close_statement(&mut self, st Statement) result<void, Error> {
+		p mut := Vec::new()
+		p.push(83u8)
+		put_cstr(&mut p, &st.name)
+		self.send(67u8, &p)?
+		self.send(83u8, &[])?
+		return self.finish()
+	}
+
+	// Reads to ReadyForQuery, returning the first error.
+	fun finish(&mut self) result<void, Error> {
+		let mut err option<Error> = None
+		loop {
+			m := self.recv()?
+			if m.kind == 69u8 && err.is_none() {
+				err = Some(server_error(&m.body))
+			} else if m.kind == 90u8 {
+				self.status = m.body[0]
+				break
+			}
+		}
+		if let Some(e) = err {
+			return Err(e)
+		}
+		return Ok(())
+	}
+
+	// Runs a statement with `$1, $2, ...` parameters and returns its rows.
+	pub fun query(&mut self, sql &str, params &[Value]) result<Rows, Error> {
+		p mut := Vec::new()
+		put_cstr(&mut p, "")
+		put_cstr(&mut p, sql)
+		put_i16(&mut p, 0)
+		self.send(80u8, &p)?
+		return self.bind_execute("", params, None)
+	}
+
+	// Runs a statement and returns the number of rows it affected.
+	pub fun execute(&mut self, sql &str, params &[Value]) result<u64, Error> {
+		return Ok(self.query(sql, params)?.affected())
+	}
+
+	// Runs a prepared statement.
+	pub fun query_prepared(&mut self, st &Statement, params &[Value]) result<Rows, Error> {
+		if params.len() != st.params.len() {
+			return Err(Error::client("statement takes {st.params.len()} parameters, got {params.len()}"))
+		}
+		return self.bind_execute(&st.name, params, Some(st.columns.clone()))
+	}
+
+	pub fun execute_prepared(&mut self, st &Statement, params &[Value]) result<u64, Error> {
+		return Ok(self.query_prepared(st, params)?.affected())
+	}
+
+	fun bind_execute(&mut self, name &str, params &[Value], cols option<Arc<Vec<Column>>>) result<Rows, Error> {
+		b mut := Vec::new()
+		put_cstr(&mut b, "")
+		put_cstr(&mut b, name)
+		put_i16(&mut b, 0)
+		put_i16(&mut b, params.len() as i64)
+		for v in params {
+			match v {
+				Value::Null => put_i32(&mut b, -1),
+				Value::Text(s) => {
+					put_i32(&mut b, s.len() as i64)
+					b.extend_from_slice(s.as_bytes())
+				},
+			}
+		}
+		put_i16(&mut b, 0)
+		self.send(66u8, &b)?
+		if cols.is_none() {
+			// Unnamed statement: ask for the row shape of the portal.
+			d mut := Vec::new()
+			d.push(80u8)
+			put_cstr(&mut d, "")
+			self.send(68u8, &d)?
+		}
+		e mut := Vec::new()
+		put_cstr(&mut e, "")
+		put_i32(&mut e, 0)
+		self.send(69u8, &e)?
+		self.send(83u8, &[])?
+		out mut := Rows::empty()
+		if let Some(c) = cols {
+			out.columns = c
+		}
+		let mut err option<Error> = None
+		loop {
+			m := self.recv()?
+			if m.kind == 84u8 {
+				out.columns = Arc::new(parse_columns(&m.body)?)
+			} else if m.kind == 68u8 {
+				out.rows.push(parse_row(&m.body, &out.columns)?)
+			} else if m.kind == 67u8 {
+				c mut := Cursor { b: &m.body, at: 0 }
+				out.tag = c.cstr()?
+			} else if m.kind == 69u8 && err.is_none() {
+				err = Some(server_error(&m.body))
+			} else if m.kind == 90u8 {
+				self.status = m.body[0]
+				break
+			}
+		}
+		if let Some(x) = err {
+			return Err(x)
+		}
+		return Ok(out)
+	}
+
+	// Ends the session.
+	pub fun close(&mut self) {
+		if !self.broken {
+			self.send(88u8, &[]).unwrap_or(())
+			self.broken = true
+		}
+	}
+}
+
+fun parse_columns(body &[u8]) result<Vec<Column>, Error> {
+	c mut := Cursor { b: body, at: 0 }
+	n := c.i16()?
+	cols mut := Vec::new()
+	for _ in 0..n {
+		name := c.cstr()?
+		c.i32()?
+		c.i16()?
+		oid := c.i32()? as u32
+		c.i16()?
+		c.i32()?
+		c.i16()?
+		cols.push(Column { name: name, type_oid: oid })
+	}
+	return Ok(cols)
+}
+
+fun parse_row(body &[u8], cols &Arc<Vec<Column>>) result<Row, Error> {
+	c mut := Cursor { b: body, at: 0 }
+	n := c.i16()?
+	vals mut := Vec::new()
+	for _ in 0..n {
+		len := c.i32()?
+		if len < 0 {
+			vals.push(None)
+		} else {
+			vals.push(Some(string::from_utf8_lossy(c.take(len as usize)?)))
+		}
+	}
+	return Ok(Row { values: vals, columns: cols.clone() })
+}
+
+// A pool of up to `max` connections shared between tasks.
+//
+//	pool := Arc::new(postgres::Pool::new(cfg, 8))
+//	c mut := pool.get()?
+//	c.execute("UPDATE ...", &[])?
+//	// back in the pool when `c` is dropped
+pub struct Pool {
+	cfg Config,
+	// One token per connection slot: Some(idle connection) or None (a
+	// slot free to open a new one). `get` waits when all are taken.
+	tx chan<- option<Conn>,
+	rx <-chan option<Conn>,
+}
+
+impl Pool {
+	pub fun new(cfg Config, max usize) Pool {
+		(tx, rx) := chan::<option<Conn>>(max)
+		for _ in 0..max {
+			tx <- None
+		}
+		return Pool { cfg: cfg, tx: tx, rx: rx }
+	}
+
+	// A connection, opened if no idle one is waiting; blocks while all
+	// `max` are in use.
+	pub fun get(&self) result<PooledConn, Error> {
+		slot := <-self.rx
+		c := match slot {
+			Some(c) => c,
+			None => match Conn::connect(&self.cfg) {
+				Ok(c) => c,
+				Err(e) => {
+					self.tx <- None
+					return Err(e)
+				},
+			},
+		}
+		return Ok(PooledConn { c: Some(c), tx: self.tx.clone() })
+	}
+}
+
+// A connection borrowed from a `Pool`; it goes back when dropped. A broken
+// connection, or one left inside a transaction, is closed instead.
+pub struct PooledConn {
+	c option<Conn>,
+	tx chan<- option<Conn>,
+}
+
+impl Deref<Conn> for PooledConn {
+	fun deref(&self) &Conn {
+		return self.c.as_ref().unwrap()
+	}
+}
+
+impl DerefMut<Conn> for PooledConn {
+	fun deref_mut(&mut self) &mut Conn {
+		return self.c.as_mut().unwrap()
+	}
+}
+
+impl Drop for PooledConn {
+	fun drop(&mut self) {
+		if let Some(c) = self.c.take() {
+			if c.is_ok() && !c.in_transaction() {
+				self.tx <- Some(c)
+			} else {
+				c mut := c
+				c.close()
+				self.tx <- None
+			}
+		}
+	}
+}
