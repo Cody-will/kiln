@@ -1,0 +1,253 @@
+// MIR inlining of small functions (release builds): a port of
+// crates/kiln_codegen/src/inline.rs. Callees without loops, defer,
+// closures, tasks or `select`, of at most MAX_STMTS statements, are
+// spliced into the caller; a body inlines at most MAX_INLINES calls.
+
+import std::collections::HashMap
+import super::mir::*
+import super::ty::Ty
+
+pub const MAX_STMTS usize = 40
+pub const MAX_INLINES usize = 48
+
+pub fun call_of(s &StmtKind) option<(Callee, Vec<Operand>)> {
+	match s {
+		StmtKind::Assign(_, Rvalue::Call { callee, args, .. }) => return Some((callee.clone(), args.clone())),
+		StmtKind::Eval(Rvalue::Call { callee, args, .. }) => return Some((callee.clone(), args.clone())),
+		_ => return None,
+	}
+}
+
+fun succ(t &Terminator) Vec<usize> {
+	o mut := Vec::new()
+	match t {
+		Terminator::Goto(b) => o.push(*b as usize),
+		Terminator::SwitchBool { t, f, .. } => {
+			o.push(*t as usize)
+			o.push(*f as usize)
+		}
+		Terminator::Branch(bs) => {
+			for b in bs {
+				o.push(*b as usize)
+			}
+		}
+		Terminator::Return | Terminator::Unreachable => {}
+		Terminator::DeferDispatch { targets, done } => {
+			for t in targets {
+				if let Some(t) = t {
+					o.push(*t as usize)
+				}
+			}
+			o.push(*done as usize)
+		},
+	}
+	return o
+}
+
+fun has_cycle(b &Body) bool {
+	state mut := Vec::new()
+	for _ in &b.blocks {
+		state.push(0u8)
+	}
+	stack mut := Vec::new()
+	stack.push((0usize, 0usize))
+	state[0] = 1u8
+	while stack.len() > 0 {
+		(n, k) := stack.pop().unwrap()
+		s := succ(&b.blocks[n].term)
+		if k < s.len() {
+			stack.push((n, k + 1))
+			m := s[k]
+			if state[m] == 1u8 {
+				return true
+			}
+			if state[m] == 0u8 {
+				state[m] = 1u8
+				stack.push((m, 0usize))
+			}
+		} else {
+			state[n] = 2u8
+		}
+	}
+	return false
+}
+
+pub fun inlinable(b &Body) bool {
+	if b.kind != BodyKind::Fn || b.unsupported.len() > 0 || b.errors.len() > 0 || b.captures.len() > 0 {
+		return false
+	}
+	n mut := 0usize
+	for blk in &b.blocks {
+		n = n + blk.stmts.len()
+	}
+	if n > MAX_STMTS || b.blocks.len() == 0 {
+		return false
+	}
+	if has_cycle(b) {
+		return false
+	}
+	for blk in &b.blocks {
+		match &blk.term {
+			Terminator::Branch(_) => return false,
+			Terminator::DeferDispatch { targets, .. } => {
+				if targets.len() > 0 {
+					return false
+				}
+			}
+			_ => {},
+		}
+		for s in &blk.stmts {
+			match &s.kind {
+				StmtKind::DeferPush(_, _) | StmtKind::DeferLoad(_) | StmtKind::Spawn { .. } => return false,
+				StmtKind::Assign(_, rv) => {
+					if bad_rv(rv) {
+						return false
+					}
+				}
+				StmtKind::Eval(rv) => {
+					if bad_rv(rv) {
+						return false
+					}
+				}
+				_ => {},
+			}
+		}
+	}
+	return true
+}
+
+fun bad_rv(rv &Rvalue) bool {
+	match rv {
+		Rvalue::Aggregate(AggKind::Closure(_), _) => return true,
+		Rvalue::Pure(Op::Unsupported(_), _) => return true,
+		_ => return false,
+	}
+}
+
+fun msubsts(v &Vec<(string, Ty)>, s &HashMap<string, Ty>) Vec<(string, Ty)> {
+	o mut := Vec::new()
+	for (k, t) in v {
+		o.push((k.clone(), t.subst(s)))
+	}
+	return o
+}
+
+fun mplace(p &Place, base u32) Place {
+	proj mut := Vec::new()
+	for pr in &p.proj {
+		match pr {
+			Proj::Index(l) => proj.push(Proj::Index(*l + base)),
+			_ => proj.push(pr.clone()),
+		}
+	}
+	return Place { local: p.local + base, proj: proj }
+}
+
+fun mop(o &Operand, base u32, s &HashMap<string, Ty>) Operand {
+	match o {
+		Operand::Copy(p) => return Operand::Copy(mplace(p, base)),
+		Operand::Move(p) => return Operand::Move(mplace(p, base)),
+		Operand::Const(c) => {
+			kind := match &c.kind {
+				ConstKind::Fn(i, v) => ConstKind::Fn(*i, msubsts(v, s)),
+				k => k.clone(),
+			}
+			return Operand::Const(Box::new(Constant { kind: kind, ty: c.ty.subst(s) }))
+		}
+	}
+}
+
+fun mops(os &Vec<Operand>, base u32, s &HashMap<string, Ty>) Vec<Operand> {
+	o mut := Vec::new()
+	for x in os {
+		o.push(mop(x, base, s))
+	}
+	return o
+}
+
+fun mrv(rv &Rvalue, base u32, s &HashMap<string, Ty>) Rvalue {
+	match rv {
+		Rvalue::Use(o) => return Rvalue::Use(mop(o, base, s)),
+		Rvalue::Coerce(o, t) => return Rvalue::Coerce(mop(o, base, s), t.subst(s)),
+		Rvalue::Ref { mutable, place } => return Rvalue::Ref { mutable: *mutable, place: mplace(place, base) },
+		Rvalue::Aggregate(k, os) => return Rvalue::Aggregate(k.clone(), mops(os, base, s)),
+		Rvalue::Call { callee, args, flows } => {
+			c2 := match callee {
+				Callee::Fn(i, v) => Callee::Fn(*i, msubsts(v, s)),
+				c => c.clone(),
+			}
+			return Rvalue::Call { callee: c2, args: mops(args, base, s), flows: flows.clone() }
+		}
+		Rvalue::Pure(op, os) => {
+			op2 := match op {
+				Op::Cast(t) => Op::Cast(t.subst(s)),
+				o => o.clone(),
+			}
+			return Rvalue::Pure(op2, mops(os, base, s))
+		}
+	}
+}
+
+fun mstmt(k &StmtKind, base u32, s &HashMap<string, Ty>) StmtKind {
+	match k {
+		StmtKind::Assign(p, rv) => return StmtKind::Assign(mplace(p, base), mrv(rv, base, s)),
+		StmtKind::Eval(rv) => return StmtKind::Eval(mrv(rv, base, s)),
+		StmtKind::Read(p) => return StmtKind::Read(mplace(p, base)),
+		StmtKind::StorageDead(l) => return StmtKind::StorageDead(*l + base),
+		other => return other.clone(),
+	}
+}
+
+// Replaces call statement `si` of block `bi` with the callee's body.
+pub fun splice(body &mut Body, bi usize, si usize, callee &Body, substs &HashMap<string, Ty>, args Vec<Operand>) {
+	base := body.locals.len() as u32
+	for (i, d) in callee.locals.iter().enumerate() {
+		d2 mut := d.clone()
+		d2.ty = d.ty.subst(substs)
+		if i == 0 || d.kind == LocalKind::Arg {
+			d2.kind = LocalKind::Temp
+		}
+		body.locals.push(d2)
+	}
+	ret := base
+	bbase := body.blocks.len() as u32
+	cont := bbase + callee.blocks.len() as u32
+	orig := body.blocks[bi].clone()
+	call := orig.stmts[si].clone()
+	head mut := Vec::new()
+	tail mut := Vec::new()
+	for (j, s) in orig.stmts.iter().enumerate() {
+		if j < si {
+			head.push(s.clone())
+		} else if j > si {
+			tail.push(s.clone())
+		}
+	}
+	for (k, a) in args.iter().enumerate() {
+		head.push(Statement { kind: StmtKind::Assign(Place::local(base + 1 + k as u32), Rvalue::Use(a.clone())), span: call.span })
+	}
+	body.blocks[bi] = BlockData { stmts: head, term: Terminator::Goto(bbase), term_span: orig.term_span }
+	for blk in &callee.blocks {
+		stmts mut := Vec::new()
+		for s in &blk.stmts {
+			stmts.push(Statement { kind: mstmt(&s.kind, base, substs), span: s.span })
+		}
+		term := match &blk.term {
+			Terminator::Return => Terminator::Goto(cont),
+			Terminator::DeferDispatch { done, .. } => Terminator::Goto(*done + bbase),
+			Terminator::Goto(b) => Terminator::Goto(*b + bbase),
+			Terminator::SwitchBool { cond, t, f } => Terminator::SwitchBool { cond: mop(cond, base, substs), t: *t + bbase, f: *f + bbase },
+			t => t.clone(),
+		}
+		body.blocks.push(BlockData { stmts: stmts, term: term, term_span: blk.term_span })
+	}
+	cs mut := Vec::new()
+	match &call.kind {
+		StmtKind::Assign(p, _) => cs.push(Statement { kind: StmtKind::Assign(p.clone(), Rvalue::Use(Operand::Move(Place::local(ret)))), span: call.span }),
+		_ => cs.push(Statement { kind: StmtKind::StorageDead(ret), span: call.span }),
+	}
+	for s in tail {
+		cs.push(s)
+	}
+	body.blocks.push(BlockData { stmts: cs, term: orig.term.clone(), term_span: orig.term_span })
+}

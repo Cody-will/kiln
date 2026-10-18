@@ -12,6 +12,8 @@
 import std::collections::{HashMap, HashSet}
 import super::ast::{BinOp, FmtSpec, ItemKind, Span, TypeKind}
 import super::lower
+import super::inline
+import std::os
 import super::mir
 import super::mir::*
 import super::resolve::{DefKind, Resolved}
@@ -1663,12 +1665,96 @@ impl Cg {
 		return self.load("i8", s, 0)
 	}
 
+	// The concrete function and substitution a direct call reaches (not
+	// virtual, intrinsic or extern); declares nothing.
+	fun static_target(&mut self, idx usize, substs HashMap<string, Ty>) option<(usize, HashMap<string, Ty>)> {
+		trait_def := self.c.r.fns[idx].trait_def
+		impl_idx := self.c.r.fns[idx].impl_idx
+		if trait_def.is_some() && impl_idx.is_none() {
+			match substs.get("Self") {
+				Some(Ty::Dyn(_)) => return None,
+				None => return None,
+				_ => {},
+			}
+			(i2, s2) := match self.c.resolve_trait_method(idx, &substs) {
+				Some(x) => x,
+				None => return None,
+			}
+			if i2 == idx {
+				if self.c.r.fns[i2].decl.body.is_some() {
+					return Some((i2, s2))
+				}
+				return None
+			}
+			s3 mut := HashMap::new()
+			for (k, v) in s2.iter() {
+				s3.insert(k.clone(), v.subst(&substs))
+			}
+			return self.static_target(i2, s3)
+		}
+		if self.c.r.fns[idx].decl.body.is_none() {
+			return None
+		}
+		return Some((idx, substs))
+	}
+
+	fun inline_calls(&mut self, body &mut Body, substs &HashMap<string, Ty>, self_idx usize) {
+		count mut := 0usize
+		bi mut := 0usize
+		while bi < body.blocks.len() && count < inline::MAX_INLINES {
+			si mut := 0usize
+			while si < body.blocks[bi].stmts.len() {
+				(callee, args) := match inline::call_of(&body.blocks[bi].stmts[si].kind) {
+					Some(x) => x,
+					None => {
+						si = si + 1
+						continue
+					}
+				}
+				(i, cs) := match callee {
+					Callee::Fn(i, cs) => (i, cs),
+					_ => {
+						si = si + 1
+						continue
+					}
+				}
+				m mut := HashMap::new()
+				for (k, v) in &cs {
+					m.insert(k.clone(), v.subst(substs))
+				}
+				(t, ts) := match self.static_target(i, m) {
+					Some(x) => x,
+					None => {
+						si = si + 1
+						continue
+					}
+				}
+				if t == self_idx {
+					si = si + 1
+					continue
+				}
+				bs := self.bodies(t)
+				if bs.len() == 0 || !inline::inlinable(&bs[0]) {
+					si = si + 1
+					continue
+				}
+				inline::splice(body, bi, si, &bs[0], &ts, args)
+				count = count + 1
+				break
+			}
+			bi = bi + 1
+		}
+	}
+
 	fun define_fn(&mut self, name &str, fn_idx usize, body_i usize, substs HashMap<string, Ty>, abi Abi) {
 		bs := self.bodies(fn_idx)
 		if body_i >= bs.len() {
 			return
 		}
-		body := bs[body_i].clone()
+		body mut := bs[body_i].clone()
+		if !self.checked && body.unsupported.len() == 0 && os::getenv("KILN_NO_INLINE").is_none() {
+			self.inline_calls(&mut body, &substs, fn_idx)
+		}
 		self.span = body.span
 		if body.unsupported.len() > 0 {
 			for (what, span) in &body.unsupported {

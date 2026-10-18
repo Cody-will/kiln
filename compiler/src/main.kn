@@ -23,6 +23,7 @@ mod mir
 mod sig
 mod borrowck
 mod lower
+mod inline
 mod codegen
 
 import std::fs
