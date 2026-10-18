@@ -2,8 +2,8 @@ import std::io
 import std::io::{Read, Write}
 import std::net::TcpListener
 import std::net::http
-import std::net::tls
 import std::net::http2
+import std::net::tls
 
 // A test certificate authority and a "localhost" certificate it signed
 // (P-256, valid until 2126). Test use only.

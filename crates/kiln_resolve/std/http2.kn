@@ -1045,6 +1045,7 @@ const HUFF_CODES [u32; 256] = [
 	0x3ffffeb, 0x7ffffe6, 0x3ffffec, 0x3ffffed, 0x7ffffe7, 0x7ffffe8, 0x7ffffe9, 0x7ffffea,
 	0x7ffffeb, 0xffffffe, 0x7ffffec, 0x7ffffed, 0x7ffffee, 0x7ffffef, 0x7fffff0, 0x3ffffee,
 ]
+
 const HUFF_LENS [u8; 256] = [
 	13, 23, 28, 28, 28, 28, 28, 28, 28, 24, 30, 28, 28, 30, 28, 28,
 	28, 28, 28, 28, 28, 28, 30, 28, 28, 28, 28, 28, 28, 28, 28, 28,
@@ -1082,6 +1083,7 @@ const STATIC_NAMES [&str; 61] = [
 	"transfer-encoding", "user-agent", "vary", "via",
 	"www-authenticate",
 ]
+
 const STATIC_VALUES [&str; 61] = [
 	"", "GET", "POST", "/",
 	"/index.html", "http", "https", "200",
