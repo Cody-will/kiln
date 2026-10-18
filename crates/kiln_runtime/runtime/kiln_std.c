@@ -48,6 +48,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <spawn.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -1998,49 +1999,46 @@ int64_t kn_os_run(const uint8_t *argv, size_t al, int64_t capture, KnVec *out, K
 		result = errno_err();
 		goto done;
 	}
-	int ep[2];
-	if (pipe(ep) != 0) {
-		result = errno_err();
-		goto done;
-	}
-	/* Keep the pipes out of programs other threads start concurrently
-	 * (dup2 in the child clears the flag on its stdout and stderr). */
-	fcntl(ep[0], F_SETFD, FD_CLOEXEC);
-	fcntl(ep[1], F_SETFD, FD_CLOEXEC);
 	if (capture) {
+		/* Keep the pipes out of programs other threads start concurrently
+		 * (the dup2 file actions clear the flag on the child's stdout and
+		 * stderr). */
 		fcntl(po[0], F_SETFD, FD_CLOEXEC);
 		fcntl(po[1], F_SETFD, FD_CLOEXEC);
 		fcntl(pe[0], F_SETFD, FD_CLOEXEC);
 		fcntl(pe[1], F_SETFD, FD_CLOEXEC);
 	}
-	pid_t pid = fork();
-	if (pid < 0) {
-		result = errno_err();
-		close(ep[0]);
-		close(ep[1]);
-		goto done;
+	/* posix_spawn, not fork: it does not copy the parent's page tables, so
+	 * starting a program costs the same however much memory this process
+	 * holds (a compiler with a large heap forking clang paid ~20 ms each). */
+	posix_spawn_file_actions_t fa;
+	posix_spawnattr_t sa;
+	posix_spawn_file_actions_init(&fa);
+	posix_spawnattr_init(&sa);
+	if (capture) {
+		posix_spawn_file_actions_adddup2(&fa, po[1], 1);
+		posix_spawn_file_actions_adddup2(&fa, pe[1], 2);
 	}
-	if (pid == 0) {
-		close(ep[0]);
+	sigset_t def;
+	sigemptyset(&def);
+	sigaddset(&def, SIGPIPE);
+	posix_spawnattr_setsigdefault(&sa, &def);
+	posix_spawnattr_setflags(&sa, POSIX_SPAWN_SETSIGDEF);
+	pid_t pid;
+	int serr = posix_spawnp(&pid, args[0], &fa, &sa, args, environ);
+	posix_spawn_file_actions_destroy(&fa);
+	posix_spawnattr_destroy(&sa);
+	if (serr != 0) {
+		result = mkerr(kind_of_errno(serr), serr);
 		if (capture) {
-			dup2(po[1], 1);
-			dup2(pe[1], 2);
 			close(po[0]);
 			close(po[1]);
 			close(pe[0]);
 			close(pe[1]);
+			po[0] = pe[0] = -1;
 		}
-		signal(SIGPIPE, SIG_DFL);
-		execvp(args[0], args);
-		int e = errno;
-		ssize_t w = write(ep[1], &e, sizeof e);
-		(void)w;
-		_exit(127);
+		goto done;
 	}
-	close(ep[1]);
-	int child_errno = 0;
-	ssize_t got = read(ep[0], &child_errno, sizeof child_errno);
-	close(ep[0]);
 	if (capture) {
 		close(po[1]);
 		close(pe[1]);
@@ -2083,9 +2081,7 @@ int64_t kn_os_run(const uint8_t *argv, size_t al, int64_t capture, KnVec *out, K
 	int status = 0;
 	while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
 	}
-	if (got == (ssize_t)sizeof child_errno) {
-		result = mkerr(kind_of_errno(child_errno), child_errno);
-	} else if (WIFEXITED(status)) {
+	if (WIFEXITED(status)) {
 		result = WEXITSTATUS(status);
 	} else {
 		result = 128 + WTERMSIG(status);
