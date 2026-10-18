@@ -14,6 +14,7 @@ import super::ast::{BinOp, FmtSpec, ItemKind, Span, TypeKind}
 import super::lower
 import super::inline
 import std::os
+import std::fs
 import super::mir
 import super::mir::*
 import super::resolve::{DefKind, Resolved}
@@ -180,6 +181,8 @@ enum Target {
 pub struct Cg {
 	c Checker,
 	checked bool,
+	// Streaming debug builds: shards are compiled while codegen runs.
+	st Stream,
 	// Module-level text: globals and function definitions.
 	globals string,
 	funcs Vec<string>,
@@ -934,6 +937,124 @@ impl Cg {
 				Work::Clone(n, t) => self.define_glue(&n, "clone", &t),
 				Work::Shim { name, target, nargs } => self.define_shim(&name, &target, nargs),
 			}
+			if self.st.on && self.funcs.len() - self.st.flushed >= SHARD_FUNCS {
+				self.flush_shard(false)
+			}
+		}
+	}
+
+	// Sends the functions defined since the last shard (and, when `last`,
+	// the global data) to a task that writes and compiles them.
+	fun flush_shard(&mut self, last bool) {
+		// New globals and runtime declarations since the last shard.
+		gb := self.globals.as_bytes()
+		while self.st.gdone < gb.len() {
+			e mut := self.st.gdone
+			while e < gb.len() && gb[e] != 10u8 {
+				e += 1
+			}
+			line := &self.globals[self.st.gdone..e]
+			if line.starts_with("@") {
+				name := symbol_of(line)
+				lb := match line.find("[") {
+					Some(x) => x,
+					None => 0,
+				}
+				rb := match line.find("]") {
+					Some(x) => x,
+					None => 0,
+				}
+				self.st.gdecl.insert(name, "external hidden global {&line[lb..rb + 1]}")
+			}
+			self.st.gdone = e + 1
+		}
+		db := self.decls.as_bytes()
+		while self.st.ddone < db.len() {
+			e mut := self.st.ddone
+			while e < db.len() && db[e] != 10u8 {
+				e += 1
+			}
+			line := &self.decls[self.st.ddone..e]
+			if line.find("@").is_some() {
+				self.st.rt.insert(symbol_of(line))
+			}
+			self.st.ddone = e + 1
+		}
+		let mut mine HashSet<string> = HashSet::new()
+		for i in self.st.flushed..self.funcs.len() {
+			mine.insert(symbol_of(&self.funcs[i]))
+		}
+		body mut := string::new()
+		let mut need Vec<string> = Vec::new()
+		let mut seen HashSet<string> = HashSet::new()
+		for i in self.st.flushed..self.funcs.len() {
+			f := &self.funcs[i]
+			for r in sym_refs(f) {
+				if !mine.contains(&r) && !seen.contains(&r) {
+					seen.insert(r.clone())
+					need.push(r)
+				}
+			}
+			if f.starts_with("define internal ") {
+				body.push("define hidden ")
+				body.push(&f[16..])
+			} else {
+				body.push(f)
+			}
+		}
+		data mut := string::new()
+		if last {
+			for line in self.globals.split("\n") {
+				if !line.starts_with("@") {
+					continue
+				}
+				name := symbol_of(line)
+				mine.insert(name.clone())
+				head := "@{name} = "
+				rest := &line[head.len()..]
+				if rest.starts_with("private ") {
+					data.push("{head}hidden {&rest[8..]}")
+				} else if rest.starts_with("internal ") {
+					data.push("{head}hidden {&rest[9..]}")
+				} else {
+					data.push(line)
+				}
+				data.push("\n")
+			}
+			for r in sym_refs(&"\n{data}") {
+				if !mine.contains(&r) && !seen.contains(&r) {
+					seen.insert(r.clone())
+					need.push(r)
+				}
+			}
+		}
+		o mut := HEADER.to_string()
+		o.push(&self.decls)
+		o.push("\n")
+		o.push(&data)
+		for r in &need {
+			if self.st.rt.contains(r) || mine.contains(r) || r.starts_with("llvm.") {
+				continue
+			}
+			match self.st.gdecl.get(r) {
+				Some(d) => o.push("@{r} = {d}\n"),
+				// Opaque pointers: a call carries its own type, so the
+				// declaration needs no parameters.
+				None => o.push("declare hidden void @{r}()\n"),
+			}
+		}
+		o.push(&body)
+		for i in self.st.flushed..self.funcs.len() {
+			self.funcs[i] = string::new()
+		}
+		self.st.flushed = self.funcs.len()
+		k := self.st.k
+		self.st.k += 1
+		ll := "{self.st.out}.{k}.ll"
+		obj := "{self.st.out}.{k}.o"
+		self.st.objs.push(obj.clone())
+		if let Some(tx) = &self.st.tx {
+			tx <- Job { o: o, files: self.dbg_files.clone(), ll: ll, obj: obj, cc: self.st.cc.clone() }
 		}
 	}
 }
@@ -6011,6 +6132,7 @@ impl Cg {
 		return Cg {
 			c: c,
 			checked: checked,
+			st: Stream::off(),
 			globals: string::new(),
 			funcs: Vec::new(),
 			declared: HashSet::new(),
@@ -6062,7 +6184,7 @@ impl Cg {
 }
 
 // Compiles a type-checked program to LLVM IR text, or returns its errors.
-pub fun compile(c Checker, checked bool, lowered Vec<(usize, Vec<Body>)>, files Vec<(string, string)>) result<Module, Vec<(string, Span)>> {
+pub fun compile(c Checker, checked bool, lowered Vec<(usize, Vec<Body>)>, files Vec<(string, string)>, stream option<(string, string, usize)>) result<Module, Vec<(string, Span)>> {
 	main_idx mut := None
 	for i in 0..c.r.fns.len() {
 		f := &c.r.fns[i]
@@ -6075,6 +6197,19 @@ pub fun compile(c Checker, checked bool, lowered Vec<(usize, Vec<Body>)>, files 
 		None => return Err(one(("no `main` function to build".to_string(), Span { start: 0, end: 0 }))),
 	}
 	cg mut := Cg::new(c, checked)
+	if let Some((out, cc, nj)) = stream {
+		cg.st.on = true
+		cg.st.out = out
+		cg.st.cc = cc
+		// Leave scheduler workers free for codegen: a compiling worker
+		// blocks its thread in waitpid.
+		nw := if nj > 3 { nj - 2 } else { 1 }
+		(tx, rx) := chan::<Job>(4096)
+		for _ in 0..nw {
+			cg.st.tasks.push(spawn shard_worker(rx.clone()))
+		}
+		cg.st.tx = Some(tx)
+	}
 	if checked {
 		for (path, text) in &files {
 			cg.dbg_files.push(path.clone())
@@ -6132,7 +6267,12 @@ pub fun compile(c Checker, checked bool, lowered Vec<(usize, Vec<Body>)>, files 
 		}
 		return Err(errs)
 	}
-	return Ok(Module { decls: cg.decls, globals: cg.globals, funcs: cg.funcs, files: cg.dbg_files })
+	if cg.st.on {
+		cg.flush_shard(true)
+		// Closes the channel: the workers finish the queue and return.
+		cg.st.tx = None
+	}
+	return Ok(Module { decls: cg.decls, globals: cg.globals, funcs: cg.funcs, files: cg.dbg_files, tasks: cg.st.tasks, objs: cg.st.objs })
 }
 
 // A compiled program: runtime and intrinsic declarations, global data, and
@@ -6143,6 +6283,96 @@ pub struct Module {
 	funcs Vec<string>,
 	// The user's files, for debug info.
 	files Vec<string>,
+	// Streaming builds: the shard compiles (exit codes) and their objects.
+	pub tasks Vec<Task<i32>>,
+	pub objs Vec<string>,
+}
+
+pub const SHARD_FUNCS usize = 64
+
+struct Stream {
+	on bool,
+	out string,
+	cc string,
+	flushed usize,
+	k usize,
+	gdone usize,
+	ddone usize,
+	gdecl HashMap<string, string>,
+	rt HashSet<string>,
+	tx option<chan<- Job >,
+	tasks Vec<Task<i32>>,
+	objs Vec<string>,
+}
+
+struct Job {
+	o string,
+	files Vec<string>,
+	ll string,
+	obj string,
+	cc string,
+}
+
+// Compiles the shards it receives until the channel closes; the number
+// that failed.
+fun shard_worker(rx <-chan Job) i32 {
+	bad mut := 0
+	for j in rx {
+		if compile_shard(j.o, j.files, j.ll, j.obj, j.cc) != 0 {
+			bad += 1
+		}
+	}
+	return bad
+}
+
+impl Stream {
+	fun off() Stream {
+		return Stream { on: false, out: string::new(), cc: string::new(), flushed: 0, k: 0, gdone: 0, ddone: 0, gdecl: HashMap::new(), rt: HashSet::new(), tx: None, tasks: Vec::new(), objs: Vec::new() }
+	}
+}
+
+// Numbers the debug info of shard text `o`, writes it to `ll` unless the
+// file already holds it (and `obj` exists), and compiles it; the exit code.
+fun compile_shard(o string, files Vec<string>, ll string, obj string, cc string) i32 {
+	text := number_debug(o, &files)
+	if let Ok(old) = fs::read_to_string(&ll) {
+		if old == text && fs::is_file(&obj) {
+			return 0
+		}
+	}
+	fs::remove_file(&obj)
+	if fs::write(&ll, text.as_bytes()).is_err() {
+		return 1
+	}
+	match os::Command::new(&cc).arg("-O0").arg("-w").arg("-c").arg(&ll).arg("-o").arg(&obj).status() {
+		Ok(c) => return c,
+		Err(_) => return 1,
+	}
+}
+
+// The `@symbol` names in `f` after its first line.
+fun sym_refs(f &str) Vec<string> {
+	b := f.as_bytes()
+	o mut := Vec::new()
+	i mut := 0
+	while i < b.len() && b[i] != 10u8 {
+		i += 1
+	}
+	while i < b.len() {
+		if b[i] != 64u8 {
+			i += 1
+			continue
+		}
+		j mut := i + 1
+		while j < b.len() && (b[j] == 95u8 || b[j] == 46u8 || b[j] == 36u8 || (b[j] >= 48u8 && b[j] <= 57u8) || (b[j] >= 65u8 && b[j] <= 90u8) || (b[j] >= 97u8 && b[j] <= 122u8)) {
+			j += 1
+		}
+		if j > i + 1 {
+			o.push(f[i + 1..j].to_string())
+		}
+		i = j
+	}
+	return o
 }
 
 fun digits(s &str) usize {

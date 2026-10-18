@@ -292,7 +292,7 @@ fun bck_keys(r &resolve::Resolved, texts &Vec<string>, builtin &str) Vec<u64> {
 	return keys
 }
 
-fun emit_llvm(path &str, dir &str, release bool, tp bool, cache &str) result<codegen::Module, string> {
+fun emit_llvm(path &str, dir &str, release bool, tp bool, cache &str, stream option<(string, string, usize)>) result<codegen::Module, string> {
 	t mut := Instant::now()
 	text := match fs::read_to_string(path) {
 		Ok(s) => s,
@@ -331,7 +331,7 @@ fun emit_llvm(path &str, dir &str, release bool, tp bool, cache &str) result<cod
 	for i in 0..l.files.len() {
 		files.push((abs_path(&l.files[i]), l.texts[i].clone()))
 	}
-	match codegen::compile(c, !release, lowered, files) {
+	match codegen::compile(c, !release, lowered, files, stream) {
 		Ok(ir) => {
 			pass_done(tp, &mut t, "codegen")
 			return Ok(ir)
@@ -392,7 +392,14 @@ fun sh_quote(s &str) string {
 // one LLVM module per job and compiles them at `-O0` in parallel; a release
 // build compiles it as one module at `-O3`. The IR goes next to `out`.
 fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string>) {
-	m := match emit_llvm(path, dir, release, tp, "{out}.bck") {
+	cc0 := match os::getenv("KILN_CLANG") {
+		Some(c) => c,
+		None => "clang".to_string(),
+	}
+	// Debug builds compile shards while codegen runs (KILNC_NO_STREAM=1
+	// builds the whole module first).
+	stream := if !release && os::getenv("KILNC_NO_STREAM").is_none() { Some((out.to_string(), cc0, jobs())) } else { None }
+	m mut := match emit_llvm(path, dir, release, tp, "{out}.bck", stream) {
 		Ok(m) => m,
 		Err(e) => {
 			eprint("{e}")
@@ -439,7 +446,31 @@ fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string
 	}
 	thin := release && lld
 
-	if release && !thin {
+	if m.objs.len() > 0 {
+		// Streamed: the shards are already compiling.
+		failed mut := false
+		while m.tasks.len() > 0 {
+			tk := m.tasks.pop().unwrap()
+			match tk.join() {
+				Ok(c) => {
+					if c > 0 {
+						failed = true
+					}
+				},
+				Err(_) => failed = true,
+			}
+		}
+		if failed {
+			fail("clang failed".to_string())
+		}
+		pass_done(tp, &mut t, "shard-compile")
+		objs mut := string::new()
+		for o in &m.objs {
+			objs.push(" {sh_quote(o)}")
+		}
+		ld := if lld { " -fuse-ld=lld" } else { "" }
+		script.push("{sh_quote(&cc)}{ld}{objs}{libs} -o {sh_quote(out)}\n")
+	} else if release && !thin {
 		ll := "{out}.ll"
 		write_file(&ll, &m.single())
 		script.push("{sh_quote(&cc)} -O3 -w {sh_quote(&ll)}{libs} -o {sh_quote(out)}\n")
@@ -535,7 +566,7 @@ fun main() {
 			build(&file, &out, &dir, release, tp, &csrc)
 			return
 		}
-		match emit_llvm(&args[2], &dir, false, false, "") {
+		match emit_llvm(&args[2], &dir, false, false, "", None) {
 			Ok(m) => print("{m.single()}"),
 			Err(e) => {
 				eprint("{e}")
