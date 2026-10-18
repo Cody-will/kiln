@@ -14,7 +14,7 @@ Run with `python3 bench/compile/run.py --runs 3`. The script lives in bench/comp
 | cargo build (debug) | 0.20 s | 0.20 s | 0.42 s | 0.28 s | 5.71 s | 1.17 s |
 | cargo build (release) | 0.13 s | 0.14 s | 0.79 s | 0.75 s | 8.54 s | 8.49 s |
 
-The kilnc rows use a kilnc built by the Rust LLVM backend (`KILN_COMPILER=rust`), as in earlier tables. The "built by kilnc" rows use the self-built binary (`kiln build --release` in compiler/ now uses kilnc), measured before kilnc's MIR inliner was in that binary; with the inliner a self-built kilnc parses hello's std in 74 ms against 63 ms for the Rust-built one, so most of that gap is closed. Debug builds now carry DWARF line tables, which cost about 0.3 s on big.
+The kilnc rows use a kilnc built by the Rust LLVM backend (`KILN_COMPILER=rust`), as in earlier tables. The "built by kilnc" rows use the self-built binary (`kiln build --release` in compiler/ now uses kilnc), measured before kilnc's MIR inliner was in that binary; with the inliner a self-built kilnc parses hello's std in 74 ms against 63 ms for the Rust-built one, so most of that gap is closed. Debug builds now carry DWARF line tables, the likely main cause of big debug clean rising from 2.88 s to 3.09 s since the last table.
 
 The mid program is bench/json. The big program is 50 modules, 50,505 lines.
 
