@@ -191,6 +191,31 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
         self.terminate(Terminator::SwitchBool { cond, t, f }, span);
     }
 
+    /// Branches to `t` if `cond` holds and to `f` otherwise, lowering `&&`
+    /// and `||` to jumps instead of a boolean temporary (LLVM would
+    /// otherwise fold the temporary into a branchless select).
+    fn branch(&mut self, cond: &Expr, t: BlockId, f: BlockId) {
+        match &cond.kind {
+            ExprKind::Paren(x) => self.branch(x, t, f),
+            ExprKind::Binary(BinOp::And, l, r) => {
+                let mid = self.new_block();
+                self.branch(l, mid, f);
+                self.cur = mid;
+                self.branch(r, t, f);
+            }
+            ExprKind::Binary(BinOp::Or, l, r) => {
+                let mid = self.new_block();
+                self.branch(l, t, mid);
+                self.cur = mid;
+                self.branch(r, t, f);
+            }
+            _ => {
+                let c = self.expr(cond);
+                self.switch(c, t, f, cond.span);
+            }
+        }
+    }
+
     fn new_local(
         &mut self,
         ty: Ty,
@@ -2416,9 +2441,8 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
             ExprKind::Paren(x) => self.expr_into(x, dest),
             ExprKind::Block(b) | ExprKind::Unsafe(b) => self.block_into(b, dest),
             ExprKind::If { cond, then, els } => {
-                let c = self.expr(cond);
                 let (tb, eb, join) = (self.new_block(), self.new_block(), self.new_block());
-                self.switch(c, tb, eb, cond.span);
+                self.branch(cond, tb, eb);
                 self.cur = tb;
                 self.block_into(then, dest.clone());
                 self.goto(join, e.span);
@@ -2502,8 +2526,7 @@ impl<'t, 'r, 'a> Lower<'t, 'r, 'a> {
                 let after = self.new_block();
                 self.goto(head, e.span);
                 self.cur = head;
-                let c = self.expr(cond);
-                self.switch(c, bodyb, after, cond.span);
+                self.branch(cond, bodyb, after);
                 self.cur = bodyb;
                 self.loops.push(LoopCx {
                     label: label.as_ref().map(|l| l.name.clone()),
