@@ -12,7 +12,8 @@ fn editors_dir() -> Option<PathBuf> {
         }
     }
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../editors");
-    src.is_dir().then(|| std::fs::canonicalize(&src).unwrap_or(src))
+    src.is_dir()
+        .then(|| std::fs::canonicalize(&src).unwrap_or(src))
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -66,7 +67,12 @@ fn vscode(dir: &Path, code: Option<String>) -> ExitCode {
             .to_vec(),
     };
     for c in &cands {
-        match Command::new(c).arg("--install-extension").arg(&vsix).arg("--force").status() {
+        match Command::new(c)
+            .arg("--install-extension")
+            .arg(&vsix)
+            .arg("--force")
+            .status()
+        {
             Ok(s) if s.success() => {
                 println!("installed the Kiln extension into {c}");
                 return ExitCode::SUCCESS;

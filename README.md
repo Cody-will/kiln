@@ -34,13 +34,16 @@ fun main() result<void, io::Error> {
 
 ## Install
 
+On Linux (x86_64 or aarch64), with clang installed (Arch: `pacman -S --needed clang lld base-devel`):
+
 ```sh
-./install.sh      # or: make install  (installs into ~/.kiln and adds it to PATH)
-kiln doctor
+curl -fsSL https://raw.githubusercontent.com/Cody-will/kiln/main/install.sh | sh
 kiln new hello && cd hello && kiln run
 ```
 
-See [website/src/install.md](website/src/install.md) for options (`--prefix`, `--no-llvm`, `--uninstall`).
+The installer downloads a prebuilt release into `~/.kiln`, adds it to `PATH`, and runs `kiln doctor`. From a clone, `./install.sh` (or `make install`) builds from source instead. See [website/src/install.md](website/src/install.md) for options, the Arch package, and building from source. Note: release downloads need the repository to be public.
+
+Editor support: `kiln editor install vscode` or `kiln editor install nvim` (see [website/src/editors.md](website/src/editors.md)).
 
 ## Building
 

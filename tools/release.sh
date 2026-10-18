@@ -12,7 +12,8 @@
 set -eu
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
-version="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/kiln_cli/Cargo.toml | head -1)"
+version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+[ -n "$version" ] || { echo "cannot read the version from Cargo.toml" >&2; exit 1; }
 case "$(uname -m)" in
 x86_64|amd64) arch=x86_64 ;;
 aarch64|arm64) arch=aarch64 ;;
@@ -35,7 +36,8 @@ boot="$dist/boot"
 rm -rf "$boot" && mkdir -p "$boot"
 (cd compiler && KILN_COMPILER=rust KILN_RUN_FLAGS= "$stage/bin/kiln" build --release -o "$boot/stage1" >/dev/null)
 KILN_RT="$stage/lib/kiln/runtime/libkiln_rt.a" KILNC_RESOLVE_DIR="$root/crates/kiln_resolve" \
-	"$boot/stage1" --build --release --c-source compiler/native/arena.c compiler/src/main.kn -o "$stage/lib/kiln/kilnc"
+	"$boot/stage1" --build --release --c-source compiler/native/arena.c compiler/src/main.kn -o "$boot/kilnc"
+cp "$boot/kilnc" "$stage/lib/kiln/kilnc"
 strip "$stage/lib/kiln/kilnc" 2>/dev/null || true
 
 echo "== editors"

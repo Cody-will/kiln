@@ -113,7 +113,9 @@ install_binary() {
 	*) echo "No prebuilt Kiln for $(uname -m) yet." >&2; return 1 ;;
 	esac
 	asset="kiln-$arch-$os.tar.gz"
-	if [ "$version" = latest ]; then
+	if [ -n "${KILN_DOWNLOAD_URL:-}" ]; then
+		base="$KILN_DOWNLOAD_URL"
+	elif [ "$version" = latest ]; then
 		base="https://github.com/$repo/releases/latest/download"
 	else
 		base="https://github.com/$repo/releases/download/$version"

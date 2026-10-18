@@ -3,6 +3,7 @@
 [Kiln](index.md)
 
 - [Installation](install.md)
+- [Editors](editors.md)
 - [Implementation status](status.md)
 
 # The Kiln Tutorial
