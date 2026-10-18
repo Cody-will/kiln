@@ -190,6 +190,17 @@ KN_NORETURN void kn_panic_str(const char *msg) {
 	kn_panic((const uint8_t *)msg, strlen(msg));
 }
 
+/* Arithmetic overflow in a debug build: 0 add, 1 subtract, 2 multiply. One
+ * call per check site keeps kilnc's debug IR small. */
+KN_NORETURN void kn_panic_overflow(int64_t kind) {
+	static const char *const m[] = {
+		"attempt to add with overflow",
+		"attempt to subtract with overflow",
+		"attempt to multiply with overflow",
+	};
+	kn_panic_str(m[kind >= 0 && kind < 3 ? kind : 0]);
+}
+
 void kn_print(const uint8_t *p, size_t len, int32_t to_stderr, int32_t newline) {
 	FILE *f = to_stderr ? stderr : stdout;
 	if (to_stderr)

@@ -301,6 +301,7 @@ fun runtime_sig(name &str) option<(Vec<string>, string)> {
 		"kn_free" => "i64,i64,i64:",
 		"kn_panic" => "i64,i64:",
 		"kn_panic_bounds" => "i64,i64:",
+		"kn_panic_overflow" => "i64:",
 		"kn_panic_str" => "i64:",
 		"kn_print" => "i64,i64,i32,i32:",
 		"kn_main_error" => "i64,i64:",
@@ -428,7 +429,7 @@ impl Cg {
 				}
 				attr := if name == "_setjmp" {
 					" returns_twice"
-				} else if name == "kn_panic" || name == "kn_panic_bounds" || name == "kn_panic_str" {
+				} else if name == "kn_panic" || name == "kn_panic_bounds" || name == "kn_panic_str" || name == "kn_panic_overflow" {
 					" cold noreturn nounwind"
 				} else {
 					""
@@ -1701,6 +1702,35 @@ impl Cg {
 	}
 }
 
+// Whether rvalue `rv` reads or borrows local `l`.
+fun rv_mentions(rv &Rvalue, l u32) bool {
+	if let Rvalue::Ref { place, .. } = rv {
+		return place_mentions(place, l)
+	}
+	for o in rv.operands() {
+		if let Some(p) = o.place() {
+			if place_mentions(&p, l) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+fun place_mentions(p &Place, l u32) bool {
+	if p.local == l {
+		return true
+	}
+	for x in &p.proj {
+		if let Proj::Index(i) = x {
+			if *i == l {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 fun vec2(a V, b V) Vec<V> {
 	o mut := Vec::new()
 	o.push(a)
@@ -2509,6 +2539,16 @@ impl Cg {
 	fun assign(&mut self, p &Place, rv &Rvalue) {
 		pty := self.place_ty(p)
 		l := self.layout(&pty)
+		// A plain local with nothing to drop, not read by the right-hand
+		// side: evaluate straight into it (no scratch slot and copy).
+		if p.proj.len() == 0 && !self.needs_drop(&pty) && !rv_mentions(rv, p.local) {
+			(dest, _) := self.place_addr(p)
+			self.rvalue(rv, &dest, &pty)
+			if let Some(f) = self.locals[p.local as usize].flag.clone() {
+				self.set_flag(&f, 1)
+			}
+			return
+		}
 		scratch := self.slot(l.size, l.align)
 		self.rvalue(rv, &scratch, &pty)
 		(dest, _) := self.place_addr(p)
@@ -3686,12 +3726,6 @@ impl Cg {
 
 	// `a op b` for `+`, `-`, `*` on integers, panicking on overflow (debug builds).
 	fun checked_arith(&mut self, op BinOp, a &V, b &V, signed bool) V {
-		what := match op {
-			BinOp::Add => "add",
-			BinOp::Sub => "subtract",
-			_ => "multiply",
-		}
-		msg := "attempt to {what} with overflow"
 		opn := match op {
 			BinOp::Add => "add",
 			BinOp::Sub => "sub",
@@ -3705,10 +3739,21 @@ impl Cg {
 		r := self.inst(&a.t, "extractvalue {{{a.t}, i1}} {pr}, 0")
 		o := self.tmp()
 		self.emit("{o} = extractvalue {{{a.t}, i1}} {pr}, 1")
-		ov := self.bool8(&o)
-		ok := self.fail_begin(&ov)
-		self.panic_msg(&msg)
-		self.fail_end(ok)
+		// Each site keeps its own block (and debug location), but the block
+		// is just a call to a noreturn runtime helper.
+		yes := self.new_block()
+		ok := self.new_block()
+		self.term("br i1 {o}, label %b{yes}, label %b{ok}")
+		self.switch_to(yes)
+		k := match op {
+			BinOp::Add => 0,
+			BinOp::Sub => 1,
+			_ => 2,
+		}
+		kv := self.iconst(k)
+		self.call_rt("kn_panic_overflow", &one(kv))
+		self.term("unreachable".to_string())
+		self.switch_to(ok)
 		return r
 	}
 
@@ -6314,7 +6359,7 @@ struct Stream {
 	ddone usize,
 	gdecl HashMap<string, string>,
 	rt HashSet<string>,
-	tx option<chan<- Job >,
+	tx option<chan<- Job>,
 	tasks Vec<Task<i32>>,
 	objs Vec<string>,
 }
