@@ -5612,7 +5612,7 @@ impl Checker {
 		impls := self.impls.clone()
 		for imp in &impls {
 			(itr, iargs) := match &imp.trait_ref {
-				Some(x) => x,
+				Some(x) => (&x.0, &x.1),
 				None => continue,
 			}
 			if *itr != tr {
@@ -5634,7 +5634,7 @@ impl Checker {
 			}
 			if ok {
 				out mut := HashMap::new()
-				for (kk, v) in &map {
+				for (kk, v) in map.iter() {
 					out.insert(kk.clone(), self.infer.zonk(v))
 				}
 				self.infer.restore(snap)

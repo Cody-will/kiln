@@ -1,0 +1,5723 @@
+// Native code generation: a port of crates/kiln_codegen that writes LLVM IR
+// as text (compiled and linked by `clang`) instead of driving Cranelift.
+//
+// The translation mirrors the Rust backend's Cranelift lowering one to one:
+// every MIR local lives in a stack slot, values move through memory, and all
+// Kiln functions take `(ret, args...)` as pointers to caller-owned slots
+// (closures take an environment pointer after `ret`). Addresses are `i64`
+// values, as in Cranelift IR; loads and stores convert them to `ptr`.
+// Release-only optimizations (register ABI, inlining, slot promotion, bounds
+// check elimination) are left to LLVM.
+
+import std::collections::{HashMap, HashSet}
+import super::ast::{BinOp, FmtSpec, ItemKind, Span, TypeKind}
+import super::lower
+import super::mir
+import super::mir::*
+import super::resolve::{DefKind, Resolved}
+import super::ty::{Ty, prim}
+import super::typeck
+import super::typeck::Checker
+
+// A value: its LLVM name (or literal) and type (`i8` .. `i128`, `float`, `double`).
+@derive(Clone)
+pub struct V {
+	n string,
+	t string,
+}
+
+fun val(n string, t &str) V {
+	return V { n: n, t: t.to_string() }
+}
+
+fun bits(t &str) u32 {
+	match t {
+		"i8" => return 8,
+		"i16" => return 16,
+		"i32" => return 32,
+		"i64" => return 64,
+		"i128" => return 128,
+		"float" => return 32,
+		"double" => return 64,
+		_ => return 64,
+	}
+}
+
+fun is_float_t(t &str) bool {
+	return t == "float" || t == "double"
+}
+
+fun int_of_bits(n u32) string {
+	return "i{n}"
+}
+
+@derive(Clone, Copy, Eq)
+pub enum Abi {
+	Plain,
+	Closure,
+}
+
+@derive(Clone)
+pub struct Layout {
+	pub size u32,
+	pub align u32,
+}
+
+fun lay(size u32, align u32) Layout {
+	return Layout { size: size, align: align }
+}
+
+fun align_up(x u32, a u32) u32 {
+	return (x + a - 1) / a * a
+}
+
+// Offsets of fields laid out in order, plus the total layout.
+fun sequential(fields &Vec<Layout>) (Vec<u32>, Layout) {
+	off mut := 0u32
+	align mut := 1u32
+	offs mut := Vec::new()
+	for f in fields {
+		off = align_up(off, f.align)
+		offs.push(off)
+		off += f.size
+		if f.align > align {
+			align = f.align
+		}
+	}
+	return (offs, lay(align_up(off, align), align))
+}
+
+fun hex_u64(x u64) string {
+	digits := "0123456789ABCDEF"
+	o mut := string::new()
+	i mut := 15
+	while true {
+		d := ((x >> ((i * 4) as u64)) & 15) as usize
+		o.push(&digits[d..d + 1])
+		if i == 0 {
+			break
+		}
+		i -= 1
+	}
+	return o
+}
+
+fun f64_bits(x f64) u64 {
+	unsafe {
+		p := &x as *const f64 as *mut u64
+		return std::ptr::read(p)
+	}
+}
+
+fun f64_lit(x f64) string {
+	return "0x{hex_u64(f64_bits(x))}"
+}
+
+// LLVM's byte-string constant body (`c"..."`).
+fun ll_bytes(b &[u8]) string {
+	digits := "0123456789ABCDEF"
+	o mut := string::new()
+	for c in b {
+		x := *c
+		if x >= 32 && x < 127 && x != 34 && x != 92 {
+			o.push_char(x as char)
+		} else {
+			o.push("\\")
+			hi := (x >> 4) as usize
+			lo := (x & 15) as usize
+			o.push(&digits[hi..hi + 1])
+			o.push(&digits[lo..lo + 1])
+		}
+	}
+	return o
+}
+
+fun clean_name(s &str) string {
+	o mut := string::new()
+	for c in s.chars() {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			o.push_char(c)
+		} else {
+			o.push_char('_')
+		}
+	}
+	return o
+}
+
+// Pending work: functions declared but not yet defined.
+@derive(Clone)
+enum Work {
+	Fn { name string, fn_idx usize, body usize, substs HashMap<string, Ty>, abi Abi },
+	Cmp(string, Ty),
+	Debug(string, Ty),
+	Hash(string, Ty),
+	Eq(string, Ty),
+	Clone(string, Ty),
+	Drop(string, Ty),
+	Shim { name string, target string, nargs usize },
+}
+
+pub struct LocalInfo {
+	addr V,
+	ty Ty,
+	// Drop flag slot (absent for types without drop glue).
+	flag option<V>,
+	// Field paths moved out somewhere in the body, each with its flag.
+	paths Vec<(Vec<string>, V)>,
+}
+
+// What a call resolves to after monomorphization.
+enum Target {
+	Direct(string),
+	Virtual(usize),
+	Intrinsic(string),
+	Extern(string),
+	Missing(string),
+}
+
+pub struct Cg {
+	c Checker,
+	checked bool,
+	// Module-level text: globals and function definitions.
+	globals string,
+	funcs string,
+	declared HashSet<string>,
+	decls string,
+	bodies HashMap<usize, Vec<Body>>,
+	instances HashMap<string, string>,
+	queue Vec<Work>,
+	qhead usize,
+	layouts HashMap<string, Layout>,
+	needs_drop_cache HashMap<string, bool>,
+	drop_glue HashMap<string, string>,
+	eq_glue HashMap<string, string>,
+	cmp_glue HashMap<string, string>,
+	hash_glue HashMap<string, string>,
+	debug_glue HashMap<string, string>,
+	clone_glue HashMap<string, string>,
+	vtables HashMap<string, string>,
+	shims HashMap<string, string>,
+	strings HashMap<string, string>,
+	// Statics in use: (definition, storage symbol, initializer fn index).
+	statics Vec<(u32, string, usize)>,
+	entry_display option<string>,
+	pub errors Vec<(string, Span)>,
+	counter usize,
+	span Span,
+	// ---- the function being translated ----
+	body Body,
+	substs HashMap<string, Ty>,
+	intr_substs HashMap<string, Ty>,
+	fn_idx usize,
+	locals Vec<LocalInfo>,
+	blocks Vec<u32>,
+	defer_stack option<V>,
+	panic_frame option<V>,
+	last_task option<V>,
+	preempt option<V>,
+	cur_block usize,
+	// Instruction text, entry allocas, value and block counters.
+	fb string,
+	allocas string,
+	nv usize,
+	nb u32,
+	open bool,
+}
+
+fun empty_body(span Span) Body {
+	return Body {
+		name: string::new(),
+		kind: BodyKind::Fn,
+		locals: Vec::new(),
+		blocks: Vec::new(),
+		arg_count: 0,
+		return_flows: None,
+		span: span,
+		errors: Vec::new(),
+		unsupported: Vec::new(),
+		captures: Vec::new(),
+		bounded_loops: Vec::new(),
+	}
+}
+
+fun ty_key(t &Ty) string {
+	return mir::ty(t)
+}
+
+fun subst_key(s &HashMap<string, Ty>) string {
+	kv mut := Vec::new()
+	for (k, v) in s.iter() {
+		kv.push("{k}={ty_key(v)}")
+	}
+	kv.sort()
+	o mut := string::new()
+	for x in &kv {
+		o.push(x)
+		o.push(";")
+	}
+	return o
+}
+
+fun subst_map(s &Vec<(string, Ty)>) HashMap<string, Ty> {
+	m mut := HashMap::new()
+	for (k, v) in s.iter() {
+		m.insert(k.clone(), v.clone())
+	}
+	return m
+}
+
+fun ptr_params(n usize) string {
+	o mut := string::new()
+	for i in 0..n {
+		if i > 0 {
+			o.push(", ")
+		}
+		o.push("i64 %p{i}")
+	}
+	return o
+}
+
+// Runtime functions: name, parameter types, result type ("void" for none).
+fun runtime_sig(name &str) option<(Vec<string>, string)> {
+	s := match name {
+		"kn_alloc" => "i64,i64:i64",
+		"kn_free" => "i64,i64,i64:",
+		"kn_panic" => "i64,i64:",
+		"kn_panic_bounds" => "i64,i64:",
+		"kn_panic_str" => "i64:",
+		"kn_print" => "i64,i64,i32,i32:",
+		"kn_main_error" => "i64,i64:",
+		"kn_vec_reserve" => "i64,i64,i64,i64:",
+		"kn_vec_free" => "i64,i64,i64:",
+		"kn_string_push" => "i64,i64,i64:",
+		"kn_string_from" => "i64,i64,i64:",
+		"kn_fmt_i64" => "i64,i64:",
+		"kn_fmt_u64" => "i64,i64:",
+		"kn_fmt_i128" => "i64,i64,i64:",
+		"kn_fmt_u128" => "i64,i64,i64:",
+		"kn_mulo128" => "i64,i64,i64,i64,i64,i64:i64",
+		"kn_fmt_bool" => "i64,i32:",
+		"kn_fmt_char" => "i64,i32:",
+		"kn_fmt_f64" => "i64,double:",
+		"kn_str_eq" => "i64,i64,i64,i64:i32",
+		"kn_hash_u64" => "i64,i64:",
+		"kn_fmt_debug_str" => "i64,i64,i64:",
+		"kn_fmt_debug_char" => "i64,i32:",
+		"kn_fmt_debug_f64" => "i64,double:",
+		"kn_fmt_radix" => "i64,i64,i32,i32,i32:",
+		"kn_fmt_f64_fixed" => "i64,double,i64:",
+		"kn_fmt_f64_exp" => "i64,double,i64,i32:",
+		"kn_fmt_begin" => "i64,i64,i64:",
+		"kn_fmt_sep" => "i64,i32,i32:",
+		"kn_fmt_end" => "i64,i64,i64,i32,i32:",
+		"kn_fmt_pad" => "i64,i64,i64,i64,i32,i32,i32,i64:",
+		"kn_hash_bytes" => "i64,i64,i64:",
+		"kn_str_cmp" => "i64,i64,i64,i64:i32",
+		"kn_str_to_upper" => "i64,i64,i64:",
+		"kn_str_to_lower" => "i64,i64,i64:",
+		"kn_str_trim" => "i64,i64,i64:",
+		"kn_str_starts_with" => "i64,i64,i64,i64:i32",
+		"kn_str_ends_with" => "i64,i64,i64,i64:i32",
+		"kn_str_contains" => "i64,i64,i64,i64:i32",
+		"kn_defer_push" => "i64,i32,i64:",
+		"kn_defer_pop" => "i64:i64",
+		"kn_go" => "i64,i64,i64,i64,i64:i64",
+		"kn_task_join" => "i64,i64:",
+		"kn_task_drop" => "i64:",
+		"kn_scope_new" => ":i64",
+		"kn_scope_spawn" => "i64,i64,i64:",
+		"kn_scope_wait" => "i64:",
+		"kn_chan_new" => "i64,i64,i64:i64",
+		"kn_chan_send" => "i64,i64:",
+		"kn_chan_recv" => "i64,i64:i32",
+		"kn_chan_try_send" => "i64,i64:i32",
+		"kn_chan_try_recv" => "i64,i64:i32",
+		"kn_chan_close" => "i64:",
+		"kn_chan_len" => "i64:i64",
+		"kn_chan_cap" => "i64:i64",
+		"kn_chan_clone_end" => "i64,i32:",
+		"kn_chan_drop_end" => "i64,i32:",
+		"kn_select" => "i64,i64,i64:i64",
+		"kn_slice_check" => "i64,i64,i64,i64,i64,i64:i64",
+		"kn_memmove" => "i64,i64,i64:",
+		"kn_maybe_yield" => ":",
+		"kn_black_box" => "i64:",
+		"kn_frame_enter" => "i64:i64",
+		"kn_frame_leave" => "i64:",
+		"_setjmp" => "i64:i32",
+		"kn_round" => "double:double",
+		"kn_powi" => "double,i32:double",
+		"kn_fmod" => "double,double:double",
+		_ => return None,
+	}
+	k := s.find(":").unwrap()
+	ps mut := Vec::new()
+	for p in s[..k].split(",") {
+		if p.len() > 0 {
+			ps.push(p.to_string())
+		}
+	}
+	r := if k + 1 < s.len() { s[k + 1..].to_string() } else { "void".to_string() }
+	return Some((ps, r))
+}
+
+impl Cg {
+	// ---- errors ----
+
+	fun fatal(&mut self, msg string) {
+		self.errors.push((msg, self.span))
+	}
+
+	fun error(&mut self, msg string) {
+		self.errors.push((msg, self.span))
+	}
+
+	fun error_at(&mut self, msg string, span Span) {
+		self.errors.push((msg, span))
+	}
+
+	fun fresh_name(&mut self, base &str) string {
+		self.counter += 1
+		return "kn{self.counter}_{clean_name(base)}"
+	}
+
+	fun fmt_ty(&self, t &Ty) string {
+		return self.c.fmt_ty(t)
+	}
+
+	// ---- module-level declarations ----
+
+	fun declare(&mut self, name &str, text string) {
+		if !self.declared.contains(name) {
+			self.declared.insert(name.to_string())
+			self.decls.push(&text)
+			self.decls.push("\n")
+		}
+	}
+
+	fun declare_rt(&mut self, name &str) {
+		match runtime_sig(name) {
+			Some((ps, r)) => {
+				ptxt mut := string::new()
+				for (i, p) in ps.iter().enumerate() {
+					if i > 0 {
+						ptxt.push(", ")
+					}
+					ptxt.push(p)
+				}
+				attr := if name == "_setjmp" { " returns_twice" } else { "" }
+				self.declare(name, "declare {r} @{name}({ptxt}){attr}")
+			}
+			None => {}
+		}
+	}
+
+	fun string_data(&mut self, s &str) string {
+		if let Some(n) = self.strings.get(s) {
+			return n.clone()
+		}
+		name := self.fresh_name("str")
+		self.globals.push("@{name} = private unnamed_addr constant [{s.len() + 1} x i8] c\"{ll_bytes(s.as_bytes())}\\00\", align 1\n")
+		self.strings.insert(s.to_string(), name.clone())
+		return name
+	}
+
+	fun bytes_data(&mut self, b &[u8]) string {
+		name := self.fresh_name("bytes")
+		self.globals.push("@{name} = private unnamed_addr constant [{b.len() + 1} x i8] c\"{ll_bytes(b)}\\00\", align 1\n")
+		return name
+	}
+
+	fun static_data(&mut self, d u32) string {
+		for (sd, n, _) in &self.statics {
+			if *sd == d {
+				return n.clone()
+			}
+		}
+		fi mut := 0usize
+		for (sd, i) in &self.c.r.statics {
+			if *sd == d {
+				fi = *i
+			}
+		}
+		(_, t) := self.c.signature(fi)
+		l := self.layout(&t)
+		dn := self.c.r.def(d).name.clone()
+		name := self.fresh_name("static_{dn}")
+		size := if l.size == 0 { 1 } else { l.size }
+		align := if l.align == 0 { 1 } else { l.align }
+		self.globals.push("@{name} = internal global [{size} x i8] zeroinitializer, align {align}\n")
+		self.statics.push((d, name.clone(), fi))
+		return name
+	}
+
+	// ---- types and layout ----
+
+	fun is_unsized(&self, t &Ty) bool {
+		match t {
+			Ty::Prim(p) => return p == "Str",
+			Ty::Slice(_) | Ty::Dyn(_) => return true,
+			_ => return false,
+		}
+	}
+
+	fun is_lang(&self, t &Ty, name &str) bool {
+		match t {
+			Ty::Adt(d, _) => return self.c.r.prelude_type(name) == Some(*d),
+			_ => return false,
+		}
+	}
+
+	fun pointee(&self, t &Ty) option<Ty> {
+		match t {
+			Ty::Ref(_, x) => return Some((**x).clone()),
+			Ty::Ptr(_, x) => return Some((**x).clone()),
+			Ty::Adt(_, a) => {
+				if self.is_lang(t, "Box") {
+					return Some(a[0].clone())
+				}
+				return None
+			}
+			_ => return None,
+		}
+	}
+
+	fun is_fat(&self, t &Ty) bool {
+		match self.pointee(t) {
+			Some(p) => return self.is_unsized(&p),
+			None => return false,
+		}
+	}
+
+	// The IR type of a scalar, or None for aggregates.
+	fun scalar(&self, t &Ty) option<string> {
+		match t {
+			Ty::Prim(p) => {
+				s := match p.as_str() {
+					"I8" | "U8" | "Bool" => "i8",
+					"I16" | "U16" => "i16",
+					"I32" | "U32" | "Char" => "i32",
+					"I64" | "U64" | "Isize" | "Usize" => "i64",
+					"I128" | "U128" => "i128",
+					"F32" => "float",
+					"F64" => "double",
+					_ => return None,
+				}
+				return Some(s.to_string())
+			}
+			Ty::Ref(_, _) | Ty::Ptr(_, _) => {
+				if self.is_fat(t) {
+					return None
+				}
+				return Some("i64".to_string())
+			}
+			Ty::Adt(_, _) => {
+				if self.is_lang(t, "Box") && !self.is_fat(t) {
+					return Some("i64".to_string())
+				}
+				return None
+			}
+			Ty::ChanSend(_) | Ty::ChanRecv(_) => return Some("i64".to_string()),
+			_ => return None,
+		}
+	}
+
+	fun layout(&mut self, t &Ty) Layout {
+		key := ty_key(t)
+		if let Some(l) = self.layouts.get(&key) {
+			return l.clone()
+		}
+		l := self.compute_layout(t)
+		self.layouts.insert(key, l.clone())
+		return l
+	}
+
+	fun layouts_of(&mut self, ts &Vec<Ty>) Vec<Layout> {
+		o mut := Vec::new()
+		for t in ts {
+			o.push(self.layout(t))
+		}
+		return o
+	}
+
+	fun field_layouts(&mut self, fs &Vec<(string, Ty)>) Vec<Layout> {
+		o mut := Vec::new()
+		for (_, t) in fs {
+			o.push(self.layout(t))
+		}
+		return o
+	}
+
+	fun compute_layout(&mut self, t &Ty) Layout {
+		if let Some(s) = self.scalar(t) {
+			n := bits(&s) / 8
+			return lay(n, if n < 8 { n } else { 8 })
+		}
+		match t {
+			Ty::Unit | Ty::Never => return lay(0, 1),
+			Ty::Ref(_, _) | Ty::Ptr(_, _) => return lay(16, 8),
+			Ty::Fn(_, _, _) => return lay(16, 8),
+			Ty::Tuple(ts) => {
+				ls := self.layouts_of(ts)
+				(_, l) := sequential(&ls)
+				return l
+			}
+			Ty::ChanSend(_) | Ty::ChanRecv(_) => return lay(8, 8),
+			Ty::Adt(d, a) => {
+				if self.is_lang(t, "Box") {
+					return lay(16, 8)
+				}
+				if self.is_lang(t, "Task") {
+					return lay(8, 8)
+				}
+				if self.is_lang(t, "string") || self.is_lang(t, "Vec") {
+					return lay(24, 8)
+				}
+				if self.is_lang(t, "Range") {
+					e := self.layout(&a[0])
+					ls mut := Vec::new()
+					ls.push(e.clone())
+					ls.push(e)
+					ls.push(lay(1, 1))
+					(_, l) := sequential(&ls)
+					return l
+				}
+				if let DefKind::Enum = self.c.r.def(*d).kind {
+					(_, l) := self.enum_layout(t)
+					return l
+				}
+				fs := self.c.adt_fields(t, None)
+				ls := self.field_layouts(&fs)
+				(_, l) := sequential(&ls)
+				return l
+			}
+			Ty::Prim(_) | Ty::Slice(_) | Ty::Dyn(_) => return lay(0, 1),
+			Ty::Array(x, n) => {
+				e := self.layout(x)
+				return lay(e.size * (*n as u32), e.align)
+			}
+			_ => {
+				name := self.fmt_ty(t)
+				self.fatal("code generation does not support values of type `{name}` yet")
+				return lay(8, 8)
+			}
+		}
+	}
+
+	// Payload offset and total layout of an enum.
+	fun enum_layout(&mut self, t &Ty) (u32, Layout) {
+		d := match t {
+			Ty::Adt(d, _) => *d,
+			_ => return (0, lay(0, 1)),
+		}
+		max_align mut := 4u32
+		max_payload mut := 0u32
+		for v in self.c.r.variants(d) {
+			fs := self.c.adt_fields(t, Some(v))
+			ls := self.field_layouts(&fs)
+			(_, l) := sequential(&ls)
+			if l.align > max_align {
+				max_align = l.align
+			}
+			if l.size > max_payload {
+				max_payload = l.size
+			}
+		}
+		off := align_up(4, max_align)
+		return (off, lay(align_up(off + max_payload, max_align), max_align))
+	}
+
+	fun variant_named(&self, d u32, name &str) option<u32> {
+		for v in self.c.r.variants(d) {
+			if self.c.r.def(v).name == name {
+				return Some(v)
+			}
+		}
+		return None
+	}
+
+	// Offset and type of field `name` of `t` (`"0"` for tuples, `"Variant.f"` for enum fields).
+	fun field(&mut self, t &Ty, name &str) (u32, Ty) {
+		match t {
+			Ty::Tuple(ts) => {
+				i := match parse_usize(name) {
+					Some(i) => i,
+					None => 0,
+				}
+				ls := self.layouts_of(ts)
+				(offs, _) := sequential(&ls)
+				if i < ts.len() {
+					return (offs[i], ts[i].clone())
+				}
+				return (0, Ty::Unit)
+			}
+			Ty::Adt(d, a) => {
+				if self.is_lang(t, "Range") {
+					e := self.layout(&a[0])
+					match name {
+						"end" => return (align_up(e.size, e.align), a[0].clone()),
+						"incl" => return (align_up(e.size, e.align) + e.size, prim("U8")),
+						_ => return (0, a[0].clone()),
+					}
+				}
+				match name.find(".") {
+					Some(k) => {
+						vname := &name[..k]
+						f := &name[k + 1..]
+						(poff, _) := self.enum_layout(t)
+						v := self.variant_named(*d, vname)
+						fields := self.c.adt_fields(t, v)
+						ls := self.field_layouts(&fields)
+						(offs, _) := sequential(&ls)
+						for (i, (n, ft)) in fields.iter().enumerate() {
+							if n == f {
+								return (poff + offs[i], ft.clone())
+							}
+						}
+						if fields.len() > 0 {
+							return (poff + offs[0], fields[0].1.clone())
+						}
+						return (poff, Ty::Unit)
+					}
+					None => {
+						fields := self.c.adt_fields(t, None)
+						ls := self.field_layouts(&fields)
+						(offs, _) := sequential(&ls)
+						for (i, (n, ft)) in fields.iter().enumerate() {
+							if n == name {
+								return (offs[i], ft.clone())
+							}
+						}
+						if fields.len() > 0 {
+							return (offs[0], fields[0].1.clone())
+						}
+						return (0, Ty::Unit)
+					}
+				}
+			}
+			_ => return (0, Ty::Unit),
+		}
+	}
+
+	fun variants_of(&self, t &Ty) Vec<option<u32>> {
+		o mut := Vec::new()
+		match t {
+			Ty::Adt(d, _) => {
+				if let DefKind::Enum = self.c.r.def(*d).kind {
+					for v in self.c.r.variants(*d) {
+						o.push(Some(v))
+					}
+					return o
+				}
+			}
+			_ => {}
+		}
+		o.push(None)
+		return o
+	}
+
+	// Whether dropping a `t` runs any code.
+	fun needs_drop(&mut self, t &Ty) bool {
+		key := ty_key(t)
+		if let Some(b) = self.needs_drop_cache.get(&key) {
+			return *b
+		}
+		self.needs_drop_cache.insert(key.clone(), false)
+		b := match t {
+			Ty::Adt(d, _) => {
+				if self.is_lang(t, "string") || self.is_lang(t, "Vec") || self.is_lang(t, "Box") || self.is_lang(t, "Task") {
+					true
+				} else if self.is_lang(t, "Range") {
+					false
+				} else if self.c.has_drop_impl(t) {
+					true
+				} else {
+					any mut := false
+					for v in self.variants_of(t) {
+						for (_, ft) in self.c.adt_fields(t, v) {
+							if self.needs_drop(&ft) {
+								any = true
+							}
+						}
+					}
+					any
+				}
+			}
+			Ty::ChanSend(_) | Ty::ChanRecv(_) => true,
+			Ty::Tuple(ts) => {
+				any mut := false
+				for x in ts {
+					if self.needs_drop(x) {
+						any = true
+					}
+				}
+				any
+			}
+			Ty::Array(x, n) => *n > 0 && self.needs_drop(x),
+			_ => false,
+		}
+		self.needs_drop_cache.insert(key, b)
+		return b
+	}
+
+	// ---- instances ----
+
+	fun bodies(&mut self, i usize) Vec<Body> {
+		if !self.bodies.contains_key(&i) {
+			b := lower::lower_fn(&mut self.c, i)
+			self.bodies.insert(i, b)
+		}
+		return self.bodies.get(&i).unwrap().clone()
+	}
+
+	fun body_count_args(&mut self, i usize, bi usize) (usize, string) {
+		if !self.bodies.contains_key(&i) {
+			b := lower::lower_fn(&mut self.c, i)
+			self.bodies.insert(i, b)
+		}
+		bs := self.bodies.get(&i).unwrap()
+		if bi < bs.len() {
+			return (bs[bi].arg_count, bs[bi].name.clone())
+		}
+		return (0, string::new())
+	}
+
+	// Declares (and queues for definition) an instance of body `body` of
+	// function `fn_idx` under `substs`.
+	fun instance(&mut self, fn_idx usize, body usize, substs HashMap<string, Ty>, abi Abi) string {
+		a := if abi == Abi::Closure { "C" } else { "P" }
+		key := "{fn_idx}/{body}/{a}/{subst_key(&substs)}"
+		if let Some(n) = self.instances.get(&key) {
+			return n.clone()
+		}
+		(_, base) := self.body_count_args(fn_idx, body)
+		name := self.fresh_name(&base)
+		self.instances.insert(key, name.clone())
+		self.queue.push(Work::Fn { name: name.clone(), fn_idx: fn_idx, body: body, substs: substs, abi: abi })
+		return name
+	}
+
+	// A closure-ABI shim around a plain function (fn items used as values).
+	fun shim(&mut self, target &str, nargs usize) string {
+		if let Some(n) = self.shims.get(target) {
+			return n.clone()
+		}
+		name := self.fresh_name("shim")
+		self.shims.insert(target.to_string(), name.clone())
+		self.queue.push(Work::Shim { name: name.clone(), target: target.to_string(), nargs: nargs })
+		return name
+	}
+
+	fun glue_name(&mut self, kind &str, t &Ty) string {
+		key := ty_key(t)
+		found := match kind {
+			"drop" => opt_str(self.drop_glue.get(&key)),
+			"eq" => opt_str(self.eq_glue.get(&key)),
+			"cmp" => opt_str(self.cmp_glue.get(&key)),
+			"hash" => opt_str(self.hash_glue.get(&key)),
+			"debug" => opt_str(self.debug_glue.get(&key)),
+			_ => opt_str(self.clone_glue.get(&key)),
+		}
+		if let Some(n) = found {
+			return n
+		}
+		self.counter += 1
+		name := "kn_{kind}{self.counter}"
+		match kind {
+			"drop" => {
+				self.drop_glue.insert(key, name.clone())
+				self.queue.push(Work::Drop(name.clone(), t.clone()))
+			}
+			"eq" => {
+				self.eq_glue.insert(key, name.clone())
+				self.queue.push(Work::Eq(name.clone(), t.clone()))
+			}
+			"cmp" => {
+				self.cmp_glue.insert(key, name.clone())
+				self.queue.push(Work::Cmp(name.clone(), t.clone()))
+			}
+			"hash" => {
+				self.hash_glue.insert(key, name.clone())
+				self.queue.push(Work::Hash(name.clone(), t.clone()))
+			}
+			"debug" => {
+				self.debug_glue.insert(key, name.clone())
+				self.queue.push(Work::Debug(name.clone(), t.clone()))
+			}
+			_ => {
+				self.clone_glue.insert(key, name.clone())
+				self.queue.push(Work::Clone(name.clone(), t.clone()))
+			}
+		}
+		return name
+	}
+
+	fun drain(&mut self) {
+		while self.qhead < self.queue.len() {
+			if self.errors.len() > 20 {
+				return
+			}
+			w := self.queue[self.qhead].clone()
+			self.qhead += 1
+			match w {
+				Work::Fn { name, fn_idx, body, substs, abi } => self.define_fn(&name, fn_idx, body, substs, abi),
+				Work::Drop(n, t) => self.define_glue(&n, "drop", &t),
+				Work::Eq(n, t) => self.define_glue(&n, "eq", &t),
+				Work::Cmp(n, t) => self.define_glue(&n, "cmp", &t),
+				Work::Hash(n, t) => self.define_glue(&n, "hash", &t),
+				Work::Debug(n, t) => self.define_glue(&n, "debug", &t),
+				Work::Clone(n, t) => self.define_glue(&n, "clone", &t),
+				Work::Shim { name, target, nargs } => self.define_shim(&name, &target, nargs),
+			}
+		}
+	}
+}
+
+fun opt_str(o option<&string>) option<string> {
+	match o {
+		Some(x) => return Some(x.clone()),
+		None => return None,
+	}
+}
+
+fun parse_usize(s &str) option<usize> {
+	if s.len() == 0 {
+		return None
+	}
+	n mut := 0usize
+	for ch in s.chars() {
+		if ch < '0' || ch > '9' {
+			return None
+		}
+		n = n * 10 + (ch as usize - '0' as usize)
+	}
+	return Some(n)
+}
+
+// ---- instruction builder ----
+
+impl Cg {
+	fun begin_fn(&mut self) {
+		self.fb = string::new()
+		self.allocas = string::new()
+		self.nv = 0
+		self.nb = 0
+		self.open = false
+		b := self.new_block()
+		self.switch_to(b)
+	}
+
+	// The finished function text.
+	fun end_fn(&mut self, header string) {
+		if self.open {
+			self.emit("unreachable".to_string())
+			self.open = false
+		}
+		self.funcs.push(&header)
+		self.funcs.push(" {{\nentry:\n")
+		self.funcs.push(&self.allocas)
+		self.funcs.push("  br label %b0\n")
+		self.funcs.push(&self.fb)
+		self.funcs.push("}}\n\n")
+	}
+
+	fun new_block(&mut self) u32 {
+		n := self.nb
+		self.nb += 1
+		return n
+	}
+
+	fun switch_to(&mut self, b u32) {
+		if self.open {
+			self.fb.push("  unreachable\n")
+		}
+		self.fb.push("b{b}:\n")
+		self.open = true
+	}
+
+	fun ensure_open(&mut self) {
+		if !self.open {
+			b := self.new_block()
+			self.fb.push("b{b}:\n")
+			self.open = true
+		}
+	}
+
+	fun emit(&mut self, text string) {
+		self.ensure_open()
+		self.fb.push("  ")
+		self.fb.push(&text)
+		self.fb.push("\n")
+	}
+
+	fun term(&mut self, text string) {
+		self.emit(text)
+		self.open = false
+	}
+
+	fun tmp(&mut self) string {
+		self.nv += 1
+		return "%v{self.nv}"
+	}
+
+	fun inst(&mut self, t &str, text string) V {
+		n := self.tmp()
+		self.emit("{n} = {text}")
+		return val(n, t)
+	}
+
+	fun iconst_t(&mut self, t &str, v i128) V {
+		if is_float_t(t) {
+			return val(f64_lit(v as f64), t)
+		}
+		// Normalize to the type's width (two's complement).
+		b := bits(t)
+		x mut := v
+		if b < 128 {
+			m := 1i128 << (b as i128)
+			x = x % m
+			if x < 0 {
+				x += m
+			}
+			if x >= m / 2 {
+				x -= m
+			}
+		}
+		return val("{x}", t)
+	}
+
+	fun iconst(&mut self, v i64) V {
+		return val("{v}", "i64")
+	}
+
+	fun f64const(&mut self, x f64) V {
+		return val(f64_lit(x), "double")
+	}
+
+	fun f32const(&mut self, x f32) V {
+		return val(f64_lit(x as f64), "float")
+	}
+
+	fun ptr_of(&mut self, addr &V, off i64) string {
+		a := if off != 0 { self.iadd_imm(addr, off) } else { addr.clone() }
+		p := self.tmp()
+		self.emit("{p} = inttoptr i64 {a.n} to ptr")
+		return p
+	}
+
+	fun load(&mut self, t &str, addr &V, off i64) V {
+		p := self.ptr_of(addr, off)
+		return self.inst(t, "load {t}, ptr {p}, align 1")
+	}
+
+	fun store(&mut self, v &V, addr &V, off i64) {
+		p := self.ptr_of(addr, off)
+		self.emit("store {v.t} {v.n}, ptr {p}, align 1")
+	}
+
+	fun copy(&mut self, dst &V, src &V, size u32) {
+		if size == 0 {
+			return
+		}
+		if size == 1 || size == 2 || size == 4 || size == 8 {
+			t := int_of_bits(size * 8)
+			v := self.load(&t, src, 0)
+			self.store(&v, dst, 0)
+			return
+		}
+		self.declare("llvm.memmove.p0.p0.i64", "declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)".to_string())
+		d := self.ptr_of(dst, 0)
+		s := self.ptr_of(src, 0)
+		self.emit("call void @llvm.memmove.p0.p0.i64(ptr {d}, ptr {s}, i64 {size}, i1 false)")
+	}
+
+	fun slot(&mut self, size u32, align u32) V {
+		self.nv += 1
+		s := "%s{self.nv}"
+		n := if size == 0 { 1 } else { size }
+		a := if align == 0 { 1 } else { align }
+		self.allocas.push("  {s} = alloca [{n} x i8], align {a}\n")
+		self.nv += 1
+		v := "%v{self.nv}"
+		self.allocas.push("  {v} = ptrtoint ptr {s} to i64\n")
+		return val(v, "i64")
+	}
+
+	fun slot_for(&mut self, t &Ty) V {
+		l := self.layout(t)
+		return self.slot(l.size, l.align)
+	}
+
+	// ---- arithmetic ----
+
+	fun bin(&mut self, op &str, a &V, b &V) V {
+		return self.inst(&a.t, "{op} {a.t} {a.n}, {b.n}")
+	}
+
+	fun iadd(&mut self, a &V, b &V) V {
+		return self.bin("add", a, b)
+	}
+
+	fun isub(&mut self, a &V, b &V) V {
+		return self.bin("sub", a, b)
+	}
+
+	fun imul(&mut self, a &V, b &V) V {
+		return self.bin("mul", a, b)
+	}
+
+	fun band(&mut self, a &V, b &V) V {
+		return self.bin("and", a, b)
+	}
+
+	fun bor(&mut self, a &V, b &V) V {
+		return self.bin("or", a, b)
+	}
+
+	fun bxor(&mut self, a &V, b &V) V {
+		return self.bin("xor", a, b)
+	}
+
+	fun iadd_imm(&mut self, a &V, k i64) V {
+		if k == 0 {
+			return a.clone()
+		}
+		return self.inst(&a.t, "add {a.t} {a.n}, {k}")
+	}
+
+	fun imul_imm(&mut self, a &V, k i64) V {
+		return self.inst(&a.t, "mul {a.t} {a.n}, {k}")
+	}
+
+	fun bxor_imm(&mut self, a &V, k i64) V {
+		return self.inst(&a.t, "xor {a.t} {a.n}, {k}")
+	}
+
+	fun ineg(&mut self, a &V) V {
+		return self.inst(&a.t, "sub {a.t} 0, {a.n}")
+	}
+
+	fun bnot(&mut self, a &V) V {
+		return self.inst(&a.t, "xor {a.t} {a.n}, -1")
+	}
+
+	// A shift amount of `a`'s type, masked to its width (as Cranelift does).
+	fun shift_amount(&mut self, a &V, b &V) V {
+		amt := self.resize(b, &a.t)
+		return self.inst(&a.t, "and {a.t} {amt.n}, {bits(&a.t) - 1}")
+	}
+
+	fun shift(&mut self, op &str, a &V, b &V) V {
+		amt := self.shift_amount(a, b)
+		return self.inst(&a.t, "{op} {a.t} {a.n}, {amt.n}")
+	}
+
+	fun shift_imm(&mut self, op &str, a &V, k i64) V {
+		return self.inst(&a.t, "{op} {a.t} {a.n}, {k}")
+	}
+
+	// Zero-extends or truncates an integer to type `t`.
+	fun resize(&mut self, v &V, t &str) V {
+		if bits(&v.t) == bits(t) {
+			return v.clone()
+		}
+		if bits(&v.t) < bits(t) {
+			return self.uextend(t, v)
+		}
+		return self.ireduce(t, v)
+	}
+
+	fun uextend(&mut self, t &str, v &V) V {
+		if v.t == t {
+			return v.clone()
+		}
+		return self.inst(t, "zext {v.t} {v.n} to {t}")
+	}
+
+	fun sextend(&mut self, t &str, v &V) V {
+		if v.t == t {
+			return v.clone()
+		}
+		return self.inst(t, "sext {v.t} {v.n} to {t}")
+	}
+
+	fun ireduce(&mut self, t &str, v &V) V {
+		if v.t == t {
+			return v.clone()
+		}
+		return self.inst(t, "trunc {v.t} {v.n} to {t}")
+	}
+
+	fun bool8(&mut self, i1 &str) V {
+		return self.inst("i8", "zext i1 {i1} to i8")
+	}
+
+	// `cc`: eq, ne, slt, sle, sgt, sge, ult, ule, ugt, uge. The result is an i8 0/1.
+	fun icmp(&mut self, cc &str, a &V, b &V) V {
+		c := self.tmp()
+		self.emit("{c} = icmp {cc} {a.t} {a.n}, {b.n}")
+		return self.bool8(&c)
+	}
+
+	fun icmp_imm(&mut self, cc &str, a &V, k i64) V {
+		c := self.tmp()
+		self.emit("{c} = icmp {cc} {a.t} {a.n}, {k}")
+		return self.bool8(&c)
+	}
+
+	// `cc`: oeq, une, olt, ole, ogt, oge.
+	fun fcmp(&mut self, cc &str, a &V, b &V) V {
+		c := self.tmp()
+		self.emit("{c} = fcmp {cc} {a.t} {a.n}, {b.n}")
+		return self.bool8(&c)
+	}
+
+	fun truthy(&mut self, c &V) string {
+		n := self.tmp()
+		self.emit("{n} = icmp ne {c.t} {c.n}, 0")
+		return n
+	}
+
+	fun select(&mut self, c &V, a &V, b &V) V {
+		k := self.truthy(c)
+		return self.inst(&a.t, "select i1 {k}, {a.t} {a.n}, {a.t} {b.n}")
+	}
+
+	fun fbin(&mut self, op &str, a &V, b &V) V {
+		return self.inst(&a.t, "{op} {a.t} {a.n}, {b.n}")
+	}
+
+	fun fneg(&mut self, a &V) V {
+		return self.inst(&a.t, "fneg {a.t} {a.n}")
+	}
+
+	fun fpromote(&mut self, v &V) V {
+		if v.t == "double" {
+			return v.clone()
+		}
+		return self.inst("double", "fpext float {v.n} to double")
+	}
+
+	fun fdemote(&mut self, v &V) V {
+		if v.t == "float" {
+			return v.clone()
+		}
+		return self.inst("float", "fptrunc double {v.n} to float")
+	}
+
+	fun bitcast(&mut self, t &str, v &V) V {
+		return self.inst(t, "bitcast {v.t} {v.n} to {t}")
+	}
+
+	fun llvm_intr(&mut self, name &str, ret &str, args &Vec<V>) V {
+		ps mut := string::new()
+		as_ mut := string::new()
+		for (i, a) in args.iter().enumerate() {
+			if i > 0 {
+				ps.push(", ")
+				as_.push(", ")
+			}
+			ps.push(&a.t)
+			as_.push("{a.t} {a.n}")
+		}
+		self.declare(name, "declare {ret} @{name}({ps})")
+		return self.inst(ret, "call {ret} @{name}({as_})")
+	}
+
+	fun intr_suffix(t &str) string {
+		if t == "double" {
+			return "f64".to_string()
+		}
+		if t == "float" {
+			return "f32".to_string()
+		}
+		return t.to_string()
+	}
+
+	fun unary_intr(&mut self, base &str, v &V) V {
+		name := "llvm.{base}.{Cg::intr_suffix(&v.t)}"
+		args := one(v.clone())
+		return self.llvm_intr(&name, &v.t, &args)
+	}
+
+	// High half of a full-width product.
+	fun mulhi(&mut self, a &V, b &V, signed bool) V {
+		w := int_of_bits(bits(&a.t) * 2)
+		(x, y) := if signed { (self.sextend(&w, a), self.sextend(&w, b)) } else { (self.uextend(&w, a), self.uextend(&w, b)) }
+		p := self.imul(&x, &y)
+		h := self.shift_imm("lshr", &p, bits(&a.t) as i64)
+		return self.ireduce(&a.t, &h)
+	}
+
+	fun isplit(&mut self, v &V) (V, V) {
+		lo := self.ireduce("i64", v)
+		h := self.shift_imm("lshr", v, 64)
+		hi := self.ireduce("i64", &h)
+		return (lo, hi)
+	}
+
+	// ---- control flow ----
+
+	fun jump(&mut self, b u32) {
+		self.term("br label %b{b}")
+	}
+
+	fun brif(&mut self, c &V, t u32, f u32) {
+		k := self.truthy(c)
+		self.term("br i1 {k}, label %b{t}, label %b{f}")
+	}
+
+	fun trap(&mut self) {
+		self.declare("llvm.trap", "declare void @llvm.trap() cold noreturn nounwind".to_string())
+		self.emit("call void @llvm.trap()".to_string())
+		self.term("unreachable".to_string())
+	}
+
+	fun ret_void(&mut self) {
+		self.term("ret void".to_string())
+	}
+
+	// `when(cond) { ... }`: returns the join block, entered after `when_end`.
+	fun when_begin(&mut self, c &V) u32 {
+		yes := self.new_block()
+		done := self.new_block()
+		self.brif(c, yes, done)
+		self.switch_to(yes)
+		return done
+	}
+
+	fun when_end(&mut self, done u32) {
+		if self.open {
+			self.jump(done)
+		}
+		self.switch_to(done)
+	}
+
+	// `fail_if(cond) { panic }`: the panic path ends in a trap.
+	fun fail_begin(&mut self, c &V) u32 {
+		yes := self.new_block()
+		ok := self.new_block()
+		self.brif(c, yes, ok)
+		self.switch_to(yes)
+		return ok
+	}
+
+	fun fail_end(&mut self, ok u32) {
+		if self.open {
+			self.trap()
+		}
+		self.switch_to(ok)
+	}
+
+	// A counted loop `for i in 0..n`: returns (i, head, done); the body follows.
+	fun loop_begin(&mut self, n &V) (V, V, u32, u32) {
+		i := self.slot(8, 8)
+		z := self.iconst(0)
+		self.store(&z, &i, 0)
+		head := self.new_block()
+		body := self.new_block()
+		done := self.new_block()
+		self.jump(head)
+		self.switch_to(head)
+		iv := self.load("i64", &i, 0)
+		more := self.icmp("ult", &iv, n)
+		self.brif(&more, body, done)
+		self.switch_to(body)
+		return (i, iv, head, done)
+	}
+
+	fun loop_end(&mut self, i &V, iv &V, head u32, done u32) {
+		next := self.iadd_imm(iv, 1)
+		self.store(&next, i, 0)
+		self.jump(head)
+		self.switch_to(done)
+	}
+
+	// ---- calls ----
+
+	fun args_text(args &Vec<V>) string {
+		o mut := string::new()
+		for (i, a) in args.iter().enumerate() {
+			if i > 0 {
+				o.push(", ")
+			}
+			o.push("{a.t} {a.n}")
+		}
+		return o
+	}
+
+	fun call_rt(&mut self, name &str, args &Vec<V>) option<V> {
+		self.declare_rt(name)
+		(ps, r) := runtime_sig(name).unwrap()
+		// Coerce arguments to the declared types.
+		vals mut := Vec::new()
+		for (i, a) in args.iter().enumerate() {
+			p := &ps[i]
+			if a.t == *p || is_float_t(p) {
+				vals.push(a.clone())
+			} else {
+				vals.push(self.resize(a, p))
+			}
+		}
+		at := Cg::args_text(&vals)
+		if r == "void" {
+			self.emit("call void @{name}({at})")
+			return None
+		}
+		return Some(self.inst(&r, "call {r} @{name}({at})"))
+	}
+
+	fun call_fn(&mut self, f &str, args &Vec<V>) {
+		at := Cg::args_text(args)
+		self.emit("call void @{f}({at})")
+	}
+
+	fun call_indirect(&mut self, code &V, args &Vec<V>) {
+		p := self.tmp()
+		self.emit("{p} = inttoptr i64 {code.n} to ptr")
+		at := Cg::args_text(args)
+		self.emit("call void {p}({at})")
+	}
+
+	fun func_addr(&mut self, f &str) V {
+		return self.inst("i64", "ptrtoint ptr @{f} to i64")
+	}
+
+	fun global_addr(&mut self, g &str) V {
+		return self.inst("i64", "ptrtoint ptr @{g} to i64")
+	}
+
+	fun str_lit(&mut self, s &str) (V, V) {
+		g := self.string_data(s)
+		p := self.global_addr(&g)
+		n := self.iconst(s.len() as i64)
+		return (p, n)
+	}
+
+	fun panic_msg(&mut self, msg &str) {
+		(p, n) := self.str_lit(msg)
+		self.call_rt("kn_panic", &vec2(p, n))
+	}
+}
+
+fun vec2(a V, b V) Vec<V> {
+	o mut := Vec::new()
+	o.push(a)
+	o.push(b)
+	return o
+}
+
+fun vec3(a V, b V, c V) Vec<V> {
+	o mut := vec2(a, b)
+	o.push(c)
+	return o
+}
+
+fun vec4(a V, b V, c V, d V) Vec<V> {
+	o mut := vec3(a, b, c)
+	o.push(d)
+	return o
+}
+
+// The field path of a place with only field projections (`x.a.b` -> ["a", "b"]).
+fun field_path(p &Place) option<Vec<string>> {
+	o mut := Vec::new()
+	for x in &p.proj {
+		match x {
+			Proj::Field(f) => o.push(f.clone()),
+			_ => return None,
+		}
+	}
+	return Some(o)
+}
+
+fun starts_with_path(q &Vec<string>, prefix &Vec<string>) bool {
+	if q.len() < prefix.len() {
+		return false
+	}
+	for i in 0..prefix.len() {
+		if q[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
+}
+
+fun is_signed(t &Ty) bool {
+	match t {
+		Ty::Prim(p) => return p == "I8" || p == "I16" || p == "I32" || p == "I64" || p == "I128" || p == "Isize",
+		_ => return false,
+	}
+}
+
+fun is_float_ty(t &Ty) bool {
+	match t {
+		Ty::Prim(p) => return p == "F32" || p == "F64",
+		_ => return false,
+	}
+}
+
+fun is_prim(t &Ty, name &str) bool {
+	match t {
+		Ty::Prim(p) => return p == name,
+		_ => return false,
+	}
+}
+
+fun is_str_ref(t &Ty) bool {
+	match t {
+		Ty::Ref(_, x) | Ty::Ptr(_, x) => return is_prim(x, "Str"),
+		_ => return false,
+	}
+}
+
+impl Cg {
+	fun subst(&self, t &Ty) Ty {
+		return t.subst(&self.substs)
+	}
+
+	fun drop_value(&mut self, addr &V, t &Ty) {
+		if self.needs_drop(t) {
+			g := self.glue_name("drop", t)
+			self.call_fn(&g, &one(addr.clone()))
+		}
+	}
+
+	fun flag_of(&self, p &Place) option<V> {
+		if p.through_ref() {
+			return None
+		}
+		return self.locals[p.local as usize].flag.clone()
+	}
+
+	fun set_flag(&mut self, s &V, v i64) {
+		c := val("{v}", "i8")
+		self.store(&c, s, 0)
+	}
+
+	fun load_flag(&mut self, s &V) V {
+		return self.load("i8", s, 0)
+	}
+
+	fun define_fn(&mut self, name &str, fn_idx usize, body_i usize, substs HashMap<string, Ty>, abi Abi) {
+		bs := self.bodies(fn_idx)
+		if body_i >= bs.len() {
+			return
+		}
+		body := bs[body_i].clone()
+		self.span = body.span
+		if body.unsupported.len() > 0 {
+			for (what, span) in &body.unsupported {
+				self.error_at("code generation does not support {what}", *span)
+			}
+			return
+		}
+		extra := if abi == Abi::Closure { 2 } else { 1 }
+		nparams := body.arg_count + extra
+		self.body = body
+		self.substs = substs
+		self.fn_idx = fn_idx
+		self.locals = Vec::new()
+		self.blocks = Vec::new()
+		self.defer_stack = None
+		self.panic_frame = None
+		self.last_task = None
+		self.preempt = None
+		self.intr_substs = HashMap::new()
+		self.begin_fn()
+		self.translate(abi)
+		self.end_fn("define internal void @{name}({ptr_params(nparams)})")
+	}
+
+	fun define_shim(&mut self, name &str, target &str, nargs usize) {
+		self.begin_fn()
+		args mut := Vec::new()
+		args.push(val("%p0".to_string(), "i64"))
+		for i in 0..nargs {
+			args.push(val("%p{i + 2}", "i64"))
+		}
+		self.call_fn(target, &args)
+		self.ret_void()
+		self.end_fn("define internal void @{name}({ptr_params(nargs + 2)})")
+	}
+
+	fun define_glue(&mut self, name &str, kind &str, t &Ty) {
+		n := match kind {
+			"drop" => 1,
+			"eq" | "cmp" => 3,
+			_ => 2,
+		}
+		self.body = empty_body(self.span)
+		self.substs = HashMap::new()
+		self.locals = Vec::new()
+		self.defer_stack = None
+		self.panic_frame = None
+		self.preempt = None
+		self.begin_fn()
+		p0 := val("%p0".to_string(), "i64")
+		p1 := val("%p1".to_string(), "i64")
+		p2 := val("%p2".to_string(), "i64")
+		match kind {
+			"drop" => self.drop_in_place(&p0, t),
+			"eq" => {
+				o := val("1".to_string(), "i8")
+				self.store(&o, &p0, 0)
+				self.eq_fields(&p1, &p2, t, &p0)
+			}
+			"cmp" => {
+				z := val("0".to_string(), "i8")
+				self.store(&z, &p0, 0)
+				self.cmp_fields(&p1, &p2, t, &p0)
+			}
+			"hash" => self.hash_fields(&p1, t, &p0),
+			"debug" => self.debug_fields(&p0, &p1, t),
+			_ => self.clone_fields(&p1, &p0, t),
+		}
+		if self.open {
+			self.ret_void()
+		}
+		self.end_fn("define internal void @{name}({ptr_params(n)})")
+	}
+
+	// The `Display::to_string` instance for the error type of `main`'s result.
+	fun main_error_display(&mut self, main_idx usize) option<string> {
+		(_, ret) := self.c.signature(main_idx)
+		if !self.is_lang(&ret, "result") {
+			return None
+		}
+		(_, et) := self.field(&ret, "Err.0")
+		if self.is_lang(&et, "string") {
+			return None
+		}
+		if let Ty::Ref(_, _) = &et {
+			return None
+		}
+		return self.display_fn(&et)
+	}
+
+	fun display_fn(&mut self, t &Ty) option<string> {
+		disp := match self.c.r.prelude_type("Display") {
+			Some(d) => d,
+			None => return None,
+		}
+		ms := self.c.trait_methods(disp)
+		if ms.len() == 0 {
+			return None
+		}
+		m := ms[0]
+		substs mut := HashMap::new()
+		substs.insert("Self".to_string(), t.clone())
+		(i, s) := match self.c.resolve_trait_method(m, &substs) {
+			Some(x) => x,
+			None => return None,
+		}
+		if i == m && self.c.r.fns[i].decl.body.is_none() {
+			return None
+		}
+		return Some(self.instance(i, 0, s, Abi::Plain))
+	}
+
+	fun define_entry(&mut self, main_idx usize, user_main &str, inits &Vec<(string, string)>) {
+		(_, ret) := self.c.signature(main_idx)
+		l := self.layout(&ret)
+		is_result := self.is_lang(&ret, "result")
+		self.body = empty_body(self.span)
+		self.locals = Vec::new()
+		self.begin_fn()
+		slot := self.slot(if l.size < 8 { 8 } else { l.size }, 8)
+		for (data, init) in inits {
+			a := self.global_addr(data)
+			self.call_fn(init, &one(a))
+		}
+		self.call_fn(user_main, &one(slot.clone()))
+		if is_result {
+			(off, et) := self.field(&ret, "Err.0")
+			tag := self.load("i32", &slot, 0)
+			okb := self.new_block()
+			errb := self.new_block()
+			self.brif(&tag, errb, okb)
+			self.switch_to(okb)
+			self.term("ret i32 0".to_string())
+			self.switch_to(errb)
+			p := self.iadd_imm(&slot, off as i64)
+			(data, len) := if self.is_lang(&et, "string") {
+				(self.load("i64", &p, 0), self.load("i64", &p, 16))
+			} else if is_str_ref(&et) {
+				(self.load("i64", &p, 0), self.load("i64", &p, 8))
+			} else if let Some(to_string) = self.entry_display.clone() {
+				out := self.slot(24, 8)
+				ra := self.slot(8, 8)
+				self.store(&p, &ra, 0)
+				self.call_fn(&to_string, &vec2(out.clone(), ra))
+				(self.load("i64", &out, 0), self.load("i64", &out, 16))
+			} else {
+				self.str_lit("main returned an error")
+			}
+			self.call_rt("kn_main_error", &vec2(data, len))
+			self.term("ret i32 1".to_string())
+		} else {
+			self.term("ret i32 0".to_string())
+		}
+		self.end_fn("define i32 @kn_main(i32 %p0, i64 %p1)".to_string())
+	}
+
+	// ---- body ----
+
+	fun translate(&mut self, abi Abi) {
+		params mut := Vec::new()
+		extra := if abi == Abi::Closure { 2 } else { 1 }
+		for i in 0..self.body.arg_count + extra {
+			params.push(val("%p{i}", "i64"))
+		}
+		// Closure environments: captures laid out in order.
+		env_offsets mut := HashMap::new()
+		if abi == Abi::Closure {
+			caps := self.body.captures.clone()
+			ls mut := Vec::new()
+			for (l, m) in &caps {
+				t := self.subst(&self.body.locals[*l as usize].ty)
+				if *m == CaptureMode::Move {
+					ls.push(self.layout(&t))
+				} else {
+					ls.push(lay(8, 8))
+				}
+			}
+			(offs, _) := sequential(&ls)
+			for (k, (l, m)) in caps.iter().enumerate() {
+				env_offsets.insert(*l, (offs[k], *m))
+			}
+		}
+		// Field paths moved out of each local (partial moves).
+		moved_paths mut := HashMap::new()
+		for blk in &self.body.blocks {
+			for st in &blk.stmts {
+				ops := match &st.kind {
+					StmtKind::Assign(_, rv) => rv.operands(),
+					StmtKind::Eval(rv) => rv.operands(),
+					StmtKind::Spawn { operands, .. } => operands.clone(),
+					_ => Vec::new(),
+				}
+				for o in &ops {
+					if let Operand::Move(p) = o {
+						if let Some(path) = field_path(p) {
+							if path.len() > 0 {
+								if !moved_paths.contains_key(&p.local) {
+									moved_paths.insert(p.local, Vec::new())
+								}
+								e := moved_paths.get_mut(&p.local).unwrap()
+								if !e.contains(&path) {
+									e.push(path)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		for i in 0..self.body.locals.len() {
+			decl := self.body.locals[i].clone()
+			ty := self.subst(&decl.ty)
+			addr := match decl.kind {
+				LocalKind::Return => params[0].clone(),
+				LocalKind::Arg => params[extra + i - 1].clone(),
+				LocalKind::Upvar => match env_offsets.get(&(i as u32)) {
+					Some((off, m)) => {
+						if *m == CaptureMode::Move {
+							self.iadd_imm(&params[1], *off as i64)
+						} else {
+							self.load("i64", &params[1], *off as i64)
+						}
+					}
+					None => self.slot_for(&ty),
+				},
+				_ => self.slot_for(&ty),
+			}
+			owned_upvar := decl.kind == LocalKind::Upvar && self.body.kind == BodyKind::GoBlock && match env_offsets.get(&(i as u32)) {
+				Some((_, m)) => *m == CaptureMode::Move,
+				None => false,
+			}
+			no_flag := ((decl.kind == LocalKind::Return || decl.kind == LocalKind::Upvar) && !owned_upvar) || !self.needs_drop(&ty)
+			flag := if no_flag {
+				None
+			} else {
+				s := self.slot(1, 1)
+				v := if decl.kind == LocalKind::Arg || owned_upvar { 1 } else { 0 }
+				self.set_flag(&s, v)
+				Some(s)
+			}
+			paths mut := Vec::new()
+			if flag.is_some() {
+				if let Some(ps) = moved_paths.get(&(i as u32)) {
+					for path in ps {
+						s := self.slot(1, 1)
+						self.set_flag(&s, 1)
+						paths.push((path.clone(), s))
+					}
+				}
+			}
+			self.locals.push(LocalInfo { addr: addr, ty: ty, flag: flag, paths: paths })
+		}
+		uses_defer mut := false
+		for b in &self.body.blocks {
+			if let Terminator::DeferDispatch { targets, .. } = &b.term {
+				if targets.len() > 0 {
+					uses_defer = true
+				}
+			}
+		}
+		if uses_defer {
+			s := self.slot(32, 8)
+			z := self.iconst(0)
+			for off in [0i64, 8, 16, 24] {
+				self.store(&z, &s, off)
+			}
+			self.defer_stack = Some(s)
+		}
+		nblocks := self.body.blocks.len()
+		for _ in 0..nblocks {
+			b := self.new_block()
+			self.blocks.push(b)
+		}
+		has_loop mut := false
+		for (i, b) in self.body.blocks.iter().enumerate() {
+			if let Terminator::Goto(t) = &b.term {
+				if (*t as usize) <= i {
+					has_loop = true
+				}
+			}
+		}
+		if has_loop {
+			s := self.slot(8, 8)
+			n := self.iconst(1024)
+			self.store(&n, &s, 0)
+			self.preempt = Some(s)
+		}
+		first := self.blocks[0]
+		// Functions with `defer` run them on panic too: register a frame and setjmp.
+		exit mut := None
+		best mut := 0usize
+		for (i, b) in self.body.blocks.iter().enumerate() {
+			if let Terminator::DeferDispatch { targets, .. } = &b.term {
+				all mut := targets.len() > 0
+				for t in targets {
+					if t.is_none() {
+						all = false
+					}
+				}
+				if all && (exit.is_none() || targets.len() >= best) {
+					best = targets.len()
+					exit = Some(i)
+				}
+			}
+		}
+		match exit {
+			Some(ex) => {
+				if self.defer_stack.is_some() {
+					s := self.slot(16 + 512, 16)
+					self.panic_frame = Some(s.clone())
+					jb := self.call_rt("kn_frame_enter", &one(s)).unwrap()
+					r := self.call_rt("_setjmp", &one(jb)).unwrap()
+					land := self.blocks[ex]
+					self.brif(&r, land, first)
+				} else {
+					self.jump(first)
+				}
+			}
+			None => self.jump(first),
+		}
+		for bi in 0..nblocks {
+			self.cur_block = bi
+			blk := self.blocks[bi]
+			self.switch_to(blk)
+			stmts := self.body.blocks[bi].stmts.clone()
+			for s in &stmts {
+				self.span = s.span
+				self.stmt(&s.kind)
+			}
+			term := self.body.blocks[bi].term.clone()
+			self.span = self.body.blocks[bi].term_span
+			self.terminator(&term)
+		}
+	}
+
+	fun stmt(&mut self, s &StmtKind) {
+		match s {
+			StmtKind::Assign(p, rv) => self.assign(p, rv),
+			StmtKind::Eval(rv) => {
+				t := self.rvalue_ty(rv)
+				scratch := self.slot_for(&t)
+				self.rvalue(rv, &scratch, &t)
+				is_copy := match rv {
+					Rvalue::Use(Operand::Copy(_)) => true,
+					_ => false,
+				}
+				if !is_copy {
+					self.drop_value(&scratch, &t)
+				}
+			}
+			StmtKind::Read(_) => {}
+			StmtKind::StorageDead(l) => {
+				li := *l as usize
+				if let Some(f) = self.locals[li].flag.clone() {
+					addr := self.locals[li].addr.clone()
+					ty := self.locals[li].ty.clone()
+					v := self.load_flag(&f)
+					w := self.when_begin(&v)
+					self.drop_elab(&addr, &ty, li, &Vec::new())
+					self.when_end(w)
+					self.set_flag(&f, 0)
+				}
+			}
+			StmtKind::DeferPush(n, rec) => {
+				s := self.defer_stack.clone().unwrap()
+				args := match rec {
+					Some(r) => {
+						ri := *r as usize
+						addr := self.locals[ri].addr.clone()
+						ty := self.locals[ri].ty.clone()
+						l := self.layout(&ty)
+						sz := self.iconst(if l.size == 0 { 1 } else { l.size as i64 })
+						al := self.iconst(l.align as i64)
+						p := self.call_rt("kn_alloc", &vec2(sz, al)).unwrap()
+						self.copy(&p, &addr, l.size)
+						if let Some(f) = self.locals[ri].flag.clone() {
+							self.set_flag(&f, 0)
+						}
+						p
+					}
+					None => self.iconst(0),
+				}
+				id := val("{*n}", "i32")
+				self.call_rt("kn_defer_push", &vec3(s, id, args))
+			}
+			StmtKind::DeferLoad(r) => {
+				s := self.defer_stack.clone().unwrap()
+				p := self.load("i64", &s, 24)
+				li := *r as usize
+				addr := self.locals[li].addr.clone()
+				ty := self.locals[li].ty.clone()
+				flag := self.locals[li].flag.clone()
+				paths mut := Vec::new()
+				for (_, ps) in &self.locals[li].paths {
+					paths.push(ps.clone())
+				}
+				l := self.layout(&ty)
+				if let Some(f) = flag {
+					v := self.load_flag(&f)
+					w := self.when_begin(&v)
+					self.drop_elab(&addr, &ty, li, &Vec::new())
+					self.when_end(w)
+					self.set_flag(&f, 1)
+				}
+				for ps in &paths {
+					self.set_flag(ps, 1)
+				}
+				self.copy(&addr, &p, l.size)
+				sz := self.iconst(if l.size == 0 { 1 } else { l.size as i64 })
+				al := self.iconst(l.align as i64)
+				self.call_rt("kn_free", &vec3(p, sz, al))
+			}
+			StmtKind::Spawn { kind, operands, body, .. } => {
+				if *kind != SpawnKind::Scoped {
+					self.spawn(operands, *body)
+				}
+			}
+		}
+	}
+
+	fun find_body(&mut self, kind BodyKind, span Span) option<usize> {
+		bs := self.bodies(self.fn_idx)
+		for (i, b) in bs.iter().enumerate() {
+			if b.kind == kind && b.span.start == span.start && b.span.end == span.end {
+				return Some(i)
+			}
+		}
+		return None
+	}
+
+	fun spawn(&mut self, ops &Vec<Operand>, body Span) {
+		bi := match self.find_body(BodyKind::GoBlock, body) {
+			Some(b) => b,
+			None => return self.error("internal error: task body not found".to_string()),
+		}
+		bs := self.bodies(self.fn_idx)
+		ret_ty := self.subst(&bs[bi].locals[0].ty)
+		id := self.instance(self.fn_idx, bi, self.substs.clone(), Abi::Closure)
+		tys mut := Vec::new()
+		for o in ops {
+			tys.push(self.op_ty(o))
+		}
+		ls := self.layouts_of(&tys)
+		(offs, l) := sequential(&ls)
+		size := self.iconst(l.size as i64)
+		align := self.iconst(l.align as i64)
+		env := self.call_rt("kn_alloc", &vec2(size.clone(), align)).unwrap()
+		for (k, o) in ops.iter().enumerate() {
+			a := self.iadd_imm(&env, offs[k] as i64)
+			self.store_op(o, &a)
+		}
+		code := self.func_addr(&id)
+		rs := self.layout(&ret_ty).size
+		ret_size := self.iconst(rs as i64)
+		drop := self.drop_fn_ptr(&ret_ty)
+		args mut := vec4(code, env, size, ret_size)
+		args.push(drop)
+		h := self.call_rt("kn_go", &args).unwrap()
+		if self.last_task.is_none() {
+			self.last_task = Some(self.slot(8, 8))
+		}
+		s := self.last_task.clone().unwrap()
+		self.store(&h, &s, 0)
+	}
+
+	fun drop_fn_ptr(&mut self, t &Ty) V {
+		if !self.needs_drop(t) {
+			return self.iconst(0)
+		}
+		g := self.glue_name("drop", t)
+		return self.func_addr(&g)
+	}
+
+	fun assign(&mut self, p &Place, rv &Rvalue) {
+		pty := self.place_ty(p)
+		l := self.layout(&pty)
+		scratch := self.slot(l.size, l.align)
+		self.rvalue(rv, &scratch, &pty)
+		(dest, _) := self.place_addr(p)
+		if self.needs_drop(&pty) {
+			has_deref mut := false
+			for x in &p.proj {
+				match x {
+					Proj::Deref(_) | Proj::Index(_) => has_deref = true,
+					_ => {}
+				}
+			}
+			if has_deref {
+				self.drop_value(&dest, &pty)
+			} else if let Some(f) = self.flag_of(p) {
+				v := self.load_flag(&f)
+				li := p.local as usize
+				path := match field_path(p) {
+					Some(x) => x,
+					None => Vec::new(),
+				}
+				w := self.when_begin(&v)
+				self.drop_elab(&dest, &pty, li, &path)
+				self.when_end(w)
+			}
+		}
+		self.copy(&dest, &scratch, l.size)
+		if p.proj.len() == 0 {
+			if let Some(f) = self.locals[p.local as usize].flag.clone() {
+				self.set_flag(&f, 1)
+			}
+		}
+		if let Some(path) = field_path(p) {
+			restored mut := Vec::new()
+			for (q, s) in &self.locals[p.local as usize].paths {
+				if starts_with_path(q, &path) {
+					restored.push(s.clone())
+				}
+			}
+			for s in &restored {
+				self.set_flag(s, 1)
+			}
+		}
+	}
+
+	fun terminator(&mut self, t &Terminator) {
+		match t {
+			Terminator::Goto(b) => {
+				blk := self.blocks[*b as usize]
+				back := (*b as usize) <= self.cur_block && !self.body.bounded_loops.contains(b)
+				match self.preempt.clone() {
+					Some(s) => {
+						if back {
+							c := self.load("i64", &s, 0)
+							c1 := self.iadd_imm(&c, -1)
+							self.store(&c1, &s, 0)
+							check := self.new_block()
+							self.brif(&c1, blk, check)
+							self.switch_to(check)
+							n := self.iconst(1024)
+							self.store(&n, &s, 0)
+							self.call_rt("kn_maybe_yield", &Vec::new())
+							self.jump(blk)
+						} else {
+							self.jump(blk)
+						}
+					}
+					None => self.jump(blk),
+				}
+			}
+			Terminator::SwitchBool { cond, t, f } => {
+				c := self.op_scalar(cond)
+				self.brif(&c, self.blocks[*t as usize], self.blocks[*f as usize])
+			}
+			Terminator::Return => self.ret_void(),
+			Terminator::Unreachable => self.trap(),
+			Terminator::Branch(_) => {
+				self.error("code generation does not support `select` yet".to_string())
+				self.trap()
+			}
+			Terminator::DeferDispatch { targets, done } => {
+				doneb := self.blocks[*done as usize]
+				s := match self.defer_stack.clone() {
+					Some(s) => s,
+					None => return self.jump(doneb),
+				}
+				id := self.call_rt("kn_defer_pop", &one(s)).unwrap()
+				bad := self.new_block()
+				neg := self.icmp_imm("slt", &id, 0)
+				dispatch := self.new_block()
+				match self.panic_frame.clone() {
+					Some(pf) => {
+						leave := self.new_block()
+						self.brif(&neg, leave, dispatch)
+						self.switch_to(leave)
+						self.call_rt("kn_frame_leave", &one(pf))
+						self.jump(doneb)
+					}
+					None => self.brif(&neg, doneb, dispatch),
+				}
+				self.switch_to(dispatch)
+				cases mut := string::new()
+				for (i, t) in targets.iter().enumerate() {
+					if let Some(t) = t {
+						cases.push(" i64 {i}, label %b{self.blocks[*t as usize]}")
+					}
+				}
+				self.term("switch i64 {id.n}, label %b{bad} [{cases} ]")
+				self.switch_to(bad)
+				self.trap()
+			}
+		}
+	}
+
+	// ---- places ----
+
+	fun place_ty(&mut self, p &Place) Ty {
+		t mut := self.locals[p.local as usize].ty.clone()
+		for pr in &p.proj {
+			t = match pr {
+				Proj::Deref(_) => match self.pointee(&t) {
+					Some(x) => x,
+					None => Ty::Unit,
+				},
+				Proj::Field(n) => {
+					(_, ft) := self.field(&t, n)
+					ft
+				}
+				Proj::Index(_) => self.elem_of(&t),
+			}
+		}
+		return t
+	}
+
+	fun elem_of(&self, t &Ty) Ty {
+		match t {
+			Ty::Adt(_, a) => {
+				if self.is_lang(t, "Vec") {
+					return a[0].clone()
+				}
+				return Ty::Unit
+			}
+			Ty::Slice(x) => return (**x).clone(),
+			Ty::Array(x, _) => return (**x).clone(),
+			_ => return Ty::Unit,
+		}
+	}
+
+	// Address (and fat-pointer metadata for unsized places) of a place.
+	fun place_addr(&mut self, p &Place) (V, option<V>) {
+		addr mut := self.locals[p.local as usize].addr.clone()
+		t mut := self.locals[p.local as usize].ty.clone()
+		meta mut := None
+		for pr in &p.proj {
+			match pr {
+				Proj::Deref(_) => {
+					inner := match self.pointee(&t) {
+						Some(x) => x,
+						None => Ty::Unit,
+					}
+					fat := self.is_unsized(&inner)
+					data := self.load("i64", &addr, 0)
+					meta = if fat { Some(self.load("i64", &addr, 8)) } else { None }
+					addr = data
+					t = inner
+				}
+				Proj::Field(n) => {
+					(off, ft) := self.field(&t, n)
+					addr = self.iadd_imm(&addr, off as i64)
+					t = ft
+					meta = None
+				}
+				Proj::Index(l) => {
+					ia := self.locals[*l as usize].addr.clone()
+					it := self.locals[*l as usize].ty.clone()
+					st := match self.scalar(&it) {
+						Some(s) => s,
+						None => "i64".to_string(),
+					}
+					i0 := self.load(&st, &ia, 0)
+					i := self.uextend("i64", &i0)
+					elem := self.elem_of(&t)
+					(data, len) := if self.is_lang(&t, "Vec") {
+						(self.load("i64", &addr, 0), self.load("i64", &addr, 16))
+					} else if let Ty::Array(_, n) = &t {
+						(addr.clone(), self.iconst(*n as i64))
+					} else if let Ty::Slice(_) = &t {
+						match meta.clone() {
+							Some(m) => (addr.clone(), m),
+							None => (addr.clone(), self.iconst(0)),
+						}
+					} else {
+						self.error("code generation does not support indexing this type yet".to_string())
+						(addr.clone(), self.iconst(0))
+					}
+					oob := self.icmp("uge", &i, &len)
+					ok := self.fail_begin(&oob)
+					self.call_rt("kn_panic_bounds", &vec2(i.clone(), len))
+					self.fail_end(ok)
+					size := self.layout(&elem).size
+					off := self.imul_imm(&i, size as i64)
+					addr = self.iadd(&data, &off)
+					t = elem
+					meta = None
+				}
+			}
+		}
+		return (addr, meta)
+	}
+
+	// ---- operands ----
+
+	fun op_ty(&mut self, o &Operand) Ty {
+		match o {
+			Operand::Copy(p) | Operand::Move(p) => return self.place_ty(p),
+			Operand::Const(c) => return self.subst(&c.ty),
+		}
+	}
+
+	fun moved(&mut self, p &Place) {
+		if p.through_ref() {
+			return
+		}
+		path := match field_path(p) {
+			Some(x) => x,
+			None => Vec::new(),
+		}
+		if path.len() > 0 {
+			s mut := None
+			for (q, f) in &self.locals[p.local as usize].paths {
+				if *q == path {
+					s = Some(f.clone())
+				}
+			}
+			if let Some(s) = s {
+				self.set_flag(&s, 0)
+			}
+			return
+		}
+		if let Some(f) = self.flag_of(p) {
+			self.set_flag(&f, 0)
+		}
+	}
+
+	// Drops the part of local `l` at field path `prefix`, skipping moved-out parts.
+	fun drop_elab(&mut self, addr &V, t &Ty, l usize, prefix &Vec<string>) {
+		own mut := None
+		for (q, s) in &self.locals[l].paths {
+			if q == prefix {
+				own = Some(s.clone())
+			}
+		}
+		match own {
+			Some(f) => {
+				v := self.load_flag(&f)
+				w := self.when_begin(&v)
+				self.drop_elab_children(addr, t, l, prefix)
+				self.when_end(w)
+			}
+			None => self.drop_elab_children(addr, t, l, prefix),
+		}
+	}
+
+	fun drop_elab_children(&mut self, addr &V, t &Ty, l usize, prefix &Vec<string>) {
+		deeper mut := false
+		for (q, _) in &self.locals[l].paths {
+			if q.len() > prefix.len() && starts_with_path(q, prefix) {
+				deeper = true
+			}
+		}
+		if !deeper {
+			self.drop_value(addr, t)
+			return
+		}
+		match t {
+			Ty::Tuple(ts) => {
+				for (i, et) in ts.iter().enumerate() {
+					(off, _) := self.field(t, &"{i}")
+					a := self.iadd_imm(addr, off as i64)
+					sub mut := prefix.clone()
+					sub.push("{i}")
+					self.drop_elab(&a, et, l, &sub)
+				}
+			}
+			Ty::Adt(_, _) => {
+				variants := self.variants_of(t)
+				is_enum := variants.len() > 0 && variants[0].is_some()
+				for (vi, v) in variants.iter().enumerate() {
+					fields := self.c.adt_fields(t, *v)
+					pfx := match v {
+						Some(v) => "{self.c.r.def(*v).name}.",
+						None => string::new(),
+					}
+					w mut := None
+					if is_enum {
+						tag := self.load("i32", addr, 0)
+						is := self.icmp_imm("eq", &tag, vi as i64)
+						w = Some(self.when_begin(&is))
+					}
+					for (n, ft) in &fields {
+						name := "{pfx}{n}"
+						(off, _) := self.field(t, &name)
+						a := self.iadd_imm(addr, off as i64)
+						sub mut := prefix.clone()
+						sub.push(name)
+						self.drop_elab(&a, ft, l, &sub)
+					}
+					if let Some(w) = w {
+						self.when_end(w)
+					}
+				}
+			}
+			_ => self.drop_value(addr, t),
+		}
+	}
+
+	// Writes the operand's value to `dest`.
+	fun store_op(&mut self, o &Operand, dest &V) {
+		match o {
+			Operand::Copy(p) | Operand::Move(p) => {
+				t := self.place_ty(p)
+				(src, _) := self.place_addr(p)
+				size := self.layout(&t).size
+				self.copy(dest, &src, size)
+				if let Operand::Move(_) = o {
+					self.moved(p)
+				}
+			}
+			Operand::Const(c) => self.store_const(c, dest),
+		}
+	}
+
+	// Address of the operand's value (constants are spilled to a slot).
+	fun op_addr(&mut self, o &Operand) V {
+		match o {
+			Operand::Copy(p) | Operand::Move(p) => {
+				(a, _) := self.place_addr(p)
+				if let Operand::Move(_) = o {
+					self.moved(p)
+				}
+				return a
+			}
+			Operand::Const(c) => {
+				t := self.subst(&c.ty)
+				s := self.slot_for(&t)
+				self.store_const(c, &s)
+				return s
+			}
+		}
+	}
+
+	fun op_scalar(&mut self, o &Operand) V {
+		t := self.op_ty(o)
+		if let Operand::Const(c) = o {
+			if let Some(st) = self.scalar(&t) {
+				if let Some(v) = self.const_scalar(c, &st) {
+					return v
+				}
+			}
+		}
+		a := self.op_addr(o)
+		st := match self.scalar(&t) {
+			Some(s) => s,
+			None => "i64".to_string(),
+		}
+		return self.load(&st, &a, 0)
+	}
+
+	fun const_scalar(&mut self, c &Constant, st &str) option<V> {
+		match &c.kind {
+			ConstKind::Int(v) => {
+				if st == "double" || st == "float" {
+					return Some(val(f64_lit(if st == "float" { (*v as f32) as f64 } else { *v as f64 }), st))
+				}
+				return Some(self.iconst_t(st, *v))
+			}
+			ConstKind::Float(v) => {
+				if st == "double" {
+					return Some(val(f64_lit(*v), st))
+				}
+				if st == "float" {
+					return Some(val(f64_lit((*v as f32) as f64), st))
+				}
+				return None
+			}
+			ConstKind::Bool(v) => return Some(val(if *v { "1".to_string() } else { "0".to_string() }, "i8")),
+			ConstKind::Char(v) => return Some(val("{*v as u32}", "i32")),
+			_ => return None,
+		}
+	}
+
+	fun store_const(&mut self, c &Constant, dest &V) {
+		t := self.subst(&c.ty)
+		match &c.kind {
+			ConstKind::Unit => {}
+			ConstKind::Str(s) => {
+				(p, n) := self.str_lit(s)
+				self.store(&p, dest, 0)
+				self.store(&n, dest, 8)
+			}
+			ConstKind::Bytes(b) => {
+				g := self.bytes_data(b)
+				p := self.global_addr(&g)
+				n := self.iconst(b.len() as i64)
+				self.store(&p, dest, 0)
+				self.store(&n, dest, 8)
+			}
+			ConstKind::Fn(i, substs) => {
+				s mut := HashMap::new()
+				for (k, v) in substs {
+					s.insert(k.clone(), self.subst(v))
+				}
+				match self.resolve(*i, s) {
+					Target::Direct(id) => {
+						nargs := match &t {
+							Ty::Fn(ps, _, _) => ps.len(),
+							_ => 0,
+						}
+						sh := self.shim(&id, nargs)
+						code := self.func_addr(&sh)
+						z := self.iconst(0)
+						self.store(&code, dest, 0)
+						self.store(&z, dest, 8)
+					}
+					_ => self.error("code generation does not support using this function as a value yet".to_string()),
+				}
+			}
+			_ => match self.scalar(&t) {
+				Some(st) => match self.const_scalar(c, &st) {
+					Some(v) => self.store(&v, dest, 0),
+					None => self.error("code generation does not support this constant yet".to_string()),
+				},
+				None => self.error("code generation does not support this constant yet".to_string()),
+			},
+		}
+	}
+
+	// ---- rvalues ----
+
+	fun rvalue_ty(&mut self, rv &Rvalue) Ty {
+		match rv {
+			Rvalue::Use(o) => return self.op_ty(o),
+			Rvalue::Coerce(_, t) => return self.subst(t),
+			Rvalue::Call { callee, args, .. } => return self.call_ret_ty(callee, args),
+			_ => return Ty::Unit,
+		}
+	}
+
+	fun rvalue(&mut self, rv &Rvalue, dest &V, dt &Ty) {
+		match rv {
+			Rvalue::Use(o) => self.store_op(o, dest),
+			Rvalue::Ref { place, .. } => {
+				(a, meta) := self.place_addr(place)
+				self.store(&a, dest, 0)
+				if let Some(m) = meta {
+					self.store(&m, dest, 8)
+				}
+			}
+			Rvalue::Aggregate(kind, ops) => self.aggregate(kind, ops, dest, dt),
+			Rvalue::Call { callee, args, .. } => self.call(callee, args, dest, dt),
+			Rvalue::Pure(op, ops) => self.pure(op, ops, dest, dt),
+			Rvalue::Coerce(o, target) => {
+				tt := self.subst(target)
+				self.coerce(o, &tt, dest)
+			}
+		}
+	}
+
+	fun store_at(&mut self, o &Operand, dest &V, off u32) {
+		a := self.iadd_imm(dest, off as i64)
+		self.store_op(o, &a)
+	}
+
+	fun aggregate(&mut self, kind &AggKind, ops &Vec<Operand>, dest &V, dt &Ty) {
+		match kind {
+			AggKind::Tuple => {
+				for (i, o) in ops.iter().enumerate() {
+					(off, _) := self.field(dt, &"{i}")
+					self.store_at(o, dest, off)
+				}
+			}
+			AggKind::Struct(_, names) => {
+				for (k, n) in names.iter().enumerate() {
+					(off, _) := self.field(dt, n)
+					self.store_at(&ops[k], dest, off)
+				}
+			}
+			AggKind::Variant { def, index, fields } => {
+				tag := val("{*index}", "i32")
+				self.store(&tag, dest, 0)
+				vname := self.c.r.def(self.c.r.variants(*def)[*index]).name.clone()
+				for (k, n) in fields.iter().enumerate() {
+					(off, _) := self.field(dt, &"{vname}.{n}")
+					self.store_at(&ops[k], dest, off)
+				}
+			}
+			AggKind::Range { has_start, has_end, inclusive } => {
+				if *has_start && *has_end {
+					(o0, _) := self.field(dt, "start")
+					self.store_at(&ops[0], dest, o0)
+					(o1, _) := self.field(dt, "end")
+					self.store_at(&ops[1], dest, o1)
+					(oi, _) := self.field(dt, "incl")
+					v := val(if *inclusive { "1".to_string() } else { "0".to_string() }, "i8")
+					self.store(&v, dest, oi as i64)
+				} else {
+					self.error("code generation supports only `a..b` and `a..=b` ranges".to_string())
+				}
+			}
+			AggKind::Array => {
+				et := self.elem_of(dt)
+				size := self.layout(&et).size
+				for (i, o) in ops.iter().enumerate() {
+					self.store_at(o, dest, (i as u32) * size)
+				}
+			}
+			AggKind::ArrayRepeat(n) => {
+				et := self.elem_of(dt)
+				size := self.layout(&et).size
+				t := self.slot_for(&et)
+				self.store_op(&ops[0], &t)
+				if *n <= 4 {
+					for i in 0..*n {
+						e := self.iadd_imm(dest, (i * size as u64) as i64)
+						self.copy(&e, &t, size)
+					}
+				} else {
+					nv := self.iconst(*n as i64)
+					(ic, iv, head, done) := self.loop_begin(&nv)
+					off := self.imul_imm(&iv, size as i64)
+					e := self.iadd(dest, &off)
+					self.copy(&e, &t, size)
+					self.loop_end(&ic, &iv, head, done)
+				}
+				if *n == 0 {
+					self.drop_value(&t, &et)
+				}
+			}
+			AggKind::Closure(span) => {
+				bi := match self.find_body(BodyKind::Closure, *span) {
+					Some(b) => b,
+					None => return self.error("internal error: closure body not found".to_string()),
+				}
+				id := self.instance(self.fn_idx, bi, self.substs.clone(), Abi::Closure)
+				tys mut := Vec::new()
+				for o in ops {
+					tys.push(self.op_ty(o))
+				}
+				ls := self.layouts_of(&tys)
+				(offs, l) := sequential(&ls)
+				size := self.iconst(l.size as i64)
+				align := self.iconst(l.align as i64)
+				env := self.call_rt("kn_alloc", &vec2(size, align)).unwrap()
+				for (k, o) in ops.iter().enumerate() {
+					self.store_at(o, &env, offs[k])
+				}
+				code := self.func_addr(&id)
+				self.store(&code, dest, 0)
+				self.store(&env, dest, 8)
+			}
+		}
+	}
+
+	fun coerce(&mut self, o &Operand, target &Ty, dest &V) {
+		src_ty := self.op_ty(o)
+		from := self.pointee(&src_ty)
+		to := self.pointee(target)
+		if from.is_none() || to.is_none() {
+			return self.store_op(o, dest)
+		}
+		from := from.unwrap()
+		to := to.unwrap()
+		p := self.op_scalar_or_first_word(o, &src_ty)
+		if let Ty::Dyn(traits) = &to {
+			if let Ty::Dyn(_) = &from {
+			} else {
+				tr := if traits.len() > 0 { Some(traits[0]) } else { None }
+				vt := self.vtable(&from, tr)
+				v := self.global_addr(&vt)
+				self.store(&p, dest, 0)
+				self.store(&v, dest, 8)
+				return
+			}
+		}
+		if is_prim(&to, "Str") && self.is_lang(&from, "string") {
+			d := self.load("i64", &p, 0)
+			n := self.load("i64", &p, 16)
+			self.store(&d, dest, 0)
+			self.store(&n, dest, 8)
+			return
+		}
+		if let Ty::Slice(_) = &to {
+			if let Ty::Array(_, n) = &from {
+				nv := self.iconst(*n as i64)
+				self.store(&p, dest, 0)
+				self.store(&nv, dest, 8)
+				return
+			}
+			if self.is_lang(&from, "Vec") {
+				d := self.load("i64", &p, 0)
+				n := self.load("i64", &p, 16)
+				self.store(&d, dest, 0)
+				self.store(&n, dest, 8)
+				return
+			}
+		}
+		if self.is_lang(&from, "Box") && !self.is_lang(&to, "Box") {
+			inner := self.load("i64", &p, 0)
+			self.store(&inner, dest, 0)
+			if self.is_fat(&from) {
+				m := self.load("i64", &p, 8)
+				self.store(&m, dest, 8)
+			}
+			return
+		}
+		self.store_op(o, dest)
+	}
+
+	fun op_scalar_or_first_word(&mut self, o &Operand, t &Ty) V {
+		if self.scalar(t).is_some() {
+			return self.op_scalar(o)
+		}
+		a := self.op_addr(o)
+		return self.load("i64", &a, 0)
+	}
+
+	// ---- calls ----
+
+	fun qualified_name(&self, idx usize) string {
+		f := &self.c.r.fns[idx]
+		match f.impl_idx {
+			Some(i) => {
+				ty := match &self.c.r.impls[i].decl.self_ty.kind {
+					TypeKind::Path(p) => match p.segments.last() {
+						Some(s) => s.ident.name.clone(),
+						None => string::new(),
+					},
+					_ => string::new(),
+				}
+				return "{ty}::{f.decl.name.name}"
+			}
+			None => {
+				if f.module != self.c.r.prelude {
+					return "{self.c.r.def(f.module).name}::{f.decl.name.name}"
+				}
+				return f.decl.name.name.clone()
+			}
+		}
+	}
+
+	fun resolve(&mut self, idx usize, substs HashMap<string, Ty>) Target {
+		trait_def := self.c.r.fns[idx].trait_def
+		impl_idx := self.c.r.fns[idx].impl_idx
+		if let Some(td) = trait_def {
+			if impl_idx.is_none() {
+				self_ty := match substs.get("Self") {
+					Some(t) => t.clone(),
+					None => Ty::Unit,
+				}
+				if let Ty::Dyn(traits) = &self_ty {
+					principal := if traits.len() > 0 { traits[0] } else { td }
+					ms := self.c.dyn_methods(principal)
+					k mut := 0usize
+					for (j, m) in ms.iter().enumerate() {
+						if *m == idx {
+							k = j
+							break
+						}
+					}
+					return Target::Virtual(k)
+				}
+				match self.c.resolve_trait_method(idx, &substs) {
+					Some((i2, s2)) => {
+						if i2 != idx || self.c.r.fns[i2].decl.body.is_some() {
+							if i2 == idx {
+								return Target::Direct(self.instance(i2, 0, s2, Abi::Plain))
+							}
+							s3 mut := HashMap::new()
+							for (k, v) in s2.iter() {
+								s3.insert(k.clone(), v.subst(&substs))
+							}
+							return self.resolve(i2, s3)
+						}
+					}
+					None => {}
+				}
+				tn := self.fmt_ty(&self_ty)
+				name := self.c.r.fns[idx].decl.name.name.clone()
+				if name == "to_string" {
+					return Target::Intrinsic("display_to_string".to_string())
+				}
+				return Target::Missing("no implementation of `{name}` for `{tn}`")
+			}
+		}
+		if self.c.r.fns[idx].decl.body.is_none() {
+			foreign mut := false
+			for a in &self.c.r.fns[idx].attrs {
+				if a.name.name == "extern" {
+					foreign = true
+				}
+			}
+			name := self.c.r.fns[idx].decl.name.name.clone()
+			if (foreign || name.starts_with("kn_")) && impl_idx.is_none() {
+				return Target::Extern(name)
+			}
+			return Target::Intrinsic(self.qualified_name(idx))
+		}
+		return Target::Direct(self.instance(idx, 0, substs, Abi::Plain))
+	}
+
+	fun call_ret_ty(&mut self, callee &Callee, args &Vec<Operand>) Ty {
+		match callee {
+			Callee::Fn(i, substs) => {
+				s mut := HashMap::new()
+				for (k, v) in substs {
+					s.insert(k.clone(), self.subst(v))
+				}
+				(_, ret) := self.c.signature(*i)
+				return ret.subst(&s)
+			}
+			Callee::Value => {
+				if args.len() > 0 {
+					if let Ty::Fn(_, r, _) = self.op_ty(&args[0]) {
+						return *r
+					}
+				}
+				return Ty::Unit
+			}
+			Callee::Intrinsic(_) => return Ty::Unit,
+		}
+	}
+
+	// Copies each argument into a fresh slot (the callee owns it).
+	fun arg_slots(&mut self, args &[Operand]) Vec<V> {
+		o mut := Vec::new()
+		for a in args {
+			t := self.op_ty(a)
+			s := self.slot_for(&t)
+			self.store_op(a, &s)
+			o.push(s)
+		}
+		return o
+	}
+
+	fun call(&mut self, callee &Callee, args &Vec<Operand>, dest &V, dt &Ty) {
+		match callee {
+			Callee::Fn(i, substs) => {
+				s mut := HashMap::new()
+				for (k, v) in substs {
+					s.insert(k.clone(), self.subst(v))
+				}
+				match self.resolve(*i, s.clone()) {
+					Target::Direct(id) => {
+						vals mut := one(dest.clone())
+						for v in self.arg_slots(&args[..]) {
+							vals.push(v)
+						}
+						self.call_fn(&id, &vals)
+					}
+					Target::Virtual(k) => {
+						a0 := self.op_addr(&args[0])
+						data := self.load("i64", &a0, 0)
+						vt := self.load("i64", &a0, 8)
+						code := self.load("i64", &vt, 24 + 8 * k as i64)
+						self_slot := self.slot(8, 8)
+						self.store(&data, &self_slot, 0)
+						vals mut := vec2(dest.clone(), self_slot)
+						for v in self.arg_slots(&args[1..]) {
+							vals.push(v)
+						}
+						self.call_indirect(&code, &vals)
+					}
+					Target::Intrinsic(name) => {
+						self.intr_substs = s
+						self.intrinsic(&name, args, dest, dt)
+					}
+					Target::Extern(name) => self.extern_call(&name, args, dest, dt),
+					Target::Missing(m) => self.error(m),
+				}
+			}
+			Callee::Value => {
+				fa := self.op_addr(&args[0])
+				code := self.load("i64", &fa, 0)
+				env := self.load("i64", &fa, 8)
+				vals mut := vec2(dest.clone(), env)
+				for v in self.arg_slots(&args[1..]) {
+					vals.push(v)
+				}
+				self.call_indirect(&code, &vals)
+			}
+			Callee::Intrinsic(name) => self.intrinsic(name, args, dest, dt),
+		}
+	}
+
+	// A runtime C function declared in `std` as a bodiless `kn_*` function.
+	fun extern_call(&mut self, name &str, args &Vec<Operand>, dest &V, dt &Ty) {
+		vals mut := Vec::new()
+		ptys mut := string::new()
+		for a in args {
+			t := self.op_ty(a)
+			if self.is_fat(&t) {
+				p := self.op_addr(a)
+				d := self.load("i64", &p, 0)
+				n := self.load("i64", &p, 8)
+				vals.push(d)
+				vals.push(n)
+			} else if let Some(_) = self.scalar(&t) {
+				vals.push(self.op_scalar(a))
+			} else {
+				tn := self.fmt_ty(&t)
+				return self.error("runtime function `{name}` cannot take a `{tn}`")
+			}
+		}
+		for (i, v) in vals.iter().enumerate() {
+			if i > 0 {
+				ptys.push(", ")
+			}
+			ptys.push(&v.t)
+		}
+		ret := match dt {
+			Ty::Unit | Ty::Never => "void".to_string(),
+			t => match self.scalar(t) {
+				Some(st) => st,
+				None => {
+					tn := self.fmt_ty(t)
+					return self.error("runtime function `{name}` cannot return a `{tn}`")
+				}
+			},
+		}
+		self.declare(name, "declare {ret} @{name}({ptys})")
+		at := Cg::args_text(&vals)
+		if ret == "void" {
+			self.emit("call void @{name}({at})")
+		} else {
+			v := self.inst(&ret, "call {ret} @{name}({at})")
+			self.store(&v, dest, 0)
+		}
+		if let Ty::Never = dt {
+			self.trap()
+		}
+	}
+
+	// ---- operators ----
+
+	// A scalar operand, looking through references (match ergonomics).
+	fun scalar_through_refs(&mut self, o &Operand) (V, Ty) {
+		t mut := self.op_ty(o)
+		v mut := self.op_scalar(o)
+		while true {
+			inner := match &t {
+				Ty::Ref(_, x) => (**x).clone(),
+				_ => break,
+			}
+			if self.is_fat(&t) {
+				break
+			}
+			match self.scalar(&inner) {
+				Some(st) => {
+					v = self.load(&st, &v, 0)
+					t = inner
+				}
+				None => break,
+			}
+		}
+		return (v, t)
+	}
+
+	fun is_str_like(&self, t &Ty) bool {
+		match t {
+			Ty::Prim(p) => return p == "Str",
+			Ty::Ref(_, x) => return self.is_str_like(x),
+			_ => return self.is_lang(t, "string"),
+		}
+	}
+
+	// `(ptr, len)` of a string-like value stored at `addr` with type `t`.
+	fun str_at(&mut self, addr &V, t &Ty) (V, V) {
+		match t {
+			Ty::Ref(_, x) => {
+				if is_prim(x, "Str") {
+					return (self.load("i64", addr, 0), self.load("i64", addr, 8))
+				}
+				p := self.load("i64", addr, 0)
+				return self.str_at(&p, x)
+			}
+			_ => return (self.load("i64", addr, 0), self.load("i64", addr, 16)),
+		}
+	}
+
+	fun str_of(&mut self, o &Operand) (V, V) {
+		t := self.op_ty(o)
+		a := self.op_addr(o)
+		return self.str_at(&a, &t)
+	}
+
+	fun pure(&mut self, op &Op, ops &Vec<Operand>, dest &V, dt &Ty) {
+		match op {
+			Op::Bin(b) => {
+				if let Some(v) = self.binary(*b, &ops[0], &ops[1]) {
+					self.store(&v, dest, 0)
+				}
+			}
+			Op::Neg => {
+				(v, t) := self.scalar_through_refs(&ops[0])
+				r := if is_float_ty(&t) {
+					self.fneg(&v)
+				} else if self.checked && is_signed(&t) {
+					z := self.iconst_t(&v.t, 0)
+					self.checked_arith(BinOp::Sub, &z, &v, true)
+				} else {
+					self.ineg(&v)
+				}
+				self.store(&r, dest, 0)
+			}
+			Op::Not => {
+				(v, t) := self.scalar_through_refs(&ops[0])
+				r := if is_prim(&t, "Bool") { self.icmp_imm("eq", &v, 0) } else { self.bnot(&v) }
+				self.store(&r, dest, 0)
+			}
+			Op::Cast(to) => {
+				to := self.subst(to)
+				ot := self.op_ty(&ops[0])
+				is_ptr_to := match &to {
+					Ty::Ptr(_, _) => true,
+					_ => false,
+				}
+				is_ptr_from := match &ot {
+					Ty::Ptr(_, _) => true,
+					_ => false,
+				}
+				(v, from) := if is_ptr_to || is_ptr_from {
+					a := self.op_addr(&ops[0])
+					(self.load("i64", &a, 0), prim("Usize"))
+				} else {
+					self.scalar_through_refs(&ops[0])
+				}
+				to_s := if is_ptr_to { prim("Usize") } else { to.clone() }
+				r := self.cast(&v, &from, &to_s)
+				self.store(&r, dest, 0)
+			}
+			Op::Discriminant => {
+				a := self.op_addr(&ops[0])
+				tag := self.load("i32", &a, 0)
+				t := self.uextend("i64", &tag)
+				self.store(&t, dest, 0)
+			}
+			Op::Print { newline, stderr } => {
+				t := self.op_ty(&ops[0])
+				nl := val(if *newline { "1".to_string() } else { "0".to_string() }, "i32")
+				se := val(if *stderr { "1".to_string() } else { "0".to_string() }, "i32")
+				if self.is_str_like(&t) {
+					(p, n) := self.str_of(&ops[0])
+					self.call_rt("kn_print", &vec4(p, n, se, nl))
+				} else {
+					s := self.new_string()
+					a := self.op_addr(&ops[0])
+					self.fmt_into(&s, &a, &t)
+					p := self.load("i64", &s, 0)
+					n := self.load("i64", &s, 16)
+					self.call_rt("kn_print", &vec4(p, n, se, nl))
+					self.free_string(&s)
+				}
+			}
+			Op::Interp(segs) => {
+				self.init_string(dest)
+				for seg in segs {
+					match seg {
+						InterpSeg::Text(t) => {
+							(p, n) := self.str_lit(t)
+							self.call_rt("kn_string_push", &vec3(dest.clone(), p, n))
+						}
+						InterpSeg::Arg(i, spec) => {
+							t := self.op_ty(&ops[*i])
+							a := self.op_addr(&ops[*i])
+							match spec {
+								None => self.fmt_into(dest, &a, &t),
+								Some(sp) => self.fmt_spec_into(dest, &a, &t, sp),
+							}
+						}
+					}
+				}
+			}
+			Op::Touch => {}
+			Op::Unsupported(what) => self.error("code generation does not support {what}"),
+		}
+	}
+
+	fun init_string(&mut self, s &V) {
+		o := self.iconst(1)
+		z := self.iconst(0)
+		self.store(&o, s, 0)
+		self.store(&z, s, 8)
+		self.store(&z, s, 16)
+	}
+
+	fun new_string(&mut self) V {
+		s := self.slot(24, 8)
+		self.init_string(&s)
+		return s
+	}
+
+	fun free_string(&mut self, s &V) {
+		o := self.iconst(1)
+		self.call_rt("kn_vec_free", &vec3(s.clone(), o.clone(), o))
+	}
+
+	fun push_str_of(&mut self, s &V, tmp &V) {
+		p := self.load("i64", tmp, 0)
+		n := self.load("i64", tmp, 16)
+		self.call_rt("kn_string_push", &vec3(s.clone(), p, n))
+	}
+
+	// Appends the `Display` form of the value at `addr` (type `t`) to String `s`.
+	fun fmt_into(&mut self, s &V, addr &V, t &Ty) {
+		if self.is_str_like(t) {
+			(p, n) := self.str_at(addr, t)
+			self.call_rt("kn_string_push", &vec3(s.clone(), p, n))
+			return
+		}
+		pointee := match t {
+			Ty::Ref(_, x) => Some((**x).clone()),
+			Ty::Adt(_, a) => {
+				if self.is_lang(t, "Box") && a.len() > 0 {
+					Some(a[0].clone())
+				} else {
+					None
+				}
+			}
+			_ => None,
+		}
+		if let Some(Ty::Dyn(traits)) = &pointee {
+			k mut := None
+			if let Some(disp) = self.c.r.prelude_type("Display") {
+				ms := self.c.trait_methods(disp)
+				if ms.len() > 0 && traits.len() > 0 {
+					for (j, x) in self.c.dyn_methods(traits[0]).iter().enumerate() {
+						if *x == ms[0] && k.is_none() {
+							k = Some(j)
+						}
+					}
+				}
+			}
+			k := match k {
+				Some(k) => k,
+				None => {
+					n := self.fmt_ty(t)
+					return self.error("cannot format a value of type `{n}`: its trait does not have `Display` as a supertrait")
+				}
+			}
+			data := self.load("i64", addr, 0)
+			vt := self.load("i64", addr, 8)
+			code := self.load("i64", &vt, 24 + 8 * k as i64)
+			self_slot := self.slot(8, 8)
+			self.store(&data, &self_slot, 0)
+			tmp := self.slot(24, 8)
+			self.call_indirect(&code, &vec2(tmp.clone(), self_slot))
+			self.push_str_of(s, &tmp)
+			self.free_string(&tmp)
+			return
+		}
+		is_box := self.is_lang(t, "Box")
+		match t {
+			Ty::Ref(_, x) => {
+				p := self.load("i64", addr, 0)
+				return self.fmt_into(s, &p, x)
+			}
+			Ty::Adt(_, a) => {
+				if is_box {
+					p := self.load("i64", addr, 0)
+					return self.fmt_into(s, &p, &a[0])
+				}
+				disp := match self.c.r.prelude_type("Display") {
+					Some(d) => d,
+					None => return,
+				}
+				ms := self.c.trait_methods(disp)
+				if ms.len() == 0 {
+					return self.error("`Display` has no `to_string` method".to_string())
+				}
+				substs mut := HashMap::new()
+				substs.insert("Self".to_string(), t.clone())
+				match self.resolve(ms[0], substs) {
+					Target::Direct(id) => {
+						tmp := self.slot(24, 8)
+						r := self.slot(8, 8)
+						self.store(addr, &r, 0)
+						self.call_fn(&id, &vec2(tmp.clone(), r))
+						self.push_str_of(s, &tmp)
+						self.free_string(&tmp)
+					}
+					_ => {
+						n := self.fmt_ty(t)
+						self.error("cannot format a value of type `{n}`: implement `Display` (with `fun to_string(&self) string`)")
+					}
+				}
+			}
+			Ty::Prim(p) => {
+				st := match self.scalar(t) {
+					Some(x) => x,
+					None => "i64".to_string(),
+				}
+				v := self.load(&st, addr, 0)
+				if p == "Bool" {
+					w := self.uextend("i32", &v)
+					self.call_rt("kn_fmt_bool", &vec2(s.clone(), w))
+				} else if p == "Char" {
+					self.call_rt("kn_fmt_char", &vec2(s.clone(), v))
+				} else if p == "F32" || p == "F64" {
+					w := self.fpromote(&v)
+					self.call_rt("kn_fmt_f64", &vec2(s.clone(), w))
+				} else if st == "i128" {
+					(lo, hi) := self.isplit(&v)
+					f := if is_signed(t) { "kn_fmt_i128" } else { "kn_fmt_u128" }
+					self.call_rt(f, &vec3(s.clone(), lo, hi))
+				} else if is_signed(t) {
+					w := self.sextend("i64", &v)
+					self.call_rt("kn_fmt_i64", &vec2(s.clone(), w))
+				} else {
+					w := self.uextend("i64", &v)
+					self.call_rt("kn_fmt_u64", &vec2(s.clone(), w))
+				}
+			}
+			Ty::Unit => {
+				(p, n) := self.str_lit("()")
+				self.call_rt("kn_string_push", &vec3(s.clone(), p, n))
+			}
+			_ => {
+				n := self.fmt_ty(t)
+				self.error("code generation cannot format a value of type `{n}` yet")
+			}
+		}
+	}
+
+	fun cast(&mut self, v &V, from &Ty, to &Ty) V {
+		fs := self.scalar(from)
+		ts := self.scalar(to)
+		if fs.is_none() || ts.is_none() {
+			self.error("unsupported cast".to_string())
+			return v.clone()
+		}
+		fs := fs.unwrap()
+		ts := ts.unwrap()
+		ff := is_float_t(&fs)
+		tf := is_float_t(&ts)
+		if !ff && !tf {
+			if bits(&fs) == bits(&ts) {
+				return v.clone()
+			}
+			if bits(&fs) > bits(&ts) {
+				return self.ireduce(&ts, v)
+			}
+			if is_signed(from) {
+				return self.sextend(&ts, v)
+			}
+			return self.uextend(&ts, v)
+		}
+		if !ff && tf {
+			op := if is_signed(from) { "sitofp" } else { "uitofp" }
+			return self.inst(&ts, "{op} {v.t} {v.n} to {ts}")
+		}
+		if ff && !tf {
+			s := if is_signed(to) { "fptosi" } else { "fptoui" }
+			name := "llvm.{s}.sat.{ts}.{Cg::intr_suffix(&fs)}"
+			return self.llvm_intr(&name, &ts, &one(v.clone()))
+		}
+		if bits(&fs) < bits(&ts) {
+			return self.fpromote(v)
+		}
+		if bits(&fs) > bits(&ts) {
+			return self.fdemote(v)
+		}
+		return v.clone()
+	}
+
+	// `a op b` for `+`, `-`, `*` on integers, panicking on overflow (debug builds).
+	fun checked_arith(&mut self, op BinOp, a &V, b &V, signed bool) V {
+		what := match op {
+			BinOp::Add => "add",
+			BinOp::Sub => "subtract",
+			_ => "multiply",
+		}
+		msg := "attempt to {what} with overflow"
+		opn := match op {
+			BinOp::Add => "add",
+			BinOp::Sub => "sub",
+			_ => "mul",
+		}
+		ws := if signed { "s" } else { "u" }
+		name := "llvm.{ws}{opn}.with.overflow.{a.t}"
+		self.declare(&name, "declare {{{a.t}, i1}} @{name}({a.t}, {a.t})")
+		pr := self.tmp()
+		self.emit("{pr} = call {{{a.t}, i1}} @{name}({a.t} {a.n}, {b.t} {b.n})")
+		r := self.inst(&a.t, "extractvalue {{{a.t}, i1}} {pr}, 0")
+		o := self.tmp()
+		self.emit("{o} = extractvalue {{{a.t}, i1}} {pr}, 1")
+		ov := self.bool8(&o)
+		ok := self.fail_begin(&ov)
+		self.panic_msg(&msg)
+		self.fail_end(ok)
+		return r
+	}
+
+	fun op_name(op BinOp) &'static str {
+		match op {
+			BinOp::Lt => return "lt",
+			BinOp::Le => return "le",
+			BinOp::Gt => return "gt",
+			_ => return "ge",
+		}
+	}
+
+	fun deref_pair(&mut self, l &Operand, r &Operand) (V, V, Ty) {
+		t mut := self.op_ty(l)
+		pa mut := self.op_addr(l)
+		pb mut := self.op_addr(r)
+		while true {
+			inner := match &t {
+				Ty::Ref(_, x) => (**x).clone(),
+				_ => break,
+			}
+			if self.is_fat(&t) {
+				break
+			}
+			pa = self.load("i64", &pa, 0)
+			pb = self.load("i64", &pb, 0)
+			t = inner
+		}
+		return (pa, pb, t)
+	}
+
+	fun binary(&mut self, op BinOp, l &Operand, r &Operand) option<V> {
+		lt := self.op_ty(l)
+		is_add := match op {
+			BinOp::Add => true,
+			_ => false,
+		}
+		if self.is_str_like(&lt) && !is_add {
+			(a, an) := self.str_of(l)
+			(b, bn) := self.str_of(r)
+			match op {
+				BinOp::Eq | BinOp::Ne => {
+					e := self.call_rt("kn_str_eq", &vec4(a, an, b, bn)).unwrap()
+					cc := match op {
+						BinOp::Eq => "ne",
+						_ => "eq",
+					}
+					return Some(self.icmp_imm(cc, &e, 0))
+				}
+				_ => {
+					c := self.call_rt("kn_str_cmp", &vec4(a, an, b, bn)).unwrap()
+					return Some(self.icmp_imm("s{Cg::op_name(op)}", &c, 0))
+				}
+			}
+		}
+		(a, t) := self.scalar_through_refs(l)
+		(b, _) := self.scalar_through_refs(r)
+		if let Ty::Unit = &t {
+			yes := match op {
+				BinOp::Eq | BinOp::Le | BinOp::Ge => "1",
+				_ => "0",
+			}
+			return Some(val(yes.to_string(), "i8"))
+		}
+		base mut := self.op_ty(l)
+		while true {
+			inner := match &base {
+				Ty::Ref(_, x) => (**x).clone(),
+				_ => break,
+			}
+			if self.is_fat(&base) {
+				break
+			}
+			base = inner
+		}
+		structural := self.scalar(&base).is_none() || self.is_lang(&base, "Box")
+		if self.scalar(&t).is_none() || structural {
+			match op {
+				BinOp::Eq | BinOp::Ne => {
+					(pa, pb, tt) := self.deref_pair(l, r)
+					e := self.eq_at(&pa, &pb, &tt)
+					if let BinOp::Eq = op {
+						return Some(e)
+					}
+					return Some(self.bxor_imm(&e, 1))
+				}
+				BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+					(pa, pb, tt) := self.deref_pair(l, r)
+					c := self.cmp_at(&pa, &pb, &tt)
+					return Some(self.icmp_imm("s{Cg::op_name(op)}", &c, 0))
+				}
+				_ => {}
+			}
+			n := self.fmt_ty(&t)
+			self.error("code generation does not support comparing or combining values of type `{n}` yet")
+			return None
+		}
+		if is_float_ty(&t) {
+			match op {
+				BinOp::Add => return Some(self.fbin("fadd", &a, &b)),
+				BinOp::Sub => return Some(self.fbin("fsub", &a, &b)),
+				BinOp::Mul => return Some(self.fbin("fmul", &a, &b)),
+				BinOp::Div => return Some(self.fbin("fdiv", &a, &b)),
+				BinOp::Rem => {
+					x := self.fpromote(&a)
+					y := self.fpromote(&b)
+					m := self.call_rt("kn_fmod", &vec2(x, y)).unwrap()
+					if a.t == "float" {
+						return Some(self.fdemote(&m))
+					}
+					return Some(m)
+				}
+				BinOp::Eq => return Some(self.fcmp("oeq", &a, &b)),
+				BinOp::Ne => return Some(self.fcmp("une", &a, &b)),
+				BinOp::Lt => return Some(self.fcmp("olt", &a, &b)),
+				BinOp::Le => return Some(self.fcmp("ole", &a, &b)),
+				BinOp::Gt => return Some(self.fcmp("ogt", &a, &b)),
+				BinOp::Ge => return Some(self.fcmp("oge", &a, &b)),
+				_ => {
+					self.error("invalid float operation".to_string())
+					return None
+				}
+			}
+		}
+		signed := is_signed(&t)
+		sp := if signed { "s" } else { "u" }
+		match op {
+			BinOp::Add | BinOp::Sub | BinOp::Mul => {
+				if self.checked {
+					return Some(self.checked_arith(op, &a, &b, signed))
+				}
+				opn := match op {
+					BinOp::Add => "add",
+					BinOp::Sub => "sub",
+					_ => "mul",
+				}
+				return Some(self.bin(opn, &a, &b))
+			}
+			BinOp::Div | BinOp::Rem => {
+				is_div := match op {
+					BinOp::Div => true,
+					_ => false,
+				}
+				zero := self.icmp_imm("eq", &b, 0)
+				msg := if is_div { "attempt to divide by zero" } else { "attempt to calculate the remainder with a divisor of zero" }
+				ok := self.fail_begin(&zero)
+				self.panic_msg(msg)
+				self.fail_end(ok)
+				if signed {
+					bw := bits(&a.t)
+					min := if bw >= 128 { "-170141183460469231731687303715884105728".to_string() } else { "{-(1i128 << ((bw - 1) as i128))}" }
+					neg1 := self.icmp_imm("eq", &b, -1)
+					c := self.tmp()
+					self.emit("{c} = icmp eq {a.t} {a.n}, {min}")
+					is_min := self.bool8(&c)
+					both := self.band(&neg1, &is_min)
+					m2 := if is_div { "attempt to divide with overflow" } else { "attempt to calculate the remainder with overflow" }
+					ok2 := self.fail_begin(&both)
+					self.panic_msg(m2)
+					self.fail_end(ok2)
+				}
+				opn := if is_div { "{sp}div" } else { "{sp}rem" }
+				return Some(self.bin(&opn, &a, &b))
+			}
+			BinOp::BitAnd | BinOp::And => return Some(self.band(&a, &b)),
+			BinOp::BitOr | BinOp::Or => return Some(self.bor(&a, &b)),
+			BinOp::BitXor => return Some(self.bxor(&a, &b)),
+			BinOp::Shl => return Some(self.shift("shl", &a, &b)),
+			BinOp::Shr => return Some(self.shift(if signed { "ashr" } else { "lshr" }, &a, &b)),
+			BinOp::Eq => return Some(self.icmp("eq", &a, &b)),
+			BinOp::Ne => return Some(self.icmp("ne", &a, &b)),
+			_ => return Some(self.icmp("{sp}{Cg::op_name(op)}", &a, &b)),
+		}
+	}
+
+	// Appends the value at `a` (type `t`) formatted by `spec` to String `s`.
+	fun fmt_spec_into(&mut self, s &V, a &V, t &Ty, spec &FmtSpec) {
+		base mut := t.clone()
+		addr mut := a.clone()
+		while true {
+			inner := match &base {
+				Ty::Ref(_, x) => (**x).clone(),
+				_ => break,
+			}
+			if self.is_fat(&base) {
+				break
+			}
+			addr = self.load("i64", &addr, 0)
+			base = inner
+		}
+		float := is_float_ty(&base)
+		int := match &base {
+			Ty::Prim(p) => typeck::prim_name(p).starts_with("i") || typeck::prim_name(p).starts_with("u"),
+			_ => false,
+		}
+		numeric := float || int
+		tmp := self.new_string()
+		match spec.kind.as_str() {
+			"Display" => {
+				if float && spec.precision.is_some() {
+					v := self.as_f64(&base, &addr)
+					p := self.iconst(spec.precision.unwrap() as i64)
+					self.call_rt("kn_fmt_f64_fixed", &vec3(tmp.clone(), v, p))
+				} else {
+					self.fmt_into(&tmp, a, t)
+				}
+			}
+			"Debug" => {
+				f := self.slot(40, 8)
+				self.init_string(&f)
+				z := self.iconst(0)
+				self.store(&z, &f, 24)
+				pretty := val(if spec.alt { "1".to_string() } else { "0".to_string() }, "i8")
+				self.store(&pretty, &f, 32)
+				self.debug_into(&f, a, t)
+				self.free_string(&tmp)
+				return self.fmt_pad(s, &f, spec, numeric, true)
+			}
+			"LowerHex" | "UpperHex" | "Octal" | "Binary" => {
+				st := match self.scalar(&base) {
+					Some(x) => x,
+					None => "i64".to_string(),
+				}
+				v0 := self.load(&st, &addr, 0)
+				v := self.resize(&v0, "i64")
+				radix := match spec.kind.as_str() {
+					"LowerHex" | "UpperHex" => 16,
+					"Octal" => 8,
+					_ => 2,
+				}
+				r := val("{radix}", "i32")
+				up := val(if spec.kind == "UpperHex" { "1".to_string() } else { "0".to_string() }, "i32")
+				alt := val(if spec.alt { "1".to_string() } else { "0".to_string() }, "i32")
+				args mut := vec4(tmp.clone(), v, r, up)
+				args.push(alt)
+				self.call_rt("kn_fmt_radix", &args)
+			}
+			_ => {
+				v := self.as_f64(&base, &addr)
+				p := self.iconst(match spec.precision {
+					Some(p) => p as i64,
+					None => -1,
+				})
+				up := val(if spec.kind == "UpperExp" { "1".to_string() } else { "0".to_string() }, "i32")
+				self.call_rt("kn_fmt_f64_exp", &vec4(tmp.clone(), v, p, up))
+			}
+		}
+		self.fmt_pad(s, &tmp, spec, numeric, false)
+	}
+
+	fun as_f64(&mut self, base &Ty, addr &V) V {
+		st := match self.scalar(base) {
+			Some(x) => x,
+			None => "i64".to_string(),
+		}
+		v := self.load(&st, addr, 0)
+		if st == "double" {
+			return v
+		}
+		if st == "float" {
+			return self.fpromote(&v)
+		}
+		op := if is_signed(base) { "sitofp" } else { "uitofp" }
+		return self.inst("double", "{op} {v.t} {v.n} to double")
+	}
+
+	// Appends String `tmp` to `s` with `spec`'s width, alignment, and fill, then frees `tmp`.
+	fun fmt_pad(&mut self, s &V, tmp &V, spec &FmtSpec, numeric bool, debug bool) {
+		p := self.load("i64", tmp, 0)
+		n := self.load("i64", tmp, 16)
+		width := self.iconst(match spec.width {
+			Some(w) => w as i64,
+			None => -1,
+		})
+		fc := match spec.fill {
+			Some(c) => c as u32,
+			None => 32,
+		}
+		fill := val("{fc}", "i32")
+		al := match &spec.align {
+			None => 0,
+			Some(a) => match a.as_str() {
+				"Left" => 1,
+				"Center" => 2,
+				_ => 3,
+			},
+		}
+		align := val("{al}", "i32")
+		fl mut := 0
+		if spec.plus {
+			fl += 1
+		}
+		if spec.zero {
+			fl += 2
+		}
+		if numeric {
+			fl += 4
+		}
+		flags := val("{fl}", "i32")
+		prec := match spec.precision {
+			Some(x) => if numeric || debug { -1 } else { x as i64 },
+			None => -1,
+		}
+		pv := self.iconst(prec)
+		args mut := vec4(s.clone(), p, n, width)
+		args.push(fill)
+		args.push(align)
+		args.push(flags)
+		args.push(pv)
+		self.call_rt("kn_fmt_pad", &args)
+		self.free_string(tmp)
+	}
+
+	// ---- glue: drop, eq, clone, cmp, hash, debug ----
+
+	fun vprefix(&self, v option<u32>) string {
+		match v {
+			Some(v) => return "{self.c.r.def(v).name}.",
+			None => return string::new(),
+		}
+	}
+
+	fun is_enum_t(&self, t &Ty) bool {
+		vs := self.variants_of(t)
+		return vs.len() > 0 && vs[0].is_some()
+	}
+
+	fun is_str_ptr(t &Ty) bool {
+		match t {
+			Ty::Ref(_, x) => return is_prim(x, "Str"),
+			Ty::Ptr(_, x) => return is_prim(x, "Str"),
+			_ => return false,
+		}
+	}
+
+	fun slice_elem(t &Ty) option<Ty> {
+		if let Ty::Ref(_, x) = t {
+			if let Ty::Slice(e) = &**x {
+				return Some((**e).clone())
+			}
+		}
+		return None
+	}
+
+	fun is_float_ty2(t &Ty) bool {
+		return is_prim(t, "F32") || is_prim(t, "F64")
+	}
+
+	fun plain_scalar(&self, t &Ty) bool {
+		if let Ty::Adt(_, _) = t {
+			return false
+		}
+		return self.scalar(t).is_some()
+	}
+
+	fun drop_in_place(&mut self, p &V, t &Ty) {
+		if !self.needs_drop(t) {
+			return
+		}
+		if self.is_lang(t, "string") {
+			o := self.iconst(1)
+			self.call_rt("kn_vec_free", &vec3(p.clone(), o.clone(), o))
+			return
+		}
+		if let Ty::Adt(_, a) = t {
+			if self.is_lang(t, "Vec") {
+				et := a[0].clone()
+				l := self.layout(&et)
+				if self.needs_drop(&et) {
+					data := self.load("i64", p, 0)
+					len := self.load("i64", p, 16)
+					(i, iv, head, done) := self.loop_begin(&len)
+					off := self.imul_imm(&iv, l.size as i64)
+					e := self.iadd(&data, &off)
+					self.drop_value(&e, &et)
+					self.loop_end(&i, &iv, head, done)
+				}
+				s := self.iconst(l.size as i64)
+				al := self.iconst(l.align as i64)
+				self.call_rt("kn_vec_free", &vec3(p.clone(), s, al))
+				return
+			}
+			if self.is_lang(t, "Box") {
+				inner := a[0].clone()
+				data := self.load("i64", p, 0)
+				if let Ty::Dyn(_) = &inner {
+					vt := self.load("i64", p, 8)
+					dropf := self.load("i64", &vt, 0)
+					self.call_indirect(&dropf, &one(data.clone()))
+					size := self.load("i64", &vt, 8)
+					align := self.load("i64", &vt, 16)
+					self.call_rt("kn_free", &vec3(data, size, align))
+				} else {
+					self.drop_value(&data, &inner)
+					l := self.layout(&inner)
+					s := self.iconst(l.size as i64)
+					al := self.iconst(l.align as i64)
+					self.call_rt("kn_free", &vec3(data, s, al))
+				}
+				return
+			}
+		}
+		match t {
+			Ty::ChanSend(_) | Ty::ChanRecv(_) => {
+				h := self.load("i64", p, 0)
+				s := val(match t {
+					Ty::ChanSend(_) => "1".to_string(),
+					_ => "0".to_string(),
+				}, "i32")
+				self.call_rt("kn_chan_drop_end", &vec2(h, s))
+				return
+			}
+			_ => {}
+		}
+		if self.is_lang(t, "Task") {
+			h := self.load("i64", p, 0)
+			self.call_rt("kn_task_drop", &one(h))
+			return
+		}
+		is_adt := match t {
+			Ty::Adt(_, _) => true,
+			_ => false,
+		}
+		if is_adt && self.c.has_drop_impl(t) {
+			if let Some(dt) = self.c.r.prelude_type("Drop") {
+				ms := self.c.trait_methods(dt)
+				if ms.len() > 0 {
+					substs mut := HashMap::new()
+					substs.insert("Self".to_string(), t.clone())
+					if let Target::Direct(id) = self.resolve(ms[0], substs) {
+						r := self.slot(8, 8)
+						self.store(p, &r, 0)
+						ret := self.slot(1, 1)
+						self.call_fn(&id, &vec2(ret, r))
+					}
+				}
+			}
+		}
+		match t {
+			Ty::Array(et, n) => {
+				size := self.layout(et).size
+				et := (**et).clone()
+				nv := self.iconst(*n as i64)
+				(i, iv, head, done) := self.loop_begin(&nv)
+				off := self.imul_imm(&iv, size as i64)
+				e := self.iadd(p, &off)
+				self.drop_value(&e, &et)
+				self.loop_end(&i, &iv, head, done)
+			}
+			Ty::Tuple(ts) => {
+				for (i, et) in ts.iter().enumerate() {
+					(off, _) := self.field(t, "{i}")
+					a := self.iadd_imm(p, off as i64)
+					self.drop_value(&a, et)
+				}
+			}
+			Ty::Adt(_, _) => {
+				variants := self.variants_of(t)
+				is_enum := variants.len() > 0 && variants[0].is_some()
+				for (vi, v) in variants.iter().enumerate() {
+					fields := self.c.adt_fields(t, *v)
+					any mut := false
+					for (_, ft) in &fields {
+						if self.needs_drop(ft) {
+							any = true
+						}
+					}
+					if !any {
+						continue
+					}
+					prefix := self.vprefix(*v)
+					done mut := 0
+					if is_enum {
+						tag := self.load("i32", p, 0)
+						is := self.icmp_imm("eq", &tag, vi as i64)
+						done = self.when_begin(&is)
+					}
+					for (n, ft) in &fields {
+						(off, _) := self.field(t, "{prefix}{n}")
+						a := self.iadd_imm(p, off as i64)
+						self.drop_value(&a, ft)
+					}
+					if is_enum {
+						self.when_end(done)
+					}
+				}
+			}
+			_ => {}
+		}
+	}
+
+	fun user_clone(&mut self, src &V, dst &V, t &Ty) bool {
+		match self.user_impl(t, "Clone", "clone") {
+			Some(id) => {
+				arg := self.slot(8, 8)
+				self.store(src, &arg, 0)
+				self.call_fn(&id, &vec2(dst.clone(), arg))
+				return true
+			}
+			None => return false,
+		}
+	}
+
+	fun and_res(&mut self, res &V, e &V) {
+		r := self.load("i8", res, 0)
+		r2 := self.band(&r, e)
+		self.store(&r2, res, 0)
+	}
+
+	fun eq_at(&mut self, a &V, b &V, t &Ty) V {
+		res := self.slot(1, 1)
+		o := val("1".to_string(), "i8")
+		self.store(&o, &res, 0)
+		self.eq_into(a, b, t, &res)
+		return self.load("i8", &res, 0)
+	}
+
+	fun str_eq_res(&mut self, p V, n V, q V, m V, res &V) {
+		e := self.call_rt("kn_str_eq", &vec4(p, n, q, m)).unwrap()
+		e2 := self.icmp_imm("ne", &e, 0)
+		self.and_res(res, &e2)
+	}
+
+	fun eq_into(&mut self, a &V, b &V, t &Ty, res &V) {
+		if is_prim(t, "Str") {
+			return self.error("cannot compare unsized `str` values".to_string())
+		}
+		if self.is_lang(t, "string") {
+			p := self.load("i64", a, 0)
+			n := self.load("i64", a, 16)
+			q := self.load("i64", b, 0)
+			m := self.load("i64", b, 16)
+			return self.str_eq_res(p, n, q, m, res)
+		}
+		if Cg::is_str_ptr(t) {
+			p := self.load("i64", a, 0)
+			n := self.load("i64", a, 8)
+			q := self.load("i64", b, 0)
+			m := self.load("i64", b, 8)
+			return self.str_eq_res(p, n, q, m, res)
+		}
+		match t {
+			Ty::Unit | Ty::Never => return,
+			Ty::Ref(_, inner) => {
+				if !self.is_fat(t) {
+					pa := self.load("i64", a, 0)
+					pb := self.load("i64", b, 0)
+					return self.eq_into(&pa, &pb, inner, res)
+				}
+			}
+			_ => {}
+		}
+		if Cg::is_float_ty2(t) {
+			st := self.scalar(t).unwrap()
+			x := self.load(&st, a, 0)
+			y := self.load(&st, b, 0)
+			e := self.fcmp("oeq", &x, &y)
+			return self.and_res(res, &e)
+		}
+		if self.scalar(t).is_some() && !self.is_lang(t, "Box") {
+			st := self.scalar(t).unwrap()
+			x := self.load(&st, a, 0)
+			y := self.load(&st, b, 0)
+			e := self.icmp("eq", &x, &y)
+			return self.and_res(res, &e)
+		}
+		match t {
+			Ty::Tuple(ts) => {
+				for (i, et) in ts.iter().enumerate() {
+					(off, _) := self.field(t, "{i}")
+					x := self.iadd_imm(a, off as i64)
+					y := self.iadd_imm(b, off as i64)
+					self.eq_into(&x, &y, et, res)
+				}
+			}
+			Ty::Array(et, n) => {
+				size := self.layout(et).size
+				nv := self.iconst(*n as i64)
+				(i, iv, head, done) := self.loop_begin(&nv)
+				off := self.imul_imm(&iv, size as i64)
+				x := self.iadd(a, &off)
+				y := self.iadd(b, &off)
+				self.eq_into(&x, &y, et, res)
+				self.loop_end(&i, &iv, head, done)
+			}
+			Ty::Adt(_, args) => {
+				if self.is_lang(t, "Box") {
+					pa := self.load("i64", a, 0)
+					pb := self.load("i64", b, 0)
+					return self.eq_into(&pa, &pb, &args[0], res)
+				}
+				if self.is_lang(t, "Vec") {
+					et := args[0].clone()
+					size := self.layout(&et).size
+					la := self.load("i64", a, 16)
+					lb := self.load("i64", b, 16)
+					same := self.icmp("eq", &la, &lb)
+					self.and_res(res, &same)
+					db := self.load("i64", b, 0)
+					da := self.load("i64", a, 0)
+					d := self.when_begin(&same)
+					(i, iv, head, done) := self.loop_begin(&la)
+					off := self.imul_imm(&iv, size as i64)
+					x := self.iadd(&da, &off)
+					y := self.iadd(&db, &off)
+					self.eq_into(&x, &y, &et, res)
+					self.loop_end(&i, &iv, head, done)
+					self.when_end(d)
+					return
+				}
+				if let Some(e) = self.user_eq(a, b, t) {
+					return self.and_res(res, &e)
+				}
+				g := self.glue_name("eq", t)
+				out := self.slot(1, 1)
+				self.call_fn(&g, &vec3(out.clone(), a.clone(), b.clone()))
+				e := self.load("i8", &out, 0)
+				self.and_res(res, &e)
+			}
+			_ => {
+				n := self.fmt_ty(t)
+				self.error("cannot compare values of type `{n}`")
+			}
+		}
+	}
+
+	fun eq_fields(&mut self, a &V, b &V, t &Ty, res &V) {
+		variants := self.variants_of(t)
+		if !(variants.len() > 0 && variants[0].is_some()) {
+			for (n, ft) in self.c.adt_fields(t, None) {
+				(off, _) := self.field(t, &n)
+				x := self.iadd_imm(a, off as i64)
+				y := self.iadd_imm(b, off as i64)
+				self.eq_into(&x, &y, &ft, res)
+			}
+			return
+		}
+		ta := self.load("i32", a, 0)
+		tb := self.load("i32", b, 0)
+		same := self.icmp("eq", &ta, &tb)
+		self.and_res(res, &same)
+		d := self.when_begin(&same)
+		for (vi, v) in variants.iter().enumerate() {
+			fields := self.c.adt_fields(t, *v)
+			if fields.len() == 0 {
+				continue
+			}
+			prefix := self.vprefix(*v)
+			tag := self.load("i32", a, 0)
+			is := self.icmp_imm("eq", &tag, vi as i64)
+			d2 := self.when_begin(&is)
+			for (n, ft) in &fields {
+				(off, _) := self.field(t, "{prefix}{n}")
+				x := self.iadd_imm(a, off as i64)
+				y := self.iadd_imm(b, off as i64)
+				self.eq_into(&x, &y, ft, res)
+			}
+			self.when_end(d2)
+		}
+		self.when_end(d)
+	}
+
+	fun clone_into(&mut self, src &V, dst &V, t &Ty) {
+		if !self.needs_drop(t) {
+			l := self.layout(t)
+			self.copy(dst, src, l.size)
+			return
+		}
+		if self.is_lang(t, "string") {
+			p := self.load("i64", src, 0)
+			n := self.load("i64", src, 16)
+			self.call_rt("kn_string_from", &vec3(dst.clone(), p, n))
+			return
+		}
+		if let Ty::Adt(_, a) = t {
+			if self.is_lang(t, "Vec") {
+				et := a[0].clone()
+				l := self.layout(&et)
+				self.init_string(dst)
+				len := self.load("i64", src, 16)
+				s := self.iconst(l.size as i64)
+				al := self.iconst(l.align as i64)
+				self.call_rt("kn_vec_reserve", &vec4(dst.clone(), len.clone(), s, al))
+				ddata := self.load("i64", dst, 0)
+				sdata := self.load("i64", src, 0)
+				(i, iv, head, done) := self.loop_begin(&len)
+				off := self.imul_imm(&iv, l.size as i64)
+				e := self.iadd(&sdata, &off)
+				d := self.iadd(&ddata, &off)
+				self.clone_into(&e, &d, &et)
+				self.loop_end(&i, &iv, head, done)
+				self.store(&len, dst, 16)
+				return
+			}
+			if self.is_lang(t, "Box") {
+				inner := a[0].clone()
+				if let Ty::Dyn(_) = &inner {
+					return self.error("cloning a `Box<dyn Trait>` is not supported".to_string())
+				}
+				l := self.layout(&inner)
+				s := self.iconst(l.size as i64)
+				al := self.iconst(l.align as i64)
+				p := self.call_rt("kn_alloc", &vec2(s, al)).unwrap()
+				from := self.load("i64", src, 0)
+				self.clone_into(&from, &p, &inner)
+				self.store(&p, dst, 0)
+				return
+			}
+		}
+		match t {
+			Ty::ChanSend(_) | Ty::ChanRecv(_) => {
+				h := self.load("i64", src, 0)
+				s := val(match t {
+					Ty::ChanSend(_) => "1".to_string(),
+					_ => "0".to_string(),
+				}, "i32")
+				self.call_rt("kn_chan_clone_end", &vec2(h.clone(), s))
+				self.store(&h, dst, 0)
+			}
+			Ty::Array(et, n) => {
+				size := self.layout(et).size
+				nv := self.iconst(*n as i64)
+				(i, iv, head, done) := self.loop_begin(&nv)
+				off := self.imul_imm(&iv, size as i64)
+				s := self.iadd(src, &off)
+				d := self.iadd(dst, &off)
+				self.clone_into(&s, &d, et)
+				self.loop_end(&i, &iv, head, done)
+			}
+			Ty::Tuple(ts) => {
+				for (i, et) in ts.iter().enumerate() {
+					(off, _) := self.field(t, "{i}")
+					s := self.iadd_imm(src, off as i64)
+					d := self.iadd_imm(dst, off as i64)
+					self.clone_into(&s, &d, et)
+				}
+			}
+			Ty::Adt(_, _) => {
+				if !self.user_clone(src, dst, t) {
+					g := self.glue_name("clone", t)
+					self.call_fn(&g, &vec2(dst.clone(), src.clone()))
+				}
+			}
+			_ => {
+				l := self.layout(t)
+				self.copy(dst, src, l.size)
+			}
+		}
+	}
+
+	fun clone_fields(&mut self, src &V, dst &V, t &Ty) {
+		variants := self.variants_of(t)
+		is_enum := variants.len() > 0 && variants[0].is_some()
+		if is_enum {
+			tag := self.load("i32", src, 0)
+			self.store(&tag, dst, 0)
+		}
+		for (vi, v) in variants.iter().enumerate() {
+			fields := self.c.adt_fields(t, *v)
+			prefix := self.vprefix(*v)
+			d mut := 0
+			if is_enum {
+				tag := self.load("i32", src, 0)
+				is := self.icmp_imm("eq", &tag, vi as i64)
+				d = self.when_begin(&is)
+			}
+			for (n, ft) in &fields {
+				(off, _) := self.field(t, "{prefix}{n}")
+				s := self.iadd_imm(src, off as i64)
+				dd := self.iadd_imm(dst, off as i64)
+				self.clone_into(&s, &dd, ft)
+			}
+			if is_enum {
+				self.when_end(d)
+			}
+		}
+	}
+
+	fun user_impl(&mut self, t &Ty, trait_name &str, method &str) option<string> {
+		d := match t {
+			Ty::Adt(d, _) => *d,
+			_ => return None,
+		}
+		if self.is_lang(t, "string") || self.is_lang(t, "Vec") || self.is_lang(t, "Box") || self.c.r.is_core(d) {
+			return None
+		}
+		tr := match self.c.r.prelude_type(trait_name) {
+			Some(x) => x,
+			None => return None,
+		}
+		tf mut := None
+		for i in 0..self.c.r.fns.len() {
+			if tf.is_none() && self.c.r.fns[i].trait_def == Some(tr) && self.c.r.fns[i].decl.name.name == method {
+				tf = Some(i)
+			}
+		}
+		tf := match tf {
+			Some(x) => x,
+			None => return None,
+		}
+		substs mut := HashMap::new()
+		substs.insert("Self".to_string(), t.clone())
+		match self.c.resolve_trait_method(tf, &substs) {
+			Some((i2, s2)) => {
+				if i2 != tf {
+					return Some(self.instance(i2, 0, s2, Abi::Plain))
+				}
+				return None
+			}
+			None => return None,
+		}
+	}
+
+	fun not_derivable(&self, t &Ty) bool {
+		match t {
+			Ty::Adt(_, _) => {}
+			_ => return true,
+		}
+		return self.is_lang(t, "Vec") || self.is_lang(t, "string") || self.is_lang(t, "Box")
+	}
+
+	fun cmp_at(&mut self, a &V, b &V, t &Ty) V {
+		res := self.slot(1, 1)
+		z := val("0".to_string(), "i8")
+		self.store(&z, &res, 0)
+		self.cmp_into(a, b, t, &res)
+		return self.load("i8", &res, 0)
+	}
+
+	fun derived_cmp(&mut self, a &V, b &V, t &Ty) V {
+		if self.not_derivable(t) {
+			return self.cmp_at(a, b, t)
+		}
+		g := self.glue_name("cmp", t)
+		out := self.slot(1, 1)
+		self.call_fn(&g, &vec3(out.clone(), a.clone(), b.clone()))
+		return self.load("i8", &out, 0)
+	}
+
+	fun derived_eq(&mut self, a &V, b &V, t &Ty) V {
+		if self.not_derivable(t) {
+			return self.eq_at(a, b, t)
+		}
+		g := self.glue_name("eq", t)
+		out := self.slot(1, 1)
+		self.call_fn(&g, &vec3(out.clone(), a.clone(), b.clone()))
+		return self.load("i8", &out, 0)
+	}
+
+	fun derived_hash(&mut self, a &V, t &Ty, h &V) {
+		if self.not_derivable(t) {
+			return self.hash_into(a, t, h)
+		}
+		g := self.glue_name("hash", t)
+		self.call_fn(&g, &vec2(h.clone(), a.clone()))
+	}
+
+	fun user_eq(&mut self, a &V, b &V, t &Ty) option<V> {
+		match self.user_impl(t, "Eq", "eq") {
+			Some(id) => return Some(self.call_ref_method(&id, a, b, 1)),
+			None => return None,
+		}
+	}
+
+	fun call_ref_method(&mut self, id &str, a &V, b &V, size u32) V {
+		out := self.slot(size, size)
+		sa := self.slot(8, 8)
+		self.store(a, &sa, 0)
+		sb := self.slot(8, 8)
+		self.store(b, &sb, 0)
+		self.call_fn(id, &vec3(out.clone(), sa, sb))
+		return self.load(if size == 4 { "i32" } else { "i8" }, &out, 0)
+	}
+
+	fun set_order(&mut self, lt &V, gt &V, res &V) {
+		v := self.isub(gt, lt)
+		self.store(&v, res, 0)
+	}
+
+	fun cmp_into(&mut self, a &V, b &V, t &Ty, res &V) {
+		r := self.load("i8", res, 0)
+		und := self.icmp_imm("eq", &r, 0)
+		d := self.when_begin(&und)
+		self.cmp_now(a, b, t, res)
+		self.when_end(d)
+	}
+
+	fun cmp_strs(&mut self, p V, n V, q V, m V, res &V) {
+		c := self.call_rt("kn_str_cmp", &vec4(p, n, q, m)).unwrap()
+		lt := self.icmp_imm("slt", &c, 0)
+		gt := self.icmp_imm("sgt", &c, 0)
+		self.set_order(&lt, &gt, res)
+	}
+
+	fun cmp_seq(&mut self, da &V, la &V, db &V, lb &V, et &Ty, res &V) {
+		size := self.layout(et).size
+		shorter := self.icmp("ult", la, lb)
+		n := self.select(&shorter, la, lb)
+		(i, iv, head, done) := self.loop_begin(&n)
+		off := self.imul_imm(&iv, size as i64)
+		x := self.iadd(da, &off)
+		y := self.iadd(db, &off)
+		self.cmp_into(&x, &y, et, res)
+		self.loop_end(&i, &iv, head, done)
+		r := self.load("i8", res, 0)
+		und := self.icmp_imm("eq", &r, 0)
+		d := self.when_begin(&und)
+		lt := self.icmp("ult", la, lb)
+		gt := self.icmp("ugt", la, lb)
+		self.set_order(&lt, &gt, res)
+		self.when_end(d)
+	}
+
+	fun cmp_now(&mut self, a &V, b &V, t &Ty, res &V) {
+		if self.is_lang(t, "string") {
+			p := self.load("i64", a, 0)
+			n := self.load("i64", a, 16)
+			q := self.load("i64", b, 0)
+			m := self.load("i64", b, 16)
+			return self.cmp_strs(p, n, q, m, res)
+		}
+		if Cg::is_str_ptr(t) {
+			p := self.load("i64", a, 0)
+			n := self.load("i64", a, 8)
+			q := self.load("i64", b, 0)
+			m := self.load("i64", b, 8)
+			return self.cmp_strs(p, n, q, m, res)
+		}
+		if let Some(et) = Cg::slice_elem(t) {
+			p := self.load("i64", a, 0)
+			n := self.load("i64", a, 8)
+			q := self.load("i64", b, 0)
+			m := self.load("i64", b, 8)
+			return self.cmp_seq(&p, &n, &q, &m, &et, res)
+		}
+		match t {
+			Ty::Unit | Ty::Never => return,
+			Ty::Ref(_, inner) => {
+				if !self.is_fat(t) {
+					pa := self.load("i64", a, 0)
+					pb := self.load("i64", b, 0)
+					return self.cmp_now(&pa, &pb, inner, res)
+				}
+			}
+			_ => {}
+		}
+		if Cg::is_float_ty2(t) {
+			st := self.scalar(t).unwrap()
+			x := self.load(&st, a, 0)
+			y := self.load(&st, b, 0)
+			lt := self.fcmp("olt", &x, &y)
+			gt := self.fcmp("ogt", &x, &y)
+			return self.set_order(&lt, &gt, res)
+		}
+		if self.plain_scalar(t) {
+			st := self.scalar(t).unwrap()
+			x := self.load(&st, a, 0)
+			y := self.load(&st, b, 0)
+			s := if is_signed(t) { "s" } else { "u" }
+			lt := self.icmp("{s}lt", &x, &y)
+			gt := self.icmp("{s}gt", &x, &y)
+			return self.set_order(&lt, &gt, res)
+		}
+		match t {
+			Ty::Tuple(ts) => {
+				for (i, et) in ts.iter().enumerate() {
+					(off, _) := self.field(t, "{i}")
+					x := self.iadd_imm(a, off as i64)
+					y := self.iadd_imm(b, off as i64)
+					self.cmp_into(&x, &y, et, res)
+				}
+			}
+			Ty::Array(et, n) => {
+				nv := self.iconst(*n as i64)
+				self.cmp_seq(a, &nv, b, &nv, et, res)
+			}
+			Ty::Adt(_, args) => {
+				if self.is_lang(t, "Box") {
+					pa := self.load("i64", a, 0)
+					pb := self.load("i64", b, 0)
+					return self.cmp_now(&pa, &pb, &args[0], res)
+				}
+				if self.is_lang(t, "Vec") {
+					p := self.load("i64", a, 0)
+					n := self.load("i64", a, 16)
+					q := self.load("i64", b, 0)
+					m := self.load("i64", b, 16)
+					return self.cmp_seq(&p, &n, &q, &m, &args[0], res)
+				}
+				if let Some(id) = self.user_impl(t, "Ord", "cmp") {
+					tag := self.call_ref_method(&id, a, b, 4)
+					v := self.iadd_imm(&tag, -1)
+					v2 := self.ireduce("i8", &v)
+					return self.store(&v2, res, 0)
+				}
+				v := self.derived_cmp(a, b, t)
+				self.store(&v, res, 0)
+			}
+			_ => {
+				n := self.fmt_ty(t)
+				self.error("cannot order values of type `{n}`")
+			}
+		}
+	}
+
+	fun cmp_fields(&mut self, a &V, b &V, t &Ty, res &V) {
+		variants := self.variants_of(t)
+		if !(variants.len() > 0 && variants[0].is_some()) {
+			for (n, ft) in self.c.adt_fields(t, None) {
+				(off, _) := self.field(t, &n)
+				x := self.iadd_imm(a, off as i64)
+				y := self.iadd_imm(b, off as i64)
+				self.cmp_into(&x, &y, &ft, res)
+			}
+			return
+		}
+		ta := self.load("i32", a, 0)
+		tb := self.load("i32", b, 0)
+		lt := self.icmp("ult", &ta, &tb)
+		gt := self.icmp("ugt", &ta, &tb)
+		is_option := match t {
+			Ty::Adt(d, _) => self.c.r.is_core(*d) && self.c.r.def(*d).name == "option",
+			_ => false,
+		}
+		if is_option {
+			self.set_order(&gt, &lt, res)
+		} else {
+			self.set_order(&lt, &gt, res)
+		}
+		same := self.icmp("eq", &ta, &tb)
+		d := self.when_begin(&same)
+		for (vi, v) in variants.iter().enumerate() {
+			fields := self.c.adt_fields(t, *v)
+			if fields.len() == 0 {
+				continue
+			}
+			prefix := self.vprefix(*v)
+			tag := self.load("i32", a, 0)
+			is := self.icmp_imm("eq", &tag, vi as i64)
+			d2 := self.when_begin(&is)
+			for (n, ft) in &fields {
+				(off, _) := self.field(t, "{prefix}{n}")
+				x := self.iadd_imm(a, off as i64)
+				y := self.iadd_imm(b, off as i64)
+				self.cmp_into(&x, &y, ft, res)
+			}
+			self.when_end(d2)
+		}
+		self.when_end(d)
+	}
+
+	fun hash_seq(&mut self, data &V, len &V, et &Ty, h &V) {
+		self.call_rt("kn_hash_u64", &vec2(h.clone(), len.clone()))
+		size := self.layout(et).size
+		(i, iv, head, done) := self.loop_begin(len)
+		off := self.imul_imm(&iv, size as i64)
+		x := self.iadd(data, &off)
+		self.hash_into(&x, et, h)
+		self.loop_end(&i, &iv, head, done)
+	}
+
+	fun hash_into(&mut self, a &V, t &Ty, h &V) {
+		if self.is_lang(t, "string") {
+			p := self.load("i64", a, 0)
+			n := self.load("i64", a, 16)
+			self.call_rt("kn_hash_bytes", &vec3(h.clone(), p, n))
+			return
+		}
+		if Cg::is_str_ptr(t) {
+			p := self.load("i64", a, 0)
+			n := self.load("i64", a, 8)
+			self.call_rt("kn_hash_bytes", &vec3(h.clone(), p, n))
+			return
+		}
+		if let Some(et) = Cg::slice_elem(t) {
+			p := self.load("i64", a, 0)
+			n := self.load("i64", a, 8)
+			return self.hash_seq(&p, &n, &et, h)
+		}
+		match t {
+			Ty::Unit | Ty::Never => return,
+			Ty::Ref(_, inner) => {
+				if !self.is_fat(t) {
+					p := self.load("i64", a, 0)
+					return self.hash_into(&p, inner, h)
+				}
+			}
+			_ => {}
+		}
+		if Cg::is_float_ty2(t) {
+			st := self.scalar(t).unwrap()
+			x := self.load(&st, a, 0)
+			z := if st == "double" { self.f64const(0.0) } else { self.f32const(0.0) }
+			x2 := self.fbin("fadd", &x, &z)
+			it := if st == "double" { "i64" } else { "i32" }
+			b0 := self.bitcast(it, &x2)
+			b := self.uextend("i64", &b0)
+			self.call_rt("kn_hash_u64", &vec2(h.clone(), b))
+			return
+		}
+		if self.plain_scalar(t) {
+			st := self.scalar(t).unwrap()
+			x := self.load(&st, a, 0)
+			x2 := if is_signed(t) { self.sextend("i64", &x) } else { self.uextend("i64", &x) }
+			self.call_rt("kn_hash_u64", &vec2(h.clone(), x2))
+			return
+		}
+		match t {
+			Ty::Tuple(ts) => {
+				for (i, et) in ts.iter().enumerate() {
+					(off, _) := self.field(t, "{i}")
+					x := self.iadd_imm(a, off as i64)
+					self.hash_into(&x, et, h)
+				}
+			}
+			Ty::Array(et, n) => {
+				nv := self.iconst(*n as i64)
+				self.hash_seq(a, &nv, et, h)
+			}
+			Ty::Adt(_, args) => {
+				if self.is_lang(t, "Box") {
+					p := self.load("i64", a, 0)
+					return self.hash_into(&p, &args[0], h)
+				}
+				if self.is_lang(t, "Vec") {
+					p := self.load("i64", a, 0)
+					n := self.load("i64", a, 16)
+					return self.hash_seq(&p, &n, &args[0], h)
+				}
+				if let Some(id) = self.user_impl(t, "Hash", "hash") {
+					out := self.slot(1, 1)
+					sa := self.slot(8, 8)
+					self.store(a, &sa, 0)
+					sh := self.slot(8, 8)
+					self.store(h, &sh, 0)
+					self.call_fn(&id, &vec3(out, sa, sh))
+					return
+				}
+				g := self.glue_name("hash", t)
+				self.call_fn(&g, &vec2(h.clone(), a.clone()))
+			}
+			_ => {
+				n := self.fmt_ty(t)
+				self.error("cannot hash values of type `{n}`")
+			}
+		}
+	}
+
+	fun hash_fields(&mut self, a &V, t &Ty, h &V) {
+		variants := self.variants_of(t)
+		if !(variants.len() > 0 && variants[0].is_some()) {
+			for (n, ft) in self.c.adt_fields(t, None) {
+				(off, _) := self.field(t, &n)
+				x := self.iadd_imm(a, off as i64)
+				self.hash_into(&x, &ft, h)
+			}
+			return
+		}
+		tag := self.load("i32", a, 0)
+		t64 := self.uextend("i64", &tag)
+		self.call_rt("kn_hash_u64", &vec2(h.clone(), t64))
+		for (vi, v) in variants.iter().enumerate() {
+			fields := self.c.adt_fields(t, *v)
+			if fields.len() == 0 {
+				continue
+			}
+			prefix := self.vprefix(*v)
+			is := self.icmp_imm("eq", &tag, vi as i64)
+			d := self.when_begin(&is)
+			for (n, ft) in &fields {
+				(off, _) := self.field(t, "{prefix}{n}")
+				x := self.iadd_imm(a, off as i64)
+				self.hash_into(&x, ft, h)
+			}
+			self.when_end(d)
+		}
+	}
+
+	fun fmt_text(&mut self, f &V, text &str) {
+		(p, n) := self.str_lit(text)
+		self.call_rt("kn_string_push", &vec3(f.clone(), p, n))
+	}
+
+	fun fmt_begin(&mut self, f &V, open &str) {
+		(p, n) := self.str_lit(open)
+		self.call_rt("kn_fmt_begin", &vec3(f.clone(), p, n))
+	}
+
+	fun fmt_sep(&mut self, f &V, first &V, spaced bool) {
+		sp := val(if spaced { "1".to_string() } else { "0".to_string() }, "i32")
+		self.call_rt("kn_fmt_sep", &vec3(f.clone(), first.clone(), sp))
+	}
+
+	fun fmt_end(&mut self, f &V, close &str, empty &V, spaced bool) {
+		(p, n) := self.str_lit(close)
+		sp := val(if spaced { "1".to_string() } else { "0".to_string() }, "i32")
+		args mut := vec4(f.clone(), p, n, empty.clone())
+		args.push(sp)
+		self.call_rt("kn_fmt_end", &args)
+	}
+
+	fun i32c(b bool) V {
+		return val(if b { "1".to_string() } else { "0".to_string() }, "i32")
+	}
+
+	fun debug_seq(&mut self, f &V, data &V, len &V, et &Ty) {
+		self.fmt_begin(f, "[")
+		size := self.layout(et).size
+		(i, iv, head, done) := self.loop_begin(len)
+		first0 := self.icmp_imm("eq", &iv, 0)
+		first := self.uextend("i32", &first0)
+		self.fmt_sep(f, &first, false)
+		off := self.imul_imm(&iv, size as i64)
+		x := self.iadd(data, &off)
+		self.debug_into(f, &x, et)
+		self.loop_end(&i, &iv, head, done)
+		e0 := self.icmp_imm("eq", len, 0)
+		e := self.uextend("i32", &e0)
+		self.fmt_end(f, "]", &e, false)
+	}
+
+	fun derived_debug(&mut self, f &V, a &V, t &Ty) {
+		if !self.not_derivable(t) {
+			g := self.glue_name("debug", t)
+			self.call_fn(&g, &vec2(f.clone(), a.clone()))
+			return
+		}
+		self.debug_into(f, a, t)
+	}
+
+	fun debug_into(&mut self, f &V, a &V, t &Ty) {
+		if self.is_lang(t, "string") {
+			p := self.load("i64", a, 0)
+			n := self.load("i64", a, 16)
+			self.call_rt("kn_fmt_debug_str", &vec3(f.clone(), p, n))
+			return
+		}
+		if Cg::is_str_ptr(t) {
+			p := self.load("i64", a, 0)
+			n := self.load("i64", a, 8)
+			self.call_rt("kn_fmt_debug_str", &vec3(f.clone(), p, n))
+			return
+		}
+		if let Some(et) = Cg::slice_elem(t) {
+			p := self.load("i64", a, 0)
+			n := self.load("i64", a, 8)
+			return self.debug_seq(f, &p, &n, &et)
+		}
+		match t {
+			Ty::Ref(_, inner) => {
+				if !self.is_fat(t) {
+					p := self.load("i64", a, 0)
+					return self.debug_into(f, &p, inner)
+				}
+			}
+			_ => {}
+		}
+		if is_prim(t, "Char") {
+			v := self.load("i32", a, 0)
+			self.call_rt("kn_fmt_debug_char", &vec2(f.clone(), v))
+			return
+		}
+		if Cg::is_float_ty2(t) {
+			st := self.scalar(t).unwrap()
+			v := self.load(&st, a, 0)
+			v2 := self.fpromote(&v)
+			self.call_rt("kn_fmt_debug_f64", &vec2(f.clone(), v2))
+			return
+		}
+		match t {
+			Ty::Prim(_) | Ty::Unit | Ty::Never => self.fmt_into(f, a, t),
+			Ty::Tuple(ts) => {
+				self.fmt_begin(f, "(")
+				for (i, et) in ts.iter().enumerate() {
+					first := Cg::i32c(i == 0)
+					self.fmt_sep(f, &first, false)
+					(off, _) := self.field(t, "{i}")
+					x := self.iadd_imm(a, off as i64)
+					self.debug_into(f, &x, et)
+				}
+				e := Cg::i32c(ts.len() == 0)
+				self.fmt_end(f, ")", &e, false)
+			}
+			Ty::Array(et, n) => {
+				nv := self.iconst(*n as i64)
+				self.debug_seq(f, a, &nv, et)
+			}
+			Ty::Adt(_, args) => {
+				if self.is_lang(t, "Box") {
+					p := self.load("i64", a, 0)
+					return self.debug_into(f, &p, &args[0])
+				}
+				if self.is_lang(t, "Vec") {
+					p := self.load("i64", a, 0)
+					n := self.load("i64", a, 16)
+					return self.debug_seq(f, &p, &n, &args[0])
+				}
+				if let Some(id) = self.user_impl(t, "Debug", "fmt_debug") {
+					out := self.slot(1, 1)
+					sa := self.slot(8, 8)
+					self.store(a, &sa, 0)
+					sf := self.slot(8, 8)
+					self.store(f, &sf, 0)
+					self.call_fn(&id, &vec3(out, sa, sf))
+					return
+				}
+				g := self.glue_name("debug", t)
+				self.call_fn(&g, &vec2(f.clone(), a.clone()))
+			}
+			Ty::Fn(_, _, _) => self.fmt_text(f, "<fn>"),
+			Ty::ChanSend(_) | Ty::ChanRecv(_) => self.fmt_text(f, "<chan>"),
+			Ty::Ptr(_, _) => {
+				v := self.load("i64", a, 0)
+				args mut := vec4(f.clone(), v, val("16".to_string(), "i32"), Cg::i32c(false))
+				args.push(Cg::i32c(true))
+				self.call_rt("kn_fmt_radix", &args)
+			}
+			Ty::Dyn(_) => self.fmt_text(f, "<dyn>"),
+			_ => {
+				n := self.fmt_ty(t)
+				self.error("cannot Debug-format values of type `{n}`")
+			}
+		}
+	}
+
+	fun debug_one(&mut self, f &V, a &V, t &Ty, v option<u32>) {
+		name := match v {
+			Some(v) => self.c.r.def(v).name.clone(),
+			None => match t {
+				Ty::Adt(d, _) => self.c.r.def(*d).name.clone(),
+				_ => string::new(),
+			},
+		}
+		self.fmt_text(f, &name)
+		fields := self.c.adt_fields(t, v)
+		if fields.len() == 0 {
+			return
+		}
+		prefix := self.vprefix(v)
+		is_named := parse_usize(&fields[0].0).is_none()
+		self.fmt_begin(f, if is_named { " {{" } else { "(" })
+		for (i, (n, ft)) in fields.iter().enumerate() {
+			first := Cg::i32c(i == 0)
+			self.fmt_sep(f, &first, is_named)
+			if is_named {
+				self.fmt_text(f, "{n}: ")
+			}
+			(off, _) := self.field(t, "{prefix}{n}")
+			x := self.iadd_imm(a, off as i64)
+			self.debug_into(f, &x, ft)
+		}
+		e := Cg::i32c(false)
+		self.fmt_end(f, if is_named { "}}" } else { ")" }, &e, is_named)
+	}
+
+	fun debug_fields(&mut self, f &V, a &V, t &Ty) {
+		if let Ty::Adt(d, args) = t {
+			if self.c.r.is_core(*d) && self.c.r.def(*d).name == "Range" {
+				et := args[0].clone()
+				(o0, _) := self.field(t, "start")
+				(o1, _) := self.field(t, "end")
+				x := self.iadd_imm(a, o0 as i64)
+				self.debug_into(f, &x, &et)
+				self.fmt_text(f, "..")
+				y := self.iadd_imm(a, o1 as i64)
+				self.debug_into(f, &y, &et)
+				return
+			}
+		}
+		variants := self.variants_of(t)
+		if !(variants.len() > 0 && variants[0].is_some()) {
+			return self.debug_one(f, a, t, None)
+		}
+		tag := self.load("i32", a, 0)
+		for (vi, v) in variants.iter().enumerate() {
+			is := self.icmp_imm("eq", &tag, vi as i64)
+			d := self.when_begin(&is)
+			self.debug_one(f, a, t, *v)
+			self.when_end(d)
+		}
+	}
+
+	// The vtable for `concrete` as `dyn trait_`: a global of i64 words.
+	fun vtable(&mut self, concrete &Ty, trait_ option<u32>) string {
+		key := "{mir::ty(concrete)}/{trait_:?}"
+		if let Some(n) = self.vtables.get(&key) {
+			return n.clone()
+		}
+		name := self.fresh_name("kn_vtable")
+		self.vtables.insert(key, name.clone())
+		l := self.layout(concrete)
+		methods := match trait_ {
+			Some(t) => self.c.dyn_methods(t),
+			None => Vec::new(),
+		}
+		words mut := Vec::new()
+		if self.needs_drop(concrete) {
+			g := self.glue_name("drop", concrete)
+			words.push("i64 ptrtoint (ptr @{g} to i64)")
+		} else {
+			g := self.glue_name("drop", concrete)
+			words.push("i64 ptrtoint (ptr @{g} to i64)")
+		}
+		words.push("i64 {l.size}")
+		words.push("i64 {l.align}")
+		for m in &methods {
+			substs mut := HashMap::new()
+			substs.insert("Self".to_string(), concrete.clone())
+			match self.c.resolve_trait_method(*m, &substs) {
+				Some((i, s)) => {
+					f := self.instance(i, 0, s, Abi::Plain)
+					words.push("i64 ptrtoint (ptr @{f} to i64)")
+				}
+				None => {
+					if self.c.fn_generics(*m).0.len() == 0 {
+						fname := self.c.r.fns[*m].decl.name.name.clone()
+						cn := self.fmt_ty(concrete)
+						self.error("no implementation of `{fname}` in the vtable for {cn}")
+					}
+					words.push("i64 0".to_string())
+				}
+			}
+		}
+		body mut := string::new()
+		for (i, w) in words.iter().enumerate() {
+			if i > 0 {
+				body.push(", ")
+			}
+			body.push(w)
+		}
+		self.globals.push("@{name} = private constant [{words.len()} x i64] [{body}]\n")
+		return name
+	}
+
+	// ---- intrinsics ----
+
+	fun bool_out(&mut self, v &V, dest &V) {
+		b := self.icmp_imm("ne", v, 0)
+		self.store(&b, dest, 0)
+	}
+
+	fun vec_elem(&mut self, t0 &Ty) (Ty, u32, u32) {
+		t mut := t0.clone()
+		while true {
+			inner := match &t {
+				Ty::Ref(_, x) => (**x).clone(),
+				_ => break,
+			}
+			t = inner
+		}
+		et := match &t {
+			Ty::Adt(_, a) => if a.len() > 0 { a[0].clone() } else { Ty::Unit },
+			Ty::Slice(x) => (**x).clone(),
+			_ => Ty::Unit,
+		}
+		l := self.layout(&et)
+		return (et, l.size, l.align)
+	}
+
+	fun chan_handle(&mut self, o &Operand) option<(V, bool)> {
+		t mut := self.op_ty(o)
+		match &t {
+			Ty::Ref(_, _) | Ty::ChanSend(_) | Ty::ChanRecv(_) => {}
+			_ => return None,
+		}
+		a mut := self.op_addr(o)
+		while true {
+			inner := match &t {
+				Ty::Ref(_, x) => (**x).clone(),
+				_ => break,
+			}
+			a = self.load("i64", &a, 0)
+			t = inner
+		}
+		send := match &t {
+			Ty::ChanSend(_) => true,
+			Ty::ChanRecv(_) => false,
+			_ => return None,
+		}
+		return Some((self.load("i64", &a, 0), send))
+	}
+
+	fun set_tag(&mut self, dest &V, index &V) {
+		x := self.resize(index, "i32")
+		self.store(&x, dest, 0)
+	}
+
+	fun chan_method(&mut self, short &str, args &Vec<Operand>, dest &V, dt &Ty) bool {
+		if args.len() == 0 {
+			return false
+		}
+		(h, send) := match self.chan_handle(&args[0]) {
+			Some(x) => x,
+			None => return false,
+		}
+		match short {
+			"recv" => {
+				(off, _) := self.field(dt, "Some.0")
+				p := self.iadd_imm(dest, off as i64)
+				ok := self.call_rt("kn_chan_recv", &vec2(h, p)).unwrap()
+				tag := self.bxor_imm(&ok, 1)
+				self.set_tag(dest, &tag)
+			}
+			"try_recv" => {
+				(off, _) := self.field(dt, "Ok.0")
+				p := self.iadd_imm(dest, off as i64)
+				r := self.call_rt("kn_chan_try_recv", &vec2(h, p)).unwrap()
+				failed := self.icmp_imm("ne", &r, 0)
+				self.set_tag(dest, &failed)
+				d := self.when_begin(&failed)
+				(eoff, _) := self.field(dt, "Err.0")
+				e := self.iadd_imm(dest, eoff as i64)
+				kind := self.iadd_imm(&r, -1)
+				self.set_tag(&e, &kind)
+				self.when_end(d)
+			}
+			"try_send" => {
+				vt := self.op_ty(&args[1])
+				size := self.layout(&vt).size
+				s := self.slot_for(&vt)
+				self.store_op(&args[1], &s)
+				r := self.call_rt("kn_chan_try_send", &vec2(h, s.clone())).unwrap()
+				failed := self.icmp_imm("ne", &r, 0)
+				self.set_tag(dest, &failed)
+				d := self.when_begin(&failed)
+				(eoff, et) := self.field(dt, "Err.0")
+				e := self.iadd_imm(dest, eoff as i64)
+				kind := self.iadd_imm(&r, -1)
+				self.set_tag(&e, &kind)
+				(poff, _) := self.field(&et, "Full.0")
+				p := self.iadd_imm(&e, poff as i64)
+				self.copy(&p, &s, size)
+				self.when_end(d)
+			}
+			"close" => {
+				self.call_rt("kn_chan_close", &one(h))
+			}
+			"len" | "cap" => {
+				f := if short == "len" { "kn_chan_len" } else { "kn_chan_cap" }
+				n := self.call_rt(f, &one(h)).unwrap()
+				self.store(&n, dest, 0)
+			}
+			"clone" => {
+				s := Cg::i32c(send)
+				self.call_rt("kn_chan_clone_end", &vec2(h.clone(), s))
+				self.store(&h, dest, 0)
+			}
+			_ => return false,
+		}
+		return true
+	}
+
+	fun select_chan(&mut self, name &str, args &Vec<Operand>, dest &V) {
+		parts := name.split(":")
+		kinds := if parts.len() > 1 { parts[1].to_string() } else { string::new() }
+		has_default := parts.len() > 2 && parts[2] == "1"
+		n := kinds.len()
+		cases := self.slot(24 * (if n == 0 { 1 } else { n }) as u32, 8)
+		for (i, k) in kinds.chars().enumerate() {
+			h := match self.chan_handle(&args[2 * i]) {
+				Some((h, _)) => h,
+				None => self.iconst(0),
+			}
+			elem := match args[2 * i + 1].place() {
+				Some(p) => self.place_addr(&p).0,
+				None => self.iconst(0),
+			}
+			send := self.iconst(if k == 's' { 1 } else { 0 })
+			base := 24 * i as i64
+			self.store(&h, &cases, base)
+			self.store(&elem, &cases, base + 8)
+			self.store(&send, &cases, base + 16)
+		}
+		nv := self.iconst(n as i64)
+		dv := self.iconst(if has_default { 1 } else { 0 })
+		r := self.call_rt("kn_select", &vec3(cases, nv, dv)).unwrap()
+		self.store(&r, dest, 0)
+	}
+
+	fun t_arg(&self) Ty {
+		match self.intr_substs.get("T") {
+			Some(t) => return t.clone(),
+			None => return Ty::Unit,
+		}
+	}
+
+	fun mem_intrinsic(&mut self, name &str, args &Vec<Operand>, dest &V, dt &Ty) bool {
+		match name {
+			"mem::size_of" | "mem::align_of" => {
+				t := self.t_arg()
+				l := self.layout(&t)
+				v := self.iconst(if name == "mem::size_of" { l.size } else { l.align } as i64)
+				self.store(&v, dest, 0)
+			}
+			"mem::forget" => {
+				if let Operand::Move(p) = &args[0] {
+					self.moved(p)
+				}
+			}
+			"mem::black_box" => {
+				self.store_op(&args[0], dest)
+				self.call_rt("kn_black_box", &one(dest.clone()))
+			}
+			"strconv::append_int" | "strconv::append_uint" | "strconv::append_float" => {
+				s := self.op_scalar(&args[0])
+				v := self.op_scalar(&args[1])
+				f := match name {
+					"strconv::append_int" => "kn_fmt_i64",
+					"strconv::append_uint" => "kn_fmt_u64",
+					_ => "kn_fmt_debug_f64",
+				}
+				self.call_rt(f, &vec2(s, v))
+			}
+			"mem::swap" => {
+				t := self.t_arg()
+				size := self.layout(&t).size
+				a := self.op_scalar(&args[0])
+				b := self.op_scalar(&args[1])
+				tmp := self.slot_for(&t)
+				self.copy(&tmp, &a, size)
+				self.copy(&a, &b, size)
+				self.copy(&b, &tmp, size)
+			}
+			"mem::replace" => {
+				t := self.t_arg()
+				size := self.layout(&t).size
+				p := self.op_scalar(&args[0])
+				self.copy(dest, &p, size)
+				self.store_op(&args[1], &p)
+			}
+			"ptr::null" => {
+				z := self.iconst(0)
+				self.store(&z, dest, 0)
+			}
+			"ptr::is_null" => {
+				p := self.op_scalar(&args[0])
+				b := self.icmp_imm("eq", &p, 0)
+				self.store(&b, dest, 0)
+			}
+			"ptr::add" => {
+				t := self.t_arg()
+				size := self.layout(&t).size as i64
+				p := self.op_scalar(&args[0])
+				n0 := self.op_scalar(&args[1])
+				n := self.resize(&n0, "i64")
+				off := self.imul_imm(&n, size)
+				r := self.iadd(&p, &off)
+				self.store(&r, dest, 0)
+			}
+			"ptr::read" => {
+				size := self.layout(dt).size
+				p := self.op_scalar(&args[0])
+				self.copy(dest, &p, size)
+			}
+			"ptr::write" => {
+				p := self.op_scalar(&args[0])
+				self.store_op(&args[1], &p)
+			}
+			"ptr::drop_in_place" => {
+				t := self.t_arg()
+				p := self.op_scalar(&args[0])
+				if self.needs_drop(&t) {
+					self.drop_in_place(&p, &t)
+				}
+			}
+			"ptr::copy" => {
+				t := self.t_arg()
+				size := self.layout(&t).size as i64
+				src := self.op_scalar(&args[0])
+				dst := self.op_scalar(&args[1])
+				n := self.op_scalar(&args[2])
+				bytes := self.imul_imm(&n, size)
+				self.call_rt("kn_memmove", &vec3(dst, src, bytes))
+			}
+			"Vec::as_ptr" => {
+				v := self.op_scalar(&args[0])
+				d := self.load("i64", &v, 0)
+				self.store(&d, dest, 0)
+			}
+			"Vec::capacity" | "string::capacity" => {
+				v := self.op_scalar(&args[0])
+				c := self.load("i64", &v, 8)
+				self.store(&c, dest, 0)
+			}
+			"Vec::set_len" => {
+				v := self.op_scalar(&args[0])
+				n := self.op_scalar(&args[1])
+				self.store(&n, &v, 16)
+			}
+			"Vec::reserve" | "string::reserve" => {
+				vt := self.op_ty(&args[0])
+				v := self.op_scalar(&args[0])
+				n := self.op_scalar(&args[1])
+				(size, align) := if name == "string::reserve" {
+					(1, 1)
+				} else {
+					(_, s, a) := self.vec_elem(&vt)
+					(s, a)
+				}
+				s := self.iconst(size as i64)
+				a := self.iconst(align as i64)
+				self.call_rt("kn_vec_reserve", &vec4(v, n, s, a))
+			}
+			"string::from_utf8_unchecked" | "string::into_bytes" => {
+				src := self.op_addr(&args[0])
+				self.copy(dest, &src, 24)
+				if let Operand::Move(p) = &args[0] {
+					self.moved(p)
+				}
+			}
+			"string::as_mut_vec" | "Box::into_raw" | "Box::from_raw" => {
+				v := self.op_scalar(&args[0])
+				self.store(&v, dest, 0)
+			}
+			"string::with_capacity" => {
+				self.init_string(dest)
+				n := self.op_scalar(&args[0])
+				o := self.iconst(1)
+				self.call_rt("kn_vec_reserve", &vec4(dest.clone(), n, o.clone(), o))
+			}
+			"string::as_bytes" | "str::as_bytes" => {
+				(p, n) := self.str_of(&args[0])
+				self.store(&p, dest, 0)
+				self.store(&n, dest, 8)
+			}
+			"ptr::slice_ptr" | "ptr::str_ptr" => {
+				a := self.op_addr(&args[0])
+				p := self.load("i64", &a, 0)
+				self.store(&p, dest, 0)
+			}
+			"ptr::slice_from_raw" | "ptr::str_from_raw" => {
+				p := self.op_scalar(&args[0])
+				n := self.op_scalar(&args[1])
+				self.store(&p, dest, 0)
+				self.store(&n, dest, 8)
+			}
+			_ => return false,
+		}
+		return true
+	}
+
+	fun to64(&mut self, o &Operand) V {
+		(v, _) := self.scalar_through_refs(o)
+		if !is_float_t(&v.t) && bits(&v.t) < 64 {
+			return self.uextend("i64", &v)
+		}
+		return v
+	}
+
+	fun deref_ty(t Ty) Ty {
+		match t {
+			Ty::Ref(_, x) => return *x,
+			t => return t,
+		}
+	}
+
+	// `Range::next` / `next_back`.
+	fun range_step(&mut self, args &Vec<Operand>, dest &V, dt &Ty, back bool) {
+		rt := Cg::deref_ty(self.op_ty(&args[0]))
+		r := self.op_scalar(&args[0])
+		(soff, et) := self.field(&rt, "start")
+		(eoff, _) := self.field(&rt, "end")
+		(ioff, _) := self.field(&rt, "incl")
+		(poff, _) := self.field(dt, "Some.0")
+		ct := match self.scalar(&et) {
+			Some(x) => x,
+			None => "i64".to_string(),
+		}
+		sg := if is_signed(&et) { "s" } else { "u" }
+		s := self.load(&ct, &r, soff as i64)
+		e := self.load(&ct, &r, eoff as i64)
+		incl := self.load("i8", &r, ioff as i64)
+		none := val("1".to_string(), "i32")
+		self.store(&none, dest, 0)
+		some := val("0".to_string(), "i32")
+		excl := self.icmp_imm("eq", &incl, 0)
+		below := self.icmp("{sg}lt", &s, &e)
+		go_excl := self.band(&excl, &below)
+		d := self.when_begin(&go_excl)
+		if back {
+			e1 := self.iadd_imm(&e, -1)
+			self.store(&e1, &r, eoff as i64)
+			self.store(&e1, dest, poff as i64)
+		} else {
+			self.store(&s, dest, poff as i64)
+			s1 := self.iadd_imm(&s, 1)
+			self.store(&s1, &r, soff as i64)
+		}
+		self.store(&some, dest, 0)
+		self.when_end(d)
+		is_incl := self.icmp_imm("eq", &incl, 1)
+		within := self.icmp("{sg}le", &s, &e)
+		go_incl := self.band(&is_incl, &within)
+		d2 := self.when_begin(&go_incl)
+		last := self.icmp("eq", &s, &e)
+		two := val("2".to_string(), "i8")
+		onev := val("1".to_string(), "i8")
+		ni := self.select(&last, &two, &onev)
+		self.store(&ni, &r, ioff as i64)
+		if back {
+			self.store(&e, dest, poff as i64)
+			e1 := self.iadd_imm(&e, -1)
+			ne := self.select(&last, &e, &e1)
+			self.store(&ne, &r, eoff as i64)
+		} else {
+			self.store(&s, dest, poff as i64)
+			s1 := self.iadd_imm(&s, 1)
+			ns := self.select(&last, &s, &s1)
+			self.store(&ns, &r, soff as i64)
+		}
+		self.store(&some, dest, 0)
+		self.when_end(d2)
+	}
+
+	fun intrinsic(&mut self, name &str, args &Vec<Operand>, dest &V, dt &Ty) {
+		segs := name.split("::")
+		short := segs[segs.len() - 1].to_string()
+		ty_name := segs[0].to_string()
+		if name.starts_with("static_addr:") {
+			d := match parse_usize(&name[12..]) {
+				Some(x) => x as u32,
+				None => 0,
+			}
+			g := self.static_data(d)
+			a := self.global_addr(&g)
+			self.store(&a, dest, 0)
+			return
+		}
+		if name.starts_with("select:") {
+			return self.select_chan(name, args, dest)
+		}
+		match short.as_str() {
+			"recv" | "try_recv" | "try_send" | "close" | "len" | "cap" | "clone" => {
+				if self.chan_method(&short, args, dest, dt) {
+					return
+				}
+			}
+			_ => {}
+		}
+		if self.mem_intrinsic(name, args, dest, dt) {
+			return
+		}
+		if self.num_intrinsic(&ty_name, &short, args, dest, dt) {
+			return
+		}
+		if name == "fmt::derived_debug" {
+			t mut := self.t_arg()
+			unsized := match &t {
+				Ty::Slice(_) => true,
+				_ => is_prim(&t, "Str"),
+			}
+			a := if unsized {
+				t = Ty::Ref(false, Box::new(t.clone()))
+				self.op_addr(&args[0])
+			} else {
+				self.op_scalar(&args[0])
+			}
+			f := self.op_scalar(&args[1])
+			self.derived_debug(&f, &a, &t)
+			return
+		}
+		if name.starts_with("cmp::derived_") || name.starts_with("hash::derived_") {
+			op := if name.starts_with("cmp::") { name[13..].to_string() } else { name[14..].to_string() }
+			t mut := self.t_arg()
+			unsized := match &t {
+				Ty::Slice(_) => true,
+				_ => is_prim(&t, "Str"),
+			}
+			(a, b) := if unsized {
+				t = Ty::Ref(false, Box::new(t.clone()))
+				a := self.op_addr(&args[0])
+				b := if op == "hash" { self.op_scalar(&args[1]) } else { self.op_addr(&args[1]) }
+				(a, b)
+			} else {
+				(self.op_scalar(&args[0]), self.op_scalar(&args[1]))
+			}
+			match op.as_str() {
+				"eq" => {
+					e := self.derived_eq(&a, &b, &t)
+					self.store(&e, dest, 0)
+				}
+				"cmp" => {
+					c := self.derived_cmp(&a, &b, &t)
+					c2 := self.sextend("i32", &c)
+					tag := self.iadd_imm(&c2, 1)
+					self.store(&tag, dest, 0)
+				}
+				_ => self.derived_hash(&a, &t, &b),
+			}
+			return
+		}
+		tn := ty_name.as_str()
+		sh := short.as_str()
+		if sh == "slice_range" {
+			bt := Cg::deref_ty(self.op_ty(&args[0]))
+			ba := self.op_scalar(&args[0])
+			is_vec := self.is_lang(&bt, "Vec")
+			is_string := self.is_lang(&bt, "string")
+			data mut := ba.clone()
+			len mut := ba.clone()
+			size mut := 1
+			is_str mut := false
+			if is_vec || is_string {
+				if is_vec {
+					et := self.elem_of(&bt)
+					size = self.layout(&et).size
+				}
+				data = self.load("i64", &ba, 0)
+				len = self.load("i64", &ba, 16)
+				is_str = is_string
+			} else if let Ty::Array(et, n) = &bt {
+				size = self.layout(et).size
+				len = self.iconst(*n as i64)
+			} else {
+				a := self.op_addr(&args[0])
+				is_str = is_prim(&bt, "Str")
+				if !is_str {
+					et := self.elem_of(&bt)
+					size = self.layout(&et).size
+				}
+				data = self.load("i64", &a, 0)
+				len = self.load("i64", &a, 8)
+			}
+			start := self.to64(&args[1])
+			end_v := self.to64(&args[2])
+			flags := self.to64(&args[3])
+			isv := self.iconst(if is_str { 1 } else { 0 })
+			cargs mut := vec4(data.clone(), len, start.clone(), end_v)
+			cargs.push(flags)
+			cargs.push(isv)
+			end := self.call_rt("kn_slice_check", &cargs).unwrap()
+			off := self.imul_imm(&start, size as i64)
+			p := self.iadd(&data, &off)
+			n := self.isub(&end, &start)
+			self.store(&p, dest, 0)
+			self.store(&n, dest, 8)
+			return
+		}
+		if sh == "go_handle" {
+			h := match self.last_task.clone() {
+				Some(s) => self.load("i64", &s, 0),
+				None => self.iconst(0),
+			}
+			self.store(&h, dest, 0)
+			return
+		}
+		if tn == "Task" && sh == "join" {
+			s := self.slot(8, 8)
+			self.store_op(&args[0], &s)
+			h := self.load("i64", &s, 0)
+			(off, _) := self.field(dt, "Ok.0")
+			p := self.iadd_imm(dest, off as i64)
+			self.call_rt("kn_task_join", &vec2(h, p))
+			z := val("0".to_string(), "i32")
+			self.store(&z, dest, 0)
+			return
+		}
+		if sh == "scope" {
+			sc := self.call_rt("kn_scope_new", &Vec::new()).unwrap()
+			fa := self.op_addr(&args[0])
+			code := self.load("i64", &fa, 0)
+			env := self.load("i64", &fa, 8)
+			arg := self.slot(8, 8)
+			self.store(&sc, &arg, 0)
+			ret := self.slot(8, 8)
+			self.call_indirect(&code, &vec3(ret, env, arg))
+			self.call_rt("kn_scope_wait", &one(sc))
+			return
+		}
+		if tn == "Scope" && sh == "spawn" {
+			sc := self.op_scalar(&args[0])
+			fa := self.op_addr(&args[1])
+			code := self.load("i64", &fa, 0)
+			env := self.load("i64", &fa, 8)
+			self.call_rt("kn_scope_spawn", &vec3(sc, code, env))
+			return
+		}
+		if sh == "chan" {
+			et := match dt {
+				Ty::Tuple(ts) => match ts.first() {
+					Some(Ty::ChanSend(t)) => (**t).clone(),
+					_ => Ty::Unit,
+				},
+				_ => Ty::Unit,
+			}
+			size := self.iconst(self.layout(&et).size as i64)
+			cap := if args.len() > 0 { self.to64(&args[0]) } else { self.iconst(0) }
+			drop := self.drop_fn_ptr(&et)
+			h := self.call_rt("kn_chan_new", &vec3(size, cap, drop)).unwrap()
+			self.store(&h, dest, 0)
+			self.store(&h, dest, 8)
+			return
+		}
+		if sh == "chan_send" {
+			h := match self.chan_handle(&args[0]) {
+				Some((h, _)) => h,
+				None => return self.error("internal error: send on a non-channel".to_string()),
+			}
+			vt := self.op_ty(&args[1])
+			s := self.slot_for(&vt)
+			self.store_op(&args[1], &s)
+			self.call_rt("kn_chan_send", &vec2(h, s))
+			return
+		}
+		if sh == "chan_recv" {
+			h := match self.chan_handle(&args[0]) {
+				Some((h, _)) => h,
+				None => return self.error("internal error: receive on a non-channel".to_string()),
+			}
+			ok := self.call_rt("kn_chan_recv", &vec2(h, dest.clone())).unwrap()
+			closed := self.icmp_imm("eq", &ok, 0)
+			k := self.fail_begin(&closed)
+			self.panic_msg("receive on a closed channel")
+			self.fail_end(k)
+			return
+		}
+		if sh == "select_sent" {
+			if let Some(p) = args[0].place() {
+				self.moved(&p)
+			}
+			return
+		}
+		is_s := tn == "string" || tn == "str"
+		if tn == "string" && sh == "new" {
+			return self.init_string(dest)
+		}
+		if (tn == "string" && sh == "from") || (is_s && sh == "to_string") {
+			(p, n) := self.str_of(&args[0])
+			self.call_rt("kn_string_from", &vec3(dest.clone(), p, n))
+			return
+		}
+		if is_s && sh == "len" {
+			(_, n) := self.str_of(&args[0])
+			self.store(&n, dest, 0)
+			return
+		}
+		if is_s && sh == "is_empty" {
+			(_, n) := self.str_of(&args[0])
+			z := self.icmp_imm("eq", &n, 0)
+			self.store(&z, dest, 0)
+			return
+		}
+		if tn == "string" && sh == "push" {
+			s := self.op_scalar(&args[0])
+			(p, n) := self.str_of(&args[1])
+			self.call_rt("kn_string_push", &vec3(s, p, n))
+			return
+		}
+		if tn == "string" && sh == "as_str" {
+			(p, n) := self.str_of(&args[0])
+			self.store(&p, dest, 0)
+			self.store(&n, dest, 8)
+			return
+		}
+		if is_s && (sh == "to_upper" || sh == "to_lower" || sh == "trim") {
+			(p, n) := self.str_of(&args[0])
+			f := match sh {
+				"to_upper" => "kn_str_to_upper",
+				"to_lower" => "kn_str_to_lower",
+				_ => "kn_str_trim",
+			}
+			self.call_rt(f, &vec3(dest.clone(), p, n))
+			return
+		}
+		if tn == "str" && (sh == "starts_with" || sh == "ends_with" || sh == "contains") {
+			(p, n) := self.str_of(&args[0])
+			(q, m) := self.str_of(&args[1])
+			f := match sh {
+				"starts_with" => "kn_str_starts_with",
+				"ends_with" => "kn_str_ends_with",
+				_ => "kn_str_contains",
+			}
+			r := self.call_rt(f, &vec4(p, n, q, m)).unwrap()
+			self.bool_out(&r, dest)
+			return
+		}
+		if tn == "Vec" && (sh == "new" || sh == "with_capacity") {
+			e := self.iconst(8)
+			z := self.iconst(0)
+			self.store(&e, dest, 0)
+			self.store(&z, dest, 8)
+			self.store(&z, dest, 16)
+			if sh == "with_capacity" {
+				n := self.op_scalar(&args[0])
+				(_, s, a) := self.vec_elem(dt)
+				sv := self.iconst(s as i64)
+				av := self.iconst(a as i64)
+				self.call_rt("kn_vec_reserve", &vec4(dest.clone(), n, sv, av))
+			}
+			return
+		}
+		if tn == "char" && sh == "from_u32_unchecked" {
+			v := self.op_scalar(&args[0])
+			self.store(&v, dest, 0)
+			return
+		}
+		if tn == "Vec" && sh == "len" {
+			v := self.op_scalar(&args[0])
+			n := self.load("i64", &v, 16)
+			self.store(&n, dest, 0)
+			return
+		}
+		if tn == "Vec" && sh == "is_empty" {
+			v := self.op_scalar(&args[0])
+			n := self.load("i64", &v, 16)
+			z := self.icmp_imm("eq", &n, 0)
+			self.store(&z, dest, 0)
+			return
+		}
+		if tn == "Vec" && sh == "push" {
+			vt := self.op_ty(&args[0])
+			v := self.op_scalar(&args[0])
+			(_, size, align) := self.vec_elem(&vt)
+			o := self.iconst(1)
+			s := self.iconst(size as i64)
+			a := self.iconst(align as i64)
+			cap := self.load("i64", &v, 8)
+			len := self.load("i64", &v, 16)
+			full := self.icmp("eq", &cap, &len)
+			d := self.when_begin(&full)
+			self.call_rt("kn_vec_reserve", &vec4(v.clone(), o, s, a))
+			self.when_end(d)
+			data := self.load("i64", &v, 0)
+			off := self.imul_imm(&len, size as i64)
+			at := self.iadd(&data, &off)
+			self.store_op(&args[1], &at)
+			len2 := self.iadd_imm(&len, 1)
+			self.store(&len2, &v, 16)
+			return
+		}
+		if tn == "Range" && sh == "next_back" {
+			return self.range_step(args, dest, dt, true)
+		}
+		if tn == "Range" && sh == "next" {
+			return self.range_step(args, dest, dt, false)
+		}
+		if tn == "Vec" && sh == "pop" {
+			vt := self.op_ty(&args[0])
+			v := self.op_scalar(&args[0])
+			(_, size, _) := self.vec_elem(&vt)
+			(poff, _) := self.field(dt, "Some.0")
+			len := self.load("i64", &v, 16)
+			none := val("1".to_string(), "i32")
+			self.store(&none, dest, 0)
+			has := self.icmp_imm("ne", &len, 0)
+			d := self.when_begin(&has)
+			len1 := self.iadd_imm(&len, -1)
+			self.store(&len1, &v, 16)
+			data := self.load("i64", &v, 0)
+			off := self.imul_imm(&len1, size as i64)
+			src := self.iadd(&data, &off)
+			dd := self.iadd_imm(dest, poff as i64)
+			self.copy(&dd, &src, size)
+			some := val("0".to_string(), "i32")
+			self.store(&some, dest, 0)
+			self.when_end(d)
+			return
+		}
+		if tn == "Vec" && (sh == "get" || sh == "first" || sh == "last") {
+			vt := self.op_ty(&args[0])
+			v := self.op_scalar(&args[0])
+			(_, size, _) := self.vec_elem(&vt)
+			len := self.load("i64", &v, 16)
+			i := match sh {
+				"get" => {
+					(i0, _) := self.scalar_through_refs(&args[1])
+					self.resize(&i0, "i64")
+				}
+				"first" => self.iconst(0),
+				_ => self.iadd_imm(&len, -1),
+			}
+			(poff, _) := self.field(dt, "Some.0")
+			none := val("1".to_string(), "i32")
+			self.store(&none, dest, 0)
+			ok := self.icmp("ult", &i, &len)
+			d := self.when_begin(&ok)
+			data := self.load("i64", &v, 0)
+			off := self.imul_imm(&i, size as i64)
+			p := self.iadd(&data, &off)
+			self.store(&p, dest, poff as i64)
+			some := val("0".to_string(), "i32")
+			self.store(&some, dest, 0)
+			self.when_end(d)
+			return
+		}
+		if tn == "Vec" && sh == "clear" {
+			vt := self.op_ty(&args[0])
+			v := self.op_scalar(&args[0])
+			(et, size, _) := self.vec_elem(&vt)
+			if self.needs_drop(&et) {
+				data := self.load("i64", &v, 0)
+				len := self.load("i64", &v, 16)
+				(i, iv, head, done) := self.loop_begin(&len)
+				off := self.imul_imm(&iv, size as i64)
+				e := self.iadd(&data, &off)
+				self.drop_value(&e, &et)
+				self.loop_end(&i, &iv, head, done)
+			}
+			z := self.iconst(0)
+			self.store(&z, &v, 16)
+			return
+		}
+		if tn == "Box" && sh == "new" {
+			t := self.op_ty(&args[0])
+			l := self.layout(&t)
+			s := self.iconst(l.size as i64)
+			a := self.iconst(l.align as i64)
+			p := self.call_rt("kn_alloc", &vec2(s, a)).unwrap()
+			self.store_op(&args[0], &p)
+			self.store(&p, dest, 0)
+			return
+		}
+		if tn == "f64" || tn == "f32" {
+			(v, _) := self.scalar_through_refs(&args[0])
+			r := match sh {
+				"sqrt" => self.unary_intr("sqrt", &v),
+				"abs" => self.unary_intr("fabs", &v),
+				"floor" => self.unary_intr("floor", &v),
+				"ceil" => self.unary_intr("ceil", &v),
+				"round" => self.call_rt("kn_round", &one(v.clone())).unwrap(),
+				"powi" => {
+					(n, _) := self.scalar_through_refs(&args[1])
+					self.call_rt("kn_powi", &vec2(v.clone(), n)).unwrap()
+				}
+				"min" | "max" => {
+					(w, _) := self.scalar_through_refs(&args[1])
+					base := if sh == "min" { "minimum" } else { "maximum" }
+					nm := "llvm.{base}.{Cg::intr_suffix(&v.t)}"
+					self.llvm_intr(&nm, &v.t, &vec2(v.clone(), w))
+				}
+				_ => return self.error("code generation does not support `{name}` yet"),
+			}
+			self.store(&r, dest, 0)
+			return
+		}
+		if sh == "panic" && args.len() == 1 {
+			(p, n) := self.str_of(&args[0])
+			self.call_rt("kn_panic", &vec2(p, n))
+			return
+		}
+		if sh == "assert" {
+			c := self.op_scalar(&args[0])
+			bad := self.icmp_imm("eq", &c, 0)
+			k := self.fail_begin(&bad)
+			self.panic_msg("assertion failed")
+			self.fail_end(k)
+			return
+		}
+		if sh == "drop" {
+			t := self.op_ty(&args[0])
+			s := self.slot_for(&t)
+			self.store_op(&args[0], &s)
+			self.drop_value(&s, &t)
+			return
+		}
+		if sh == "clone" {
+			if let Ty::Ref(_, _) = dt {
+				a := self.op_addr(&args[0])
+				src := self.load("i64", &a, 0)
+				size := self.layout(dt).size
+				self.copy(dest, &src, size)
+				return
+			}
+			src := self.op_scalar(&args[0])
+			self.clone_into(&src, dest, dt)
+			return
+		}
+		if sh == "len" {
+			t := self.op_ty(&args[0])
+			a := self.op_addr(&args[0])
+			n := match &t {
+				Ty::Array(_, n) => self.iconst(*n as i64),
+				Ty::Ref(_, x) => match &**x {
+					Ty::Array(_, n) => self.iconst(*n as i64),
+					Ty::Slice(_) => self.load("i64", &a, 8),
+					_ => {
+						p := self.load("i64", &a, 0)
+						self.load("i64", &p, 16)
+					}
+				},
+				_ => self.load("i64", &a, 16),
+			}
+			self.store(&n, dest, 0)
+			return
+		}
+		if sh == "vec_take" {
+			t := self.op_ty(&args[0])
+			(_, size, _) := self.vec_elem(&t)
+			p := match args[0].place() {
+				Some(p) => p,
+				None => return,
+			}
+			(a, _) := self.place_addr(&p)
+			(i0, _) := self.scalar_through_refs(&args[1])
+			i := self.resize(&i0, "i64")
+			data := self.load("i64", &a, 0)
+			off := self.imul_imm(&i, size as i64)
+			src := self.iadd(&data, &off)
+			self.copy(dest, &src, size)
+			return
+		}
+		if sh == "array_iter_view" || sh == "vec_iter_view" {
+			t := self.op_ty(&args[0])
+			p := match args[0].place() {
+				Some(p) => p,
+				None => return,
+			}
+			(a, _) := self.place_addr(&p)
+			no := self.iconst(-1)
+			if sh == "array_iter_view" {
+				n := match &t {
+					Ty::Array(_, n) => *n,
+					_ => 0,
+				}
+				len := self.iconst(n as i64)
+				self.store(&a, dest, 0)
+				self.store(&no, dest, 8)
+				self.store(&len, dest, 16)
+				self.moved(&p)
+			} else {
+				data := self.load("i64", &a, 0)
+				len := self.load("i64", &a, 16)
+				self.store(&data, dest, 0)
+				self.store(&no, dest, 8)
+				self.store(&len, dest, 16)
+			}
+			return
+		}
+		if sh == "vec_take_front" {
+			t := self.op_ty(&args[0])
+			(_, size, _) := self.vec_elem(&t)
+			p := match args[0].place() {
+				Some(p) => p,
+				None => return,
+			}
+			(a, _) := self.place_addr(&p)
+			data := self.load("i64", &a, 0)
+			self.copy(dest, &data, size)
+			next := self.iadd_imm(&data, size as i64)
+			self.store(&next, &a, 0)
+			len := self.load("i64", &a, 16)
+			len1 := self.iadd_imm(&len, -1)
+			self.store(&len1, &a, 16)
+			return
+		}
+		if sh == "vec_forget_elems" {
+			p := match args[0].place() {
+				Some(p) => p,
+				None => return,
+			}
+			(a, _) := self.place_addr(&p)
+			z := self.iconst(0)
+			self.store(&z, &a, 16)
+			return
+		}
+		if sh == "display_to_string" || sh == "to_string" {
+			t := self.op_ty(&args[0])
+			inner := Cg::deref_ty(t)
+			a := self.op_addr(&args[0])
+			p := self.load("i64", &a, 0)
+			self.init_string(dest)
+			self.fmt_into(dest, &p, &inner)
+			return
+		}
+		self.error("code generation does not support `{name}` yet")
+	}
+
+	fun num_intrinsic(&mut self, ty &str, name &str, args &Vec<Operand>, dest &V, dt &Ty) bool {
+		match ty {
+			"i8" | "i16" | "i32" | "i64" | "isize" | "u8" | "u16" | "u32" | "u64" | "usize" | "i128" | "u128" => {}
+			_ => return false,
+		}
+		match name {
+			"wrapping_add" | "wrapping_sub" | "wrapping_mul" | "wrapping_neg" | "wrapping_shl" | "wrapping_shr" | "rotate_left" | "rotate_right" | "swap_bytes" | "reverse_bits" | "count_ones" | "leading_zeros" | "trailing_zeros" | "overflowing_add" | "overflowing_sub" | "overflowing_mul" => {}
+			_ => return false,
+		}
+		signed := ty.starts_with("i")
+		a := self.op_scalar(&args[0])
+		it := a.t.clone()
+		b := if args.len() > 1 { self.op_scalar(&args[1]) } else { a.clone() }
+		v := match name {
+			"wrapping_add" => self.iadd(&a, &b),
+			"wrapping_sub" => self.isub(&a, &b),
+			"wrapping_mul" => self.imul(&a, &b),
+			"wrapping_neg" => self.ineg(&a),
+			"wrapping_shl" => self.shift("shl", &a, &b),
+			"wrapping_shr" => self.shift(if signed { "ashr" } else { "lshr" }, &a, &b),
+			"rotate_left" | "rotate_right" => {
+				amt := self.resize(&b, &it)
+				f := if name == "rotate_left" { "fshl" } else { "fshr" }
+				nm := "llvm.{f}.{it}"
+				self.llvm_intr(&nm, &it, &vec3(a.clone(), a.clone(), amt))
+			}
+			"swap_bytes" => if it == "i8" { a.clone() } else { self.unary_intr("bswap", &a) },
+			"reverse_bits" => self.unary_intr("bitreverse", &a),
+			"count_ones" | "leading_zeros" | "trailing_zeros" => {
+				r := if name == "count_ones" {
+					self.unary_intr("ctpop", &a)
+				} else {
+					f := if name == "leading_zeros" { "ctlz" } else { "cttz" }
+					nm := "llvm.{f}.{it}"
+					self.declare(&nm, "declare {it} @{nm}({it}, i1)")
+					self.inst(&it, "call {it} @{nm}({it} {a.n}, i1 false)")
+				}
+				self.resize(&r, "i32")
+			}
+			_ => {
+				opn := match name {
+					"overflowing_add" => "add",
+					"overflowing_sub" => "sub",
+					_ => "mul",
+				}
+				ws := if signed { "s" } else { "u" }
+				nm := "llvm.{ws}{opn}.with.overflow.{it}"
+				self.declare(&nm, "declare {{{it}, i1}} @{nm}({it}, {it})")
+				pr := self.tmp()
+				self.emit("{pr} = call {{{it}, i1}} @{nm}({it} {a.n}, {it} {b.n})")
+				r := self.inst(&it, "extractvalue {{{it}, i1}} {pr}, 0")
+				o1 := self.tmp()
+				self.emit("{o1} = extractvalue {{{it}, i1}} {pr}, 1")
+				o := self.bool8(&o1)
+				(off0, _) := self.field(dt, "0")
+				(off1, _) := self.field(dt, "1")
+				self.store(&r, dest, off0 as i64)
+				self.store(&o, dest, off1 as i64)
+				return true
+			}
+		}
+		self.store(&v, dest, 0)
+		return true
+	}
+
+	fun new(c Checker, checked bool) Cg {
+		return Cg {
+			c: c,
+			checked: checked,
+			globals: string::new(),
+			funcs: string::new(),
+			declared: HashSet::new(),
+			decls: string::new(),
+			bodies: HashMap::new(),
+			instances: HashMap::new(),
+			queue: Vec::new(),
+			qhead: 0,
+			layouts: HashMap::new(),
+			needs_drop_cache: HashMap::new(),
+			drop_glue: HashMap::new(),
+			eq_glue: HashMap::new(),
+			cmp_glue: HashMap::new(),
+			hash_glue: HashMap::new(),
+			debug_glue: HashMap::new(),
+			clone_glue: HashMap::new(),
+			vtables: HashMap::new(),
+			shims: HashMap::new(),
+			strings: HashMap::new(),
+			statics: Vec::new(),
+			entry_display: None,
+			errors: Vec::new(),
+			counter: 0,
+			span: Span { start: 0, end: 0 },
+			body: empty_body(Span { start: 0, end: 0 }),
+			substs: HashMap::new(),
+			intr_substs: HashMap::new(),
+			fn_idx: 0,
+			locals: Vec::new(),
+			blocks: Vec::new(),
+			defer_stack: None,
+			panic_frame: None,
+			last_task: None,
+			preempt: None,
+			cur_block: 0,
+			fb: string::new(),
+			allocas: string::new(),
+			nv: 0,
+			nb: 0,
+			open: false,
+		}
+	}
+}
+
+// Compiles a type-checked program to LLVM IR text, or returns its errors.
+pub fun compile(c Checker, checked bool) result<string, Vec<(string, Span)>> {
+	main_idx mut := None
+	for i in 0..c.r.fns.len() {
+		f := &c.r.fns[i]
+		if main_idx.is_none() && !f.is_prelude && f.impl_idx.is_none() && f.trait_def.is_none() && f.decl.name.name == "main" {
+			main_idx = Some(i)
+		}
+	}
+	main_idx := match main_idx {
+		Some(i) => i,
+		None => return Err(one(("no `main` function to build".to_string(), Span { start: 0, end: 0 }))),
+	}
+	cg mut := Cg::new(c, checked)
+	user_main := cg.instance(main_idx, 0, HashMap::new(), Abi::Plain)
+	cg.entry_display = cg.main_error_display(main_idx)
+	cg.drain()
+	inits mut := Vec::new()
+	done mut := 0
+	while done < cg.statics.len() {
+		(_, g, fi) := cg.statics[done].clone()
+		done += 1
+		f := cg.instance(fi, 0, HashMap::new(), Abi::Plain)
+		inits.push((g, f))
+		cg.drain()
+	}
+	// Declaration order: statics are keyed by definition.
+	order mut := Vec::new()
+	for (d, g, _) in &cg.statics {
+		order.push((*d, g.clone()))
+	}
+	order.sort()
+	sorted mut := Vec::new()
+	for (_, g) in &order {
+		for (g2, f) in &inits {
+			if g2 == g {
+				sorted.push((g2.clone(), f.clone()))
+			}
+		}
+	}
+	if cg.errors.len() == 0 {
+		cg.define_entry(main_idx, &user_main, &sorted)
+	}
+	if cg.errors.len() > 0 {
+		errs mut := Vec::new()
+		last mut := (string::new(), 0)
+		for (m, sp) in &cg.errors {
+			if errs.len() == 0 || last.0 != *m || last.1 != sp.start {
+				errs.push((m.clone(), *sp))
+				last = (m.clone(), sp.start)
+			}
+		}
+		return Err(errs)
+	}
+	o mut := "; generated by kilnc\n".to_string()
+	o.push(&cg.decls)
+	o.push("\n")
+	o.push(&cg.globals)
+	o.push("\n")
+	o.push(&cg.funcs)
+	return Ok(o)
+}
