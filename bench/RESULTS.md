@@ -15,6 +15,35 @@ The same program in three languages, in `bench/<name>/main.{kn,go,rs}`. Run ever
 
 This is a shared cloud VM, so expect some noise (hyperfine reported outliers). Each time is the **median of 5 runs** after 1 warm-up run (`hyperfine -N`). Memory is **peak RSS**, the highest of repeated runs, measured with `maxrss.c` (wait4 rusage from a tiny parent process). All three versions print identical output for every benchmark. The one exception is JSON byte counts, because Go writes `99.0` as `99`; there only the decoded checksum is compared, and it matches.
 
+## Self-hosted compiler round (Oct 18, 2026; main at `71b0677`)
+
+One full `bench/run.py` run, in seconds (lower is better), median of 5 runs. The
+kilnc column is the self-hosted compiler (`kilnc --build --release`, built by the
+Rust LLVM backend). The VM was noisy (hyperfine reported outliers).
+
+| Benchmark | Kiln Cranelift | Kiln LLVM | **kilnc** | Go | Rust | kilnc/Go | kilnc/Rust |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| fib(35) | 0.060 | 0.003 | **0.004** | 0.043 | 0.022 | 0.09× | 0.18× |
+| nbody, 5M steps | 0.724 | 0.233 | **0.227** | 0.271 | 0.182 | 0.84× | 1.25× |
+| binary-trees, depth 18 | 2.471 | 1.298 | **1.296** | 1.167 | 1.035 | 1.11× | 1.25× |
+| spectral-norm, n=2000 | 0.361 | 0.182 | **0.180** | 0.180 | 0.180 | 1.00× | 1.00× |
+| fannkuch-redux, n=10 | 0.328 | 0.203 | **0.185** | 0.189 | 0.191 | 0.98× | 0.97× |
+| JSON encode+decode | 0.558 | 0.203 | **0.205** | 0.498 | 0.152 | 0.41× | 1.35× |
+| HashMap ops | 0.310 | 0.213 | **0.207** | 0.304 | 0.289 | 0.68× | 0.72× |
+| channel ping-pong | 0.112 | 0.106 | **0.109** | 0.158 | 3.853 | 0.69× | 0.03× |
+| worker pool | 0.078 | 0.081 | **0.080** | 0.085 | 0.177 | 0.94× | 0.45× |
+
+HTTP req/s: Cranelift 151,098, LLVM 178,532, kilnc 183,122, Go 201,474, Rust 217,184.
+
+Notes:
+- **HashMap**: kilnc was 1.14× slower than the Rust LLVM backend. It lowered
+  `a && b` in a condition to a bool temporary, which LLVM folded into a
+  branchless `or` of two compares in the probe loop; on a 16 MB slot table that
+  made the cache misses costlier. Both compilers now lower `&&`/`||` conditions
+  to jumps (`71b0677`), and kilnc is level with the LLVM backend.
+- kilnc is within 3% of the Rust LLVM backend on every benchmark (fib, at
+  3–4 ms, is too short to compare), and ahead on fannkuch and HashMap.
+
 ## Gap-fix round (Oct 17, 2026; main at `6b07e5e`)
 
 One full `bench/run.py` run, in seconds (lower is better). The VM was noisy
