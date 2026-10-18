@@ -446,6 +446,14 @@ fn packages_modules_and_dependencies() {
         .join("target/debug/app")
         .with_extension(std::env::consts::EXE_EXTENSION)
         .exists());
+    // Editing any module invalidates the cached build.
+    let shapes = app.join("src/geo/shapes.kn");
+    let mut text = std::fs::read_to_string(&shapes).unwrap();
+    text.push_str("// edited\n");
+    std::fs::write(&shapes, text).unwrap();
+    let out = k(&["build"], &app);
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("built") && !s.contains("up to date"), "{s}");
     let out = k(&["test"], &app);
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(
