@@ -34,3 +34,23 @@ bootstrap:
 	@echo "bootstrap OK: stage2 and stage3 are identical"
 
 .PHONY: bootstrap
+
+# make dist          the release tarball for this machine (tools/release.sh)
+# make vsix          the VS Code extension package (editors/vscode/kiln-*.vsix)
+# make nvim-queries  copy the tree-sitter queries into the nvim plugin
+# make editors-test  the VS Code grammar test and the headless nvim test
+dist:
+	tools/release.sh
+
+vsix:
+	cd editors/vscode && npm ci && rm -f kiln-*.vsix && npx -y @vscode/vsce package
+
+nvim-queries:
+	cp editors/tree-sitter-kiln/queries/highlights.scm editors/tree-sitter-kiln/queries/indents.scm \
+		editors/tree-sitter-kiln/queries/folds.scm editors/nvim/queries/kiln/
+
+editors-test:
+	cd editors/vscode && npm test
+	editors/nvim/test/run.sh $(abspath target/release/kiln)
+
+.PHONY: dist vsix nvim-queries editors-test

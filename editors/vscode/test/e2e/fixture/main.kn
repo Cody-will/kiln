@@ -1,0 +1,5 @@
+fun main() {
+	count := 41
+	let x i64 = "not a number"
+	println("{count} {x}")
+}
