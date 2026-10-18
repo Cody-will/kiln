@@ -226,6 +226,10 @@ pub fn emit(
         cx.m.verify()
             .map_err(|x| format!("LLVM verifier: {}", x.to_string()))?;
     }
+    if let Some(p) = std::env::var_os("KILN_LLVM_DUMP_PRE") {
+        cx.m.print_to_file(std::path::Path::new(&p))
+            .map_err(|x| x.to_string())?;
+    }
     cx.m.run_passes("default<O3>", &tm, PassBuilderOptions::create())
         .map_err(|x| format!("LLVM optimization failed: {}", x.to_string()))?;
     if let Some(p) = &settings.dump_ir {
