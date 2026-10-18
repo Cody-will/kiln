@@ -1,0 +1,14 @@
+huffman: 12 www.example.com
+hpack: :method=GET
+hpack: x-k=v
+h2c: 200 h2 hello /hi 0
+h2: 200 h2 hello /hi 0
+post: 200 h2 hello /hi 150000
+big: 200 200000 true
+multi: 200 h2 hello /hi 0
+multi: 200 h2 hello /hi 0
+multi: 200 h2 hello /hi 0
+multi: 200 h2 hello /hi 0
+multi: 200 h2 hello /hi 0
+missing: 404
+http/1.1: 200 h2 hello /hi 0

@@ -1,0 +1,123 @@
+import std::io
+import std::io::{Read, Write}
+import std::net::TcpListener
+import std::net::http
+import std::net::tls
+import std::net::http2
+
+// A test certificate authority and a "localhost" certificate it signed
+// (P-256, valid until 2126). Test use only.
+const CA &str = r"-----BEGIN CERTIFICATE-----
+MIIBhTCCASugAwIBAgIULyCVIvmQ+2CxJFLYWuU9ml7PZw8wCgYIKoZIzj0EAwIw
+FzEVMBMGA1UEAwwMS2lsbiBUZXN0IENBMCAXDTI2MTAxMDIyNTEwMVoYDzIxMjYw
+OTE2MjI1MTAxWjAXMRUwEwYDVQQDDAxLaWxuIFRlc3QgQ0EwWTATBgcqhkjOPQIB
+BggqhkjOPQMBBwNCAATI8t3Kt+ZirtD7sECnafMzxMqvSi3hFHrUU3VSD7so6H7m
+o496SLA8b+GB1a9Q7FbV+ZRuJZ1qA7298UTFZ/2eo1MwUTAdBgNVHQ4EFgQUGSWI
+XE0GBs5ufAekxmgu3YDnLzMwHwYDVR0jBBgwFoAUGSWIXE0GBs5ufAekxmgu3YDn
+LzMwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiAI+5/Tl55VTKY+
++KAUacg9Jjy34HuYABBmRwsO7XGvpQIhAKZVqPZ6H2KgB608aTLgnJyvDZNQRL+N
+BBNxWWza1aKk
+-----END CERTIFICATE-----"
+const CERT &str = r"-----BEGIN CERTIFICATE-----
+MIIBrTCCAVOgAwIBAgIUHQN4MbVrOlqORiOFhTJxbNXjQU4wCgYIKoZIzj0EAwIw
+FzEVMBMGA1UEAwwMS2lsbiBUZXN0IENBMCAXDTI2MTAxMDIyNTEwMVoYDzIxMjYw
+OTE2MjI1MTAxWjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggq
+hkjOPQMBBwNCAASxosX0bhvQt6T5CVB3mapqRQt429y5iOTxfJpxSfDL89PFK+Mi
+ymSaokUIdHdM0km1+bMr/fU7RiPmsBl5ZcDjo34wfDAaBgNVHREEEzARgglsb2Nh
+bGhvc3SHBH8AAAEwCQYDVR0TBAIwADATBgNVHSUEDDAKBggrBgEFBQcDATAdBgNV
+HQ4EFgQUBmJhmBZINO3xIHHY36iBHtBpO3EwHwYDVR0jBBgwFoAUGSWIXE0GBs5u
+fAekxmgu3YDnLzMwCgYIKoZIzj0EAwIDSAAwRQIhAJIeCYPeWquZdRDipdEekbtW
+XEgIyvPQQ5uEqtVSV+6dAiBnfL336BIFAVGKvthBhAxxL8aFP0cWK4CvpXaOe01y
+Nw==
+-----END CERTIFICATE-----"
+const KEY &str = r"-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgxBMjZh7fVtaKBzR9
+FZ/2y9hLgwiz2D/1w/k3MFAyphKhRANCAASxosX0bhvQt6T5CVB3mapqRQt429y5
+iOTxfJpxSfDL89PFK+MiymSaokUIdHdM0km1+bMr/fU7RiPmsBl5ZcDj
+-----END PRIVATE KEY-----"
+
+fun hello(req http::Request) http::Response {
+	return http::Response::text(200, "h2 hello {req.path()} {req.body_text().len()}")
+}
+
+fun big(req http::Request) http::Response {
+	b mut := Vec::new()
+	for i in 0..200000 {
+		b.push((i % 251) as u8)
+	}
+	return http::Response::bytes(200, "application/octet-stream", &b)
+}
+
+fun main() result<void, io::Error> {
+	// HPACK Huffman: the RFC 7541 C.4.1 example.
+	h := http2::huffman_encode(b"www.example.com")
+	println("huffman: {h.len()} {string::from_utf8_lossy(&http2::huffman_decode(&h)?)}")
+	enc := http2::encode_headers(&[(":method".to_string(), "GET".to_string()), ("x-k".to_string(), "v".to_string())])
+	dec mut := http2::Decoder::new()
+	for (k, v) in &dec.decode(&enc)? {
+		println("hpack: {k}={v}")
+	}
+
+	router mut := http::Router::new()
+	router.get("/hi", hello)
+	router.post("/hi", hello)
+	router.get("/big", big)
+	router2 mut := http::Router::new()
+	router2.get("/hi", hello)
+
+	// h2c (prior knowledge).
+	pl := TcpListener::bind("127.0.0.1:0")?
+	pport := pl.port()?
+	spawn move {
+		http2::serve_h2c(pl, router2).unwrap()
+	}
+	c mut := http2::Client::connect_plain("127.0.0.1:{pport}")?
+	r := c.send(http::Request::new("GET", "/hi"))?
+	println("h2c: {r.status} {r.body_text()}")
+	c.close()
+
+	// TLS with ALPN; the same port also serves HTTP/1.1.
+	l := TcpListener::bind("127.0.0.1:0")?
+	port := l.port()?
+	cfg := tls::ServerConfig::from_pem(CERT.as_bytes(), KEY.as_bytes())?
+	spawn move {
+		http2::serve_tls(l, cfg, router).unwrap()
+	}
+	ccfg := tls::ClientConfig::with_roots_pem(CA.as_bytes())?
+	t mut := http2::Client::connect("localhost:{port}", &ccfg)?
+	r1 := t.send(http::Request::new("GET", "/hi"))?
+	println("h2: {r1.status} {r1.body_text()}")
+	// A large request body and a large response exercise flow control.
+	body mut := Vec::new()
+	for _ in 0..150000 {
+		body.push(7u8)
+	}
+	r2 := t.send(http::Request::new("POST", "/hi").with_body(&body))?
+	println("post: {r2.status} {r2.body_text()}")
+	r3 := t.send(http::Request::new("GET", "/big"))?
+	ok mut := r3.body.len() == 200000
+	for i in 0..r3.body.len() {
+		if r3.body[i] != (i % 251) as u8 {
+			ok = false
+		}
+	}
+	println("big: {r3.status} {r3.body.len()} {ok}")
+	// Several streams at once.
+	reqs mut := Vec::new()
+	for i in 0..5 {
+		reqs.push(http::Request::new("GET", "/hi?n={i}"))
+	}
+	rs := t.send_all(reqs)?
+	for x in &rs {
+		println("multi: {x.status} {x.body_text()}")
+	}
+	r4 := t.send(http::Request::new("GET", "/missing"))?
+	println("missing: {r4.status}")
+	t.close()
+
+	// An HTTP/1.1 client still works on the same port.
+	h1 := http::Client::new().with_tls_config(tls::ClientConfig::with_roots_pem(CA.as_bytes())?)
+	r5 := h1.get("https://localhost:{port}/hi")?
+	println("http/1.1: {r5.status} {r5.body_text()}")
+	return Ok()
+}

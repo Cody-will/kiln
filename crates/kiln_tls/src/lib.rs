@@ -234,10 +234,15 @@ pub unsafe extern "C" fn kn_tls_free(c: *mut Conn) {
 }
 
 /// Feeds `n` bytes of ciphertext from the peer; returns how many were
-/// taken, or -2 on a protocol error.
+/// taken, -1 if no more is wanted until plaintext is read, or -2 on a
+/// protocol error.
 #[no_mangle]
 pub unsafe extern "C" fn kn_tls_read_tls(c: *mut Conn, buf: *const u8, n: usize) -> i64 {
     let c = &mut *c;
+    if !c.c.wants_read() {
+        // Decrypted data is waiting; the caller keeps the rest for later.
+        return -1;
+    }
     let mut src = bytes(buf, n);
     let taken = match c.c.read_tls(&mut src) {
         Ok(k) => k,
@@ -285,7 +290,18 @@ pub unsafe extern "C" fn kn_tls_handshaking(c: *const Conn) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn kn_tls_read(c: *mut Conn, buf: *mut u8, cap: usize) -> i64 {
     let c = &mut *c;
-    match c.c.reader().read(bytes_mut(buf, cap)) {
+    let mut r = c.c.reader().read(bytes_mut(buf, cap));
+    if matches!(&r, Err(e) if e.kind() == ErrorKind::WouldBlock) {
+        // Records may be buffered but not yet decrypted (rustls stops
+        // when its plaintext buffer fills); process them before asking
+        // the socket for more.
+        if let Err(e) = c.c.process_new_packets() {
+            c.err = e.to_string();
+            return -2;
+        }
+        r = c.c.reader().read(bytes_mut(buf, cap));
+    }
+    match r {
         Ok(k) => k as i64,
         Err(e) if e.kind() == ErrorKind::WouldBlock => -1,
         Err(e) => {
@@ -327,6 +343,40 @@ pub unsafe extern "C" fn kn_tls_version(c: *const Conn) -> i32 {
         Some(rustls::ProtocolVersion::TLSv1_2) => 12,
         Some(rustls::ProtocolVersion::TLSv1_3) => 13,
         _ => 0,
+    }
+}
+
+/// Parses an ALPN list: protocol names separated by commas (`h2,http/1.1`).
+unsafe fn alpn_list(p: *const u8, n: usize) -> Vec<Vec<u8>> {
+    bytes(p, n)
+        .split(|b| *b == b',')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_vec())
+        .collect()
+}
+
+/// Sets the protocols a client offers with ALPN, most preferred first.
+#[no_mangle]
+pub unsafe extern "C" fn kn_tls_client_config_alpn(c: *mut Client, list: *const u8, n: usize) {
+    let mut cfg = (*(*c).cfg).clone();
+    cfg.alpn_protocols = alpn_list(list, n);
+    (*c).cfg = Arc::new(cfg);
+}
+
+/// Sets the protocols a server accepts with ALPN, most preferred first.
+#[no_mangle]
+pub unsafe extern "C" fn kn_tls_server_config_alpn(s: *mut Server, list: *const u8, n: usize) {
+    let mut cfg = (*(*s).cfg).clone();
+    cfg.alpn_protocols = alpn_list(list, n);
+    (*s).cfg = Arc::new(cfg);
+}
+
+/// The protocol agreed with ALPN, written to `out`; its length (0 if none).
+#[no_mangle]
+pub unsafe extern "C" fn kn_tls_alpn(c: *const Conn, out: *mut u8, cap: usize) -> usize {
+    match (*c).c.alpn_protocol() {
+        Some(p) => put(&String::from_utf8_lossy(p), out, cap),
+        None => 0,
     }
 }
 

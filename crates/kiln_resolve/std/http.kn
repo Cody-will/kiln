@@ -419,6 +419,18 @@ impl Server {
 		}
 	}
 
+	// The server's router (HTTP/2 connections dispatch through it too).
+	pub fun router(&self) &Router {
+		return &self.router
+	}
+
+	// Serves HTTP/1.1 on one TLS connection whose handshake is done (for
+	// `http2::serve_tls`, which hands over connections that did not agree
+	// on "h2").
+	pub fun serve_tls_stream(srv Arc<Server>, stream tls::TlsStream) {
+		serve_conn(Conn::Tls(stream), srv)
+	}
+
 	// Time allowed from the first byte of a request to the end of its headers.
 	pub fun with_read_header_timeout(self, d option<Duration>) Server {
 		s mut := self

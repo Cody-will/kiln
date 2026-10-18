@@ -35,6 +35,21 @@ fun kn_tls_write(c i64, buf &[u8]) i64
 fun kn_tls_close(c i64)
 fun kn_tls_error(c i64, out &mut [u8]) usize
 fun kn_tls_version(c i64) i32
+fun kn_tls_client_config_alpn(c i64, list &[u8])
+fun kn_tls_server_config_alpn(s i64, list &[u8])
+fun kn_tls_alpn(c i64, out &mut [u8]) usize
+
+// `protos` as the shim's ALPN list: names joined by commas.
+fun alpn_text(protos &[&str]) string {
+	o mut := string::new()
+	for (i, p) in protos.iter().enumerate() {
+		if i > 0 {
+			o.push(",")
+		}
+		o.push(p)
+	}
+	return o
+}
 
 fun tls_error(msg &str) io::Error {
 	return io::Error::new(io::ErrorKind::InvalidData, "tls: {msg}")
@@ -94,6 +109,21 @@ impl Drop for ClientConfig {
 	}
 }
 
+impl ClientConfig {
+	// Offers these application protocols with ALPN, most preferred first
+	// (the default is `["http/1.1"]`; HTTP/2 clients use `["h2"]`).
+	pub fun with_alpn(self, protos &[&str]) ClientConfig {
+		self.set_alpn(protos)
+		return self
+	}
+
+	// Sets the protocols offered with ALPN on this config (connections made
+	// with it afterwards use them).
+	pub fun set_alpn(&self, protos &[&str]) {
+		kn_tls_client_config_alpn(self.h, alpn_text(protos).as_bytes())
+	}
+}
+
 // A server's certificate chain and private key.
 pub struct ServerConfig {
 	h i64,
@@ -125,12 +155,30 @@ impl Drop for ServerConfig {
 	}
 }
 
+impl ServerConfig {
+	// Accepts these application protocols with ALPN, most preferred first
+	// (the default is `["http/1.1"]`; see `http2::serve_tls`).
+	pub fun with_alpn(self, protos &[&str]) ServerConfig {
+		self.set_alpn(protos)
+		return self
+	}
+
+	// Sets the protocols accepted with ALPN on this config.
+	pub fun set_alpn(&self, protos &[&str]) {
+		kn_tls_server_config_alpn(self.h, alpn_text(protos).as_bytes())
+	}
+}
+
 // An encrypted stream over a TCP connection. Reads and writes need
 // `&mut self`, since both drive one protocol state machine.
 pub struct TlsStream {
 	tcp TcpStream,
 	c i64,
 	scratch Vec<u8>,
+	// Ciphertext read from the socket but not yet taken by the protocol
+	// (it takes no more while decrypted data waits to be read).
+	inbuf Vec<u8>,
+	in_at usize,
 }
 
 impl TlsStream {
@@ -173,7 +221,7 @@ impl TlsStream {
 	fun wrap(tcp TcpStream, c i64) TlsStream {
 		scratch mut := Vec::new()
 		scratch.resize(18432, 0 as u8)
-		return TlsStream { tcp: tcp, c: c, scratch: scratch }
+		return TlsStream { tcp: tcp, c: c, scratch: scratch, inbuf: Vec::new(), in_at: 0 }
 	}
 
 	// The underlying TCP stream (for timeouts and addresses).
@@ -184,6 +232,18 @@ impl TlsStream {
 	// The negotiated version: 12 for TLS 1.2, 13 for TLS 1.3.
 	pub fun version(&self) i32 {
 		return kn_tls_version(self.c)
+	}
+
+	// The application protocol agreed with ALPN ("h2", "http/1.1"), or ""
+	// if none was.
+	pub fun alpn(&self) string {
+		b mut := Vec::new()
+		b.resize(64, 0 as u8)
+		n := kn_tls_alpn(self.c, b.as_mut_slice())
+		if n < b.len() {
+			b.truncate(n)
+		}
+		return string::from_utf8_lossy(&b)
 	}
 
 	fun last_error(&self) io::Error {
@@ -209,20 +269,34 @@ impl TlsStream {
 
 	// Reads ciphertext from the socket into the protocol. False at EOF.
 	fun fill_tls(&mut self) result<bool, io::Error> {
-		m := self.tcp.read(self.scratch.as_mut_slice())?
-		if m == 0 {
-			return Ok(false)
+		if self.in_at >= self.inbuf.len() {
+			self.inbuf.resize(18432, 0 as u8)
+			m := self.tcp.read(self.inbuf.as_mut_slice())?
+			if m == 0 {
+				self.inbuf.clear()
+				self.in_at = 0
+				return Ok(false)
+			}
+			self.inbuf.truncate(m)
+			self.in_at = 0
 		}
-		at mut := 0
-		while at < m {
-			k := kn_tls_read_tls(self.c, &self.scratch[at..m])
+		while self.in_at < self.inbuf.len() {
+			if kn_tls_wants_write(self.c) != 0 {
+				// The protocol takes no input while its output waits.
+				self.flush_tls()?
+			}
+			k := kn_tls_read_tls(self.c, &self.inbuf[self.in_at..])
+			if k == -1 {
+				// Full: the rest waits until the plaintext is read.
+				break
+			}
 			if k < 0 {
 				err := self.last_error()
 				// Send the alert that explains the failure, if possible.
 				self.flush_tls().unwrap_or(())
 				return Err(err)
 			}
-			at += k as usize
+			self.in_at += k as usize
 		}
 		return Ok(true)
 	}
