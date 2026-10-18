@@ -133,7 +133,7 @@ fun dump_derive(src &str) string {
 }
 
 // Front end plus code generation: the program's LLVM IR, or its errors.
-fun emit_llvm(src &str, dir &str) result<string, string> {
+fun emit_llvm(src &str, dir &str, release bool) result<string, string> {
 	next mut := derive::DERIVE_BASE
 	user := resolve::parse_at(src, 0, &mut next)
 	if user.errors.len() > 0 {
@@ -155,7 +155,7 @@ fun emit_llvm(src &str, dir &str) result<string, string> {
 	if ds.len() > 0 {
 		return Err("borrow error at {ds[0].span.start}..{ds[0].span.end}: {ds[0].message}")
 	}
-	match codegen::compile(c, true) {
+	match codegen::compile(c, !release) {
 		Ok(ir) => return Ok(ir),
 		Err(es) => {
 			o mut := string::new()
@@ -168,7 +168,7 @@ fun emit_llvm(src &str, dir &str) result<string, string> {
 }
 
 // `kilnc --build <file.kn> -o <out>`: writes `<out>.ll` and links with clang.
-fun build(path &str, out &str, dir &str) {
+fun build(path &str, out &str, dir &str, release bool) {
 	src := match fs::read_to_string(path) {
 		Ok(s) => s,
 		Err(e) => {
@@ -176,7 +176,7 @@ fun build(path &str, out &str, dir &str) {
 			os::exit(1)
 		}
 	}
-	ir := match emit_llvm(&src, dir) {
+	ir := match emit_llvm(&src, dir, release) {
 		Ok(ir) => ir,
 		Err(e) => {
 			eprint("{e}")
@@ -199,7 +199,18 @@ fun build(path &str, out &str, dir &str) {
 		Some(c) => c,
 		None => "clang".to_string(),
 	}
-	st := os::Command::new(&cc).arg("-O1").arg("-w").arg(&ll).arg(&rt).arg("-o").arg(out).arg("-lm").arg("-lpthread").arg("-ldl").status()
+	cmd mut := os::Command::new(&cc)
+	cmd = cmd.arg(if release { "-O2" } else { "-O1" }).arg("-w").arg(&ll).arg(&rt)
+	if ir.contains("@kn_tls_") {
+		// The TLS library sits next to the runtime library.
+		dir_end := match rt.find("libkiln_rt.a") {
+			Some(i) => i,
+			None => 0,
+		}
+		cmd = cmd.arg("{&rt[..dir_end]}libkiln_tls.a").arg("-lpthread").arg("-ldl").arg("-lrt").arg("-lutil").arg("-lgcc_s")
+	}
+	cmd = cmd.arg("-o").arg(out).arg("-lm").arg("-lpthread")
+	st := cmd.status()
 	match st {
 		Ok(code) => {
 			if code != 0 {
@@ -226,8 +237,22 @@ fun main() {
 			os::exit(2)
 		}
 		if args[1] == "--build" {
-			out := if args.len() > 4 && args[3] == "-o" { args[4].clone() } else { "a.out".to_string() }
-			build(&args[2], &out, &dir)
+			release mut := false
+			out mut := "a.out".to_string()
+			file mut := string::new()
+			j mut := 2
+			while j < args.len() {
+				if args[j] == "--release" {
+					release = true
+				} else if args[j] == "-o" && j + 1 < args.len() {
+					out = args[j + 1].clone()
+					j += 1
+				} else {
+					file = args[j].clone()
+				}
+				j += 1
+			}
+			build(&file, &out, &dir, release)
 			return
 		}
 		src := match fs::read_to_string(&args[2]) {
@@ -237,7 +262,7 @@ fun main() {
 				os::exit(1)
 			}
 		}
-		match emit_llvm(&src, &dir) {
+		match emit_llvm(&src, &dir, false) {
 			Ok(ir) => print("{ir}"),
 			Err(e) => {
 				eprint("{e}")
