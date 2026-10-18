@@ -6311,6 +6311,49 @@ fun fn_refs(f &str, index &HashMap<string, usize>) Vec<usize> {
 	return o
 }
 
+// The text of shard `k` (functions `g`); see `Module::shards`.
+fun shard_text(k usize, g &Vec<usize>, funcs &Vec<string>, decls &string, files &Vec<string>, names &Vec<string>, params &Vec<string>, refs &Vec<Vec<usize>>, grefs &Vec<usize>, gdefs &string, gdecls &string) string {
+	o mut := HEADER.to_string()
+	o.push(decls)
+	o.push("\n")
+	o.push(if k == 0 { gdefs } else { gdecls })
+	o.push("\n")
+	let mut mine HashSet<usize> = HashSet::new()
+	for i in g {
+		mine.insert(*i)
+	}
+	let mut used HashSet<usize> = HashSet::new()
+	if k == 0 {
+		for r in grefs {
+			if !mine.contains(r) {
+				used.insert(*r)
+			}
+		}
+	}
+	for i in g {
+		for r in &refs[*i] {
+			if !mine.contains(r) {
+				used.insert(*r)
+			}
+		}
+	}
+	for (i, name) in names.iter().enumerate() {
+		if used.contains(&i) && name != "kn_main" {
+			o.push("declare hidden void @{name}{params[i]}\n")
+		}
+	}
+	for i in g {
+		f := &funcs[*i]
+		if f.starts_with("define internal ") {
+			o.push("define hidden ")
+			o.push(&f[16..])
+		} else {
+			o.push(f)
+		}
+	}
+	return number_debug(o, files)
+}
+
 fun symbol_of(line &str) string {
 	b := line.as_bytes()
 	i mut := 0
@@ -6431,47 +6474,40 @@ impl Module {
 		}
 		// Data (vtables, function pointers) lives in the first shard.
 		grefs := fn_refs(&"\n{gdefs}", &index)
+		// Each shard's text is independent: build them in parallel tasks.
+		(tx, rx) := chan::<(usize, string)>(groups.len())
+		gs := &groups
+		ns := &names
+		ps := &params
+		rs := &refs
+		gr := &grefs
+		gd := &gdefs
+		gc := &gdecls
+		fs_ := &self.funcs
+		dc := &self.decls
+		fl := &self.files
+		scope(|s| {
+			for k in 0..groups.len() {
+				t := tx.clone()
+				s.spawn(move || {
+					t <- (k, shard_text(k, &gs[k], fs_, dc, fl, ns, ps, rs, gr, gd, gc))
+				})
+			}
+		})
+		drop(tx)
+		let mut slots Vec<option<string>> = Vec::new()
+		for _ in 0..groups.len() {
+			slots.push(None)
+		}
+		// One message per shard (not `for .. in rx`: that waits for the
+		// channel to close).
+		for _ in 0..groups.len() {
+			(k, text) := <-rx
+			slots[k] = Some(text)
+		}
 		out mut := Vec::new()
-		for (k, g) in groups.iter().enumerate() {
-			o mut := HEADER.to_string()
-			o.push(&self.decls)
-			o.push("\n")
-			o.push(if k == 0 { &gdefs } else { &gdecls })
-			o.push("\n")
-			mine mut := HashSet::new()
-			for i in g {
-				mine.insert(*i)
-			}
-			let mut used HashSet<usize> = HashSet::new()
-			if k == 0 {
-				for r in &grefs {
-					if !mine.contains(r) {
-						used.insert(*r)
-					}
-				}
-			}
-			for i in g {
-				for r in &refs[*i] {
-					if !mine.contains(r) {
-						used.insert(*r)
-					}
-				}
-			}
-			for (i, name) in names.iter().enumerate() {
-				if used.contains(&i) && name != "kn_main" {
-					o.push("declare hidden void @{name}{params[i]}\n")
-				}
-			}
-			for i in g {
-				f := &self.funcs[*i]
-				if f.starts_with("define internal ") {
-					o.push("define hidden ")
-					o.push(&f[16..])
-				} else {
-					o.push(f)
-				}
-			}
-			out.push(number_debug(o, &self.files))
+		for x in slots {
+			out.push(x.unwrap())
 		}
 		return out
 	}

@@ -433,10 +433,12 @@ fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string
 	script mut := "set -e\n{cobjs}"
 	// Release: ThinLTO over parallel shards when lld is installed (cross-shard
 	// inlining is kept), else one module at -O3.
-	thin := release && match os::Command::new(&cc).arg("-print-prog-name=ld.lld").output() {
+	lld := match os::Command::new(&cc).arg("-print-prog-name=ld.lld").output() {
 		Ok(o) => fs::is_file(o.stdout_text().trim()),
 		Err(_) => false,
 	}
+	thin := release && lld
+
 	if release && !thin {
 		ll := "{out}.ll"
 		write_file(&ll, &m.single())
@@ -445,11 +447,16 @@ fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string
 		// Several shards per job, so an edit recompiles little; a shard whose
 		// IR is unchanged since the last build keeps its object.
 		(opt, ext) := if thin { ("-O3 -flto=thin", "bc") } else { ("-O0", "o") }
-		n0 := jobs() * 4
+		// One `nproc` run per build (it forks this large process).
+		nj := jobs()
+		n0 := nj * 4
 		n := if m.funcs.len() / 64 + 1 < n0 { m.funcs.len() / 64 + 1 } else { n0 }
 		objs mut := string::new()
-		running mut := Vec::new()
-		for (k, text) in m.shards(n).iter().enumerate() {
+		cmds mut := string::new()
+		ncmds mut := 0
+		texts := m.shards(n)
+		pass_done(tp, &mut t, "shard-text")
+		for (k, text) in texts.iter().enumerate() {
 			ll := "{out}.{k}.ll"
 			o := "{out}.{k}.{ext}"
 			objs.push(" {sh_quote(&o)}")
@@ -463,19 +470,18 @@ fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string
 			// Remove a stale object first, so a failed build can't reuse it.
 			script.push("rm -f {sh_quote(&o)}\n")
 			write_file(&ll, text)
-			script.push("{sh_quote(&cc)} {opt} -w -c {sh_quote(&ll)} -o {sh_quote(&o)} & p{k}=$!\n")
-			running.push(k)
-			if running.len() >= jobs() {
-				for r in &running {
-					script.push("wait $p{r}\n")
-				}
-				running = Vec::new()
-			}
+			cmds.push("{sh_quote(&cc)} {opt} -w -c {sh_quote(&ll)} -o {sh_quote(&o)}\n")
+			ncmds += 1
 		}
-		for r in &running {
-			script.push("wait $p{r}\n")
+		pass_done(tp, &mut t, "shard-files")
+		// A pool of `nj` compiles (not batches of `nj`, where each batch
+		// waits for its slowest shard). xargs fails if any command does.
+		if ncmds > 0 {
+			cpath := "{out}.cmds"
+			write_file(&cpath, &cmds)
+			script.push("xargs -d '\\n' -P {nj} -I CMD sh -c CMD < {sh_quote(&cpath)}\n")
 		}
-		lto := if thin { " -O3 -flto=thin -fuse-ld=lld -Wl,--thinlto-jobs={jobs()}" } else { string::new() }
+		lto := if thin { " -O3 -flto=thin -fuse-ld=lld -Wl,--thinlto-jobs={nj}".to_string() } else if lld { " -fuse-ld=lld".to_string() } else { string::new() }
 		script.push("{sh_quote(&cc)}{lto}{objs}{libs} -o {sh_quote(out)}\n")
 	}
 	sh_path := "{out}.build.sh"
