@@ -6088,7 +6088,7 @@ fun hex2(v u32) string {
 // on a define line, `!@L<line>.<col>` on its instructions) with numbered
 // metadata, and adds the compile unit and module flags.
 fun number_debug(text string, files &[string]) string {
-	if text.find("!@S").is_none() {
+	if text.find(" !dbg !@S").is_none() {
 		return text
 	}
 	o mut := string::new()
@@ -6121,7 +6121,10 @@ fun number_debug(text string, files &[string]) string {
 				continue
 			}
 		}
-		if let Some(i) = line.find(", !dbg !@L") {
+		// Instructions are indented; global data (which may hold the same
+		// text in a string constant) is not.
+		at := if line.starts_with("  ") { line.find(", !dbg !@L") } else { None }
+		if let Some(i) = at {
 			key := line[i + 10..].to_string()
 			id := match locs.get(&key) {
 				Some(id) => *id,
