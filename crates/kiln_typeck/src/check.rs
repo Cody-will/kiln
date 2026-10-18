@@ -1846,7 +1846,10 @@ impl Body<'_, '_, '_> {
             Some(e) => {
                 let et = self.expr_v(e, value);
                 if value {
-                    self.join(&tt, &et, e.span)
+                    let j = self.join(&tt, &et, e.span);
+                    self.coerce_block_tail(then, &tt, &j);
+                    self.coerce_branch(e, &et, &j);
+                    j
                 } else if matches!(self.shallow(&tt), Ty::Never)
                     && matches!(self.shallow(&et), Ty::Never)
                 {
@@ -1858,19 +1861,52 @@ impl Body<'_, '_, '_> {
         }
     }
 
+    /// Records the coercion of a branch value of type `found` to the
+    /// joined type `to` (`if c { "lit" } else { owned_ref }` turns the
+    /// `&String` into a `&str`) on the expression that produces it.
+    fn coerce_branch(&mut self, e: &Expr, found: &Ty, to: &Ty) {
+        let (f, t) = (self.c.infer.zonk(found), self.c.infer.zonk(to));
+        if f == t || matches!(f, Ty::Never | Ty::Unknown) {
+            return;
+        }
+        match &e.kind {
+            ExprKind::Paren(x) => self.coerce_branch(x, found, to),
+            ExprKind::Block(b) | ExprKind::Unsafe(b) => self.coerce_block_tail(b, found, to),
+            // Their own branches were already coerced to their joined type.
+            ExprKind::If { .. } | ExprKind::IfLet { .. } | ExprKind::Match(..) => {}
+            _ => {
+                self.coerce(found, to, e.span);
+            }
+        }
+    }
+
+    fn coerce_block_tail(&mut self, b: &Block, found: &Ty, to: &Ty) {
+        if let Some(Stmt {
+            kind: StmtKind::Expr(x),
+            ..
+        }) = b.stmts.last()
+        {
+            self.coerce_branch(x, found, to);
+        }
+    }
+
     /// Joins branch types (`!` defers to the other branch).
     fn join(&mut self, a: &Ty, b: &Ty, span: Span) -> Ty {
         match (self.shallow(a), self.shallow(b)) {
             (Ty::Never, _) => b.clone(),
             (_, Ty::Never) => a.clone(),
             _ => {
-                if !self.coerces(b, a) && !self.coerces(a, b) {
-                    let (x, y) = (self.fmt(a), self.fmt(b));
-                    self.error(
-                        format!("branches have incompatible types: expected `{x}`, found `{y}`"),
-                        span,
-                    );
+                if self.coerces(b, a) {
+                    return a.clone();
                 }
+                if self.coerces(a, b) {
+                    return b.clone();
+                }
+                let (x, y) = (self.fmt(a), self.fmt(b));
+                self.error(
+                    format!("branches have incompatible types: expected `{x}`, found `{y}`"),
+                    span,
+                );
                 a.clone()
             }
         }
@@ -3364,6 +3400,7 @@ impl Body<'_, '_, '_> {
         let st = self.expr(scrut);
         let mut result: Option<Ty> = None;
         let mut all_never = !arms.is_empty();
+        let mut arm_tys = Vec::new();
         for arm in arms {
             self.bind_pat(&arm.pat, &st, None);
             if let Some(g) = &arm.guard {
@@ -3375,9 +3412,17 @@ impl Body<'_, '_, '_> {
             all_never &= never;
             if value && !never {
                 result = Some(match result {
-                    None => bt,
+                    None => bt.clone(),
                     Some(r) => self.join(&r, &bt, arm.body.span),
                 });
+                arm_tys.push(bt);
+            } else {
+                arm_tys.push(Ty::Never);
+            }
+        }
+        if let (true, Some(j)) = (value, result.clone()) {
+            for (arm, bt) in arms.iter().zip(&arm_tys) {
+                self.coerce_branch(&arm.body, bt, &j);
             }
         }
         self.check_exhaustive(&st, arms, span);

@@ -2967,7 +2967,10 @@ impl Checker {
 			Some(e) => {
 				et := self.expr_v(e, value)
 				if value {
-					return self.join(&tt, &et, e.span)
+					j := self.join(&tt, &et, e.span)
+					self.coerce_block_tail(then, &tt, &j)
+					self.coerce_branch(e, &et, &j)
+					return j
 				}
 				if self.is_never(&tt) && self.is_never(&et) {
 					return Ty::Never
@@ -2985,12 +2988,50 @@ impl Checker {
 		if self.is_never(b) {
 			return a.clone()
 		}
-		if !self.coerces(b, a) && !self.coerces(a, b) {
-			x := self.fmt(a)
-			y := self.fmt(b)
-			self.error("branches have incompatible types: expected `{x}`, found `{y}`", span)
+		if self.coerces(b, a) {
+			return a.clone()
 		}
+		if self.coerces(a, b) {
+			return b.clone()
+		}
+		x := self.fmt(a)
+		y := self.fmt(b)
+		self.error("branches have incompatible types: expected `{x}`, found `{y}`", span)
 		return a.clone()
+	}
+
+	// Records the coercion of a branch value of type `found` to the joined
+	// type `to` (`if c { "lit" } else { owned_ref }` turns the `&String`
+	// into a `&str`) on the expression that produces it.
+	fun coerce_branch(&mut self, e &Expr, found &Ty, to &Ty) {
+		f := self.infer.zonk(found)
+		t := self.infer.zonk(to)
+		if f == t || self.is_never(&f) {
+			return
+		}
+		if let Ty::Unknown = f {
+			return
+		}
+		match &e.kind {
+			ExprKind::Paren(x) => self.coerce_branch(x, found, to),
+			ExprKind::Block(b) => self.coerce_block_tail(b, found, to),
+			ExprKind::Unsafe(b) => self.coerce_block_tail(b, found, to),
+			// Their own branches were already coerced to their joined type.
+			ExprKind::If { .. } => {},
+			ExprKind::IfLet { .. } => {},
+			ExprKind::Match(_, _) => {},
+			_ => {
+				self.coerce(found, to, e.span)
+			},
+		}
+	}
+
+	fun coerce_block_tail(&mut self, b &Block, found &Ty, to &Ty) {
+		if let Some(st) = b.stmts.last() {
+			if let StmtKind::Expr(x) = &st.kind {
+				self.coerce_branch(x, found, to)
+			}
+		}
 	}
 
 	fun recv_elem(&mut self, ct &Ty, span Span) Ty {
@@ -4762,6 +4803,7 @@ impl Checker {
 		st := self.expr(scrut)
 		result mut := None
 		all_never mut := !arms.is_empty()
+		let mut arm_tys Vec<Ty> = Vec::new()
 		for arm in arms {
 			self.bind_pat(&arm.pat, &st, None)
 			match &arm.guard {
@@ -4776,8 +4818,19 @@ impl Checker {
 			all_never = all_never && never
 			if value && !never {
 				result = match result {
-					None => Some(bt),
+					None => Some(bt.clone()),
 					Some(r) => Some(self.join(&r, &bt, arm.body.span)),
+				}
+				arm_tys.push(bt)
+			} else {
+				arm_tys.push(Ty::Never)
+			}
+		}
+		if value {
+			if let Some(j) = &result {
+				j := j.clone()
+				for i in 0..arms.len() {
+					self.coerce_branch(&arms[i].body, &arm_tys[i], &j)
 				}
 			}
 		}

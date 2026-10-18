@@ -1,0 +1,25 @@
+fun pick(c bool, owned &string) string {
+	s := if c { "lit" } else { owned }
+	return s.to_string()
+}
+
+fun main() {
+	o := "own".to_string()
+	println("[{pick(true, &o)}] [{pick(false, &o)}]")
+	t := if o.len() > 1 { &o } else { "x" }
+	println("[{t}]")
+	w := if o.len() > 5 { &o } else { "x" }
+	println("[{w}] {more(&o, 0)} {more(&o, 1)} {more(&o, 2)}")
+}
+
+fun more(o &string, k i64) string {
+	u := if k == 0 { o } else if k == 1 { "one" } else { "many" }
+	v := match k {
+		0 => "zero",
+		1 => o,
+		_ => {
+			"other"
+		},
+	}
+	return "{u}/{v}"
+}
