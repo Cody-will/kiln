@@ -8,13 +8,17 @@ Run with `python3 bench/compile/run.py --runs 3`. The script lives in bench/comp
 | kiln (LLVM, release) | 0.35 s | 0.33 s | 1.40 s | 1.37 s | 18.51 s | 19.01 s |
 | kilnc (debug) | 0.19 s | 0.18 s | 0.36 s | 0.33 s | 3.09 s | 1.92 s |
 | kilnc (release) | 0.24 s | 0.23 s | 0.94 s | 0.88 s | 11.52 s | 9.80 s |
-| kilnc built by kilnc (debug) | 0.33 s | 0.33 s | 0.61 s | 0.60 s | 5.83 s | 4.29 s |
-| kilnc built by kilnc (release) | 0.39 s | 0.41 s | 1.17 s | 1.12 s | 14.37 s | 12.38 s |
+| kilnc built by kilnc (debug) | 0.21 s | 0.20 s | 0.35 s | 0.34 s | 3.11 s | 1.82 s |
+| kilnc built by kilnc (release) | 0.25 s | 0.25 s | 1.03 s | 0.95 s | 11.77 s | 10.16 s |
 | go build | 0.13 s | 0.13 s | 0.15 s | 0.15 s | 1.22 s | 1.19 s |
 | cargo build (debug) | 0.20 s | 0.20 s | 0.42 s | 0.28 s | 5.71 s | 1.17 s |
 | cargo build (release) | 0.13 s | 0.14 s | 0.79 s | 0.75 s | 8.54 s | 8.49 s |
 
-The kilnc rows use a kilnc built by the Rust LLVM backend (`KILN_COMPILER=rust`), as in earlier tables. The "built by kilnc" rows use the self-built binary (`kiln build --release` in compiler/ now uses kilnc), measured before kilnc's MIR inliner was in that binary; with the inliner a self-built kilnc parses hello's std in 74 ms against 63 ms for the Rust-built one, so most of that gap is closed. Debug builds now carry DWARF line tables, the likely main cause of big debug clean rising from 2.88 s to 3.09 s since the last table.
+The kilnc rows use a kilnc built by the Rust LLVM backend (`KILN_COMPILER=rust`), as in earlier tables. The "built by kilnc" rows use a release kilnc compiled by kilnc itself; it performs like the Rust-built one. (Note: the kilnc that `check.sh` leaves in compiler/target/release is compiled by the Rust Cranelift backend, from the cranelift test suite, and is about 1.9x slower; don't benchmark with it.)
+
+The kiln rows now measure the built-in Rust compiler. In the previous table a stale kilnc sat next to `kiln`, so `kiln build` handed most builds to it (hello 0.25 s). The built-in compiler type-checks all of std on every build, so hello costs 0.33 s with the old std and 0.38 s with the current one, after the http2, websocket and postgres modules were added.
+
+Debug builds now carry DWARF line tables, the likely main cause of big debug clean rising from 2.88 s to 3.09 s since the last table.
 
 The mid program is bench/json. The big program is 50 modules, 50,505 lines.
 
