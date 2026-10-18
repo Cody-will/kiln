@@ -10,7 +10,7 @@ import super::ast::*
 import super::derive
 import super::lower
 import super::mir
-import super::mir::{AggKind, BodyKind, CaptureMode, DEEP_FLOW, DerefKey, LocalKind, Operand, Place, Proj, Rvalue, SpawnKind, Statement, Terminator}
+import super::mir::{AggKind, BodyKind, Callee, CaptureMode, DEEP_FLOW, DerefKey, LocalKind, Operand, Place, Proj, Rvalue, SpawnKind, Statement, Terminator}
 import super::mir::StmtKind as MStmt
 import super::resolve
 import super::resolve::Resolved
@@ -520,7 +520,13 @@ impl<'a> Ck<'a> {
 		n := self.b.locals.len()
 		self.holds = self.empty_holds()
 		for i in 1..self.b.arg_count + 1 {
-			if self.may_hold_cache[i] && self.b.kind == BodyKind::Fn {
+			// A shareable `fun` argument never borrows: a `fun` value that
+			// does can't be passed on (see `check_fun_escapes`).
+			shareable := match &self.b.locals[i].ty {
+				Ty::Fn(_, _, m) => !*m,
+				_ => false,
+			}
+			if self.may_hold_cache[i] && !shareable && self.b.kind == BodyKind::Fn {
 				id := self.loans.len()
 				self.loans.push(Loan { place: None, mutable: false, span: self.b.locals[i].span, param: Some(i - 1), deep: false })
 				sadd(&mut self.holds[i], id)
@@ -1405,6 +1411,8 @@ impl<'a> Ck<'a> {
 			for si in 0..self.b.blocks[bi].stmts.len() {
 				s := self.b.blocks[bi].stmts[si].clone()
 				match &s.kind {
+					MStmt::Assign(_, rv) => self.check_fun_escapes(rv, bi, si, s.span),
+					MStmt::Eval(rv) => self.check_fun_escapes(rv, bi, si, s.span),
 					MStmt::Spawn { kind, operands, captures, .. } => {
 						match kind {
 							SpawnKind::GoCall => {
@@ -1450,6 +1458,70 @@ impl<'a> Ck<'a> {
 					}
 					_ => {},
 				}
+			}
+		}
+	}
+
+	// A shareable `fun` value may be stored and sent to other tasks, so one
+	// that borrows (a closure capturing a reference) must stay in the local
+	// it was made in: it can't be passed to a function or put into a
+	// struct, tuple, array or enum.
+	fun check_fun_escapes(&mut self, rv &Rvalue, bi usize, si usize, span Span) {
+		let mut ops Vec<Operand> = Vec::new()
+		match rv {
+			Rvalue::Call { callee, args, .. } => {
+				match callee {
+					Callee::Value => {
+						for k in 1..args.len() {
+							ops.push(args[k].clone())
+						}
+					},
+					Callee::Intrinsic(n) => {
+						if n == "drop" || n == "clone" {
+							return
+						}
+						ops = args.clone()
+					},
+					_ => ops = args.clone(),
+				}
+			},
+			Rvalue::Aggregate(AggKind::Closure(_), _) => return,
+			Rvalue::Aggregate(_, xs) => ops = xs.clone(),
+			_ => return,
+		}
+		for o in &ops {
+			p := match o.place() {
+				Some(p) => p,
+				None => continue,
+			}
+			if p.proj.len() > 0 {
+				continue
+			}
+			shareable := match &self.b.locals[p.local as usize].ty {
+				Ty::Fn(_, _, m) => !*m,
+				_ => false,
+			}
+			if !shareable {
+				continue
+			}
+			held := self.op_holds_in(&self.holds_before(bi, si), o)
+			// A closure that mutates a capture (a mutable loan) is already
+			// rejected as a `fun` value where it is made.
+			for li in &held {
+				loan := self.loans[*li].clone()
+				if loan.mutable {
+					continue
+				}
+				src := match &loan.place {
+					Some(pl) => "`{describe(self.b, pl)}`",
+					None => "a parameter".to_string(),
+				}
+				d mut := diag("this `fun` value borrows {src}, so it can't be passed on or stored", span).help("`fun` values may be kept or run on other tasks: capture owned values with `move` (clone them first), or take a `fun mut` for a callback that borrows")
+				if loan.place.is_some() {
+					d = d.note("borrowed here", loan.span)
+				}
+				self.report(d)
+				return
 			}
 		}
 	}

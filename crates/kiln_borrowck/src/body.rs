@@ -225,7 +225,11 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
         let n = self.b.locals.len();
         self.holds = vec![BTreeSet::new(); 2 * n];
         for i in 1..=self.b.arg_count {
-            if self.may_hold_cache[i] && self.b.kind == BodyKind::Fn {
+            // A shareable `fun` argument never borrows: a `fun` value that
+            // does can't be passed on (see `check_fun_escapes`), so it may be
+            // stored and sent to tasks freely.
+            let shareable = matches!(self.b.locals[i].ty, Ty::Fn(_, _, false));
+            if self.may_hold_cache[i] && !shareable && self.b.kind == BodyKind::Fn {
                 let id = self.loans.len();
                 self.loans.push(Loan {
                     place: None,
@@ -1152,6 +1156,51 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
         self.typed.implements(t, tr, &bounds)
     }
 
+    /// A shareable `fun` value may be stored and sent to other tasks, so one
+    /// that borrows (a closure capturing a reference) must stay in the
+    /// local it was made in: it can't be passed to a function or put into
+    /// a struct, tuple, array or enum.
+    fn check_fun_escapes(&mut self, rv: &Rvalue, bi: usize, si: usize, span: Span) {
+        let ops: Vec<&Operand> = match rv {
+            Rvalue::Call { callee, args, .. } => match callee {
+                Callee::Value => args.iter().skip(1).collect(),
+                Callee::Intrinsic(n) if n == "drop" || n == "clone" => return,
+                _ => args.iter().collect(),
+            },
+            Rvalue::Aggregate(AggKind::Closure(_), _) => return,
+            Rvalue::Aggregate(_, ops) => ops.iter().collect(),
+            _ => return,
+        };
+        let mut before: Option<Vec<BTreeSet<usize>>> = None;
+        for o in ops {
+            let Some(p) = o.place() else { continue };
+            if !p.proj.is_empty() || !matches!(self.ty_of(p.local), Ty::Fn(_, _, false)) {
+                continue;
+            }
+            let st = before.get_or_insert_with(|| self.holds_before(bi, si));
+            let held = self.op_holds_in(st, o);
+            // A closure that mutates a capture (a mutable loan) is already
+            // rejected as a `fun` value where it is made.
+            if let Some(&li) = held.iter().find(|&&l| !self.loans[l].mutable) {
+                let loan = self.loans[li].clone();
+                let src = match &loan.place {
+                    Some(pl) => format!("`{}`", self.b.describe(pl)),
+                    None => "a parameter".into(),
+                };
+                let mut d = Diagnostic::error(
+                    format!("this `fun` value borrows {src}, so it can't be passed on or stored"),
+                    span,
+                )
+                .with_help("`fun` values may be kept or run on other tasks: capture owned values with `move` (clone them first), or take a `fun mut` for a callback that borrows");
+                if loan.place.is_some() {
+                    d = d.with_note("borrowed here", loan.span);
+                }
+                self.report(d);
+                return;
+            }
+        }
+    }
+
     fn check_spawns(&mut self) {
         for bi in 0..self.b.blocks.len() {
             if !self.reachable[bi] {
@@ -1159,6 +1208,10 @@ impl<'b, 't, 'r, 'a> Ck<'b, 't, 'r, 'a> {
             }
             for si in 0..self.b.blocks[bi].stmts.len() {
                 let s = self.b.blocks[bi].stmts[si].clone();
+                if let StmtKind::Assign(_, rv) | StmtKind::Eval(rv) = &s.kind {
+                    self.check_fun_escapes(rv, bi, si, s.span);
+                    continue;
+                }
                 let StmtKind::Spawn {
                     kind,
                     operands,

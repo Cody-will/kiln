@@ -732,6 +732,19 @@ fn closure_capabilities() {
         "fun each(f fun mut(i32)) {\n g := f\n f(1)\n}\nfun main() {}",
         "use of moved value",
     );
+    // `fun` arguments carry no borrows, so tasks may take them...
+    ok("fun run(f fun(i32) i32) {\n spawn move {\n  x := f(1)\n }\n}\nfun main() {}");
+    // ...because a `fun` value that borrows can't be passed or stored.
+    err1(
+        "fun keep(f fun() i32) {}\nfun main() {\n v := 5\n r := &v\n keep(|| *r)\n}",
+        "this `fun` value borrows `r`, so it can't be passed on or stored",
+    );
+    err1(
+        "struct H {\n f fun() i32,\n}\nfun main() {\n v := 5\n r := &v\n h := H { f: || *r }\n}",
+        "this `fun` value borrows `r`, so it can't be passed on or stored",
+    );
+    // Used where it was made, it may borrow.
+    ok("fun main() {\n v := 5\n r := &v\n g := || *r\n x := g()\n}");
     // A plain `fn` coerces to `fn mut`, not the other way around.
     ok("fun each(f fun mut(i32)) {\n f(1)\n}\nfun show(x i32) {}\nfun main() {\n each(show)\n}");
 }

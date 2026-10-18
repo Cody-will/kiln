@@ -1,0 +1,15 @@
+fun run(f fun(i64) i64, x i64) i64 {
+	(tx, rx) := chan::<i64>(1)
+	spawn move {
+		tx <- f(x)
+	}
+	return <-rx
+}
+
+fun double(v i64) i64 {
+	return v * 2
+}
+
+fun main() {
+	println("{run(double, 21)}")
+}
