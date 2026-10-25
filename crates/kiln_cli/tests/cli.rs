@@ -243,3 +243,31 @@ fn compiler_selection_and_fallback() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `kiln editor install nvim` copies the plugin (from the source tree's
+/// editors/ here) into nvim's package path under XDG_DATA_HOME.
+#[test]
+fn editor_install_nvim_copies_the_plugin() {
+    let data = std::env::temp_dir().join(format!("kiln-editor-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let out = Command::new(env!("CARGO_BIN_EXE_kiln"))
+        .args(["editor", "install", "nvim"])
+        .env("XDG_DATA_HOME", &data)
+        .env("KILN_LIB_DIR", "/nonexistent")
+        .output()
+        .unwrap();
+    let dest = data.join("nvim/site/pack/kiln/start/kiln.nvim");
+    let ok = dest.join("plugin/kiln.lua").is_file()
+        && dest.join("queries/kiln/highlights.scm").is_file()
+        && dest.join("lua/kiln/init.lua").is_file();
+    let _ = std::fs::remove_dir_all(&data);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(ok, "plugin files missing");
+    let (code, _, err) = kiln(&["editor", "install", "emacs"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("usage: kiln editor install"), "{err}");
+}

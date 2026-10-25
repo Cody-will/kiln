@@ -65,9 +65,11 @@
     ]
   },
   "scripts": {
-    "test": "node --check extension.js && node test/grammar.test.js"
+    "test": "node --check extension.js && node test/grammar.test.js",
+    "test:e2e": "node test/e2e/run.js"
   },
   "devDependencies": {
+    "@vscode/test-electron": "^2.5.2",
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.1.0"
   },

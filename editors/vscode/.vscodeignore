@@ -1,0 +1,6 @@
+test/**
+node_modules/vscode-oniguruma/**
+node_modules/vscode-textmate/**
+node_modules/@vscode/test-electron/**
+.vscode-test/**
+*.vsix

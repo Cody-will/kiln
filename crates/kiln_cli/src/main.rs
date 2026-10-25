@@ -18,6 +18,7 @@
 //! Exit status is 0 on success, 1 when the file has errors, and 2 on usage errors
 //! (`kiln run` exits with the program's status).
 
+mod editor;
 mod fmt;
 mod install;
 mod package;
@@ -83,6 +84,8 @@ USAGE:
     (and implies --compiler=rust).
     kiln version [-v]       Show the version (-v: where std and the runtime come from)
     kiln doctor             Check the C toolchain/linker and build a test program
+    kiln editor install <vscode|nvim>
+                            Install editor support (VS Code extension or nvim plugin)
     kiln help               Show this message
     kiln --version          Show the version";
 
@@ -286,6 +289,7 @@ fn main() -> ExitCode {
             install::version(rest.first().is_some_and(|a| a == "-v" || a == "--verbose"))
         }
         [cmd] if cmd == "doctor" => install::doctor(),
+        [cmd, rest @ ..] if cmd == "editor" => editor::run(rest),
         [cmd, dir] if cmd == "__install-lib" => install::install_lib(std::path::Path::new(dir)),
         [cmd] if cmd == "help" || cmd == "--help" || cmd == "-h" => {
             println!("{USAGE}");

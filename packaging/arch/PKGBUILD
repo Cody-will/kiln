@@ -1,0 +1,38 @@
+# Maintainer: Kiln contributors <https://github.com/Cody-will/kiln>
+#
+# Prebuilt Kiln from GitHub Releases (for the AUR as kiln-bin). After
+# tagging a release: bump pkgver, run `updpkgsums`, then
+# `makepkg --printsrcinfo > .SRCINFO`. The release assets are only
+# downloadable once the repository is public.
+pkgname=kiln-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="The Kiln programming language: compiler, standard library, formatter, test runner and language server"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Cody-will/kiln"
+license=('MIT OR Apache-2.0')
+depends=('glibc' 'gcc-libs' 'clang')
+optdepends=('lld: faster linking (used automatically when present)'
+            'neovim: editor support (kiln editor install nvim)'
+            'tree-sitter-cli: build the tree-sitter parser for nvim-treesitter')
+provides=('kiln')
+conflicts=('kiln' 'kiln-git')
+options=('!strip' '!debug')
+source_x86_64=("kiln-x86_64-linux-$pkgver.tar.gz::$url/releases/download/v$pkgver/kiln-x86_64-linux.tar.gz")
+source_aarch64=("kiln-aarch64-linux-$pkgver.tar.gz::$url/releases/download/v$pkgver/kiln-aarch64-linux.tar.gz")
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+	cd "kiln-$pkgver"
+	install -Dm755 bin/kiln "$pkgdir/usr/bin/kiln"
+	install -dm755 "$pkgdir/usr/lib"
+	cp -R lib/kiln "$pkgdir/usr/lib/kiln"
+	chmod 755 "$pkgdir/usr/lib/kiln/kilnc"
+	install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+	install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+	install -Dm644 README.md "$pkgdir/usr/share/doc/kiln/README.md"
+	# nvim picks the plugin up from the system package path.
+	install -dm755 "$pkgdir/usr/share/nvim/site/pack/kiln/start"
+	ln -s /usr/lib/kiln/editors/nvim "$pkgdir/usr/share/nvim/site/pack/kiln/start/kiln.nvim"
+}
