@@ -15,7 +15,50 @@ The same program in three languages, in `bench/<name>/main.{kn,go,rs}`. Run ever
 
 This is a shared cloud VM, so expect some noise (hyperfine reported outliers). Each time is the **median of 5 runs** after 1 warm-up run (`hyperfine -N`). Memory is **peak RSS**, the highest of repeated runs, measured with `maxrss.c` (wait4 rusage from a tiny parent process). All three versions print identical output for every benchmark. The one exception is JSON byte counts, because Go writes `99.0` as `99`; there only the decoded checksum is compared, and it matches.
 
+## Gap close round (Oct 24, 2026; `perf/rust-gaps` at `e929dd2`)
+
+One full `bench/run.py` run (median of 5 after 1 warm-up), seconds (lower is
+better). kilnc is the self-hosted `--release` path.
+
+| Benchmark | Kiln Cranelift | Kiln LLVM | **kilnc** | Go | Rust | kilnc/Go | kilnc/Rust |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| fib(35) | 0.062 | 0.003 | **0.002** | 0.039 | 0.019 | 0.05× | 0.11× |
+| nbody, 5M steps | 0.647 | 0.210 | **0.227** | 0.245 | 0.169 | 0.93× | 1.34× |
+| binary-trees, depth 18 | 2.309 | 1.238 | **1.203** | 1.186 | 0.978 | 1.01× | 1.23× |
+| spectral-norm, n=2000 | 0.362 | 0.176 | **0.177** | 0.186 | 0.182 | 0.95× | 0.97× |
+| fannkuch-redux, n=10 | 0.326 | 0.181 | **0.176** | 0.177 | 0.182 | 0.99× | 0.97× |
+| JSON encode+decode | 0.542 | 0.197 | **0.211** | 0.494 | 0.143 | 0.43× | 1.48× |
+| HashMap ops | 0.296 | 0.203 | **0.206** | 0.253 | 0.249 | 0.81× | 0.83× |
+| channel ping-pong | 0.101 | 0.103 | **0.109** | 0.156 | 3.741 | 0.70× | 0.03× |
+| worker pool | 0.073 | 0.075 | **0.076** | 0.080 | 0.166 | 0.95× | 0.46× |
+
+HTTP req/s: Cranelift 160,394, LLVM 190,836, **kilnc 225,861**, Go 207,956, Rust 217,418.
+
+### Hard limits vs Rust (target was ~1.05–1.10×)
+
+- **HTTP:** met. One-buffer response writes (headers + small body), no
+  per-request `Connection` `to_lower` alloc, reuse of `remote_addr` across
+  keep-alive, one `SO_RCVTIMEO` arm per header block, and `split_once` for
+  the request line put kilnc slightly ahead of Rust/axum on this VM (noise
+  ±5% from the shared load generator).
+- **binary-trees (~1.23×):** niche layout landed (`option<Box<Node>>` is
+  one word, Node 16 bytes vs 32). Remaining gap is recursive `make` /
+  drop-flag noise and allocator traffic; closing the last ~15% needs drop
+  elision or a bump allocator, not more MIR tweaks. Treat as a soft hard
+  limit without those.
+- **nbody (~1.34×):** unchanged hard limit. Rust vectorizes the pair loop
+  with `sqrtpd`/`divpd` on SoA-friendly data; Kiln stays scalar without
+  language-level SoA / `[f64; N]` lowering that keeps values in registers
+  across the inner loop. Documented previously; no silent path to ≤1.10×.
+- **JSON (~1.35–1.50×):** encode is close; decode dominates (~3× encode).
+  Capacity / no-escape fast path / `is_key` length checks landed. What
+  remains is serde_json's hand-tuned scanner versus Kiln's safe byte loop
+  and per-field `string` allocations. A SIMD/`memchr`-style scanner (or
+  buffer reuse across records) would be a language/runtime project, not a
+  small kilnc fix. Treat ~1.4× as the hard limit for the current std JSON.
+
 ## Self-hosted compiler round (Oct 18, 2026; main at `71b0677`)
+
 
 One full `bench/run.py` run, in seconds (lower is better), median of 5 runs. The
 kilnc column is the self-hosted compiler (`kilnc --build --release`, built by the
