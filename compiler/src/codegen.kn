@@ -636,6 +636,9 @@ impl Cg {
 
 	// Payload offset and total layout of an enum.
 	fun enum_layout(&mut self, t &Ty) (u32, Layout) {
+		if let Some(p) = self.niche_payload(t) {
+			return (0, self.layout(&p))
+		}
 		d := match t {
 			Ty::Adt(d, _) => *d,
 			_ => return (0, lay(0, 1)),
@@ -655,6 +658,61 @@ impl Cg {
 		}
 		off := align_up(4, max_align)
 		return (off, lay(align_up(off + max_payload, max_align), max_align))
+	}
+
+	// Thin non-null pointer payload of a niche-optimized `option`, or None.
+	// `option<Box<T>>`, `option<&T>`, and `option<*T>` (thin) store None as
+	// a null pointer and take no discriminant word — Node shrinks from 32 to
+	// 16 bytes, matching Rust.
+	fun niche_payload(&mut self, t &Ty) option<Ty> {
+		if !self.is_lang(t, "option") {
+			return None
+		}
+		match t {
+			Ty::Adt(_, a) => {
+				if a.len() == 0 {
+					return None
+				}
+				p := a[0].clone()
+				ok := match &p {
+					Ty::Ref(_, _) | Ty::Ptr(_, _) => !self.is_fat(&p),
+					Ty::Adt(_, _) => self.is_lang(&p, "Box") && !self.is_fat(&p),
+					_ => false,
+				}
+				if ok {
+					return Some(p)
+				}
+				return None
+			}
+			_ => return None,
+		}
+	}
+
+	// Discriminant as i32 (Some/Ok = 0, None/Err = 1, …). Niche options
+	// derive it from a null check.
+	fun load_disc(&mut self, addr &V, t &Ty) V {
+		if self.niche_payload(t).is_some() {
+			p := self.load("ptr", addr, 0)
+			nz := self.icmp_imm("ne", &p, 0)
+			z := val("0".to_string(), "i32")
+			one := val("1".to_string(), "i32")
+			return self.select(&nz, &z, &one)
+		}
+		return self.load("i32", addr, 0)
+	}
+
+	// Write the discriminant. For niche None, stores a null pointer; for
+	// niche Some, the payload store carries the bit pattern.
+	fun store_disc(&mut self, dest &V, t &Ty, index usize) {
+		if self.niche_payload(t).is_some() {
+			if index != 0 {
+				z := val("null".to_string(), "ptr")
+				self.store(&z, dest, 0)
+			}
+			return
+		}
+		tag := val("{index}", "i32")
+		self.store(&tag, dest, 0)
 	}
 
 	fun variant_named(&self, d u32, name &str) option<u32> {
@@ -2222,7 +2280,7 @@ impl Cg {
 		self.call_fn(user_main, &one(slot.clone()))
 		if is_result {
 			(off, et) := self.field(&ret, "Err.0")
-			tag := self.load("i32", &slot, 0)
+			tag := self.load_disc(&slot, &ret)
 			okb := self.new_block()
 			errb := self.new_block()
 			self.brif(&tag, errb, okb)
@@ -2878,7 +2936,7 @@ impl Cg {
 					}
 					w mut := None
 					if is_enum {
-						tag := self.load("i32", addr, 0)
+						tag := self.load_disc(addr, t)
 						is := self.icmp_imm("eq", &tag, vi as i64)
 						w = Some(self.when_begin(&is))
 					}
@@ -3071,8 +3129,7 @@ impl Cg {
 				}
 			}
 			AggKind::Variant { def, index, fields } => {
-				tag := val("{*index}", "i32")
-				self.store(&tag, dest, 0)
+				self.store_disc(dest, &dt, *index)
 				vname := self.c.r.def(self.c.r.variants(*def)[*index]).name.clone()
 				for (k, n) in fields.iter().enumerate() {
 					(off, _) := self.field(dt, &"{vname}.{n}")
@@ -3525,7 +3582,8 @@ impl Cg {
 			}
 			Op::Discriminant => {
 				a := self.op_addr(&ops[0])
-				tag := self.load("i32", &a, 0)
+				o_t := self.op_ty(&ops[0])
+				tag := self.load_disc(&a, &o_t)
 				t := self.uextend("i64", &tag)
 				self.store(&t, dest, 0)
 			}
@@ -4260,7 +4318,7 @@ impl Cg {
 					prefix := self.vprefix(*v)
 					done mut := 0
 					if is_enum {
-						tag := self.load("i32", p, 0)
+						tag := self.load_disc(p, t)
 						is := self.icmp_imm("eq", &tag, vi as i64)
 						done = self.when_begin(&is)
 					}
@@ -4424,8 +4482,8 @@ impl Cg {
 			}
 			return
 		}
-		ta := self.load("i32", a, 0)
-		tb := self.load("i32", b, 0)
+		ta := self.load_disc(a, t)
+		tb := self.load_disc(b, t)
 		same := self.icmp("eq", &ta, &tb)
 		self.and_res(res, &same)
 		d := self.when_begin(&same)
@@ -4435,7 +4493,7 @@ impl Cg {
 				continue
 			}
 			prefix := self.vprefix(*v)
-			tag := self.load("i32", a, 0)
+			tag := self.load_disc(a, t)
 			is := self.icmp_imm("eq", &tag, vi as i64)
 			d2 := self.when_begin(&is)
 			for (n, ft) in &fields {
@@ -4541,15 +4599,21 @@ impl Cg {
 		variants := self.variants_of(t)
 		is_enum := variants.len() > 0 && variants[0].is_some()
 		if is_enum {
-			tag := self.load("i32", src, 0)
-			self.store(&tag, dst, 0)
+			if self.niche_payload(t).is_some() {
+				// Seed dst as None (null); the Some arm overwrites with a cloned pointer.
+				z := val("null".to_string(), "ptr")
+				self.store(&z, dst, 0)
+			} else {
+				tag := self.load("i32", src, 0)
+				self.store(&tag, dst, 0)
+			}
 		}
 		for (vi, v) in variants.iter().enumerate() {
 			fields := self.c.adt_fields(t, *v)
 			prefix := self.vprefix(*v)
 			d mut := 0
 			if is_enum {
-				tag := self.load("i32", src, 0)
+				tag := self.load_disc(src, t)
 				is := self.icmp_imm("eq", &tag, vi as i64)
 				d = self.when_begin(&is)
 			}
@@ -4803,8 +4867,8 @@ impl Cg {
 			}
 			return
 		}
-		ta := self.load("i32", a, 0)
-		tb := self.load("i32", b, 0)
+		ta := self.load_disc(a, t)
+		tb := self.load_disc(b, t)
 		lt := self.icmp("ult", &ta, &tb)
 		gt := self.icmp("ugt", &ta, &tb)
 		is_option := match t {
@@ -4824,7 +4888,7 @@ impl Cg {
 				continue
 			}
 			prefix := self.vprefix(*v)
-			tag := self.load("i32", a, 0)
+			tag := self.load_disc(a, t)
 			is := self.icmp_imm("eq", &tag, vi as i64)
 			d2 := self.when_begin(&is)
 			for (n, ft) in &fields {
@@ -4945,7 +5009,7 @@ impl Cg {
 			}
 			return
 		}
-		tag := self.load("i32", a, 0)
+		tag := self.load_disc(a, t)
 		t64 := self.uextend("i64", &tag)
 		self.call_rt("kn_hash_u64", &vec2(h.clone(), t64))
 		for (vi, v) in variants.iter().enumerate() {
@@ -5160,7 +5224,7 @@ impl Cg {
 		if !(variants.len() > 0 && variants[0].is_some()) {
 			return self.debug_one(f, a, t, None)
 		}
-		tag := self.load("i32", a, 0)
+		tag := self.load_disc(a, t)
 		for (vi, v) in variants.iter().enumerate() {
 			is := self.icmp_imm("eq", &tag, vi as i64)
 			d := self.when_begin(&is)
