@@ -20,6 +20,11 @@ This runs `code --install-extension` on the bundled `.vsix` (it also tries `codi
 code --install-extension ~/.kiln/lib/kiln/editors/kiln.vsix
 ```
 
+The extension is not on the VS Marketplace / Open VSX yet (publishing needs a
+publisher token). Until then, sideload the `.vsix` as above, or download
+[`kiln-0.1.0.vsix`](https://github.com/Cody-will/kiln/releases/download/v0.1.0/kiln-0.1.0.vsix)
+from the release and run `code --install-extension kiln-0.1.0.vsix`.
+
 Open a `.kn` file: it is highlighted, and the "Kiln Language Server" output channel shows the server starting. Settings:
 
 | Setting | Default | |

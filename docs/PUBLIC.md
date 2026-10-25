@@ -67,5 +67,5 @@ publish marketplace/AUR packages unless you explicitly approve each step.
 - Changing repository visibility
 - Enabling GitHub Pages in repo settings
 - Creating the release tag
-- Publishing VSIX / AUR / Homebrew taps
+- Publishing VSIX / AUR / Homebrew taps (needs `VSCE_PAT` / `OVSX_TOKEN` in the environment or GitHub Actions secrets; until then the `.vsix` is a release asset and `kiln editor install vscode` sideloads it)
 - Tweeting or posting announcements

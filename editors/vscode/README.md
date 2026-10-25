@@ -54,3 +54,11 @@ Reload VS Code and open any `.kn` file.
 3. To check scopes, use **Developer: Inspect Editor Tokens and Scopes**.
 
 `editors/vscode/test/grammar.test.js` runs the grammar against `examples/*.kn` with `vscode-textmate` to catch regressions. Run it with `npm test`.
+
+## Prebuilt `.vsix`
+
+Until the extension is on the Marketplace, download
+[kiln-0.1.0.vsix](https://github.com/Cody-will/kiln/releases/download/v0.1.0/kiln-0.1.0.vsix)
+and run `code --install-extension kiln-0.1.0.vsix`, or use `kiln editor install vscode`
+after installing Kiln.
+
