@@ -21,8 +21,18 @@ jobs:
         with:
           node-version: 20
       - name: clang and lld
-        run: sudo apt-get update && sudo apt-get install -y clang lld
+        # Kiln emits opaque-pointer LLVM IR (`ptr`); needs clang 15+.
+        # Ubuntu 22.04's default `clang` package is still 14.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-15 lld-15
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-15 150
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-15 150
+          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-15 150 || true
+          clang --version
       - name: build the tarball
+        env:
+          KILN_CLANG: clang-15
         run: tools/release.sh
       - uses: actions/upload-artifact@v4
         with:
