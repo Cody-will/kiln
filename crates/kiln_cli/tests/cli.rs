@@ -207,9 +207,10 @@ fn compiler_selection_and_fallback() {
     std::fs::create_dir_all(&dir).unwrap();
     let out = dir.join("hello");
     let out_s = out.to_str().unwrap();
-    // The built-in compiler, explicitly.
+    // Deprecated built-in compiler, explicitly.
     let (code, _, err) = kiln(&["build", "--compiler=rust", "examples/hello.kn", "-o", out_s]);
     assert_eq!(code, 0, "{err}");
+    assert!(err.contains("deprecated"), "{err}");
     // `--compiler=kilnc` without kilnc installed warns and falls back.
     let o = Command::new(env!("CARGO_BIN_EXE_kiln"))
         .args([
@@ -225,7 +226,7 @@ fn compiler_selection_and_fallback() {
         .unwrap();
     assert!(o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("kilnc is not installed"));
-    // A kilnc that fails: kiln rebuilds with the built-in compiler.
+    // A kilnc that fails: no silent Rust fallback unless opted in.
     let fake = dir.join("fake-kilnc");
     std::fs::write(&fake, "#!/bin/sh\necho broken >&2\nexit 1\n").unwrap();
     #[cfg(unix)]
@@ -235,10 +236,24 @@ fn compiler_selection_and_fallback() {
         let o = Command::new(env!("CARGO_BIN_EXE_kiln"))
             .args(["build", "examples/hello.kn", "-o", out_s])
             .env("KILNC", &fake)
+            .env_remove("KILN_ALLOW_RUST_FALLBACK")
             .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
             .output()
             .unwrap();
-        assert!(o.status.success());
+        assert!(
+            !o.status.success(),
+            "expected kilnc failure without fallback"
+        );
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(err.contains("kilnc failed"), "{err}");
+        let o = Command::new(env!("CARGO_BIN_EXE_kiln"))
+            .args(["build", "examples/hello.kn", "-o", out_s])
+            .env("KILNC", &fake)
+            .env("KILN_ALLOW_RUST_FALLBACK", "1")
+            .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
         assert!(String::from_utf8_lossy(&o.stderr).contains("note: kilnc failed"));
     }
     let _ = std::fs::remove_dir_all(&dir);

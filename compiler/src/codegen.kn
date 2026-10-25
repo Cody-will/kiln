@@ -5623,9 +5623,7 @@ impl Cg {
 		s := self.load(&ct, &r, soff as i64)
 		e := self.load(&ct, &r, eoff as i64)
 		incl := self.load("i8", &r, ioff as i64)
-		none := val("1".to_string(), "i32")
-		self.store(&none, dest, 0)
-		some := val("0".to_string(), "i32")
+		self.store_disc(dest, dt, 1)
 		excl := self.icmp_imm("eq", &incl, 0)
 		below := self.icmp("{sg}lt", &s, &e)
 		go_excl := self.band(&excl, &below)
@@ -5639,7 +5637,7 @@ impl Cg {
 			s1 := self.iadd_imm(&s, 1)
 			self.store(&s1, &r, soff as i64)
 		}
-		self.store(&some, dest, 0)
+		self.store_disc(dest, dt, 0)
 		self.when_end(d)
 		is_incl := self.icmp_imm("eq", &incl, 1)
 		within := self.icmp("{sg}le", &s, &e)
@@ -5661,7 +5659,7 @@ impl Cg {
 			ns := self.select(&last, &s, &s1)
 			self.store(&ns, &r, soff as i64)
 		}
-		self.store(&some, dest, 0)
+		self.store_disc(dest, dt, 0)
 		self.when_end(d2)
 	}
 
@@ -5993,8 +5991,7 @@ impl Cg {
 			(_, size, _) := self.vec_elem(&vt)
 			(poff, _) := self.field(dt, "Some.0")
 			len := self.load("i64", &v, 16)
-			none := val("1".to_string(), "i32")
-			self.store(&none, dest, 0)
+			self.store_disc(dest, dt, 1)
 			has := self.icmp_imm("ne", &len, 0)
 			d := self.when_begin(&has)
 			len1 := self.iadd_imm(&len, -1)
@@ -6004,8 +6001,7 @@ impl Cg {
 			src := self.iadd(&data, &off)
 			dd := self.iadd_imm(dest, poff as i64)
 			self.copy(&dd, &src, size)
-			some := val("0".to_string(), "i32")
-			self.store(&some, dest, 0)
+			self.store_disc(dest, dt, 0)
 			self.when_end(d)
 			return
 		}
@@ -6023,16 +6019,14 @@ impl Cg {
 				_ => self.iadd_imm(&len, -1),
 			}
 			(poff, _) := self.field(dt, "Some.0")
-			none := val("1".to_string(), "i32")
-			self.store(&none, dest, 0)
+			self.store_disc(dest, dt, 1)
 			ok := self.icmp("ult", &i, &len)
 			d := self.when_begin(&ok)
 			data := self.load("i64", &v, 0)
 			off := self.imul_imm(&i, size as i64)
 			p := self.iadd(&data, &off)
 			self.store(&p, dest, poff as i64)
-			some := val("0".to_string(), "i32")
-			self.store(&some, dest, 0)
+			self.store_disc(dest, dt, 0)
 			self.when_end(d)
 			return
 		}
