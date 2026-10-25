@@ -1,10 +1,15 @@
-# Self-hosting plan
+# Self-hosting
 
-The compiler is written in Rust. The plan is to rewrite it in Kiln one
-stage at a time, front to back. Each stage is checked differentially
-against the Rust implementation of the same stage before anything
-depends on it. The Rust compiler stays the reference (and the bootstrap
-compiler) until the Kiln one can build itself.
+**kilnc** (the Kiln package in `compiler/`) is the daily-driver code
+generator for `kiln build` / `kiln run`. The Rust crates under `crates/`
+remain as the differential-test reference and as the bootstrap path that
+builds stage 1 of kilnc; they are not the default codegen anymore.
+
+`--compiler=rust` / `KILN_COMPILER=rust` is deprecated. Use it only for
+bootstrap stage 1, differential tests, or packages that need native
+`[link]` / `--backend=` (not yet supported by kilnc). Silent fallback
+from a kilnc failure to the Rust codegen is off unless
+`KILN_ALLOW_RUST_FALLBACK=1`.
 
 ## Layout
 
@@ -172,8 +177,9 @@ and `make`; it takes about three minutes.
 | 6. Codegen | `kiln_codegen` | `compiler/src/codegen.kn` | ✅ ported (LLVM IR text + clang); all 83 `tests/run` programs give the expected output |
 | 7. Bootstrap | | `make bootstrap` | ✅ `kilnc` builds `kilnc`; stage 2 and stage 3 are byte-identical |
 
-The Rust compiler is still the reference and builds stage 1. Nothing in
-the Rust build depends on `compiler/`.
+The Rust crates are the differential-test reference and still build
+bootstrap stage 1. Nothing in the Rust build depends on `compiler/` as a
+Cargo dependency; kilnc is a separate package.
 
 ## Gaps the parser port hit
 
@@ -228,12 +234,57 @@ Debug builds split the IR into hidden-linkage shards, compiled with `clang -O0` 
 ## Release code generation
 With `--release`, kilnc emits LLVM attributes for Kiln's guarantees (codegen.kn `end_release_fn`). Every function `f` gets an `f.v` body that takes small scalar arguments, thin references and `(ptr, len)` fat references by value, and returns 1/2/4/8/16-byte results by value. `f` itself keeps the uniform slot signature (function pointers and vtables still use it) as an always-inlined wrapper. See bench/RESULTS.md for the numbers.
 
-## kilnc as the default compiler
-`install.sh` builds kilnc with the Rust compiler (stage 1), rebuilds it with itself (stage 2), and installs stage 2 as `<prefix>/lib/kiln/kilnc`. `--no-kilnc` skips this; so does a missing `clang`, which kilnc needs. `kiln build` and `kiln run` then compile with kilnc. kiln writes kilnc's inputs (std sources and runtime libraries) once to `$TMPDIR/kiln-<version>-<hash>`. Intermediate files go to `target/<profile>/kilnc/` (packages) or `$TMPDIR/kiln-work-<hash>` (single files), so rebuilds are incremental.
+## kilnc as the daily driver
+`install.sh` builds kilnc with the Rust compiler (stage 1), rebuilds it with itself (stage 2), and installs stage 2 as `<prefix>/lib/kiln/kilnc`. `--no-kilnc` skips this; so does a missing `clang`, which kilnc needs. `kiln build` and `kiln run` then compile with kilnc only. kiln writes kilnc's inputs (std sources and runtime libraries) once to `$TMPDIR/kiln-<version>-<hash>`. Intermediate files go to `target/<profile>/kilnc/` (packages) or `$TMPDIR/kiln-work-<hash>` (single files), so rebuilds are incremental.
 
-Programs use the built-in compiler when:
-- `--compiler=rust` or `KILN_COMPILER=rust` is set, or `--backend=` is given;
+The built-in Rust codegen is used only when:
+- `--compiler=rust` or `KILN_COMPILER=rust` is set (deprecated; prints a warning), or `--backend=` is given;
 - the package has native `[link]` settings;
-- kilnc reports an error. kiln rebuilds with the built-in compiler, which has richer diagnostics, and prints a note if that build succeeds. `KILN_DEBUG_KILNC=1` shows kilnc's output.
+- kilnc fails **and** `KILN_ALLOW_RUST_FALLBACK=1` is set. Otherwise the build errors. `KILN_DEBUG_KILNC=1` shows kilnc's output.
 
-kiln looks for kilnc in `$KILNC`, then next to the `kiln` executable, then in `<prefix>/lib/kiln/kilnc`. `kiln doctor` shows which one it found, and `--compiler=kilnc` asks for it explicitly. `kiln test`, `kiln check` and the LSP still use the built-in front end.
+kiln looks for kilnc in `$KILNC`, then next to the `kiln` executable, then in `<prefix>/lib/kiln/kilnc`. `kiln doctor` shows which one it found, and `--compiler=kilnc` asks for it explicitly. `kiln test`, `kiln check` and the LSP still use the Rust front end (resolution / typeck / borrowck); retiring those is a later step. The Rust crates stay in-tree for differential tests (`*_diff.rs`) until that lands — see "Retiring the Rust compiler" below.
+
+## Bootstrap seed (no Rust as the daily path)
+
+To rebuild kilnc without treating the Rust sources as the default compiler:
+
+1. **Release seed (preferred).** Each GitHub release tarball ships a
+   `kilnc` binary for that platform. Install it as
+   `<prefix>/lib/kiln/kilnc` (or set `KILNC`), then rebuild from source:
+   ```sh
+   KILN_RT=$(kiln runtime --write /tmp/kiln-rt && echo /tmp/kiln-rt/libkiln_rt.a) \
+     KILNC_RESOLVE_DIR=crates/kiln_resolve \
+     kilnc --build --release --c-source compiler/native/arena.c \
+       compiler/src/main.kn -o kilnc-new
+   ```
+   Replace the seed with `kilnc-new` and repeat once (stage 3) if you want
+   a fixed point.
+
+2. **`make bootstrap` (still uses Rust for stage 1).** Builds stage 1 with
+   the Rust `kiln`, then stage 2/3 with kilnc. Use this when you have a
+   full Rust toolchain and no release seed yet.
+
+3. **Stage-1 IR + clang (optional).** `kilnc --build` can leave LLVM IR
+   shards under the work directory; archiving those IR files plus
+   `libkiln_rt.a` and compiling with `clang`/`lld` is enough to recreate
+   a seed without re-running the Rust compiler. Document the exact shard
+   set in release notes when cutting a seed-only artifact.
+
+Rebuilding the seed for a release: `tools/release.sh` (or `make dist`)
+runs the stage1→stage2 bootstrap and packs `kilnc` into the tarball.
+
+## Retiring the Rust compiler
+
+| Step | Status |
+|---|---|
+| kilnc default for `build`/`run` | ✅ |
+| `--compiler=rust` deprecated warning | ✅ |
+| No silent Rust fallback | ✅ (`KILN_ALLOW_RUST_FALLBACK=1` to opt in) |
+| Pinned seed in releases | ✅ (tarball `kilnc`; see above) |
+| Differential tests still on Rust crates | ✅ keep `crates/kiln_*` until fronts move |
+| `kiln check` / LSP / `kiln test` on kilnc | ⬜ later |
+| Move Rust crates under `bootstrap/reference/` | ⬜ after check/LSP no longer need them |
+| Delete Rust codegen crates | ⬜ last |
+
+Do **not** delete the Rust crates while `*_diff.rs` and stage-1 bootstrap
+still need them.

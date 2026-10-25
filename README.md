@@ -7,7 +7,7 @@ Kiln is a compiled systems and backend programming language with **syntax as sim
 - Traits and generics.
 - Goroutine-style tasks with `spawn`, channels using `<-`, and `select`.
 
-> **Status:** early development. The compiler type-checks and borrow-checks programs (`kiln check`) and compiles them to native executables with a Cranelift backend (`kiln build`, `kiln run`) and an optional LLVM backend for `--release` (`--backend=llvm`, see [docs/LLVM.md](docs/LLVM.md)). The default code generator is **kilnc**, the self-hosted compiler, which `install.sh` bootstraps; `--compiler=rust` selects the built-in one (see [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)): functions, structs, enums and `match`, generics, traits including `dyn`, closures, `result` and `?`, `defer`, `Drop`, fixed-size arrays, and Go-style concurrency (`spawn` tasks on an M:N work-stealing scheduler, channels, `select`, scoped tasks) all work. The standard library is next. There are VS Code and Tree-sitter grammars. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status:** pre-1.0, self-hosted. **`kilnc`** (bootstrapped by `install.sh`) is the daily-driver code generator for `kiln build` / `kiln run`. Language: ownership and borrowing, `result`/`?`, traits and generics (including `dyn`), closures, `defer`/`Drop`, fixed-size arrays, and Go-style concurrency (`spawn`, channels, `select`). Std: `io`, `fs`, `net`/`http`/`http2`/`tls`, `encoding::json`, collections, sync, time, and more — see the [website](website/). Editors: VS Code and Neovim (`kiln editor install …`). `--compiler=rust` is deprecated (bootstrap / differential tests only). See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md).
 
 ```kiln
 fun main() result<void, io::Error> {
@@ -31,6 +31,9 @@ fun main() result<void, io::Error> {
 - [docs/ROADMAP.md](docs/ROADMAP.md): milestones and current status.
 - [website/](website/): the Kiln website and step-by-step tutorial. Build it with `mdbook build website`.
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to build, test, and contribute.
+- [SECURITY.md](SECURITY.md): how to report vulnerabilities.
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md): community standards.
+- [docs/PUBLIC.md](docs/PUBLIC.md): checklist for making the repo public (manual steps).
 
 ## Install
 
@@ -44,6 +47,25 @@ kiln new hello && cd hello && kiln run
 The installer downloads a prebuilt release into `~/.kiln`, adds it to `PATH`, and runs `kiln doctor`. From a clone, `./install.sh` (or `make install`) builds from source instead. See [website/src/install.md](website/src/install.md) for options, the Arch package, and building from source. Note: release downloads need the repository to be public.
 
 Editor support: `kiln editor install vscode` or `kiln editor install nvim` (see [website/src/editors.md](website/src/editors.md)).
+
+## Hello world
+
+```sh
+kiln new hello && cd hello
+kiln run
+```
+
+Or a single file:
+
+```kiln
+fun main() {
+	println("hello, kiln")
+}
+```
+
+```sh
+kiln run hello.kn
+```
 
 ## Building
 

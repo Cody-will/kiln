@@ -78,7 +78,7 @@ USAGE:
     Packages with dependencies get a kiln.lock (versions and checksums of
     the dependencies); --locked fails instead of updating it.
     Builds use kilnc, the self-hosted compiler, when it is installed (see
-    kiln doctor); --compiler=rust or KILN_COMPILER=rust selects the built-in
+    kiln doctor). --compiler=rust / KILN_COMPILER=rust is deprecated and selects
     compiler. That one's release builds use LLVM when this kiln includes it
     (built with --features llvm), Cranelift otherwise; --backend= overrides
     (and implies --compiler=rust).
@@ -378,16 +378,21 @@ fn build_to(
         match selfhost::build(&kilnc, &p.root, out, &work, opts.release) {
             Ok(()) => return Ok(()),
             Err(msg) => {
-                // Rebuild with the built-in compiler: its diagnostics are
-                // richer, and a kilnc bug should not block the build.
                 if std::env::var_os("KILN_DEBUG_KILNC").is_some() {
                     eprint!("{msg}");
                 }
-                let r = build_to_rust(p, out, opts, &native);
-                if r.is_ok() {
-                    eprintln!("note: kilnc failed on this program; built with the built-in compiler (set KILN_DEBUG_KILNC=1 for kilnc's output)");
+                // Rust fallback is opt-in: kilnc is the daily driver.
+                if std::env::var_os("KILN_ALLOW_RUST_FALLBACK").is_some() {
+                    let r = build_to_rust(p, out, opts, &native);
+                    if r.is_ok() {
+                        eprintln!("note: kilnc failed; built with the deprecated built-in compiler (KILN_ALLOW_RUST_FALLBACK=1; set KILN_DEBUG_KILNC=1 for kilnc's output)");
+                    }
+                    return r;
                 }
-                return r;
+                eprint!("{msg}");
+                return Err(
+                    "kilnc failed (set KILN_DEBUG_KILNC=1 for details; KILN_ALLOW_RUST_FALLBACK=1 to try the deprecated built-in compiler)".into(),
+                );
             }
         }
     }

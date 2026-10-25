@@ -187,14 +187,15 @@ install_source() {
 	mv "$prefix/bin/kiln.new" "$prefix/bin/kiln"
 	echo "Installed $prefix/bin/kiln with std and runtime in $prefix/lib/kiln."
 
-	# kilnc: built by the Rust compiler (stage 1), then by itself (stage 2, what
-	# gets installed); `kiln build` uses it unless --compiler=rust is given.
+	# kilnc: stage 1 via the deprecated Rust codegen, stage 2 by itself (installed).
+	# `kiln build` uses kilnc by default; --compiler=rust is deprecated.
 	clang="${KILN_CLANG:-clang}"
 	if [ "$kilnc" != no ]; then
 		if command -v "$clang" >/dev/null 2>&1; then
 			echo "Bootstrapping kilnc (the self-hosted compiler)..."
 			boot="$src/target/install-kilnc"
 			rm -rf "$boot" && mkdir -p "$boot"
+			# Stage 1 still needs the Rust codegen (deprecated for normal builds).
 			(cd "$src/compiler" && KILN_COMPILER=rust "$prefix/bin/kiln" build --release -o "$boot/stage1" >/dev/null)
 			KILN_RT="$prefix/lib/kiln/runtime/libkiln_rt.a" KILNC_RESOLVE_DIR="$src/crates/kiln_resolve" \
 				"$boot/stage1" --build --release --c-source "$src/compiler/native/arena.c" "$src/compiler/src/main.kn" -o "$boot/stage2"

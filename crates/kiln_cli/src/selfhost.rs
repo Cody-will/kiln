@@ -1,11 +1,14 @@
 //! Building with kilnc, the self-hosted compiler (compiler/ in the source
-//! tree). It is the default code generator when it is installed:
+//! tree). It is the **only** daily-driver code generator when installed:
 //! `<prefix>/lib/kiln/kilnc`, `kilnc` next to this executable, or `$KILNC`.
-//! `--compiler=rust` (or `KILN_COMPILER=rust`) uses the compiler built into
-//! `kiln` instead; so does `--backend=...`, and so do packages with native
-//! `[link]` settings, which kilnc does not support yet. When kilnc reports
-//! an error, `kiln` rebuilds with the built-in compiler, whose diagnostics
-//! are richer (and which keeps a kilnc bug from blocking a build).
+//!
+//! `--compiler=rust` / `KILN_COMPILER=rust` is **deprecated**: it selects the
+//! Rust-built-in codegen for differential tests and bootstrap stage 1. Prefer
+//! kilnc. `--backend=` and packages with native `[link]` still force the
+//! built-in path (kilnc does not support those yet).
+//!
+//! When kilnc fails, `kiln` no longer silently falls back unless
+//! `KILN_ALLOW_RUST_FALLBACK=1` is set (temporary escape hatch).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -17,7 +20,12 @@ static CHOICE: AtomicU8 = AtomicU8::new(0);
 pub fn flag(a: &str) -> bool {
     match a {
         "--compiler=kilnc" => CHOICE.store(1, Ordering::Relaxed),
-        "--compiler=rust" => CHOICE.store(2, Ordering::Relaxed),
+        "--compiler=rust" => {
+            eprintln!(
+                "warning: --compiler=rust is deprecated; kilnc is the default code generator (see docs/SELF_HOSTING.md)"
+            );
+            CHOICE.store(2, Ordering::Relaxed);
+        }
         _ => return false,
     }
     true
@@ -45,7 +53,12 @@ pub fn find() -> Option<PathBuf> {
 pub fn wanted(explicit_backend: bool, has_native: bool) -> Option<PathBuf> {
     let choice = match CHOICE.load(Ordering::Relaxed) {
         0 => match std::env::var("KILN_COMPILER").as_deref() {
-            Ok("rust") => 2,
+            Ok("rust") => {
+                eprintln!(
+                    "warning: KILN_COMPILER=rust is deprecated; kilnc is the default code generator (see docs/SELF_HOSTING.md)"
+                );
+                2
+            }
             Ok("kilnc") => 1,
             _ => 0,
         },

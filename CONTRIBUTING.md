@@ -1,6 +1,6 @@
 # Contributing to Kiln
 
-Thanks for your interest! Kiln is in early development, so the design is still moving. Read [docs/SPEC.md](docs/SPEC.md) before proposing language changes.
+Thanks for your interest! Kiln is in early development, so the design is still moving. Read [docs/SPEC.md](docs/SPEC.md) before proposing language changes. By participating, you agree to the [Code of Conduct](CODE_OF_CONDUCT.md). Security reports go through [SECURITY.md](SECURITY.md), not public issues.
 
 ## Setup
 
