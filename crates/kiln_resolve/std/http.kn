@@ -617,12 +617,14 @@ fun serve_conn(conn Conn, srv Arc<Server>) {
 				return
 			},
 		}
-		req.remote_addr = remote.clone()
-		conn_hdr := match req.header("Connection") {
-			Some(v) => v.to_lower(),
-			None => string::new(),
+		// Reuse the remote_addr buffer across keep-alive requests.
+		req.remote_addr.clear()
+		req.remote_addr.push(&remote)
+		close := match req.header("Connection") {
+			Some(v) => v.eq_ignore_ascii_case("close"),
+			None => false,
 		}
-		keep := !req.target.is_empty() && conn_hdr != "close"
+		keep := !req.target.is_empty() && !close
 		head := req.method == "HEAD"
 		resp := srv.router.route(req)
 		d := Deadline::after(srv.write_timeout)
@@ -666,14 +668,21 @@ fun read_request(r &mut BufReader<Conn>, wait Deadline, lim &Limits) result<opti
 			None => return Ok(None),
 		}
 	}
-	parts := line.split(" ")
-	if parts.len() != 3 || !parts[2].starts_with("HTTP/1.") {
+	(method, rest) := match line.split_once(" ") {
+		Some(p) => p,
+		None => return Err(invalid("malformed request line")),
+	}
+	(target, ver) := match rest.split_once(" ") {
+		Some(p) => p,
+		None => return Err(invalid("malformed request line")),
+	}
+	if !ver.starts_with("HTTP/1.") {
 		return Err(invalid("malformed request line"))
 	}
-	req mut := Request::new(parts[0], parts[1])
+	req mut := Request::new(method, target)
 	req.headers = read_headers(r, dl)?
 	// HTTP/1.0 connections close after one request unless asked otherwise.
-	if parts[2] == "HTTP/1.0" && !req.headers.has("Connection") {
+	if ver == "HTTP/1.0" && !req.headers.has("Connection") {
 		req.headers.set("Connection", "close")
 	}
 	req.body = read_body(r, &req.headers, true, body_dl)?
@@ -687,8 +696,10 @@ fun invalid(msg &str) io::Error {
 // Reads header lines up to the blank line.
 fun read_headers(r &mut BufReader<Conn>, dl Deadline) result<Headers, io::Error> {
 	h mut := Headers::new()
+	// One SO_RCVTIMEO arm for the whole header block; the socket timeout
+	// still bounds each read without a setsockopt per line.
+	dl.arm(r.get_ref().tcp(), false)?
 	loop {
-		dl.arm(r.get_ref().tcp(), false)?
 		line := match r.next_line()? {
 			Some(l) => l,
 			None => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "connection closed in headers")),
@@ -795,18 +806,39 @@ fun fill(r &mut BufReader<Conn>, buf &mut [u8], dl Deadline) result<void, io::Er
 
 // Writes a response with Content-Length and Connection headers.
 fun write_response(conn &mut Conn, resp &Response, keep bool, head bool) result<void, io::Error> {
-	out mut := string::new()
-	out.push("HTTP/1.1 {resp.status} {status_text(resp.status)}\r\n")
+	// One buffer for headers (+ body when small) so a keep-alive reply is
+	// a single write(2) instead of two.
+	body_len := resp.body.len()
+	cap := 160 + if !head && body_len <= 4096 { body_len } else { 0 }
+	out mut := Vec::with_capacity(cap)
+	out.extend_from_slice("HTTP/1.1 ".as_bytes())
+	let mut num string = string::with_capacity(12)
+	std::strconv::append_int(&mut num, resp.status as i64)
+	out.extend_from_slice(num.as_bytes())
+	out.extend_from_slice(" ".as_bytes())
+	out.extend_from_slice(status_text(resp.status).as_bytes())
+	out.extend_from_slice("\r\n".as_bytes())
 	for (k, v) in resp.headers.entries() {
 		if k.eq_ignore_ascii_case("Content-Length") || k.eq_ignore_ascii_case("Connection") {
 			continue
 		}
-		out.push("{k}: {v}\r\n")
+		out.extend_from_slice(k.as_bytes())
+		out.extend_from_slice(": ".as_bytes())
+		out.extend_from_slice(v.as_bytes())
+		out.extend_from_slice("\r\n".as_bytes())
 	}
-	out.push("Content-Length: {resp.body.len()}\r\n")
-	out.push(if keep { "Connection: keep-alive\r\n" } else { "Connection: close\r\n" })
-	out.push("\r\n")
-	conn.write_all(out.as_bytes())?
+	out.extend_from_slice("Content-Length: ".as_bytes())
+	num.clear()
+	std::strconv::append_int(&mut num, body_len as i64)
+	out.extend_from_slice(num.as_bytes())
+	out.extend_from_slice("\r\n".as_bytes())
+	out.extend_from_slice((if keep { "Connection: keep-alive\r\n" } else { "Connection: close\r\n" }).as_bytes())
+	out.extend_from_slice("\r\n".as_bytes())
+	if !head && body_len <= 4096 {
+		out.extend_from_slice(resp.body.as_slice())
+		return conn.write_all(out.as_slice())
+	}
+	conn.write_all(out.as_slice())?
 	if !head {
 		conn.write_all(resp.body.as_slice())?
 	}

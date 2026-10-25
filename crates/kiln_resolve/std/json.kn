@@ -661,7 +661,12 @@ impl<'a> Parser<'a> {
 
 	// Whether the current key is `k`.
 	pub fun is_key(&self, k &str) bool {
-		return self.key() == k
+		// Length first: derived structs try several keys per member.
+		key := self.key()
+		if key.len() != k.len() {
+			return false
+		}
+		return key == k
 	}
 
 	// Moves to the next element of the current array: false at its end.
@@ -919,7 +924,17 @@ impl<'a> Parser<'a> {
 
 	fun string(&mut self) result<string, Error> {
 		self.pos += 1
-		out mut := string::new()
+		// Fast path: no escapes — one exact-sized allocation.
+		i mut := self.pos
+		while i < self.b.len() && self.b[i] != 34 && self.b[i] != 92 && self.b[i] >= 32 {
+			i += 1
+		}
+		if i < self.b.len() && self.b[i] == 34 {
+			out := self.s[self.pos..i].to_string()
+			self.pos = i + 1
+			return Ok(out)
+		}
+		out mut := string::with_capacity(i - self.pos + 8)
 		start mut := self.pos
 		loop {
 			if self.pos >= self.b.len() {
@@ -1141,7 +1156,7 @@ pub trait FromJson {
 
 // Compact JSON for `v`.
 pub fun to_string<T: ToJson>(v &T) string {
-	out mut := string::new()
+	out mut := string::with_capacity(256)
 	v.write_json(&mut out)
 	return out
 }
@@ -1425,6 +1440,8 @@ impl<T: ToJson> ToJson for Vec<T> {
 	}
 
 	fun write_json(&self, out &mut string) {
+		// Rough lower bound: brackets, commas, and a few bytes per element.
+		out.reserve(self.len() * 64 + 2)
 		out.push_char('[')
 		first mut := true
 		for x in self.iter() {
@@ -1483,7 +1500,7 @@ impl<T: FromJson> FromJson for Vec<T> {
 			return Self::from_json(&v)
 		}
 		p.begin()?
-		out mut := Vec::new()
+		out mut := Vec::with_capacity(8)
 		first mut := true
 		while p.next_elem(first)? {
 			first = false
