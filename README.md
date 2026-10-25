@@ -1,11 +1,11 @@
 # Kiln
 
-Kiln is a compiled systems and backend programming language with **syntax as simple as Go and functionality like Rust**:
+Kiln is a compiled systems and backend language: **ownership without a garbage collector**, syntax you can actually read, and a standard library built for services.
 
-- Ownership and borrowing with no garbage collector.
-- `result` and `?` for error handling.
-- Traits and generics.
-- Goroutine-style tasks with `spawn`, channels using `<-`, and `select`.
+- Borrowing and ownership instead of GC or manual `free`.
+- `result` and `?` for errors; traits and generics when you need them.
+- Lightweight tasks with `spawn`, channels (`<-`), and `select`.
+- Self-hosted compiler; installs with one line and runs from any folder.
 
 > **Status:** pre-1.0, self-hosted. **`kilnc`** (bootstrapped by `install.sh`) is the daily-driver code generator for `kiln build` / `kiln run`. Language: ownership and borrowing, `result`/`?`, traits and generics (including `dyn`), closures, `defer`/`Drop`, fixed-size arrays, and Go-style concurrency (`spawn`, channels, `select`). Std: `io`, `fs`, `net`/`http`/`http2`/`tls`, `encoding::json`, collections, sync, time, and more — see the [website](website/). Editors: VS Code and Neovim (`kiln editor install …`). `--compiler=rust` is deprecated (bootstrap / differential tests only). See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md).
 
