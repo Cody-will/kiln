@@ -4,7 +4,7 @@ members = ["crates/kiln_llvm", "crates/kiln_lexer", "crates/kiln_parser", "crate
 exclude = ["crates/kiln_tls"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.82"
 license = "MIT OR Apache-2.0"

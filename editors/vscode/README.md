@@ -34,15 +34,15 @@ You can do either of the following.
 
 ```sh
 cd editors/vscode && npm install --omit=dev && cd -
-cp -r editors/vscode ~/.vscode/extensions/kiln-lang.kiln-0.1.0
+cp -r editors/vscode ~/.vscode/extensions/kiln-lang.kiln-0.1.1
 ```
 
 **Package a `.vsix` with [`vsce`](https://github.com/microsoft/vscode-vsce):**
 
 ```sh
 cd editors/vscode
-npx @vscode/vsce package          # produces kiln-0.1.0.vsix
-code --install-extension kiln-0.1.0.vsix
+npx @vscode/vsce package          # produces kiln-0.1.1.vsix
+code --install-extension kiln-0.1.1.vsix
 ```
 
 Reload VS Code and open any `.kn` file.
@@ -58,7 +58,7 @@ Reload VS Code and open any `.kn` file.
 ## Prebuilt `.vsix`
 
 Until the extension is on the Marketplace, download
-[kiln-0.1.0.vsix](https://github.com/Cody-will/kiln/releases/download/v0.1.0/kiln-0.1.0.vsix)
-and run `code --install-extension kiln-0.1.0.vsix`, or use `kiln editor install vscode`
+[kiln-0.1.1.vsix](https://github.com/Cody-will/kiln/releases/download/v0.1.1/kiln-0.1.1.vsix)
+and run `code --install-extension kiln-0.1.1.vsix`, or use `kiln editor install vscode`
 after installing Kiln.
 

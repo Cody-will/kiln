@@ -5,7 +5,7 @@
 # `makepkg --printsrcinfo > .SRCINFO`. The release assets are only
 # downloadable once the repository is public.
 pkgname=kiln-bin
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="The Kiln programming language: compiler, standard library, formatter, test runner and language server"
 arch=('x86_64' 'aarch64')
