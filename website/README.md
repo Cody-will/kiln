@@ -33,4 +33,4 @@ Open `website/book/index.html` directly in a browser to view the built site offl
 
 ## Publishing
 
-`.github/workflows/pages.yml` builds the book and deploys it to GitHub Pages. It runs **only when triggered manually** (Actions → *Deploy website* → *Run workflow*), because the repository is private. GitHub Pages for private repositories needs a paid plan, and the published site would be public. Before the first run, enable Pages with the source set to "GitHub Actions" in the repository settings.
+`.github/workflows/pages.yml` builds the book and deploys it to GitHub Pages. It runs on pushes that touch `website/` (and via *Actions → Deploy website → Run workflow*). Before the first run, enable Pages with the source set to "GitHub Actions" in the repository settings. The live site is at https://cody-will.github.io/kiln/.

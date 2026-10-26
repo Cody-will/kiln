@@ -5,7 +5,8 @@
 //! `--compiler=rust` / `KILN_COMPILER=rust` is **deprecated**: it selects the
 //! Rust-built-in codegen for differential tests and bootstrap stage 1. Prefer
 //! kilnc. `--backend=` and packages with native `[link]` still force the
-//! built-in path (kilnc does not support those yet).
+//! built-in path (kilnc does not link natives yet). Path `[dependencies]`
+//! are resolved by kilnc.
 //!
 //! When kilnc fails, `kiln` no longer silently falls back unless
 //! `KILN_ALLOW_RUST_FALLBACK=1` is set (temporary escape hatch).

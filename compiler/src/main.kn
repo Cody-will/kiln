@@ -25,12 +25,14 @@ mod borrowck
 mod lower
 mod inline
 mod codegen
+mod manifest
 
 import std::fs
 import std::hash::Hasher
 import std::os
 import std::time::Instant
-import ast::{Item, ItemKind}
+import ast::{Ident, Item, ItemKind, Span, Visibility}
+import std::path
 import token::{StrPart, TokenKind}
 
 fun esc(b &[u8]) string {
@@ -197,6 +199,68 @@ impl Loader {
 	}
 }
 
+// Drops `@test` items from a dependency (its tests are its own business).
+fun strip_tests(items &mut Vec<Item>) {
+	i mut := 0
+	while i < items.len() {
+		is_test mut := false
+		for a in &items[i].attrs {
+			if a.name.name == "test" {
+				is_test = true
+				break
+			}
+		}
+		if is_test {
+			items.remove(i)
+			continue
+		}
+		if let ItemKind::Mod { name: _, items: Some(inner) } = &mut items[i].kind {
+			strip_tests(inner)
+		}
+		i += 1
+	}
+}
+
+// Loads path dependencies from the nearest `kiln.toml` as public top-level
+// modules (same semantics as crates/kiln_parser/src/package.rs).
+fun load_path_deps(l &mut Loader, items &mut Vec<Item>, root_file &str) result<(), string> {
+	deps := match manifest::deps_for_root(root_file) {
+		Ok(d) => d,
+		Err(e) => return Err("{e}\n"),
+	}
+	for d in &deps {
+		for item in &*items {
+			if let ItemKind::Mod { name, items: _ } = &item.kind {
+				if name.name == d.name {
+					return Err("module `{d.name}` has the same name as a dependency\n")
+				}
+			}
+		}
+		text := match fs::read_to_string(&d.root) {
+			Ok(t) => t,
+			Err(e) => return Err("dependency `{d.name}`: cannot read `{d.root}`: {e}\n"),
+		}
+		sub mut := l.parse_file(&d.root, &text)
+		l.expand(&mut sub, path::dir(&d.root))
+		if l.errors.len() > 0 {
+			return Err("{l.errors[0]}\n")
+		}
+		strip_tests(&mut sub)
+		span := Span::new(0, 0)
+		items.push(Item {
+			kind: ItemKind::Mod {
+				name: Ident { name: d.name.clone(), span: span },
+				items: Some(sub),
+			},
+			vis: Visibility::Public,
+			attrs: Vec::new(),
+			doc: None,
+			span: span,
+		})
+	}
+	return Ok()
+}
+
 fun dir_of(path &str) string {
 	b := path.as_bytes()
 	i mut := b.len()
@@ -303,6 +367,9 @@ fun emit_llvm(path &str, dir &str, release bool, tp bool, cache &str, stream opt
 	l.expand(&mut items, &dir_of(path))
 	if l.errors.len() > 0 {
 		return Err("{l.errors[0]}\n")
+	}
+	if let Err(e) = load_path_deps(&mut l, &mut items, path) {
+		return Err(e)
 	}
 	user := ast::File { items: items }
 	builtin := resolve::builtin_text(dir)

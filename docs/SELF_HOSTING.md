@@ -33,8 +33,9 @@ from a kilnc failure to the Rust codegen is off unless
   `kilnc --emit-llvm <file.kn>` prints a program's LLVM IR and
   `kilnc --build [--release] <file.kn> -o <out>` compiles it to an
   executable (see "Code generation and bootstrap" below). Both load
-  multi-file packages: `mod name` reads `name.kn` or `name/mod.kn`, as
-  `kiln_parser::package` does.
+  multi-file packages: `mod name` reads `name.kn` or `name/mod.kn`, and
+  path `[dependencies]` from `kiln.toml` become public top-level modules,
+  as `kiln_parser::package` does (`compiler/src/manifest.kn`).
 
 Build it with `kiln build` in `compiler/`.
 
@@ -239,8 +240,10 @@ With `--release`, kilnc emits LLVM attributes for Kiln's guarantees (codegen.kn 
 
 The built-in Rust codegen is used only when:
 - `--compiler=rust` or `KILN_COMPILER=rust` is set (deprecated; prints a warning), or `--backend=` is given;
-- the package has native `[link]` settings;
+- the package has native `[link]` settings (kilnc does not compile C sources or pass `-l` yet);
 - kilnc fails **and** `KILN_ALLOW_RUST_FALLBACK=1` is set. Otherwise the build errors. `KILN_DEBUG_KILNC=1` shows kilnc's output.
+
+Path `[dependencies]` are resolved by kilnc; they no longer force the Rust codegen.
 
 kiln looks for kilnc in `$KILNC`, then next to the `kiln` executable, then in `<prefix>/lib/kiln/kilnc`. `kiln doctor` shows which one it found, and `--compiler=kilnc` asks for it explicitly. `kiln test`, `kiln check` and the LSP still use the Rust front end (resolution / typeck / borrowck); retiring those is a later step. The Rust crates stay in-tree for differential tests (`*_diff.rs`) until that lands — see "Retiring the Rust compiler" below.
 
@@ -278,9 +281,11 @@ runs the stage1→stage2 bootstrap and packs `kilnc` into the tarball.
 | Step | Status |
 |---|---|
 | kilnc default for `build`/`run` | ✅ |
+| Path `[dependencies]` in kilnc | ✅ (`compiler/src/manifest.kn`) |
 | `--compiler=rust` deprecated warning | ✅ |
 | No silent Rust fallback | ✅ (`KILN_ALLOW_RUST_FALLBACK=1` to opt in) |
 | Pinned seed in releases | ✅ (tarball `kilnc`; see above) |
+| Native `[link]` / `--backend=` in kilnc | ⬜ still forces Rust codegen |
 | Differential tests still on Rust crates | ✅ keep `crates/kiln_*` until fronts move |
 | `kiln check` / LSP / `kiln test` on kilnc | ⬜ later |
 | Move Rust crates under `bootstrap/reference/` | ⬜ after check/LSP no longer need them |

@@ -44,7 +44,7 @@ curl -fsSL https://raw.githubusercontent.com/Cody-will/kiln/main/install.sh | sh
 kiln new hello && cd hello && kiln run
 ```
 
-The installer downloads a prebuilt release into `~/.kiln`, adds it to `PATH`, and runs `kiln doctor`. From a clone, `./install.sh` (or `make install`) builds from source instead. See [website/src/install.md](website/src/install.md) for options, the Arch package, and building from source. Note: release downloads need the repository to be public.
+The installer downloads a prebuilt release into `~/.kiln`, adds it to `PATH`, and runs `kiln doctor`. From a clone, `./install.sh` (or `make install`) builds from source instead. See [website/src/install.md](website/src/install.md) for options, the Arch package, and building from source.
 
 Editor support: `kiln editor install vscode` or `kiln editor install nvim` (see [website/src/editors.md](website/src/editors.md)).
 

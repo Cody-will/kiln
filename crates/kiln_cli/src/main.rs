@@ -358,14 +358,9 @@ fn build_to(
     };
     let has_native =
         !native.libs.is_empty() || !native.c_sources.is_empty() || !native.search.is_empty();
-    // kilnc does not resolve `[dependencies]` yet, so packages with
-    // dependencies use the built-in compiler (like native `[link]`).
-    let has_deps = p
-        .manifest
-        .as_ref()
-        .and_then(|m| kiln_parser::manifest::all_deps(m).ok())
-        .is_some_and(|d| !d.is_empty());
-    if let Some(kilnc) = selfhost::wanted(selfhost::explicit_backend(), has_native || has_deps) {
+    // Native `[link]` still needs the built-in compiler; path dependencies
+    // are resolved by kilnc (see compiler/src/manifest.kn).
+    if let Some(kilnc) = selfhost::wanted(selfhost::explicit_backend(), has_native) {
         let work = match out
             .parent()
             .filter(|d| d.ends_with("debug") || d.ends_with("release"))

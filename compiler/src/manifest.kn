@@ -1,0 +1,228 @@
+// kiln.toml: the package name and path dependencies (subset of
+// crates/kiln_parser/src/manifest.rs). Used by kilnc so packages with
+// `[dependencies] name = { path = "..." }` build without the Rust compiler.
+
+import std::fs
+import std::path
+
+// A path dependency: its import name and its library root (`src/lib.kn`).
+@derive(Clone)
+pub struct Dep {
+	pub name string,
+	pub root string,
+}
+
+@derive(Clone)
+pub struct Manifest {
+	pub name string,
+	pub version string,
+	pub dir string,
+	pub deps Vec<(string, string)>,
+}
+
+fun unquote(v &str) option<string> {
+	t := v.trim()
+	inner := match t.strip_prefix("\"") {
+		Some(s) => match s.strip_suffix("\"") {
+			Some(u) => u,
+			None => return None,
+		},
+		None => return None,
+	}
+	return Some(inner.replace("\\\\", "\\").replace("\\\"", "\""))
+}
+
+fun is_ident(s &str) bool {
+	if s.is_empty() {
+		return false
+	}
+	first mut := true
+	for c in s.chars() {
+		ok := if first {
+			c.is_alphabetic() || c == '_'
+		} else {
+			c.is_alphanumeric() || c == '_'
+		}
+		if !ok {
+			return false
+		}
+		first = false
+	}
+	return true
+}
+
+// Finds `kiln.toml` in `start` or a parent directory.
+pub fun find(start &str) option<string> {
+	d mut := start.to_string()
+	seen mut := 0
+	while seen < 64 {
+		m := path::join(&d, "kiln.toml")
+		if fs::is_file(&m) {
+			return Some(m)
+		}
+		parent := path::dir(&d).to_string()
+		if parent == d {
+			return None
+		}
+		d = parent
+		seen += 1
+	}
+	return None
+}
+
+// Parses the subset of TOML a manifest uses: `[package]` with `name` /
+// `version`, and `[dependencies]` with `name = { path = "..." }`. Other
+// sections (`[link]`, …) are skipped so kilnc can still load path deps from
+// packages that also declare native link settings.
+pub fun parse(path &str) result<Manifest, string> {
+	text := match fs::read_to_string(path) {
+		Ok(t) => t,
+		Err(e) => return Err("cannot read {path}: {e}"),
+	}
+	dir := path::dir(path).to_string()
+	m mut := Manifest {
+		name: string::new(),
+		version: "0.0.0".to_string(),
+		dir: dir.clone(),
+		deps: Vec::new(),
+	}
+	section mut := string::new()
+	n mut := 0
+	for raw in text.lines() {
+		n += 1
+		line0 := match raw.find("#") {
+			Some(i) => {
+				if !raw[..i].contains("\"") {
+					&raw[..i]
+				} else {
+					raw
+				}
+			},
+			None => raw,
+		}
+		line := line0.trim()
+		if line.is_empty() {
+			continue
+		}
+		if let Some(s) = line.strip_prefix("[") {
+			sec := match s.strip_suffix("]") {
+				Some(t) => t.trim().to_string(),
+				None => return Err("{path}:{n}: expected `]`"),
+			}
+			section = sec
+			continue
+		}
+		(k0, v0) := match line.split_once("=") {
+			Some(kv) => kv,
+			None => return Err("{path}:{n}: expected `key = value`"),
+		}
+		k := k0.trim()
+		v := v0.trim()
+		if section == "package" {
+			match k {
+				"name" => {
+					m.name = match unquote(v) {
+						Some(s) => s,
+						None => return Err("{path}:{n}: `name` must be a string"),
+					}
+				},
+				"version" => {
+					m.version = match unquote(v) {
+						Some(s) => s,
+						None => return Err("{path}:{n}: `version` must be a string"),
+					}
+				},
+				_ => {},
+			}
+		} else if section == "dependencies" {
+			inner0 := match v.strip_prefix("{{") {
+				Some(s) => match s.strip_suffix("}}") {
+					Some(t) => t,
+					None => return Err("{path}:{n}: a dependency must be `{{ path = \"...\" }}` (registry dependencies are not supported yet)"),
+				},
+				None => return Err("{path}:{n}: a dependency must be `{{ path = \"...\" }}` (registry dependencies are not supported yet)"),
+			}
+			p mut := None
+			for kv in inner0.split(",") {
+				if let Some((a, b)) = kv.split_once("=") {
+					if a.trim() == "path" {
+						p = unquote(b)
+					}
+				}
+			}
+			rel := match p {
+				Some(s) => s,
+				None => return Err("{path}:{n}: a dependency needs `path = \"...\"`"),
+			}
+			if !is_ident(k) {
+				return Err("{path}:{n}: dependency name `{k}` must be an identifier")
+			}
+			m.deps.push((k.to_string(), path::join(&dir, &rel)))
+		}
+		// `[link]` and unknown sections: ignore keys (kilnc does not link natives yet).
+	}
+	if m.name.is_empty() {
+		return Err("{path}: [package] needs a `name`")
+	}
+	return Ok(m)
+}
+
+// All path dependencies of `m`, transitively (each library once), in order.
+pub fun all_deps(m &Manifest) result<Vec<Dep>, string> {
+	out mut := Vec::new()
+	names mut := Vec::new()
+	stack mut := Vec::new()
+	stack.push(m.clone())
+	seen mut := Vec::new()
+	seen.push(path::clean(&m.dir))
+	while stack.len() > 0 {
+		cur := stack.pop().unwrap()
+		for (name, dir) in &cur.deps {
+			canon := path::clean(dir)
+			dup mut := false
+			for s in &seen {
+				if *s == canon {
+					dup = true
+					break
+				}
+			}
+			if dup {
+				continue
+			}
+			seen.push(canon.clone())
+			toml := path::join(dir, "kiln.toml")
+			dm := match parse(&toml) {
+				Ok(x) => x,
+				Err(e) => return Err("dependency `{name}`: {e}"),
+			}
+			root := path::join(dir, "src/lib.kn")
+			if !fs::is_file(&root) {
+				return Err("dependency `{name}` is not a library: {root} is missing")
+			}
+			for n in &names {
+				if *n == *name {
+					return Err("two dependencies are named `{name}`")
+				}
+			}
+			names.push(name.clone())
+			out.push(Dep { name: name.clone(), root: root })
+			stack.push(dm)
+		}
+	}
+	return Ok(out)
+}
+
+// Path dependencies of the package that owns `root_file` (`src/main.kn` or
+// `src/lib.kn`), or an empty list when there is no kiln.toml.
+pub fun deps_for_root(root_file &str) result<Vec<Dep>, string> {
+	start := path::dir(root_file)
+	mpath := match find(start) {
+		Some(p) => p,
+		None => return Ok(Vec::new()),
+	}
+	m := match parse(&mpath) {
+		Ok(x) => x,
+		Err(e) => return Err(e),
+	}
+	return all_deps(&m)
+}

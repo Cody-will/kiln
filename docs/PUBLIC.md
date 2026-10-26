@@ -1,9 +1,9 @@
 # Making the repository public
 
-The repo stays **private** until you flip visibility yourself. This
-checklist is the remaining manual work after the in-tree public-readiness
-pieces (README, dual MIT/Apache licenses, CONTRIBUTING, SECURITY,
-CODE_OF_CONDUCT, CI, website book) are in place.
+The GitHub repository is **public**. This checklist tracks the remaining
+optional polish (Marketplace, AUR, Pages automation) after the in-tree
+public-readiness pieces (README, dual MIT/Apache licenses, CONTRIBUTING,
+SECURITY, CODE_OF_CONDUCT, CI, website book) landed.
 
 Do **not** ask the bots to change GitHub visibility, enable Pages, or
 publish marketplace/AUR packages unless you explicitly approve each step.
@@ -14,7 +14,7 @@ publish marketplace/AUR packages unless you explicitly approve each step.
 - [x] `CONTRIBUTING.md`
 - [x] `SECURITY.md`
 - [x] `CODE_OF_CONDUCT.md`
-- [x] README install one-liner (notes that release downloads need a public repo)
+- [x] README install one-liner (`curl … | sh`; public releases on GitHub)
 - [x] Website / mdBook under `website/` (`mdbook build website`)
 - [x] `.github/workflows/pages.yml` (manual `workflow_dispatch` only)
 - [x] Linux CI (`.github/workflows/ci.yml`) — green when Actions billing allows

@@ -8,10 +8,6 @@ curl -fsSL https://raw.githubusercontent.com/Cody-will/kiln/main/install.sh | sh
 
 This downloads the prebuilt release for your machine (x86_64 or aarch64 Linux) from GitHub Releases, checks its SHA-256, installs it into `~/.kiln`, adds `~/.kiln/bin` to `PATH`, and runs `kiln doctor`. If there is no release for your machine, it clones the repository and builds from source instead (see below).
 
-> **Note:** the repository is private for now. Release downloads and the
-> `raw.githubusercontent.com` URL only work once it is public; until then,
-> install from a clone.
-
 Options go after `sh -s --`, for example `curl -fsSL .../install.sh | sh -s -- --prefix /opt/kiln`:
 
 | Option | |
@@ -36,7 +32,7 @@ The prebuilt binaries need glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 
 
 ### Arch Linux (AUR)
 
-`packaging/arch/PKGBUILD` packages the release as `kiln-bin`, which will go to the AUR once there are public releases. Until then you can build it from a clone:
+`packaging/arch/PKGBUILD` packages the release as `kiln-bin` for the AUR. Until it is published there, build it from a clone:
 
 ```sh
 cd packaging/arch && makepkg -si
