@@ -9,11 +9,70 @@ The same program in three languages, in `bench/<name>/main.{kn,go,rs}`. Run ever
 | CPU | Intel Xeon (virtualized), 8 vCPUs, 1 thread per core |
 | Memory | 16 GB |
 | OS | Linux 6.12 (x86_64) |
-| Kiln | commit `7dea5d8`, `kiln build --release --backend=cranelift` and `--backend=llvm` (LLVM 18, `-O3`) |
+| Kiln | commit on `main` (quick-speed pass Oct 25), `kiln build --release --backend=cranelift` and `--backend=llvm` (LLVM 18, `-O3`); kilnc `--release` |
 | Go | 209,124 | 0.26 ms | 1.19 ms | 14.7 MiB |
 | Rust | 225,177 | 0.26 ms | 0.64 ms | 6.6 MiB |
 
 This is a shared cloud VM, so expect some noise (hyperfine reported outliers). Each time is the **median of 5 runs** after 1 warm-up run (`hyperfine -N`). Memory is **peak RSS**, the highest of repeated runs, measured with `maxrss.c` (wait4 rusage from a tiny parent process). All three versions print identical output for every benchmark. The one exception is JSON byte counts, because Go writes `99.0` as `99`; there only the decoded checksum is compared, and it matches.
+
+## Quick-speed pass (Oct 25, 2026; main after allocator/JSON tweaks)
+
+Highest-ROI runtime fixes on top of the Oct 24 gap-close numbers. One focused
+`bench/run.py` run of the three leftover benches (median of 7 after 1 warm-up),
+plus the unchanged Oct 24 numbers for the rest. Seconds, lower is better.
+
+| Benchmark | Kiln Cranelift | Kiln LLVM | **kilnc** | Go | Rust | kilnc/Go | kilnc/Rust |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| fib(35) | 0.062 | 0.003 | **0.002** | 0.039 | 0.019 | 0.05× | 0.11× |
+| nbody, 5M steps | 0.677 | 0.234 | **0.223** | 0.263 | 0.172 | 0.85× | 1.30× |
+| binary-trees, depth 18 | 2.103 | 1.076 | **0.994** | 1.142 | 1.088 | 0.87× | 0.91× |
+| spectral-norm, n=2000 | 0.362 | 0.176 | **0.177** | 0.186 | 0.182 | 0.95× | 0.97× |
+| fannkuch-redux, n=10 | 0.326 | 0.181 | **0.176** | 0.177 | 0.182 | 0.99× | 0.97× |
+| JSON encode+decode | 0.557 | 0.188 | **0.197** | 0.487 | 0.146 | 0.40× | 1.35× |
+| HashMap ops | 0.296 | 0.203 | **0.206** | 0.253 | 0.249 | 0.81× | 0.83× |
+| channel ping-pong | 0.101 | 0.103 | **0.109** | 0.156 | 3.741 | 0.70× | 0.03× |
+| worker pool | 0.073 | 0.075 | **0.076** | 0.080 | 0.166 | 0.95× | 0.46× |
+
+HTTP req/s unchanged this pass (Oct 24): Cranelift 160,394, LLVM 190,836,
+**kilnc 225,861**, Go 207,956, Rust 217,418.
+
+### What landed
+
+- **TLS size-class freelist in `kn_alloc`/`kn_free`** (`kiln_rt.c`): classes
+  16/32/48/64 bytes, depth 256 per class. binary-trees Nodes are 16 bytes;
+  kilnc went from ~1.23× Rust to **~0.91×** (ahead of Rust/Go on this VM).
+  Absolute kilnc median: 1.203 s → 0.994 s.
+- **`Vec::read_json` capacity estimate**: after 8 elements, reserve
+  `(remaining_bytes * 8) / bytes_consumed` more slots so a 50k-record array
+  does not thrash on 2× growth from cap 8.
+- **Json derive first-byte key filter** (`compiler/src/derive.kn`): generated
+  `read_json` compares `k.as_bytes()[0]` before `is_key`, so most misses skip
+  `memcmp`. Helps nested objects; JSON overall still decode-bound.
+
+### Before → after (kilnc vs Rust, same three leftovers)
+
+| Benchmark | Before (Oct 24) | After | Before ×Rust | After ×Rust |
+|---|---:|---:|---:|---:|
+| binary-trees | 1.203 / 0.978 | 0.994 / 1.088 | 1.23× | **0.91×** |
+| JSON | 0.211 / 0.143 | 0.197 / 0.146 | 1.48× | **1.35×** |
+| nbody | 0.227 / 0.169 | 0.223 / 0.172 | 1.34× | **1.30×** |
+
+(Absolute Rust times move with VM noise; the binary-trees freelist win is the
+clear signal — kilnc absolute dropped ~17%.)
+
+### Still slow / hard limits
+
+- **JSON (~1.35× Rust):** encode is close; decode still pays for a safe byte
+  scanner and per-field `string` allocations versus serde_json. A SIMD /
+  `memchr` scanner or buffer reuse across records would be a larger std /
+  runtime project. Treat ~1.3–1.4× as the soft hard limit for the current
+  design.
+- **nbody (~1.25–1.30×):** unchanged hard limit — Rust vectorizes the pair
+  loop (`sqrtpd`/`divpd`); Kiln stays scalar without SoA / `[f64; N]`
+  lowering that keeps values in registers. No silent path to ≤1.10×.
+- **Release compile (~10 s big):** not touched this pass. ThinLTO + clang is
+  the remaining tax (see `bench/COMPILE.md`); tuning job count without
+  regressing runtime was not measured as a clear win, so left alone.
 
 ## Gap close round (Oct 24, 2026; `perf/rust-gaps` at `e929dd2`)
 

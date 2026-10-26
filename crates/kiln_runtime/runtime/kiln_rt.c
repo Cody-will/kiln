@@ -45,11 +45,48 @@ static KN_NORETURN void oom(void) {
 	kn_panic((const uint8_t *)m, sizeof m - 1);
 }
 
+/* Thread-local freelist for small blocks (binary-trees Nodes, short
+ * strings, …). Classes are 16/32/48/64 bytes; depth caps retained
+ * blocks so a burst of frees cannot pin unbounded memory. */
+#define KN_SLAB_MAX 64
+#define KN_SLAB_CLASSES 4
+#define KN_SLAB_DEPTH 256
+
+typedef struct KnSlab {
+	struct KnSlab *next;
+} KnSlab;
+
+#ifdef _MSC_VER
+static __declspec(thread) KnSlab *kn_slabs[KN_SLAB_CLASSES];
+static __declspec(thread) int kn_slab_n[KN_SLAB_CLASSES];
+#else
+static __thread KnSlab *kn_slabs[KN_SLAB_CLASSES];
+static __thread int kn_slab_n[KN_SLAB_CLASSES];
+#endif
+
+static int kn_slab_class(size_t size) {
+	if (size == 0 || size > KN_SLAB_MAX)
+		return -1;
+	return (int)((size - 1) / 16); /* 1..16→0, 17..32→1, 33..48→2, 49..64→3 */
+}
+
+static size_t kn_slab_bytes(int c) {
+	return (size_t)(c + 1) * 16;
+}
+
 void *kn_alloc(size_t size, size_t align) {
-	(void)align; /* malloc is aligned for every Kiln type (max align 8) */
+	(void)align; /* malloc / slab classes are aligned for every Kiln type */
 	if (size == 0)
 		return (void *)(uintptr_t)8;
-	void *p = malloc(size);
+	int c = kn_slab_class(size);
+	if (c >= 0 && kn_slab_n[c] > 0) {
+		KnSlab *s = kn_slabs[c];
+		kn_slabs[c] = s->next;
+		kn_slab_n[c]--;
+		return s;
+	}
+	size_t asize = c >= 0 ? kn_slab_bytes(c) : size;
+	void *p = malloc(asize);
 	if (!p)
 		oom();
 	return p;
@@ -57,8 +94,17 @@ void *kn_alloc(size_t size, size_t align) {
 
 void kn_free(void *p, size_t size, size_t align) {
 	(void)align;
-	if (size != 0 && p)
-		free(p);
+	if (size == 0 || !p)
+		return;
+	int c = kn_slab_class(size);
+	if (c >= 0 && kn_slab_n[c] < KN_SLAB_DEPTH) {
+		KnSlab *s = (KnSlab *)p;
+		s->next = kn_slabs[c];
+		kn_slabs[c] = s;
+		kn_slab_n[c]++;
+		return;
+	}
+	free(p);
 }
 
 /* ----- panics and printing ----------------------------------------------- */

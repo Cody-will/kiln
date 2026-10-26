@@ -415,16 +415,21 @@ fun read_body(path &str, fields &Fields, ind usize, fallback bool) string {
 				i += 1
 			}
 			o.push("{t}first mut := true\n{t}while p.next_key(first)? {{\n{t}\tfirst = false\n")
+			if !fs.is_empty() {
+				o.push("{t}\tk := p.key()\n{t}\tif k.len() > 0 {{\n{t}\t\tc := k.as_bytes()[0]\n")
+			}
 			i = 0
 			for f in fs {
+				n := &f.name.name
+				fb := if n.len() > 0 { n.as_bytes()[0] } else { 0u8 }
 				kw := if i == 0 { "if" } else { "}} else if" }
-				o.push("{t}\t{kw} p.is_key(\"{f.name.name}\") {{\n{t}\t\tf{i} = Some({J}::FromJson::read_json(p)?)\n")
+				o.push("{t}\t\t{kw} c == {fb}u8 && p.is_key(\"{n}\") {{\n{t}\t\t\tf{i} = Some({J}::FromJson::read_json(p)?)\n")
 				i += 1
 			}
 			if fs.is_empty() {
 				o.push("{t}\tp.skip()?\n")
 			} else {
-				o.push("{t}\t}} else {{\n{t}\t\tp.skip()?\n{t}\t}}\n")
+				o.push("{t}\t\t}} else {{\n{t}\t\t\tp.skip()?\n{t}\t\t}}\n{t}\t}} else {{\n{t}\t\tp.skip()?\n{t}\t}}\n")
 			}
 			o.push("{t}}}\n")
 			inits mut := Vec::new()

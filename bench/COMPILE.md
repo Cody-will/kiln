@@ -61,3 +61,11 @@ Big debug clean went from 3.09 s to 1.91 s (1.81 s with the self-built kilnc), a
 
 ## Remaining gap
 Big debug clean is 1.9 s against Go's 1.2 s, and big incremental is 1.3 s against 1.2 s. The build is now CPU-bound: what remains is serial codegen (rerun in full because symbol numbering is global), about 5 core-seconds of clang on a clean build, and parsing the 400 KB std on every run (50 ms of hello's 0.2 s). Next: per-function IR caching with stable symbol names, and a serialized parsed std.
+
+## Quick-speed pass (Oct 25, 2026) — compile unchanged
+
+No compile-time change this pass. Release big builds remain ~10 s because of
+clang ThinLTO; that is a hard clang/LTO tax once IR is written. Tweaking ThinLTO
+job count or shard size was not shown to cut wall time without risking runtime,
+so release LTO is left as documented above. Runtime wins landed in `kiln_rt.c`
+(small-object freelist) and std/derive JSON paths — see `bench/RESULTS.md`.

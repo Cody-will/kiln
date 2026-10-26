@@ -1502,9 +1502,23 @@ impl<T: FromJson> FromJson for Vec<T> {
 		p.begin()?
 		out mut := Vec::with_capacity(8)
 		first mut := true
+		start := p.pos
 		while p.next_elem(first)? {
 			first = false
 			out.push(T::read_json(p)?)
+			// After a few elements, estimate the rest from bytes/element so
+			// large arrays (JSON bench: 50k records) avoid repeated realloc.
+			if out.len() == 8 {
+				consumed := p.pos - start
+				if consumed > 0 {
+					rem := p.b.len() - p.pos
+					// rem / (bytes per element) ~ remaining elements.
+					est := (rem * 8) / consumed
+					if est > 0 {
+						out.reserve(est)
+					}
+				}
+			}
 		}
 		return Ok(out)
 	}
