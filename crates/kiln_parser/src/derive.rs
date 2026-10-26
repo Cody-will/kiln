@@ -355,18 +355,28 @@ fn read_body(path: &str, fields: &Fields, ind: usize, fallback: bool) -> String 
                 o,
                 "{t}first mut := true\n{t}while p.next_key(first)? {{\n{t}\tfirst = false"
             );
+            if !fs.is_empty() {
+                let _ = writeln!(
+                    o,
+                    "{t}\tk := p.key()\n{t}\tif k.len() > 0 {{\n{t}\t\tc := k.as_bytes()[0]"
+                );
+            }
             for (i, f) in fs.iter().enumerate() {
+                let n = f.name.name.as_str();
+                let fb = n.as_bytes().first().copied().unwrap_or(0);
                 let kw = if i == 0 { "if" } else { "} else if" };
                 let _ = writeln!(
                     o,
-                    "{t}\t{kw} p.is_key(\"{n}\") {{\n{t}\t\tf{i} = Some({J}::FromJson::read_json(p)?)",
-                    n = f.name.name
+                    "{t}\t\t{kw} c == {fb}u8 && p.is_key(\"{n}\") {{\n{t}\t\t\tf{i} = Some({J}::FromJson::read_json(p)?)",
                 );
             }
             if fs.is_empty() {
                 let _ = writeln!(o, "{t}\tp.skip()?");
             } else {
-                let _ = writeln!(o, "{t}\t}} else {{\n{t}\t\tp.skip()?\n{t}\t}}");
+                let _ = writeln!(
+                    o,
+                    "{t}\t\t}} else {{\n{t}\t\t\tp.skip()?\n{t}\t\t}}\n{t}\t}} else {{\n{t}\t\tp.skip()?\n{t}\t}}"
+                );
             }
             let _ = writeln!(o, "{t}}}");
             let inits: Vec<_> = fs
