@@ -18,6 +18,7 @@ lsp-server = "0.7"
 lsp-types = "0.97"
 serde_json = "1"
 serde = "1"
+crossbeam-channel = "0.5"
 
 [lints]
 workspace = true

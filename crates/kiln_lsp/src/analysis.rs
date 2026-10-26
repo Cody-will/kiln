@@ -1,6 +1,8 @@
-//! Semantic facts about one file, computed once per edit by the compiler
-//! front end (parse, resolve, type check, borrow check) and then queried by
-//! the server.
+//! Semantic facts about one program, computed by the compiler front end
+//! (parse, resolve, type check, borrow check) and then queried by the server.
+//!
+//! The language server debounces edits and runs this on a background thread;
+//! each successful run replaces the previous analysis for that project.
 
 use kiln_lexer::{Diagnostic, Span};
 use kiln_resolve::{DefKind, Res};

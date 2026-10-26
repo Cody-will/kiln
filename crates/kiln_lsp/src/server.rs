@@ -1,16 +1,27 @@
 //! The LSP transport (stdio, JSON-RPC via `lsp-server`) and request handlers.
+//!
+//! Analysis runs on a background thread. `textDocument/didChange` is debounced
+//! so typing stays responsive; open/save schedule a prompt recheck. Results are
+//! applied only when open-document versions still match the snapshot used for
+//! that job (stale work is dropped). Hover/completion keep serving the last
+//! applied analysis while a recheck is in flight.
 
 // `Uri` caches its parse internally but hashes by its text, so it is a
 // sound map key.
 #![allow(clippy::mutable_key_type)]
 
 use crate::analysis::{analyze_package, Analysis, Completion};
+use crossbeam_channel::{select, Receiver, Sender};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::Notification as _;
 use lsp_types::request::Request as _;
 use lsp_types::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+/// How long to wait after the last `didChange` before re-analyzing.
+pub(crate) const CHANGE_DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// A line index for converting byte offsets to LSP positions (UTF-16).
 struct Lines<'a> {
@@ -72,9 +83,22 @@ struct Proj {
     published: Vec<PathBuf>,
 }
 
+/// Result of a background analysis job.
+struct JobResult {
+    /// Document that triggered the job.
+    trigger: Uri,
+    /// Project root the analysis belongs to (when successful).
+    root: Option<PathBuf>,
+    analysis: Option<Analysis>,
+    /// Open-document versions at the time the job was snapshotted.
+    versions: HashMap<PathBuf, i32>,
+}
+
 struct State {
     docs: HashMap<Uri, Doc>,
     projs: HashMap<PathBuf, Proj>,
+    /// Debounced recheck queue (background analysis).
+    schedule: Schedule,
 }
 
 fn uri_to_path(u: &Uri) -> Option<PathBuf> {
@@ -149,34 +173,120 @@ fn program_for(path: &Path) -> (PathBuf, Vec<kiln_parser::package::Dependency>) 
     (path.to_path_buf(), vec![])
 }
 
-impl State {
-    /// Re-analyzes the program containing `uri`; returns its root.
-    fn analyze(&mut self, uri: &Uri) -> Option<PathBuf> {
-        let path = uri_to_path(uri)?;
-        let (mut root, mut deps) = program_for(&path);
-        let overlay = |p: &Path| -> Option<String> {
-            self.docs
-                .iter()
-                .find(|(u, _)| uri_to_path(u).is_some_and(|q| same_file(&q, p)))
-                .map(|(_, d)| d.text.clone())
-        };
-        let mut pkg = kiln_parser::package::load(&root, &deps, &overlay).ok();
-        // A file outside its package's module tree is analyzed on its own.
-        if !pkg
-            .as_ref()
-            .is_some_and(|p| p.files.iter().any(|(_, f, _)| same_file(f, &path)))
-        {
-            root = path.clone();
-            deps = vec![];
-            pkg = kiln_parser::package::load(&root, &deps, &overlay).ok();
+/// Whether `versions` still matches every currently open document.
+pub(crate) fn versions_still_current(
+    open: &HashMap<PathBuf, i32>,
+    snapshotted: &HashMap<PathBuf, i32>,
+) -> bool {
+    if open.len() != snapshotted.len() {
+        return false;
+    }
+    open.iter().all(|(p, v)| snapshotted.get(p) == Some(v))
+}
+
+/// Debounce / queue helper used by the server loop (and unit tests).
+#[derive(Default)]
+pub(crate) struct Schedule {
+    /// project key → (trigger uri, due)
+    pub pending: HashMap<PathBuf, (Uri, Instant)>,
+    pub in_flight: bool,
+}
+
+impl Schedule {
+    pub fn schedule(&mut self, key: PathBuf, trigger: Uri, delay: Duration, now: Instant) {
+        self.pending.insert(key, (trigger, now + delay));
+    }
+
+    pub fn next_timeout(&self, now: Instant) -> Option<Duration> {
+        if self.in_flight {
+            return None;
         }
-        let pkg = pkg?;
-        // The front end may panic on input it doesn't handle yet; keep serving.
-        let analysis =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| analyze_package(&pkg)))
-                .unwrap_or_default();
-        if let Some(d) = self.docs.get_mut(uri) {
+        self.pending
+            .values()
+            .map(|(_, due)| due.saturating_duration_since(now))
+            .min()
+    }
+
+    /// Pops one due entry when idle. Returns its trigger uri.
+    pub fn take_due(&mut self, now: Instant) -> Option<Uri> {
+        if self.in_flight {
+            return None;
+        }
+        let key = self
+            .pending
+            .iter()
+            .find(|(_, (_, due))| *due <= now)
+            .map(|(k, _)| k.clone())?;
+        let (trigger, _) = self.pending.remove(&key).unwrap();
+        self.in_flight = true;
+        Some(trigger)
+    }
+
+    pub fn finish(&mut self, stale: bool, key: PathBuf, trigger: Uri, now: Instant) {
+        self.in_flight = false;
+        if stale {
+            self.pending
+                .entry(key)
+                .and_modify(|e| {
+                    e.0 = trigger.clone();
+                    e.1 = now;
+                })
+                .or_insert((trigger, now));
+        }
+    }
+}
+
+impl State {
+    fn project_key_for(&self, uri: &Uri) -> PathBuf {
+        if let Some(d) = self.docs.get(uri) {
+            if !d.root.as_os_str().is_empty() {
+                return d.root.clone();
+            }
+        }
+        uri_to_path(uri).unwrap_or_default()
+    }
+
+    fn schedule(&mut self, uri: Uri, delay: Duration) {
+        let key = self.project_key_for(&uri);
+        self.schedule.schedule(key, uri, delay, Instant::now());
+    }
+
+    fn open_versions(&self) -> HashMap<PathBuf, i32> {
+        let mut v = HashMap::new();
+        for (uri, d) in &self.docs {
+            if let Some(p) = uri_to_path(uri) {
+                v.insert(p, d.version);
+            }
+        }
+        v
+    }
+
+    fn overlay_texts(&self) -> HashMap<PathBuf, String> {
+        let mut o = HashMap::new();
+        for (uri, d) in &self.docs {
+            if let Some(p) = uri_to_path(uri) {
+                o.insert(p, d.text.clone());
+            }
+        }
+        o
+    }
+
+    fn is_fresh(&self, snapshotted: &HashMap<PathBuf, i32>) -> bool {
+        versions_still_current(&self.open_versions(), snapshotted)
+    }
+
+    /// Applies a fresh analysis to `root`, preserving `good_members` on error.
+    fn apply_analysis(&mut self, trigger: &Uri, root: PathBuf, analysis: Analysis) {
+        if let Some(d) = self.docs.get_mut(trigger) {
             d.root = root.clone();
+        }
+        // Any open doc whose path is in this analysis belongs to this root.
+        for (uri, d) in self.docs.iter_mut() {
+            if let Some(p) = uri_to_path(uri) {
+                if analysis.files.iter().any(|(_, f, _)| same_file(f, &p)) {
+                    d.root = root.clone();
+                }
+            }
         }
         let ok = analysis.diagnostics.is_empty();
         let (good_members, published) = match self.projs.remove(&root) {
@@ -185,14 +295,13 @@ impl State {
             None => (analysis.members.clone(), vec![]),
         };
         self.projs.insert(
-            root.clone(),
+            root,
             Proj {
                 analysis,
                 good_members,
                 published,
             },
         );
-        Some(root)
     }
 
     fn proj_of(&self, uri: &Uri) -> Option<(&Proj, usize)> {
@@ -206,6 +315,73 @@ impl State {
             .position(|(_, f, _)| same_file(f, &path))?;
         Some((p, fi))
     }
+
+    fn next_timeout(&self) -> Duration {
+        self.schedule
+            .next_timeout(Instant::now())
+            .unwrap_or(Duration::from_secs(3600))
+    }
+
+    fn take_due(&mut self) -> Option<Uri> {
+        self.schedule.take_due(Instant::now())
+    }
+}
+
+/// Runs package analysis from a path + overlay map (safe to call off-thread).
+fn analyze_with_overlays(
+    path: &Path,
+    overlays: &HashMap<PathBuf, String>,
+) -> Option<(PathBuf, Analysis)> {
+    let overlay = |p: &Path| -> Option<String> {
+        overlays
+            .iter()
+            .find(|(q, _)| same_file(q, p))
+            .map(|(_, t)| t.clone())
+    };
+    let (mut root, mut deps) = program_for(path);
+    let mut pkg = kiln_parser::package::load(&root, &deps, &overlay).ok();
+    if !pkg
+        .as_ref()
+        .is_some_and(|p| p.files.iter().any(|(_, f, _)| same_file(f, path)))
+    {
+        root = path.to_path_buf();
+        deps = vec![];
+        pkg = kiln_parser::package::load(&root, &deps, &overlay).ok();
+    }
+    let pkg = pkg?;
+    let analysis = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| analyze_package(&pkg)))
+        .unwrap_or_default();
+    Some((root, analysis))
+}
+
+fn spawn_analysis(st: &mut State, trigger: Uri, done: &Sender<JobResult>) {
+    let path = match uri_to_path(&trigger) {
+        Some(p) => p,
+        None => {
+            // take_due already marked in_flight; clear so the loop can continue.
+            st.schedule.in_flight = false;
+            return;
+        }
+    };
+    let overlays = st.overlay_texts();
+    let versions = st.open_versions();
+    let tx = done.clone();
+    std::thread::Builder::new()
+        .name("kiln-lsp-analyze".into())
+        .spawn(move || {
+            let out = analyze_with_overlays(&path, &overlays);
+            let (root, analysis) = match out {
+                Some((r, a)) => (Some(r), Some(a)),
+                None => (None, None),
+            };
+            let _ = tx.send(JobResult {
+                trigger,
+                root,
+                analysis,
+                versions,
+            });
+        })
+        .expect("spawn kiln-lsp-analyze");
 }
 
 /// A file's text inside the analysis, with its offset.
@@ -259,26 +435,61 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut st = State {
         docs: HashMap::new(),
         projs: HashMap::new(),
+        schedule: Schedule::default(),
     };
-    for msg in &conn.receiver {
-        match msg {
-            Message::Request(req) => {
-                if conn.handle_shutdown(&req)? {
-                    break;
+    let (done_tx, done_rx): (Sender<JobResult>, Receiver<JobResult>) =
+        crossbeam_channel::unbounded();
+
+    loop {
+        let timeout = st.next_timeout();
+        select! {
+            recv(conn.receiver) -> msg => {
+                let Ok(msg) = msg else { break; };
+                match msg {
+                    Message::Request(req) => {
+                        if conn.handle_shutdown(&req)? {
+                            break;
+                        }
+                        let resp = handle_request(&st, req);
+                        conn.sender.send(Message::Response(resp))?;
+                    }
+                    Message::Notification(n) => {
+                        handle_notification(&mut st, n);
+                    }
+                    Message::Response(_) => {}
                 }
-                let resp = handle_request(&st, req);
-                conn.sender.send(Message::Response(resp))?;
             }
-            Message::Notification(n) => {
-                if let Some(root) = handle_notification(&mut st, n) {
-                    publish(&conn, &mut st, &root)?;
+            recv(done_rx) -> result => {
+                let Ok(result) = result else { break; };
+                let fresh = st.is_fresh(&result.versions);
+                let key = st.project_key_for(&result.trigger);
+                st.schedule.finish(
+                    !fresh,
+                    key,
+                    result.trigger.clone(),
+                    Instant::now(),
+                );
+                if fresh {
+                    if let (Some(root), Some(analysis)) = (result.root, result.analysis) {
+                        st.apply_analysis(&result.trigger, root.clone(), analysis);
+                        publish(&conn, &mut st, &root)?;
+                    }
+                }
+                // Kick the next due job if any.
+                if let Some(uri) = st.take_due() {
+                    spawn_analysis(&mut st, uri, &done_tx);
                 }
             }
-            Message::Response(_) => {}
+            default(timeout) => {
+                if let Some(uri) = st.take_due() {
+                    spawn_analysis(&mut st, uri, &done_tx);
+                }
+            }
         }
     }
     // The writer thread ends once the connection (its sender) is gone.
     drop(conn);
+    drop(done_tx);
     io.join()?;
     Ok(())
 }
@@ -369,10 +580,12 @@ fn send_diags(
     Ok(())
 }
 
-fn handle_notification(st: &mut State, n: Notification) -> Option<PathBuf> {
+fn handle_notification(st: &mut State, n: Notification) {
     match n.method.as_str() {
         notification::DidOpenTextDocument::METHOD => {
-            let p: DidOpenTextDocumentParams = serde_json::from_value(n.params).ok()?;
+            let Ok(p) = serde_json::from_value::<DidOpenTextDocumentParams>(n.params) else {
+                return;
+            };
             let uri = p.text_document.uri.clone();
             st.docs.insert(
                 uri.clone(),
@@ -382,27 +595,37 @@ fn handle_notification(st: &mut State, n: Notification) -> Option<PathBuf> {
                     root: PathBuf::new(),
                 },
             );
-            st.analyze(&uri)
+            // Prompt analysis on open (no debounce).
+            st.schedule(uri, Duration::ZERO);
         }
         notification::DidChangeTextDocument::METHOD => {
-            let p: DidChangeTextDocumentParams = serde_json::from_value(n.params).ok()?;
-            let text = p.content_changes.into_iter().last()?.text;
+            let Ok(p) = serde_json::from_value::<DidChangeTextDocumentParams>(n.params) else {
+                return;
+            };
+            let Some(text) = p.content_changes.into_iter().last().map(|c| c.text) else {
+                return;
+            };
             let uri = p.text_document.uri.clone();
-            let d = st.docs.get_mut(&uri)?;
+            let Some(d) = st.docs.get_mut(&uri) else {
+                return;
+            };
             d.text = text;
             d.version = p.text_document.version;
-            st.analyze(&uri)
+            st.schedule(uri, CHANGE_DEBOUNCE);
         }
         notification::DidSaveTextDocument::METHOD => {
-            let p: DidSaveTextDocumentParams = serde_json::from_value(n.params).ok()?;
-            st.analyze(&p.text_document.uri)
+            let Ok(p) = serde_json::from_value::<DidSaveTextDocumentParams>(n.params) else {
+                return;
+            };
+            st.schedule(p.text_document.uri, Duration::ZERO);
         }
         notification::DidCloseTextDocument::METHOD => {
-            let p: DidCloseTextDocumentParams = serde_json::from_value(n.params).ok()?;
+            let Ok(p) = serde_json::from_value::<DidCloseTextDocumentParams>(n.params) else {
+                return;
+            };
             st.docs.remove(&p.text_document.uri);
-            None
         }
-        _ => None,
+        _ => {}
     }
 }
 
@@ -422,6 +645,19 @@ fn handle_request(st: &State, req: Request) -> Response {
     let Some(doc) = st.docs.get(&uri) else {
         return none;
     };
+    // Formatting uses the live buffer and does not need analysis.
+    if req.method.as_str() == request::Formatting::METHOD {
+        return match kiln_fmt::format(&doc.text) {
+            Ok(out) if out != doc.text => {
+                let end = Lines::new(&doc.text).position(doc.text.len());
+                ok(
+                    id,
+                    vec![TextEdit::new(Range::new(Position::new(0, 0), end), out)],
+                )
+            }
+            _ => ok(id, Vec::<TextEdit>::new()),
+        };
+    }
     let Some((proj, fi)) = st.proj_of(&uri) else {
         return none;
     };
@@ -568,16 +804,6 @@ fn handle_request(st: &State, req: Request) -> Response {
                 .collect();
             ok(id, DocumentSymbolResponse::Flat(syms))
         }
-        request::Formatting::METHOD => match kiln_fmt::format(&doc.text) {
-            Ok(out) if out != doc.text => {
-                let end = Lines::new(&doc.text).position(doc.text.len());
-                ok(
-                    id,
-                    vec![TextEdit::new(Range::new(Position::new(0, 0), end), out)],
-                )
-            }
-            _ => ok(id, Vec::<TextEdit>::new()),
-        },
         request::InlayHintRequest::METHOD => {
             let end = base + ftext.len();
             let hints: Vec<InlayHint> = a

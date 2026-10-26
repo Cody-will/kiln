@@ -388,6 +388,7 @@ dependencies = [
 name = "kiln_lsp"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "kiln_borrowck",
  "kiln_fmt",
  "kiln_lexer",
