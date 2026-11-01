@@ -3,6 +3,7 @@
 //! formatting, and inlay type hints, over stdio.
 
 pub mod analysis;
+pub mod facts;
 pub mod kilnc;
 pub mod server;
 

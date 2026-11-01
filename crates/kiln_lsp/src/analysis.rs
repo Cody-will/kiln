@@ -5,7 +5,6 @@
 //! each successful run replaces the previous analysis for that project.
 
 use kiln_lexer::{Diagnostic, Span};
-use kiln_resolve::{DefKind, Res};
 use std::collections::HashMap;
 
 /// What a name refers to.
@@ -79,6 +78,8 @@ pub struct Analysis {
     pub text: String,
     /// Function bodies: (body span, local binding spans in it).
     pub scopes: Vec<(Span, Vec<Span>)>,
+    /// Each file's global span base, offset in `text`, and length.
+    pub bases: Vec<(usize, usize, usize)>,
 }
 
 fn ident_at_end(src: &str, sp: Span) -> Span {
@@ -93,51 +94,6 @@ fn ident_at_end(src: &str, sp: Span) -> Span {
             .last()
             .map_or(trimmed.len(), |(i, _)| i);
     Span::new(start, end)
-}
-
-/// The first source line of an item, as a signature for hover.
-fn signature(src: &str, start: usize) -> String {
-    // Back up to the start of the line (to include `pub fn`).
-    let line_start = src[..start].rfind('\n').map_or(0, |i| i + 1);
-    let rest = &src[line_start..];
-    let line = rest.lines().next().unwrap_or("").trim();
-    line.trim_end_matches('{').trim_end().to_string()
-}
-
-/// Doc comments (`//` lines directly above an item).
-fn doc_above(src: &str, start: usize) -> String {
-    let line_start = src[..start].rfind('\n').map_or(0, |i| i + 1);
-    let mut docs = Vec::new();
-    let mut end = line_start;
-    while end > 0 {
-        let prev_start = src[..end - 1].rfind('\n').map_or(0, |i| i + 1);
-        let line = src[prev_start..end - 1].trim();
-        if let Some(c) = line.strip_prefix("//") {
-            docs.push(c.trim_start_matches('/').trim().to_string());
-            end = prev_start;
-        } else if line.starts_with('@') {
-            end = prev_start;
-        } else {
-            break;
-        }
-    }
-    docs.reverse();
-    docs.join("\n")
-}
-
-fn kind_name(k: DefKind) -> &'static str {
-    match k {
-        DefKind::Mod => "mod",
-        DefKind::Struct => "struct",
-        DefKind::Enum => "enum",
-        DefKind::Variant { .. } => "variant",
-        DefKind::Trait => "trait",
-        DefKind::Fn => "fun",
-        DefKind::Const => "const",
-        DefKind::Static => "static",
-        DefKind::TypeAlias => "type",
-        DefKind::External => "module",
-    }
 }
 
 /// Spans of `.name` at bracket depth 0 within a call's span (the method name).
@@ -200,252 +156,238 @@ pub fn analyze_package(pkg: &kiln_parser::package::Package) -> Analysis {
 /// [`analyze_package`]; `diagnostics: false` leaves the diagnostics empty
 /// (the language server takes them from kilnc, the self-hosted front end).
 pub fn analyze_package_with(pkg: &kiln_parser::package::Package, diagnostics: bool) -> Analysis {
-    let parsed = &pkg.parse;
-    let mut layout = Vec::new();
-    let mut text = String::new();
-    for (base, path, t) in &pkg.files {
-        layout.push((*base, text.len(), path.clone(), t.len()));
-        text.push_str(t);
-        text.push('\n');
+    let files: Vec<(usize, std::path::PathBuf, String)> = pkg.files.clone();
+    let facts = crate::facts::rust(&pkg.parse.file);
+    let mut a = from_facts(&files, &facts);
+    if diagnostics {
+        let diags = kiln_borrowck::check_parse(&pkg.parse);
+        a.diagnostics = a.map_diagnostics(diags);
     }
-    let map = |s: Span| -> Option<Span> {
-        let (base, v, _, len) = layout
+    a
+}
+
+impl Analysis {
+    /// Converts a global compiler span to an offset span in [`Analysis::text`].
+    pub fn map_span(&self, s: Span) -> Option<Span> {
+        let (base, v, len) = self
+            .bases
             .iter()
-            .filter(|(b, _, _, _)| *b <= s.start)
-            .max_by_key(|(b, _, _, _)| *b)?;
-        if s.end > base + len || s.start >= kiln_lexer::BUILTIN_BASE {
+            .filter(|(b, _, _)| *b <= s.start)
+            .max_by_key(|(b, _, _)| *b)?;
+        if s.start >= kiln_lexer::BUILTIN_BASE || s.end > base + len {
             return None;
         }
         Some(Span::new(s.start - base + v, s.end - base + v))
-    };
-    let mut a = Analysis {
-        diagnostics: (if diagnostics {
-            kiln_borrowck::check_parse(parsed)
-        } else {
-            Vec::new()
-        })
-        .into_iter()
-        .map(|mut d| {
-            d.span = map(d.span).unwrap_or(Span::new(0, 0));
-            d.notes = d
-                .notes
-                .into_iter()
-                .map(|(m, sp)| (m, sp.and_then(map)))
-                .collect();
-            d
-        })
-        .collect(),
-        files: layout
-            .iter()
-            .map(|(_, v, p, len)| (*v, p.clone(), *len))
-            .collect(),
-        ..Default::default()
-    };
-    let src = text.as_str();
-    let prelude = kiln_resolve::parse_prelude();
-    let r = kiln_resolve::resolve(&parsed.file, &prelude);
-    let t = kiln_typeck::typeck(&r);
-    let in_file = |s: Span| map(s).is_some();
-    let m = |s: Span| map(s).unwrap_or(s);
-    let builtin = kiln_resolve::builtin();
-    let std_text = |s: Span| -> Option<(&str, usize)> {
-        let base = kiln_lexer::BUILTIN_BASE;
-        if s.start >= base && s.start - base < builtin.text.len() {
-            Some((builtin.text.as_str(), s.start - base))
-        } else {
-            None
-        }
-    };
-
-    // Definitions.
-    for d in &r.defs {
-        if matches!(d.kind, DefKind::Mod) && d.name.starts_with('<') {
-            continue;
-        }
-        if in_file(d.span) && d.span.start < d.span.end {
-            let ds = m(d.span);
-            a.def_names.insert(ds, d.name.clone());
-            let doc = doc_above(src, ds.start);
-            let sig = signature(src, ds.start);
-            a.def_hover.insert(ds, hover_text(&sig, &doc));
-            if d.module == r.root || matches!(d.kind, DefKind::Variant { .. }) {
-                let full = m(d.item.map_or(d.span, |i| i.span));
-                a.symbols.push(Symbol {
-                    name: d.name.clone(),
-                    kind: kind_name(d.kind),
-                    span: ds,
-                    full,
-                    container: None,
-                });
-            }
-            if d.module == r.root && !matches!(d.kind, DefKind::Variant { .. }) {
-                a.globals.push(Completion {
-                    label: d.name.clone(),
-                    kind: kind_name(d.kind),
-                    detail: sig,
-                });
-            }
-        }
     }
-    // Prelude names for completion.
-    if let Some(scope) = r.modules.get(&r.prelude) {
-        for (name, id) in scope.values.iter().chain(scope.types.iter()) {
-            let d = r.def(*id);
-            if name.starts_with("kn_") || name.starts_with('_') {
+
+    /// Maps diagnostics with global spans into this analysis.
+    pub fn map_diagnostics(&self, ds: Vec<Diagnostic>) -> Vec<Diagnostic> {
+        ds.into_iter()
+            .map(|mut d| {
+                d.span = self.map_span(d.span).unwrap_or(Span::new(0, 0));
+                d.notes = d
+                    .notes
+                    .into_iter()
+                    .map(|(m, sp)| (m, sp.and_then(|s| self.map_span(s))))
+                    .collect();
+                d
+            })
+            .collect()
+    }
+}
+
+fn kind_static(k: &str) -> &'static str {
+    const KINDS: [&str; 11] = [
+        "mod", "struct", "enum", "variant", "trait", "fun", "const", "static", "type", "module",
+        "method",
+    ];
+    KINDS.iter().find(|x| **x == k).copied().unwrap_or("module")
+}
+
+/// Builds the analysis of a program from its files (span base, path, text)
+/// and its navigation facts (see [`crate::facts`]).
+pub fn from_facts(files: &[(usize, std::path::PathBuf, String)], facts: &str) -> Analysis {
+    use crate::facts::{doc_above, hover_text, signature, unfield};
+    let mut a = Analysis::default();
+    let mut text = String::new();
+    for (base, path, t) in files {
+        a.bases.push((*base, text.len(), t.len()));
+        a.files.push((text.len(), path.clone(), t.len()));
+        text.push_str(t);
+        text.push('\n');
+    }
+    a.text = text;
+    // Scopes first: the lines are sorted, and `local` lines refer to them.
+    let mut scopes: Vec<(usize, Span, Vec<Span>)> = Vec::new();
+    for line in facts.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        if let ["scope", s, e] = f.as_slice() {
+            let (Ok(s), Ok(e)) = (s.parse(), e.parse()) else {
                 continue;
+            };
+            if let Some(full) = a.map_span(Span::new(s, e)) {
+                scopes.push((s, full, Vec::new()));
             }
-            let detail = std_text(d.span)
-                .map(|(t, o)| signature(t, o))
-                .unwrap_or_default();
-            a.globals.push(Completion {
-                label: name.clone(),
-                kind: kind_name(d.kind),
-                detail,
-            });
         }
     }
-
-    // Uses of names.
-    for (sp, res) in &r.paths {
-        if !in_file(*sp) {
-            continue;
-        }
-        let name_span = ident_at_end(src, m(*sp));
-        match res {
-            Res::Def(id) => {
-                let d = r.def(*id);
-                if in_file(d.span) {
-                    a.refs.push((name_span, Target::Def(m(d.span))));
-                } else {
-                    let key = format!("{}#{}", d.name, d.span.start);
-                    if let Some((text, off)) = std_text(d.span) {
-                        a.std_hover.entry(key.clone()).or_insert_with(|| {
-                            hover_text(&signature(text, off), &doc_above(text, off))
-                        });
-                    }
-                    a.refs.push((name_span, Target::Std(key)));
+    for line in facts.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        let n = |i: usize| -> usize { f.get(i).and_then(|x| x.parse().ok()).unwrap_or(0) };
+        let sp = |i: usize| Span::new(n(i), n(i + 1));
+        let txt = |i: usize| unfield(f.get(i).copied().unwrap_or(""));
+        let src = a.text.as_str();
+        match f[0] {
+            "def" => {
+                let Some(ds) = a.map_span(sp(2)) else {
+                    continue;
+                };
+                let name = txt(7);
+                let kind = kind_static(f[1]);
+                let sig = signature(src, ds.start);
+                a.def_names.insert(ds, name.clone());
+                a.def_hover
+                    .insert(ds, hover_text(&sig, &doc_above(src, ds.start)));
+                let root = f[6] == "1";
+                if root || kind == "variant" {
+                    let full = a.map_span(sp(4)).unwrap_or(ds);
+                    a.symbols.push(Symbol {
+                        name: name.clone(),
+                        kind,
+                        span: ds,
+                        full,
+                        container: None,
+                    });
+                }
+                if root && kind != "variant" {
+                    a.globals.push(Completion {
+                        label: name,
+                        kind,
+                        detail: sig,
+                    });
                 }
             }
-            Res::Local(l) => {
-                let ls = m(r.locals[l.0 as usize].span);
-                a.refs.push((name_span, Target::Local(ls)));
+            "pre" => a.globals.push(Completion {
+                label: txt(2),
+                kind: kind_static(f[1]),
+                detail: txt(3),
+            }),
+            "ref" => {
+                let Some(at) = a.map_span(sp(1)) else {
+                    continue;
+                };
+                let name_span = ident_at_end(src, at);
+                let target = match f[3] {
+                    "D" => match a.map_span(sp(4)) {
+                        Some(d) => Target::Def(d),
+                        None => continue,
+                    },
+                    "L" => match a.map_span(sp(4)) {
+                        Some(l) => Target::Local(l),
+                        None => continue,
+                    },
+                    _ => {
+                        let key = txt(4);
+                        a.std_hover.entry(key.clone()).or_insert_with(|| txt(5));
+                        Target::Std(key)
+                    }
+                };
+                a.refs.push((name_span, target));
             }
-            _ => {}
-        }
-    }
-    // Binding sites refer to themselves.
-    for (sp, l) in &r.bindings {
-        if in_file(*sp) {
-            let ls = m(r.locals[l.0 as usize].span);
-            let sp = &m(*sp);
-            a.refs.push((*sp, Target::Local(ls)));
-            // `x: T` (annotated binding or parameter) needs no hint.
-            let rest = src[sp.end..].trim_start();
-            let annotated = rest.starts_with(':') && !rest.starts_with(":=");
-            if !annotated {
-                a.inferred.push(*sp);
+            "bind" => {
+                let (Some(at), Some(ls)) = (a.map_span(sp(1)), a.map_span(sp(3))) else {
+                    continue;
+                };
+                a.refs.push((at, Target::Local(ls)));
+                // `x: T` (annotated binding or parameter) needs no hint.
+                let rest = src[at.end..].trim_start();
+                if !rest.starts_with(':') || rest.starts_with(":=") {
+                    a.inferred.push(at);
+                }
             }
-        }
-    }
-
-    // Per-function types, methods, and members.
-    for (i, f) in r.fns.iter().enumerate() {
-        let in_this = in_file(f.item.span);
-        // Members of in-file and std types alike, for `.` completion.
-        if let Some(ii) = f.impl_idx {
-            let imp = &r.impls[ii];
-            let self_name = type_name_of(&r, &imp.decl.self_ty);
-            if let Some(tn) = self_name {
-                if f.decl.self_param.is_some() && !f.decl.name.name.starts_with('_') {
-                    let detail = if in_this {
-                        signature(src, m(f.decl.name.span).start)
-                    } else {
-                        std_text(f.decl.name.span)
-                            .map(|(t, o)| signature(t, o))
-                            .unwrap_or_default()
+            "meth" => {
+                let tn = txt(1);
+                let name = txt(7);
+                let ns = a.map_span(sp(2));
+                if f[6] == "1" && !name.starts_with('_') {
+                    let detail = match ns {
+                        Some(ns) => signature(src, ns.start),
+                        None => txt(8),
                     };
                     a.members.entry(tn.clone()).or_default().push(Completion {
-                        label: f.decl.name.name.clone(),
+                        label: name.clone(),
                         kind: "method",
                         detail,
                     });
                 }
-                if in_this {
-                    a.def_names
-                        .insert(m(f.decl.name.span), f.decl.name.name.clone());
-                    let sig = signature(src, m(f.decl.name.span).start);
-                    a.def_hover.insert(
-                        m(f.decl.name.span),
-                        hover_text(&sig, &doc_above(src, m(f.decl.name.span).start)),
-                    );
+                if let (Some(ns), Some(full)) = (ns, a.map_span(sp(4))) {
+                    let sig = signature(src, ns.start);
+                    a.def_names.insert(ns, name.clone());
+                    a.def_hover
+                        .insert(ns, hover_text(&sig, &doc_above(src, ns.start)));
                     a.symbols.push(Symbol {
-                        name: f.decl.name.name.clone(),
+                        name,
                         kind: "method",
-                        span: m(f.decl.name.span),
-                        full: m(f.item.span),
+                        span: ns,
+                        full,
                         container: Some(tn),
                     });
                 }
             }
-        }
-        if !in_this {
-            continue;
-        }
-        let Some(res) = t.fn_results(i) else { continue };
-        let mut scope = Vec::new();
-        for (l, ty) in &res.locals {
-            let loc = &r.locals[l.0 as usize];
-            if in_file(loc.span) {
-                a.locals
-                    .insert(m(loc.span), (loc.name.clone(), t.fmt_ty(ty)));
-                scope.push(m(loc.span));
+            "local" => {
+                let Some(ls) = a.map_span(sp(2)) else {
+                    continue;
+                };
+                a.locals.insert(ls, (txt(4), txt(5)));
+                if let Some(s) = scopes.iter_mut().find(|(k, _, _)| *k == n(1)) {
+                    s.2.push(ls);
+                }
             }
-        }
-        a.scopes.push((m(f.item.span), scope));
-        for (sp, ty) in &res.tys {
-            if in_file(*sp) {
-                let sp = &m(*sp);
-                a.expr_tys.push((*sp, t.fmt_ty(ty)));
-                if let Some(name) = adt_name(&r, ty) {
-                    a.expr_type_names.push((*sp, name.clone()));
-                    // Fields.
-                    let fields = t.struct_fields(&strip_refs(ty));
-                    if !fields.is_empty() {
-                        let e = a.members.entry(name).or_default();
-                        for (fname, fty) in fields {
-                            let c = Completion {
-                                label: fname,
-                                kind: "field",
-                                detail: t.fmt_ty(&fty),
-                            };
-                            if !e.contains(&c) {
-                                e.push(c);
-                            }
-                        }
+            "ety" => {
+                let Some(at) = a.map_span(sp(1)) else {
+                    continue;
+                };
+                a.expr_tys.push((at, txt(3)));
+                let adt = txt(4);
+                if !adt.is_empty() {
+                    a.expr_type_names.push((at, adt));
+                }
+            }
+            "field" => {
+                let c = Completion {
+                    label: txt(2),
+                    kind: "field",
+                    detail: txt(3),
+                };
+                let e = a.members.entry(txt(1)).or_default();
+                if !e.contains(&c) {
+                    e.push(c);
+                }
+            }
+            "mref" => {
+                let Some(call) = a.map_span(sp(1)) else {
+                    continue;
+                };
+                let name = txt(3);
+                let Some(ns) = method_name_span(src, call, &name) else {
+                    continue;
+                };
+                let target = match f[4] {
+                    "D" => match a.map_span(sp(5)) {
+                        Some(d) => Target::Def(d),
+                        None => continue,
+                    },
+                    _ => {
+                        let key = txt(5);
+                        a.std_hover.entry(key.clone()).or_insert_with(|| txt(6));
+                        Target::Std(key)
                     }
-                }
+                };
+                a.refs.push((ns, target));
             }
-        }
-        for (call, mi) in &res.methods {
-            let Some(fi) = mi.fn_idx else { continue };
-            let callee = &r.fns[fi];
-            let Some(ns) = method_name_span(src, m(*call), &callee.decl.name.name) else {
-                continue;
-            };
-            let def = callee.decl.name.span;
-            if in_file(def) {
-                a.refs.push((ns, Target::Def(m(def))));
-            } else {
-                let key = format!("{}#{}", callee.decl.name.name, def.start);
-                if let Some((text, off)) = std_text(def) {
-                    a.std_hover.entry(key.clone()).or_insert_with(|| {
-                        hover_text(&signature(text, off), &doc_above(text, off))
-                    });
-                }
-                a.refs.push((ns, Target::Std(key)));
-            }
+            _ => {}
         }
     }
+    a.scopes = scopes.into_iter().map(|(_, s, v)| (s, v)).collect();
     for v in a.members.values_mut() {
         v.sort();
         v.dedup_by(|x, y| x.label == y.label);
@@ -455,48 +397,9 @@ pub fn analyze_package_with(pkg: &kiln_parser::package::Package, diagnostics: bo
     a.refs.sort_by_key(|(s, _)| (s.start, s.end));
     a.refs.dedup();
     a.symbols.sort_by_key(|s| s.span.start);
-    a.text = text.clone();
     a.expr_tys
         .sort_by_key(|(s, _)| (s.start, std::cmp::Reverse(s.end)));
     a
-}
-
-fn hover_text(sig: &str, doc: &str) -> String {
-    if doc.is_empty() {
-        format!("```kiln\n{sig}\n```")
-    } else {
-        format!("```kiln\n{sig}\n```\n\n{doc}")
-    }
-}
-
-fn strip_refs(t: &kiln_typeck::ty::Ty) -> kiln_typeck::ty::Ty {
-    match t {
-        kiln_typeck::ty::Ty::Ref(_, inner) => strip_refs(inner),
-        _ => t.clone(),
-    }
-}
-
-fn adt_name(r: &kiln_resolve::Resolved<'_>, t: &kiln_typeck::ty::Ty) -> Option<String> {
-    match strip_refs(t) {
-        kiln_typeck::ty::Ty::Adt(id, _) => Some(r.def(id).name.clone()),
-        kiln_typeck::ty::Ty::Prim(p) => Some(format!("{p:?}").to_lowercase()),
-        _ => None,
-    }
-}
-
-fn type_name_of(r: &kiln_resolve::Resolved<'_>, ty: &kiln_parser::ast::Type) -> Option<String> {
-    // The type's path resolution, when it names an ADT.
-    for (sp, res) in &r.paths {
-        if *sp == ty.span {
-            if let Res::Def(id) = res {
-                return Some(r.def(*id).name.clone());
-            }
-            if let Res::Prim(p) = res {
-                return Some(format!("{p:?}").to_lowercase());
-            }
-        }
-    }
-    None
 }
 
 impl Analysis {
