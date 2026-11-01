@@ -4,9 +4,11 @@
 //!
 //! `--compiler=rust` / `KILN_COMPILER=rust` is **deprecated**: it selects the
 //! Rust-built-in codegen for differential tests and bootstrap stage 1. Prefer
-//! kilnc. `--backend=` and packages with native `[link]` still force the
-//! built-in path (kilnc does not link natives yet). Path `[dependencies]`
-//! are resolved by kilnc.
+//! kilnc. Only `--backend=cranelift` (a backend that exists only in the Rust
+//! compiler) selects it implicitly. Native `[link]` settings (C sources,
+//! `-l`, `-L`) and path `[dependencies]` are handled by kilnc. `kiln check`,
+//! `kiln test` and the language server's diagnostics use kilnc's front end
+//! (`kilnc --check`, `kilnc --build --tests`).
 //!
 //! When kilnc fails, `kiln` no longer silently falls back unless
 //! `KILN_ALLOW_RUST_FALLBACK=1` is set (temporary escape hatch).
@@ -50,8 +52,9 @@ pub fn find() -> Option<PathBuf> {
         .filter(|p| p.is_file())
 }
 
-/// Whether this build should use kilnc (and which one).
-pub fn wanted(explicit_backend: bool, has_native: bool) -> Option<PathBuf> {
+/// Whether this build should use kilnc (and which one). `rust_backend`:
+/// `--backend=cranelift` was given, which only the Rust compiler has.
+pub fn wanted(rust_backend: bool) -> Option<PathBuf> {
     let choice = match CHOICE.load(Ordering::Relaxed) {
         0 => match std::env::var("KILN_COMPILER").as_deref() {
             Ok("rust") => {
@@ -65,7 +68,7 @@ pub fn wanted(explicit_backend: bool, has_native: bool) -> Option<PathBuf> {
         },
         c => c,
     };
-    if choice == 2 || (choice == 0 && (explicit_backend || has_native)) {
+    if choice == 2 || (choice == 0 && rust_backend) {
         return None;
     }
     let k = find();
@@ -78,7 +81,7 @@ pub fn wanted(explicit_backend: bool, has_native: bool) -> Option<PathBuf> {
 /// A directory with kilnc's inputs from this `kiln`: the std sources in the
 /// source-tree layout kilnc reads (`src/prelude.kn`, `std/<name>.kn`) and the
 /// runtime libraries. Written once per kiln version and contents.
-fn support_dir() -> Result<PathBuf, String> {
+pub fn support_dir() -> Result<PathBuf, String> {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     kiln_resolve::PRELUDE_SRC.hash(&mut h);
@@ -134,6 +137,8 @@ pub fn build(
     out: &Path,
     work: &Path,
     release: bool,
+    native: &kiln_parser::manifest::NativeLink,
+    tests_out: Option<&Path>,
 ) -> Result<(), String> {
     let sup = support_dir()?;
     std::fs::create_dir_all(work).map_err(|e| format!("cannot create {}: {e}", work.display()))?;
@@ -146,6 +151,24 @@ pub fn build(
     cmd.arg("--build");
     if release {
         cmd.arg("--release");
+    }
+    for c in &native.c_sources {
+        if !c.is_file() {
+            return Err(format!(
+                "error: [link] c-sources: {} not found\n",
+                c.display()
+            ));
+        }
+        cmd.arg("--c-source").arg(c);
+    }
+    for d in &native.search {
+        cmd.arg(format!("-L{}", d.display()));
+    }
+    for l in &native.libs {
+        cmd.arg(format!("-l{l}"));
+    }
+    if let Some(t) = tests_out {
+        cmd.arg("--tests").arg(t);
     }
     cmd.arg(root).arg("-o").arg(&tmp_out);
     cmd.env("KILN_RT", sup.join("rt").join(kiln_runtime::LIB_NAME));
@@ -170,11 +193,21 @@ pub fn build(
 
 static EXPLICIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Records whether `--backend=` was given (which selects the built-in compiler).
-pub fn set_explicit_backend(b: bool) {
+/// Records whether `--backend=cranelift` was given (which selects the
+/// built-in compiler; `--backend=llvm` is what kilnc does anyway).
+pub fn set_rust_backend(b: bool) {
     EXPLICIT.store(b, Ordering::Relaxed);
 }
 
-pub fn explicit_backend() -> bool {
+/// Whether `--backend=cranelift` was given.
+pub fn rust_backend() -> bool {
     EXPLICIT.load(Ordering::Relaxed)
+}
+
+/// kilnc for front-end work (`kiln check`, `kiln test`, the language
+/// server), if it is installed and not deselected with `--compiler=rust`.
+pub fn front_end() -> Option<kiln_lsp::kilnc::Kilnc> {
+    let exe = wanted(false)?;
+    let resolve_dir = support_dir().ok()?;
+    Some(kiln_lsp::kilnc::Kilnc { exe, resolve_dir })
 }

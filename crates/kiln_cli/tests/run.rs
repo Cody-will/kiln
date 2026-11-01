@@ -611,3 +611,42 @@ fn postgres_live() {
     );
     assert_eq!(got, want);
 }
+
+/// `kiln check` and `kiln test` go through kilnc's front end (`KILNC` is set
+/// by `kiln()`): rendered diagnostics, and the generated test harness.
+#[test]
+fn check_and_test_use_kilnc() {
+    let dir = scratch("kilnc-front");
+    let bad = dir.join("bad.kn");
+    std::fs::write(
+        &bad,
+        "fun main() {\n\tx := \"a\".to_string()\n\ty := x\n\tprintln(\"{x}\")\n}\n",
+    )
+    .unwrap();
+    let out = Command::new(kiln())
+        .arg("check")
+        .arg(&bad)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(!out.status.success());
+    assert!(
+        err.contains("use of moved value: `x`") && err.contains("value moved here"),
+        "{err}"
+    );
+    let t = dir.join("t.kn");
+    std::fs::write(
+        &t,
+        "fun main() {}\n\n@test\nfun passes() {\n\tassert(1 + 1 == 2)\n}\n\n@test\n@should_panic(expected = \"boom\")\nfun panics() {\n\tpanic(\"boom\")\n}\n\n@test\n@ignore\nfun skipped() {}\n",
+    )
+    .unwrap();
+    let out = Command::new(kiln()).arg("test").arg(&t).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        out.status.success(),
+        "{text}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains("2 passed; 0 failed; 1 ignored"), "{text}");
+}

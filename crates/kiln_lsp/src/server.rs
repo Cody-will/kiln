@@ -10,7 +10,8 @@
 // sound map key.
 #![allow(clippy::mutable_key_type)]
 
-use crate::analysis::{analyze_package, Analysis, Completion};
+use crate::analysis::{analyze_package, analyze_package_with, Analysis, Completion};
+use crate::kilnc::Kilnc;
 use crossbeam_channel::{select, Receiver, Sender};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::Notification as _;
@@ -349,9 +350,75 @@ fn analyze_with_overlays(
         pkg = kiln_parser::package::load(&root, &deps, &overlay).ok();
     }
     let pkg = pkg?;
-    let analysis = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| analyze_package(&pkg)))
+    let Some(k) = KILNC.get().and_then(|k| k.as_ref()) else {
+        let analysis =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| analyze_package(&pkg)))
+                .unwrap_or_default();
+        return Some((root, analysis));
+    };
+    // Diagnostics come from kilnc (run concurrently); the navigation tables
+    // (hover, definitions, completion) from the in-process index.
+    let ov: Vec<(PathBuf, String)> = overlays
+        .iter()
+        .map(|(p, t)| (p.clone(), t.clone()))
+        .collect();
+    let (checked, mut analysis) = std::thread::scope(|s| {
+        let h = s.spawn(|| crate::kilnc::check(k, &root, &ov));
+        let a = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            analyze_package_with(&pkg, false)
+        }))
         .unwrap_or_default();
+        (h.join().ok(), a)
+    });
+    match checked {
+        Some(Ok(c)) => analysis.diagnostics = map_kilnc(&analysis, c),
+        Some(Err(e)) => {
+            analysis.diagnostics = vec![kiln_lexer::Diagnostic::error(
+                e,
+                kiln_lexer::Span::new(0, 0),
+            )]
+        }
+        None => {}
+    }
     Some((root, analysis))
+}
+
+/// kilnc for diagnostics (set once by [`run_with`]).
+static KILNC: std::sync::OnceLock<Option<Kilnc>> = std::sync::OnceLock::new();
+
+/// Converts kilnc's global spans (`k << 32` per file) to offsets in the
+/// analysis text (files laid end to end, see [`Analysis::files`]).
+fn map_kilnc(a: &Analysis, c: crate::kilnc::Checked) -> Vec<kiln_lexer::Diagnostic> {
+    use kiln_lexer::Span;
+    let map = |s: Span| -> Option<Span> {
+        let (base, path) = c
+            .files
+            .iter()
+            .filter(|(b, _)| *b <= s.start)
+            .max_by_key(|(b, _)| *b)?;
+        let (v, _, len) = a.files.iter().find(|(_, p, _)| same_file(p, path))?;
+        if s.start >= kiln_lexer::BUILTIN_BASE || s.end - base > *len {
+            return None;
+        }
+        Some(Span::new(s.start - base + v, s.end - base + v))
+    };
+    let mut out: Vec<_> = c
+        .diagnostics
+        .into_iter()
+        .map(|mut d| {
+            d.span = map(d.span).unwrap_or(Span::new(0, 0));
+            d.notes = d
+                .notes
+                .into_iter()
+                .map(|(m, sp)| (m, sp.and_then(map)))
+                .collect();
+            d
+        })
+        .collect();
+    if let Some(f) = c.fatal {
+        out.push(kiln_lexer::Diagnostic::error(f, Span::new(0, 0)));
+    }
+    out
 }
 
 fn spawn_analysis(st: &mut State, trigger: Uri, done: &Sender<JobResult>) {
@@ -405,8 +472,16 @@ fn location(a: &Analysis, s: kiln_lexer::Span) -> Option<Location> {
     ))
 }
 
-/// Runs the server on stdin/stdout until the client shuts it down.
+/// Runs the server on stdin/stdout until the client shuts it down, with
+/// the in-process front end for diagnostics.
 pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    run_with(None)
+}
+
+/// [`run`], taking diagnostics from kilnc (the self-hosted front end) when
+/// given.
+pub fn run_with(kilnc: Option<Kilnc>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let _ = KILNC.set(kilnc);
     let (conn, io) = Connection::stdio();
     let caps = ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),

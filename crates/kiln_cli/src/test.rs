@@ -137,7 +137,11 @@ pub fn run(o: TestOpts) -> ExitCode {
             }
         };
         let src = program.src().to_string();
-        let tests = match kiln_codegen::build_tests_parsed(program.pkg.parse, &exe, o.codegen) {
+        let built = match selfhost_tests(&program, &exe, &dir, fi, o.codegen.release) {
+            Some(r) => r,
+            None => kiln_codegen::build_tests_parsed(program.pkg.parse, &exe, o.codegen),
+        };
+        let tests = match built {
             Ok(t) => t,
             Err(kiln_codegen::BuildError::Diagnostics(errs)) => {
                 crate::report(&shown, &src, &errs);
@@ -206,6 +210,92 @@ pub fn run(o: TestOpts) -> ExitCode {
     } else {
         ExitCode::from(1)
     }
+}
+
+/// Builds the test program with kilnc (`kilnc --build --tests`), when it is
+/// installed; `None` means use the built-in compiler.
+fn selfhost_tests(
+    p: &crate::package::Program,
+    exe: &Path,
+    dir: &Path,
+    fi: usize,
+    release: bool,
+) -> Option<Result<Vec<kiln_parser::TestCase>, kiln_codegen::BuildError>> {
+    let kilnc = crate::selfhost::wanted(crate::selfhost::rust_backend())?;
+    let native = match &p.manifest {
+        Some(m) => match kiln_parser::manifest::all_link(m) {
+            Ok(n) => n,
+            Err(e) => return Some(Err(kiln_codegen::BuildError::Other(e.to_string()))),
+        },
+        None => Default::default(),
+    };
+    let list = dir.join(format!("t{fi}.tests"));
+    let work = dir.join(format!("w{fi}"));
+    if let Err(msg) =
+        crate::selfhost::build(&kilnc, &p.root, exe, &work, release, &native, Some(&list))
+    {
+        // Show the front end's diagnostics properly when there are any.
+        if let Some(k) = crate::selfhost::front_end() {
+            if let Ok(c) = kiln_lsp::kilnc::check(&k, &p.root, &[]) {
+                if !c.diagnostics.is_empty() {
+                    return Some(Err(kiln_codegen::BuildError::Diagnostics(c.diagnostics)));
+                }
+            }
+        }
+        return Some(Err(kiln_codegen::BuildError::Other(
+            msg.trim_end().to_string(),
+        )));
+    }
+    let text = match std::fs::read_to_string(&list) {
+        Ok(t) => t,
+        Err(e) => {
+            return Some(Err(kiln_codegen::BuildError::Other(format!(
+                "cannot read {}: {e}",
+                list.display()
+            ))))
+        }
+    };
+    Some(Ok(parse_test_list(&text)))
+}
+
+/// The test list kilnc writes: `name<TAB>ignore<TAB>should_panic` per line.
+fn parse_test_list(text: &str) -> Vec<kiln_parser::TestCase> {
+    text.lines()
+        .filter_map(|l| {
+            let mut f = l.splitn(3, '\t');
+            let name = f.next()?.to_string();
+            let ignore = f.next()? == "1";
+            let sp = f.next()?;
+            let should_panic = match sp {
+                "-" => None,
+                "*" => Some(None),
+                s => Some(Some(unfield(s.strip_prefix('=').unwrap_or(s)))),
+            };
+            Some(kiln_parser::TestCase {
+                name,
+                ignore,
+                should_panic,
+            })
+        })
+        .collect()
+}
+
+fn unfield(s: &str) -> String {
+    let mut o = String::new();
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            match it.next() {
+                Some('n') => o.push('\n'),
+                Some('t') => o.push('\t'),
+                Some(x) => o.push(x),
+                None => o.push('\\'),
+            }
+        } else {
+            o.push(c);
+        }
+    }
+    o
 }
 
 fn run_all(exe: &Path, tests: &[&kiln_parser::TestCase], o: &TestOpts) -> Vec<Outcome> {
@@ -298,5 +388,18 @@ fn run_one(exe: &Path, t: &kiln_parser::TestCase, o: &TestOpts) -> Outcome {
             Outcome::Fail(out)
         }
         Some(_) => Outcome::Pass,
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    #[test]
+    fn parses_test_list() {
+        let t = super::parse_test_list("a\t0\t-\nm::b\t1\t*\nc\t0\t=boom\\tx\n");
+        assert_eq!(t.len(), 3);
+        assert_eq!(t[1].name, "m::b");
+        assert!(t[1].ignore);
+        assert_eq!(t[1].should_panic, Some(None));
+        assert_eq!(t[2].should_panic, Some(Some("boom\tx".into())));
     }
 }

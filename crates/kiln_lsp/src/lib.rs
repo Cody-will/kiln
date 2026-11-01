@@ -3,6 +3,7 @@
 //! formatting, and inlay type hints, over stdio.
 
 pub mod analysis;
+pub mod kilnc;
 pub mod server;
 
 #[cfg(test)]

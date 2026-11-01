@@ -20,7 +20,7 @@ KILN := target/debug/kiln
 
 bootstrap:
 	cargo build -p kiln_cli
-	cd compiler && KILN_RUN_FLAGS= ../$(KILN) build
+	cd compiler && KILN_COMPILER=rust KILN_RUN_FLAGS= ../$(KILN) build
 	rm -rf $(BOOT)
 	mkdir -p $(BOOT)
 	cp compiler/target/debug/kilnc $(BOOT)/stage1

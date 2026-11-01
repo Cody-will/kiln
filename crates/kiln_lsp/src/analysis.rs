@@ -194,6 +194,12 @@ pub fn analyze(src: &str) -> Analysis {
 /// converted to an offset in it, so the queries below work across files.
 /// [`Analysis::files`] maps offsets back to files.
 pub fn analyze_package(pkg: &kiln_parser::package::Package) -> Analysis {
+    analyze_package_with(pkg, true)
+}
+
+/// [`analyze_package`]; `diagnostics: false` leaves the diagnostics empty
+/// (the language server takes them from kilnc, the self-hosted front end).
+pub fn analyze_package_with(pkg: &kiln_parser::package::Package, diagnostics: bool) -> Analysis {
     let parsed = &pkg.parse;
     let mut layout = Vec::new();
     let mut text = String::new();
@@ -213,18 +219,22 @@ pub fn analyze_package(pkg: &kiln_parser::package::Package) -> Analysis {
         Some(Span::new(s.start - base + v, s.end - base + v))
     };
     let mut a = Analysis {
-        diagnostics: kiln_borrowck::check_parse(parsed)
-            .into_iter()
-            .map(|mut d| {
-                d.span = map(d.span).unwrap_or(Span::new(0, 0));
-                d.notes = d
-                    .notes
-                    .into_iter()
-                    .map(|(m, sp)| (m, sp.and_then(map)))
-                    .collect();
-                d
-            })
-            .collect(),
+        diagnostics: (if diagnostics {
+            kiln_borrowck::check_parse(parsed)
+        } else {
+            Vec::new()
+        })
+        .into_iter()
+        .map(|mut d| {
+            d.span = map(d.span).unwrap_or(Span::new(0, 0));
+            d.notes = d
+                .notes
+                .into_iter()
+                .map(|(m, sp)| (m, sp.and_then(map)))
+                .collect();
+            d
+        })
+        .collect(),
         files: layout
             .iter()
             .map(|(_, v, p, len)| (*v, p.clone(), *len))

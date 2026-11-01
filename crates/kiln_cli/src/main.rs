@@ -78,10 +78,10 @@ USAGE:
     Packages with dependencies get a kiln.lock (versions and checksums of
     the dependencies); --locked fails instead of updating it.
     Builds use kilnc, the self-hosted compiler, when it is installed (see
-    kiln doctor). --compiler=rust / KILN_COMPILER=rust is deprecated and selects
-    compiler. That one's release builds use LLVM when this kiln includes it
-    (built with --features llvm), Cranelift otherwise; --backend= overrides
-    (and implies --compiler=rust).
+    kiln doctor); so do kiln check, kiln test and kiln lsp. --compiler=rust /
+    KILN_COMPILER=rust selects the Rust bootstrap compiler (deprecated; for
+    bootstrap and differential tests). --backend=llvm is kilnc's backend;
+    --backend=cranelift exists only in the Rust compiler and selects it.
     kiln version [-v]       Show the version (-v: where std and the runtime come from)
     kiln doctor             Check the C toolchain/linker and build a test program
     kiln editor install <vscode|nvim>
@@ -110,7 +110,7 @@ pub(crate) fn finish_codegen_flags(
     flags: &[String],
 ) -> Option<kiln_codegen::Options> {
     let explicit = flags.iter().any(|a| a.starts_with("--backend="));
-    selfhost::set_explicit_backend(explicit);
+    selfhost::set_rust_backend(flags.iter().any(|a| a == "--backend=cranelift"));
     if flags
         .iter()
         .any(|a| a.starts_with("--backend=") && a != "--backend=llvm" && a != "--backend=cranelift")
@@ -124,7 +124,11 @@ pub(crate) fn finish_codegen_flags(
             kiln_codegen::Backend::Cranelift
         };
     }
-    if opts.backend == kiln_codegen::Backend::Llvm && !kiln_codegen::llvm_available() {
+    // kilnc always emits LLVM IR; only the Rust compiler can lack LLVM.
+    if opts.backend == kiln_codegen::Backend::Llvm
+        && !kiln_codegen::llvm_available()
+        && selfhost::wanted(false).is_none()
+    {
         eprintln!("error: this `kiln` was built without the LLVM backend (see docs/LLVM.md)");
         return None;
     }
@@ -272,7 +276,7 @@ fn main() -> ExitCode {
         }
         [cmd, rest @ ..] if cmd == "fmt" => fmt::run(rest),
         [cmd, rest @ ..] if cmd == "lsp" && rest.iter().all(|a| a == "--stdio") => {
-            match kiln_lsp::server::run() {
+            match kiln_lsp::server::run_with(selfhost::front_end()) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("kiln lsp: {e}");
@@ -356,16 +360,13 @@ fn build_to(
         },
         None => Default::default(),
     };
-    let has_native =
-        !native.libs.is_empty() || !native.c_sources.is_empty() || !native.search.is_empty();
-    // Native `[link]` still needs the built-in compiler; path dependencies
-    // are resolved by kilnc (see compiler/src/manifest.kn).
-    if let Some(kilnc) = selfhost::wanted(selfhost::explicit_backend(), has_native) {
+    // kilnc handles native `[link]` settings and path dependencies too.
+    if let Some(kilnc) = selfhost::wanted(selfhost::rust_backend()) {
         let work = match out
             .parent()
             .filter(|d| d.ends_with("debug") || d.ends_with("release"))
         {
-            Some(d) if p.manifest.is_some() => d.join("kilnc"),
+            Some(d) if p.manifest.is_some() => d.join(".kilnc-work"),
             _ => {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -377,7 +378,7 @@ fn build_to(
                 std::env::temp_dir().join(format!("kiln-work-{:016x}", h.finish()))
             }
         };
-        match selfhost::build(&kilnc, &p.root, out, &work, opts.release) {
+        match selfhost::build(&kilnc, &p.root, out, &work, opts.release, &native, None) {
             Ok(()) => return Ok(()),
             Err(msg) => {
                 if std::env::var_os("KILN_DEBUG_KILNC").is_some() {
@@ -426,7 +427,23 @@ fn check(target: Option<&str>) -> ExitCode {
         Ok(p) => p,
         Err(c) => return c,
     };
-    let errors = kiln_borrowck::check_parse(&p.pkg.parse);
+    let errors = match selfhost::front_end() {
+        Some(k) => match kiln_lsp::kilnc::check(&k, &p.root, &[]) {
+            Ok(c) => {
+                if let Some(f) = &c.fatal {
+                    eprintln!("error: {f}");
+                    return ExitCode::from(1);
+                }
+                c.diagnostics
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(1);
+            }
+        },
+        // No kilnc (a bootstrap `kiln`): the Rust front end.
+        None => kiln_borrowck::check_parse(&p.pkg.parse),
+    };
     if errors.is_empty() {
         println!("{}: ok", p.name());
     }
@@ -447,7 +464,7 @@ fn build_program(
     };
     let stamp = out.with_extension("fingerprint");
     let mut fp = package::fingerprint(p, opts.release, opts.backend == kiln_codegen::Backend::Llvm);
-    if selfhost::wanted(selfhost::explicit_backend(), false).is_some() {
+    if selfhost::wanted(selfhost::rust_backend()).is_some() {
         fp.push_str("-kilnc");
     }
     let cached = p.manifest.is_some()
