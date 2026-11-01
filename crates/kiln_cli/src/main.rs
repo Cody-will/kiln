@@ -22,6 +22,7 @@ mod editor;
 mod fmt;
 mod install;
 mod package;
+mod registry;
 mod selfhost;
 mod test;
 
@@ -33,6 +34,13 @@ kiln - the Kiln language toolchain
 
 USAGE:
     kiln new <name> [--lib] Create a package (kiln.toml, src/main.kn or src/lib.kn)
+    kiln add <name>[@<version>] | kiln add --path <dir>
+                            Add a registry (or path) dependency to kiln.toml
+    kiln update [names...]  Move registry dependencies to the newest matching
+                            versions and rewrite kiln.lock
+    kiln publish [--index <dir|url>] [--dry-run] | --init-index <dir>
+                            Package a library and add it to a package index
+                            (local directory or git checkout; never pushes)
     kiln check [file.kn]    Resolve names, type-check, and borrow-check
     kiln build [--release] [--compiler=kilnc|rust] [--backend=llvm|cranelift] [--locked] [file.kn] [-o <output>]
                             Compile to a native executable (a package goes to
@@ -76,7 +84,10 @@ USAGE:
 
     Debug builds (the default) panic on integer overflow; --release builds wrap.
     Packages with dependencies get a kiln.lock (versions and checksums of
-    the dependencies); --locked fails instead of updating it.
+    the dependencies); --locked fails instead of updating it. Registry
+    dependencies (`name = \"1.2\"`) come from KILN_REGISTRY or ~/.kiln/config.toml
+    and are cached in ~/.kiln (KILN_HOME); --offline / KILN_OFFLINE=1 uses only
+    the cache.
     Builds use kilnc, the self-hosted compiler, when it is installed (see
     kiln doctor); so do kiln check, kiln test and kiln lsp. --compiler=rust /
     KILN_COMPILER=rust selects the Rust bootstrap compiler (deprecated; for
@@ -97,6 +108,7 @@ pub(crate) fn codegen_flag(opts: &mut kiln_codegen::Options, a: &str) -> bool {
         "--backend=cranelift" => opts.backend = kiln_codegen::Backend::Cranelift,
         "--backend=llvm" => opts.backend = kiln_codegen::Backend::Llvm,
         "--locked" => package::set_locked(),
+        "--offline" => registry::set_offline(),
         _ if selfhost::flag(a) => {}
         _ => return false,
     }
@@ -226,6 +238,9 @@ fn main() -> ExitCode {
             check(rest.first().map(String::as_str))
         }
         [cmd, rest @ ..] if cmd == "new" => package::new(rest),
+        [cmd, rest @ ..] if cmd == "add" => registry::add(rest),
+        [cmd, rest @ ..] if cmd == "update" => registry::update(rest),
+        [cmd, rest @ ..] if cmd == "publish" => registry::publish(rest),
         [cmd, rest @ ..] if cmd == "build" => {
             let mut opts = kiln_codegen::Options::default();
             let (mut file, mut out) = (None, None);

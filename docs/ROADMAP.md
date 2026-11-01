@@ -32,3 +32,5 @@ Status key: ✅ done · 🚧 in progress · ⬜ not started
 - **`scope |s| { ... }` sugar:** not special syntax. Use `scope(|s| { ... })` as an ordinary call.
 - **Labeled blocks:** not supported. Only `loop`, `while`, and `for` take labels.
 - **AST dump format:** `kiln parse` prints the AST with Rust's `Debug` format. A compact pretty-printer is planned.
+
+- Package registry: git/file index, `kiln add/update/publish`, semver, checksummed lockfile, offline cache (docs/REGISTRY.md). Official public index pending owner approval.

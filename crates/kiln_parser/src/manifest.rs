@@ -14,6 +14,8 @@ pub struct Manifest {
     pub dir: PathBuf,
     /// Path dependencies: (name, directory).
     pub deps: Vec<(String, PathBuf)>,
+    /// Registry dependencies: (name, version requirement), in order.
+    pub reg: Vec<(String, String)>,
     /// `[link]`: native libraries and C sources for `extern "C"` code.
     pub link: NativeLink,
 }
@@ -99,6 +101,7 @@ pub fn parse(path: &Path) -> Result<Manifest, String> {
         version: "0.0.0".into(),
         dir: dir.clone(),
         deps: vec![],
+        reg: vec![],
         link: NativeLink::default(),
     };
     let mut section = String::new();
@@ -137,23 +140,40 @@ pub fn parse(path: &Path) -> Result<Manifest, String> {
                 _ => return Err(err(&format!("unknown key `{k}` in [package]"))),
             },
             "dependencies" => {
-                let inner = v
-                    .strip_prefix('{')
-                    .and_then(|s| s.strip_suffix('}'))
-                    .ok_or_else(|| err("a dependency must be `{ path = \"...\" }` (registry dependencies are not supported yet)"))?;
-                let mut p = None;
-                for kv in inner.split(',') {
-                    if let Some((a, b)) = kv.split_once('=') {
-                        if a.trim() == "path" {
-                            p = unquote(b);
-                        }
-                    }
-                }
-                let p = p.ok_or_else(|| err("a dependency needs `path = \"...\"`"))?;
                 if !is_ident(k) {
                     return Err(err(&format!("dependency name `{k}` must be an identifier")));
                 }
-                m.deps.push((k.to_string(), dir.join(p)));
+                // `name = "1.2"`: a registry dependency.
+                if let Some(req) = unquote(v) {
+                    m.reg.push((k.to_string(), req));
+                    continue;
+                }
+                let inner = v
+                    .strip_prefix('{')
+                    .and_then(|s| s.strip_suffix('}'))
+                    .ok_or_else(|| {
+                        err("a dependency must be `\"<version>\"`, `{ version = \"...\" }`, or `{ path = \"...\" }`")
+                    })?;
+                let mut p = None;
+                let mut ver = None;
+                for kv in inner.split(',') {
+                    if let Some((a, b)) = kv.split_once('=') {
+                        match a.trim() {
+                            "path" => p = unquote(b),
+                            "version" => ver = unquote(b),
+                            _ => {}
+                        }
+                    }
+                }
+                match (p, ver) {
+                    (Some(p), _) => m.deps.push((k.to_string(), dir.join(p))),
+                    (None, Some(req)) => m.reg.push((k.to_string(), req)),
+                    (None, None) => {
+                        return Err(err(
+                            "a dependency needs `path = \"...\"` or `version = \"...\"`",
+                        ))
+                    }
+                }
             }
             "link" => {
                 let xs = string_array(v).ok_or_else(|| {
@@ -189,13 +209,87 @@ pub fn is_ident(s: &str) -> bool {
         && s.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
+/// Where kiln keeps downloaded packages and registry indexes:
+/// `$KILN_HOME`, or `~/.kiln`.
+pub fn kiln_home() -> PathBuf {
+    if let Some(h) = std::env::var_os("KILN_HOME").filter(|h| !h.is_empty()) {
+        return PathBuf::from(h);
+    }
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .unwrap_or_else(|| ".".into());
+    PathBuf::from(home).join(".kiln")
+}
+
+/// The unpacked source of registry package `name` at `version`.
+pub fn registry_src(name: &str, version: &str) -> PathBuf {
+    kiln_home()
+        .join("registry")
+        .join("src")
+        .join(format!("{name}-{version}"))
+}
+
+static RESOLVED: std::sync::Mutex<Option<Vec<(String, String)>>> = std::sync::Mutex::new(None);
+
+/// Overrides the lock file: the registry versions just resolved (the CLI
+/// sets these before it writes `kiln.lock`).
+pub fn set_registry_versions(v: Vec<(String, String)>) {
+    *RESOLVED.lock().unwrap() = Some(v);
+}
+
+/// The versions of the registry packages pinned in `dir/kiln.lock` (or set
+/// with [`set_registry_versions`]).
+pub fn locked_registry_versions(dir: &Path) -> Vec<(String, String)> {
+    if let Some(v) = RESOLVED.lock().unwrap().clone() {
+        return v;
+    }
+    let Ok(text) = std::fs::read_to_string(dir.join("kiln.lock")) else {
+        return vec![];
+    };
+    let mut out = vec![];
+    let (mut name, mut version) = (None, None);
+    for line in text.lines().chain(std::iter::once("[[package]]")) {
+        let line = line.trim();
+        if line == "[[package]]" {
+            if let (Some(n), Some(v)) = (name.take(), version.take()) {
+                out.push((n, v));
+            }
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            match k.trim() {
+                "name" => name = unquote(v),
+                "version" => version = unquote(v),
+                "source" => {
+                    if !unquote(v).is_some_and(|s| s.starts_with("registry+")) {
+                        name = None;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 /// All dependencies of `m`, transitively (each library once), in order.
+/// Registry dependencies use the versions pinned in `m`'s `kiln.lock`.
 pub fn all_deps(m: &Manifest) -> Result<Vec<Dependency>, String> {
+    let locked = locked_registry_versions(&m.dir);
     let mut out: Vec<Dependency> = Vec::new();
     let mut stack = vec![m.clone()];
     let mut seen = vec![m.dir.canonicalize().unwrap_or(m.dir.clone())];
     while let Some(cur) = stack.pop() {
-        for (name, dir) in &cur.deps {
+        let mut deps = cur.deps.clone();
+        for (name, _) in &cur.reg {
+            let Some((_, v)) = locked.iter().find(|(n, _)| n == name) else {
+                return Err(format!(
+                    "registry dependency `{name}` is not in kiln.lock; run `kiln update` to resolve it"
+                ));
+            };
+            deps.push((name.clone(), registry_src(name, v)));
+        }
+        for (name, dir) in &deps {
             let canon = dir
                 .canonicalize()
                 .map_err(|_| format!("dependency `{name}`: no package at {}", dir.display()))?;

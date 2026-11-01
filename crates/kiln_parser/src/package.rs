@@ -52,6 +52,53 @@ pub struct Dependency {
     pub root: PathBuf,
 }
 
+/// Adds `import super::<dep>` to a dependency's items for every other
+/// dependency it does not shadow, so a library can name its own
+/// dependencies (which are loaded as its siblings).
+fn sibling_imports(items: &mut Vec<Item>, deps: &[Dependency], me: &str) {
+    let span = Span::new(0, 0);
+    for o in deps {
+        if o.name == me || items.iter().any(|i| defines(i, &o.name)) {
+            continue;
+        }
+        let ident = |n: &str| crate::ast::Ident {
+            name: n.to_string(),
+            span,
+        };
+        items.push(Item {
+            kind: ItemKind::Import(crate::ast::ImportTree::Path {
+                path: vec![ident("super"), ident(&o.name)],
+                alias: None,
+            }),
+            vis: Visibility::Private,
+            attrs: Vec::new(),
+            doc: None,
+            span,
+        });
+    }
+}
+
+/// Whether `item` defines `name` in the type namespace (approximately).
+fn defines(item: &Item, name: &str) -> bool {
+    match &item.kind {
+        ItemKind::Mod { name: n, .. } => n.name == name,
+        ItemKind::Import(t) => import_binds(t, name),
+        _ => false,
+    }
+}
+
+fn import_binds(t: &crate::ast::ImportTree, name: &str) -> bool {
+    use crate::ast::ImportTree;
+    match t {
+        ImportTree::Path { path, alias } => alias
+            .as_ref()
+            .or(path.last())
+            .is_some_and(|i| i.name == name),
+        ImportTree::Glob { .. } => false,
+        ImportTree::Group { items, .. } => items.iter().any(|i| import_binds(i, name)),
+    }
+}
+
 /// Loads the program rooted at `root`, with `deps` as top-level modules.
 /// `overlay` supplies unsaved editor text for files (by path).
 pub fn load(
@@ -100,6 +147,8 @@ pub fn load(
         l.expand(&mut p.file.items, &ddir, &mut Vec::new());
         // A dependency's tests are its own business.
         strip_tests(&mut p.file.items);
+        // The other dependencies are siblings; make them visible by name.
+        sibling_imports(&mut p.file.items, deps, &d.name);
         parse.errors.extend(p.errors);
         let span = Span::new(0, 0);
         parse.file.items.push(Item {

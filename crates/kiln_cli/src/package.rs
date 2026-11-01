@@ -95,6 +95,10 @@ pub fn load(target: Option<&str>, lib_ok: bool) -> Result<Program, ExitCode> {
             (root, Some(m))
         }
     };
+    if let Some(m) = &manifest {
+        crate::registry::ensure(m, LOCKED.load(std::sync::atomic::Ordering::Relaxed))
+            .map_err(fail)?;
+    }
     let deps = match &manifest {
         Some(m) => all_deps(m).map_err(fail)?,
         None => vec![],
@@ -161,11 +165,29 @@ pub fn lock_text(
             fnv64(&mut h, text.as_bytes());
             fnv64(&mut h, &[0]);
         }
+        // A registry package: its index and the tarball's checksum.
+        if let (Ok(src), Ok(sum)) = (
+            std::fs::read_to_string(dir.join(".kiln-source")),
+            std::fs::read_to_string(dir.join(".kiln-checksum")),
+        ) {
+            entries.push((
+                d.name.clone(),
+                dm.version.clone(),
+                format!("registry+{}", src.trim()),
+                sum.trim().to_string(),
+            ));
+            continue;
+        }
         let src = match canon.strip_prefix(m.dir.canonicalize().unwrap_or(m.dir.clone())) {
             Ok(r) => r.to_string_lossy().replace('\\', "/"),
             Err(_) => pathdiff_from(&canon, &m.dir),
         };
-        entries.push((d.name.clone(), dm.version.clone(), src, format!("{h:016x}")));
+        entries.push((
+            d.name.clone(),
+            dm.version.clone(),
+            format!("path+{src}"),
+            format!("fnv64:{h:016x}"),
+        ));
     }
     entries.sort();
     let mut out = String::from(
@@ -173,7 +195,7 @@ pub fn lock_text(
     );
     for (name, version, src, sum) in entries {
         out.push_str(&format!(
-            "\n[[package]]\nname = \"{name}\"\nversion = \"{version}\"\nsource = \"path+{src}\"\nchecksum = \"fnv64:{sum}\"\n"
+            "\n[[package]]\nname = \"{name}\"\nversion = \"{version}\"\nsource = \"{src}\"\nchecksum = \"{sum}\"\n"
         ));
     }
     Ok(out)

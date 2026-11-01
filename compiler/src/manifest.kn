@@ -3,6 +3,7 @@
 // `[dependencies] name = { path = "..." }` build without the Rust compiler.
 
 import std::fs
+import std::os
 import std::path
 
 // A path dependency: its import name and its library root (`src/lib.kn`).
@@ -18,6 +19,8 @@ pub struct Manifest {
 	pub version string,
 	pub dir string,
 	pub deps Vec<(string, string)>,
+	// Registry dependencies: (name, version requirement).
+	pub reg Vec<(string, string)>,
 }
 
 fun unquote(v &str) option<string> {
@@ -85,6 +88,7 @@ pub fun parse(path &str) result<Manifest, string> {
 		version: "0.0.0".to_string(),
 		dir: dir.clone(),
 		deps: Vec::new(),
+		reg: Vec::new(),
 	}
 	section mut := string::new()
 	n mut := 0
@@ -135,29 +139,39 @@ pub fun parse(path &str) result<Manifest, string> {
 				_ => {},
 			}
 		} else if section == "dependencies" {
+			if !is_ident(k) {
+				return Err("{path}:{n}: dependency name `{k}` must be an identifier")
+			}
+			// `name = "1.2"`: a registry dependency.
+			if let Some(req) = unquote(v) {
+				m.reg.push((k.to_string(), req))
+				continue
+			}
 			inner0 := match v.strip_prefix("{{") {
 				Some(s) => match s.strip_suffix("}}") {
 					Some(t) => t,
-					None => return Err("{path}:{n}: a dependency must be `{{ path = \"...\" }}` (registry dependencies are not supported yet)"),
+					None => return Err("{path}:{n}: a dependency must be `\"<version>\"`, `{{ version = \"...\" }}`, or `{{ path = \"...\" }}`"),
 				},
-				None => return Err("{path}:{n}: a dependency must be `{{ path = \"...\" }}` (registry dependencies are not supported yet)"),
+				None => return Err("{path}:{n}: a dependency must be `\"<version>\"`, `{{ version = \"...\" }}`, or `{{ path = \"...\" }}`"),
 			}
 			p mut := None
+			ver mut := None
 			for kv in inner0.split(",") {
 				if let Some((a, b)) = kv.split_once("=") {
 					if a.trim() == "path" {
 						p = unquote(b)
+					} else if a.trim() == "version" {
+						ver = unquote(b)
 					}
 				}
 			}
-			rel := match p {
-				Some(s) => s,
-				None => return Err("{path}:{n}: a dependency needs `path = \"...\"`"),
+			match p {
+				Some(rel) => m.deps.push((k.to_string(), path::join(&dir, &rel))),
+				None => match ver {
+					Some(req) => m.reg.push((k.to_string(), req)),
+					None => return Err("{path}:{n}: a dependency needs `path = \"...\"` or `version = \"...\"`"),
+				},
 			}
-			if !is_ident(k) {
-				return Err("{path}:{n}: dependency name `{k}` must be an identifier")
-			}
-			m.deps.push((k.to_string(), path::join(&dir, &rel)))
 		}
 		// `[link]` and unknown sections: ignore keys (kilnc does not link natives yet).
 	}
@@ -167,8 +181,76 @@ pub fun parse(path &str) result<Manifest, string> {
 	return Ok(m)
 }
 
-// All path dependencies of `m`, transitively (each library once), in order.
+// `$KILN_HOME`, or `~/.kiln`: downloaded packages and registry indexes.
+pub fun kiln_home() string {
+	if let Some(h) = os::getenv("KILN_HOME") {
+		if !h.is_empty() {
+			return h
+		}
+	}
+	home := match os::getenv("HOME") {
+		Some(h) => h,
+		None => match os::getenv("USERPROFILE") {
+			Some(h) => h,
+			None => ".".to_string(),
+		},
+	}
+	return path::join(&home, ".kiln")
+}
+
+// The unpacked source of registry package `name` at `version`.
+pub fun registry_src(name &str, version &str) string {
+	return path::join(&path::join(&path::join(&kiln_home(), "registry"), "src"), "{name}-{version}")
+}
+
+// The versions of the registry packages pinned in `dir/kiln.lock`.
+pub fun locked_registry_versions(dir &str) Vec<(string, string)> {
+	out mut := Vec::new()
+	text := match fs::read_to_string(&path::join(dir, "kiln.lock")) {
+		Ok(t) => t,
+		Err(_) => return out,
+	}
+	let mut name option<string> = None
+	let mut version option<string> = None
+	lines mut := Vec::new()
+	for l in text.lines() {
+		lines.push(l.to_string())
+	}
+	lines.push("[[package]]".to_string())
+	for raw in &lines {
+		line := raw.trim()
+		if line == "[[package]]" {
+			if name.is_some() && version.is_some() {
+				out.push((name.clone().unwrap(), version.clone().unwrap()))
+			}
+			name = None
+			version = None
+			continue
+		}
+		if let Some((k, v)) = line.split_once("=") {
+			key := k.trim()
+			if key == "name" {
+				name = unquote(v)
+			} else if key == "version" {
+				version = unquote(v)
+			} else if key == "source" {
+				reg := match unquote(v) {
+					Some(s) => s.starts_with("registry+"),
+					None => false,
+				}
+				if !reg {
+					name = None
+				}
+			}
+		}
+	}
+	return out
+}
+
+// All dependencies of `m`, transitively (each library once), in order.
+// Registry dependencies use the versions pinned in `m`'s `kiln.lock`.
 pub fun all_deps(m &Manifest) result<Vec<Dep>, string> {
+	locked := locked_registry_versions(&m.dir)
 	out mut := Vec::new()
 	names mut := Vec::new()
 	stack mut := Vec::new()
@@ -177,7 +259,20 @@ pub fun all_deps(m &Manifest) result<Vec<Dep>, string> {
 	seen.push(path::clean(&m.dir))
 	while stack.len() > 0 {
 		cur := stack.pop().unwrap()
-		for (name, dir) in &cur.deps {
+		deps mut := cur.deps.clone()
+		for (rname, _) in &cur.reg {
+			let mut found option<string> = None
+			for (ln, lv) in &locked {
+				if *ln == *rname {
+					found = Some(lv.clone())
+				}
+			}
+			match found {
+				Some(v) => deps.push((rname.clone(), registry_src(rname, &v))),
+				None => return Err("registry dependency `{rname}` is not in kiln.lock; run `kiln update` to resolve it"),
+			}
+		}
+		for (name, dir) in &deps {
 			canon := path::clean(dir)
 			dup mut := false
 			for s in &seen {

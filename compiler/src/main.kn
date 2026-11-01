@@ -31,9 +31,9 @@ mod testgen
 import std::fs
 import std::hash::Hasher
 import std::os
-import std::time::Instant
-import ast::{Ident, Item, ItemKind, Span, Visibility}
 import std::path
+import std::time::Instant
+import ast::{Ident, ImportTree, Item, ItemKind, Span, Visibility}
 import token::{StrPart, TokenKind}
 
 fun esc(b &[u8]) string {
@@ -243,6 +243,63 @@ fun strip_tests(items &mut Vec<Item>) {
 	}
 }
 
+// Adds `import super::<dep>` to a dependency's items for every other
+// dependency it does not shadow (same as crates/kiln_parser/src/package.rs).
+fun sibling_imports(items &mut Vec<Item>, deps &Vec<manifest::Dep>, me &str) {
+	for o in deps {
+		if o.name == me {
+			continue
+		}
+		shadowed mut := false
+		for i in &*items {
+			if defines(i, &o.name) {
+				shadowed = true
+			}
+		}
+		if shadowed {
+			continue
+		}
+		span := Span::new(0, 0)
+		segs mut := Vec::new()
+		segs.push(Ident { name: "super".to_string(), span: span })
+		segs.push(Ident { name: o.name.clone(), span: span })
+		items.push(Item {
+			kind: ItemKind::Import(ImportTree::Path { path: segs, alias: None }),
+			vis: Visibility::Private,
+			attrs: Vec::new(),
+			doc: None,
+			span: span,
+		})
+	}
+}
+
+fun defines(item &Item, name &str) bool {
+	return match &item.kind {
+		ItemKind::Mod { name: n, items: _ } => n.name == name,
+		ItemKind::Import(t) => import_binds(t, name),
+		_ => false,
+	}
+}
+
+fun import_binds(t &ImportTree, name &str) bool {
+	return match t {
+		ImportTree::Path { path, alias } => match alias {
+			Some(a) => a.name == name,
+			None => path.len() > 0 && path[path.len() - 1].name == name,
+		},
+		ImportTree::Glob { prefix: _ } => false,
+		ImportTree::Group { prefix: _, items } => {
+			found mut := false
+			for i in items {
+				if import_binds(i, name) {
+					found = true
+				}
+			}
+			found
+		},
+	}
+}
+
 // Loads path dependencies from the nearest `kiln.toml` as public top-level
 // modules (same semantics as crates/kiln_parser/src/package.rs).
 fun load_path_deps(l &mut Loader, items &mut Vec<Item>, root_file &str) result<(), string> {
@@ -268,6 +325,7 @@ fun load_path_deps(l &mut Loader, items &mut Vec<Item>, root_file &str) result<(
 			return Err("{l.errors[0]}\n")
 		}
 		strip_tests(&mut sub)
+		sibling_imports(&mut sub, &deps, &d.name)
 		span := Span::new(0, 0)
 		items.push(Item {
 			kind: ItemKind::Mod {
