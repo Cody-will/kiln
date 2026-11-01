@@ -29,6 +29,11 @@ fun main() result<void, io::Error> {
 - [docs/SPEC.md](docs/SPEC.md): the language design spec (draft).
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the compiler is organized.
 - [docs/ROADMAP.md](docs/ROADMAP.md): milestones and current status.
+- [docs/STABILITY.md](docs/STABILITY.md): what 1.0 will promise (semver, stable surface, platform tiers, MSRV).
+- [tests/conformance/](tests/conformance/): the conformance suite, organized by SPEC section.
+- [docs/FUZZING.md](docs/FUZZING.md): the front-end fuzzer.
+- [docs/REGISTRY.md](docs/REGISTRY.md): the package index and how to run one.
+- [examples/todo_api.kn](examples/todo_api.kn): an HTTP + PostgreSQL + JSON service (run end to end in CI).
 - [website/](website/): the Kiln website and step-by-step tutorial. Build it with `mdbook build website`.
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to build, test, and contribute.
 - [SECURITY.md](SECURITY.md): how to report vulnerabilities.

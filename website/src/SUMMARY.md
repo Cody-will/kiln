@@ -21,6 +21,7 @@
 - [Tooling](tutorial/11-tooling.md)
 - [Files, processes, and the network](tutorial/12-stdlib.md)
 - [Calling C](tutorial/13-ffi.md)
+- [A web service: HTTP, JSON, and PostgreSQL](tutorial/14-web-service.md)
 
 # Reference
 
