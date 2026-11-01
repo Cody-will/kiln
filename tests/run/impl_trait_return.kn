@@ -1,0 +1,64 @@
+// Return-position `impl Trait`: the concrete type is used directly.
+trait Shape {
+	fun area(&self) f64
+}
+
+struct Square {
+	side f64,
+}
+
+impl Shape for Square {
+	fun area(&self) f64 {
+		return self.side * self.side
+	}
+}
+
+fun unit_square() impl Shape {
+	return Square { side: 1.5 }
+}
+
+fun evens(n i32) impl Iterator<i32> {
+	return small(n).filter(|x| x % 2 == 0)
+}
+
+// Defined after its caller, and generic.
+fun small<T>(n T) impl Iterator<T> where T: Copy {
+	return Repeat { v: n, left: 3 }
+}
+
+struct Repeat<T> {
+	v T,
+	left i32,
+}
+
+impl<T> Iterator<T> for Repeat<T> where T: Copy {
+	fun next(&mut self) option<T> {
+		if self.left == 0 {
+			return None
+		}
+		self.left -= 1
+		return Some(self.v)
+	}
+}
+
+struct Counter {
+	n i32,
+}
+
+impl Counter {
+	fun upto(&self) impl Iterator<i32> {
+		return 0..self.n
+	}
+}
+
+fun main() {
+	println("{unit_square().area()}")
+	for x in evens(4) {
+		print("{x} ")
+	}
+	println("")
+	c := Counter { n: 4 }
+	total := c.upto().map(|x| x * 10).sum()
+	words := small("hi").count()
+	println("{total} {words}")
+}

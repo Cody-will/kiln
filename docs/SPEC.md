@@ -523,6 +523,7 @@ Network I/O in a task never blocks an OS thread. The runtime parks the task on i
 - **Traits**:
   - Implementations are explicit (`impl Trait for Type`), as in Rust, not structural like Go.
   - `dyn Trait` gives dynamic dispatch.
+  - A function may return `impl Trait` (`fun evens(n i32) impl Iterator<i32>`). The concrete type is inferred from the body and monomorphized (no boxing); callers may only rely on the named traits. Trait methods and recursive functions cannot return `impl Trait`. In argument position, `impl Trait` means `dyn Trait`.
   - Coherence uses Rust's orphan rule.
 - **Built-in marker traits**: `Copy`, `Send`, `Sync`, `Sized`. `Clone`, `Debug`, `Eq`, `Ord`, and `Hash` can be derived with `@derive(...)`. `@derive(Json)` (or `ToJson` / `FromJson` alone) generates `std::encoding::json` conversions: structs become objects keyed by field name, written in declaration order (`json::Map` keeps insertion order, and parsing keeps document order), one-field tuple structs are transparent, other tuple structs are arrays, unit structs are `null`, unit variants are strings (`"Empty"`), and data variants are externally tagged (`{"Dot": ...}`), like serde's default. A missing field is an error, except that a missing `option` field reads as `None`. Derive expansion generates ordinary Kiln source, shown as `<derive>` in error messages.
 - **Inference**: local Hindley–Milner-style inference within function bodies. Function signatures are always fully annotated.

@@ -45,6 +45,9 @@ pub struct FnSig {
 	pub params Vec<Ty>,
 	pub ret Ty,
 	pub has_body bool,
+	// The bounds of a return-position `impl Trait`. Its concrete type,
+	// found by checking the body, replaces `ret`.
+	pub opaque option<Vec<(u32, Vec<Ty>)>>,
 }
 
 @derive(Clone)
@@ -189,6 +192,9 @@ pub struct Checker {
 	pub infer InferTable,
 	pub errors Vec<Diag>,
 	pub results Vec<option<FnResults>>,
+	// Functions returning `impl Trait`: false while checking, true once the
+	// concrete type is known.
+	opaque_done HashMap<usize, bool>,
 	b Body,
 	// The longest slice length the current match distinguishes.
 	slice_max usize,
@@ -372,6 +378,7 @@ impl Checker {
 			infer: InferTable::new(),
 			errors: Vec::new(),
 			results: Vec::new(),
+			opaque_done: HashMap::new(),
 			b: Body::new(Vec::new()),
 			slice_max: 0,
 			int_cuts: Vec::new(),
@@ -927,7 +934,31 @@ impl Checker {
 			Some(t) => self.lower_ty(t, sty, false),
 			None => Ty::Unit,
 		}
+		opaque mut := None
+		if let Some(rt) = &decl.ret {
+			if let TypeKind::Impl(bs) = &rt.kind {
+				v mut := Vec::new()
+				for b in bs {
+					if let Bound::Trait { path, maybe } = b {
+						if !*maybe {
+							if let Res::Def(d) = self.r.path(path.span) {
+								if self.r.def(d).kind == DefKind::Trait {
+									args := self.lower_args(&path.segments[path.segments.len() - 1].args, sty, false)
+									v.push((d, args))
+								}
+							}
+						}
+					}
+				}
+				if trait_def.is_some() || decl.body.is_none() {
+					self.error("`impl Trait` return types need a function body (they are not supported in trait methods)".to_string(), rt.span)
+				} else {
+					opaque = Some(v)
+				}
+			}
+		}
 		return FnSig {
+			opaque: opaque,
 			generics: generic_names(&decl.generics),
 			outer_generics: outer_generics,
 			bounds: bounds,
@@ -1202,9 +1233,16 @@ impl Checker {
 	// ----- bodies ------------------------------------------------------------
 
 	pub fun check_bodies(&mut self) {
+		// Functions returning `impl Trait` first, so callers see their
+		// concrete return types.
+		for j in 0..self.r.fns.len() {
+			if self.sigs[j].opaque.is_some() {
+				self.ensure_opaque(j)
+			}
+		}
 		i mut := 0
 		while i < self.r.fns.len() {
-			if self.r.fns[i].decl.body.is_some() {
+			if self.r.fns[i].decl.body.is_some() && !self.opaque_done.contains_key(&i) {
 				self.check_fn(i)
 			}
 			i += 1
@@ -1289,6 +1327,27 @@ impl Checker {
 		}
 	}
 
+	// Checks a function returning `impl Trait` (once), which fixes its
+	// concrete return type.
+	fun ensure_opaque(&mut self, i usize) {
+		match self.opaque_done.get(&i) {
+			Some(true) => {},
+			Some(false) => {
+				name := self.r.fns[i].decl.name.clone()
+				self.error_help("`{name.name}` returns `impl Trait` and is used before its concrete type is known".to_string(), name.span, "a recursive function cannot return `impl Trait`; name the type instead".to_string())
+				self.sigs[i].ret = Ty::Unknown
+				self.opaque_done.insert(i, true)
+			}
+			None => {
+				self.opaque_done.insert(i, false)
+				saved := std::mem::replace(&mut self.b, Body::new(Vec::new()))
+				self.check_fn(i)
+				self.b = saved
+				self.opaque_done.insert(i, true)
+			},
+		}
+	}
+
 	fun check_fn(&mut self, i usize) {
 		decl := self.r.fns[i].decl.clone()
 		impl_idx := self.r.fns[i].impl_idx
@@ -1300,7 +1359,8 @@ impl Checker {
 			None => if trait_def.is_some() { Some(Ty::Param("Self".to_string())) } else { None },
 		}
 		b mut := Body::new(sig.bounds.clone())
-		b.rets.push(sig.ret.clone())
+		ret := if sig.opaque.is_some() { self.fresh() } else { sig.ret.clone() }
+		b.rets.push(ret.clone())
 		b.bound_args = sig.bound_args.clone()
 		b.unsafe_depth = if decl.is_unsafe { 1 } else { 0 }
 		b.self_ty = self_ty.clone()
@@ -1322,11 +1382,43 @@ impl Checker {
 		}
 		body := decl.body.as_ref().unwrap()
 		t := self.block(body, false)
-		self.check_explicit_return(body, &t, &sig.ret, &decl.name)
+		self.check_explicit_return(body, &t, &ret, &decl.name)
+		rspan := match &decl.ret {
+			Some(r) => r.span,
+			None => decl.name.span,
+		}
+		if let Some(bs) = &sig.opaque {
+			for (tr, args) in bs {
+				if args.len() > 0 {
+					self.b.arg_obligations.push((ret.clone(), *tr, args.clone()))
+				}
+			}
+		}
 		self.finish()
+		concrete := self.infer.zonk(&ret)
+		unbound := self.infer.has_unbound(&concrete)
+		if !unbound {
+			if let Some(bs) = &sig.opaque {
+				for (tr, _) in bs {
+					if !self.implements(&concrete, *tr) {
+						tn := self.fmt(&concrete)
+						trn := self.r.def(*tr).name.clone()
+						self.error_help("the trait `{trn}` is not implemented for `{tn}`, the type this function returns".to_string(), rspan, "return a type that implements `{trn}`".to_string())
+					}
+				}
+			}
+		}
 		results := self.export()
 		self.results[i] = Some(results)
 		self.b = Body::new(Vec::new())
+		if sig.opaque.is_some() {
+			if unbound {
+				self.error("cannot infer the concrete type behind this `impl Trait`".to_string(), rspan)
+				self.sigs[i].ret = Ty::Unknown
+			} else {
+				self.sigs[i].ret = concrete
+			}
+		}
 	}
 
 	fun fresh(&mut self) Ty {
@@ -2004,6 +2096,9 @@ impl Checker {
 	// ----- method lookup -----------------------------------------------------
 
 	fun instantiate_sig(&mut self, i usize, subst HashMap<string, Ty>) Method {
+		if self.sigs[i].opaque.is_some() {
+			self.ensure_opaque(i)
+		}
 		subst mut := subst
 		sig := self.sigs[i].clone()
 		for g in &sig.generics {

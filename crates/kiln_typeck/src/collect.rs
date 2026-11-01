@@ -46,6 +46,9 @@ pub(crate) struct FnSig {
     pub params: Vec<Ty>,
     pub ret: Ty,
     pub has_body: bool,
+    /// The bounds of a return-position `impl Trait`. Its concrete type,
+    /// found by checking the body, replaces `ret`.
+    pub opaque: Option<Vec<(DefId, Vec<Ty>)>>,
 }
 
 /// A lowered `impl` block.
@@ -79,6 +82,9 @@ pub(crate) struct Checker<'r, 'a> {
     pub errors: Vec<Diagnostic>,
     /// Per-function type results (indexed like `Resolved::fns`).
     pub results: Vec<Option<crate::check::FnResults>>,
+    /// Functions returning `impl Trait`: `false` while checking, `true` once
+    /// the concrete type is known.
+    pub opaque_done: HashMap<usize, bool>,
 }
 
 /// Names of the generic type parameters declared in `g`.
@@ -103,6 +109,7 @@ impl<'r, 'a> Checker<'r, 'a> {
             infer: InferTable::default(),
             errors: Vec::new(),
             results: Vec::new(),
+            opaque_done: HashMap::new(),
         }
     }
 
@@ -545,7 +552,35 @@ impl<'r, 'a> Checker<'r, 'a> {
             .as_ref()
             .map(|t| self.lower_ty(t, sty, false))
             .unwrap_or(Ty::Unit);
+        let mut opaque = None;
+        if let Some(ast::Type {
+            kind: TypeKind::Impl(bs),
+            span,
+        }) = &f.decl.ret
+        {
+            let mut v = Vec::new();
+            for b in bs {
+                if let Bound::Trait { path, maybe: false } = b {
+                    if let Res::Def(d) = self.r.path(path.span) {
+                        if self.r.def(d).kind == DefKind::Trait {
+                            let args =
+                                self.lower_args(&path.segments.last().unwrap().args, sty, false);
+                            v.push((d, args));
+                        }
+                    }
+                }
+            }
+            if f.trait_def.is_some() || f.decl.body.is_none() {
+                self.error(
+                    "`impl Trait` return types need a function body (they are not supported in trait methods)",
+                    *span,
+                );
+            } else {
+                opaque = Some(v);
+            }
+        }
         FnSig {
+            opaque,
             generics: generic_names(&f.decl.generics),
             outer_generics,
             bounds,

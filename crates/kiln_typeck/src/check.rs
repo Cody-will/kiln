@@ -175,9 +175,16 @@ fn int_ty(p: PrimTy) -> Ty {
 
 impl Checker<'_, '_> {
     pub(crate) fn check_bodies(&mut self) {
+        // Functions returning `impl Trait` first, so callers see their
+        // concrete return types.
+        for i in 0..self.r.fns.len() {
+            if self.sigs[i].opaque.is_some() {
+                self.ensure_opaque(i);
+            }
+        }
         for i in 0..self.r.fns.len() {
             let f = &self.r.fns[i];
-            if f.decl.body.is_none() {
+            if f.decl.body.is_none() || self.opaque_done.contains_key(&i) {
                 continue;
             }
             self.check_fn(i);
@@ -243,6 +250,32 @@ impl Checker<'_, '_> {
         }
     }
 
+    /// Checks a function returning `impl Trait` (once), which fixes its
+    /// concrete return type.
+    pub(crate) fn ensure_opaque(&mut self, i: usize) {
+        match self.opaque_done.get(&i) {
+            Some(true) => {}
+            Some(false) => {
+                let name = self.r.fns[i].decl.name.clone();
+                self.error_help(
+                    format!(
+                        "`{}` returns `impl Trait` and is used before its concrete type is known",
+                        name.name
+                    ),
+                    name.span,
+                    "a recursive function cannot return `impl Trait`; name the type instead",
+                );
+                self.sigs[i].ret = Ty::Unknown;
+                self.opaque_done.insert(i, true);
+            }
+            None => {
+                self.opaque_done.insert(i, false);
+                self.check_fn(i);
+                self.opaque_done.insert(i, true);
+            }
+        }
+    }
+
     fn check_fn(&mut self, i: usize) {
         let f = self.r.fns[i].clone();
         let sig = self.sigs[i].clone();
@@ -293,12 +326,53 @@ impl Checker<'_, '_> {
         for (p, t) in f.decl.params.iter().zip(&sig.params) {
             b.bind_pat(&p.pat, t, None);
         }
+        let ret = match &sig.opaque {
+            Some(_) => b.fresh(),
+            None => sig.ret.clone(),
+        };
+        b.rets = vec![ret.clone()];
         let body = f.decl.body.as_ref().unwrap();
         let t = b.block(body, false);
-        b.check_explicit_return(body, &t, &sig.ret, &f.decl.name);
+        b.check_explicit_return(body, &t, &ret, &f.decl.name);
+        let rspan = f
+            .decl
+            .ret
+            .as_ref()
+            .map(|r| r.span)
+            .unwrap_or(f.decl.name.span);
+        for (tr, args) in sig.opaque.iter().flatten() {
+            if !args.is_empty() {
+                b.arg_obligations.push((ret.clone(), *tr, args.clone()));
+            }
+        }
         b.finish();
+        let concrete = b.c.infer.zonk(&ret);
+        let unbound = b.c.infer.has_unbound(&concrete);
+        if !unbound {
+            for (tr, _) in sig.opaque.iter().flatten() {
+                if !b.implements(&concrete, *tr) {
+                    let (tn, trn) = (b.fmt(&concrete), b.c.r.def(*tr).name.clone());
+                    b.error_help(
+                        format!("the trait `{trn}` is not implemented for `{tn}`, the type this function returns"),
+                        rspan,
+                        format!("return a type that implements `{trn}`"),
+                    );
+                }
+            }
+        }
         let results = b.export();
         self.results[i] = Some(results);
+        if sig.opaque.is_some() {
+            if unbound {
+                self.error(
+                    "cannot infer the concrete type behind this `impl Trait`",
+                    rspan,
+                );
+                self.sigs[i].ret = Ty::Unknown;
+            } else {
+                self.sigs[i].ret = concrete;
+            }
+        }
     }
 }
 
@@ -930,6 +1004,9 @@ impl Body<'_, '_, '_> {
     /// Instantiates signature `i` with `subst` for outer generics and fresh vars
     /// for the method's own generics.
     fn instantiate_sig(&mut self, i: usize, mut subst: HashMap<String, Ty>) -> Method {
+        if self.c.sigs[i].opaque.is_some() {
+            self.c.ensure_opaque(i);
+        }
         let sig = self.c.sigs[i].clone();
         for g in sig.generics.iter().chain(&sig.outer_generics) {
             if !subst.contains_key(g) {
