@@ -212,6 +212,19 @@ fn main() -> ExitCode {
             print!("{}", kiln_typeck::dump::dump(&src));
             ExitCode::SUCCESS
         }
+        [cmd, flag, file] if cmd == "index" && flag == "--dump" => {
+            // The language server's navigation facts (`kilnc --index` prints
+            // the same lines, each after `fact\t`).
+            let pkg = match kiln_parser::package::load(std::path::Path::new(file), &[], &|_| None) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            print!("{}", kiln_lsp::facts::rust(&pkg.parse.file));
+            ExitCode::SUCCESS
+        }
         [cmd, flag, file] if cmd == "resolve" && flag == "--dump" => {
             let Ok(src) = std::fs::read_to_string(file) else {
                 eprintln!("error: cannot read {file}");

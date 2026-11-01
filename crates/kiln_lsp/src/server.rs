@@ -10,7 +10,7 @@
 // sound map key.
 #![allow(clippy::mutable_key_type)]
 
-use crate::analysis::{analyze_package, analyze_package_with, Analysis, Completion};
+use crate::analysis::{analyze_package, Analysis, Completion};
 use crate::kilnc::Kilnc;
 use crossbeam_channel::{select, Receiver, Sender};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
@@ -339,7 +339,12 @@ fn analyze_with_overlays(
             .find(|(q, _)| same_file(q, p))
             .map(|(_, t)| t.clone())
     };
-    let (mut root, mut deps) = program_for(path);
+    let (root, deps) = program_for(path);
+    if let Some(k) = KILNC.get().and_then(|k| k.as_ref()) {
+        return Some(index_with_kilnc(k, path, root, overlays, &overlay));
+    }
+    // No kilnc: the Rust front end.
+    let (mut root, mut deps) = (root, deps);
     let mut pkg = kiln_parser::package::load(&root, &deps, &overlay).ok();
     if !pkg
         .as_ref()
@@ -350,37 +355,60 @@ fn analyze_with_overlays(
         pkg = kiln_parser::package::load(&root, &deps, &overlay).ok();
     }
     let pkg = pkg?;
-    let Some(k) = KILNC.get().and_then(|k| k.as_ref()) else {
-        let analysis =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| analyze_package(&pkg)))
-                .unwrap_or_default();
-        return Some((root, analysis));
-    };
-    // Diagnostics come from kilnc (run concurrently); the navigation tables
-    // (hover, definitions, completion) from the in-process index.
+    let analysis = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| analyze_package(&pkg)))
+        .unwrap_or_default();
+    Some((root, analysis))
+}
+
+/// Diagnostics and the navigation tables from `kilnc --index` on the
+/// program containing `path` (`root`, else `path` alone).
+fn index_with_kilnc(
+    k: &Kilnc,
+    path: &Path,
+    root: PathBuf,
+    overlays: &HashMap<PathBuf, String>,
+    overlay: &dyn Fn(&Path) -> Option<String>,
+) -> (PathBuf, Analysis) {
     let ov: Vec<(PathBuf, String)> = overlays
         .iter()
         .map(|(p, t)| (p.clone(), t.clone()))
         .collect();
-    let (checked, mut analysis) = std::thread::scope(|s| {
-        let h = s.spawn(|| crate::kilnc::check(k, &root, &ov));
-        let a = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            analyze_package_with(&pkg, false)
-        }))
-        .unwrap_or_default();
-        (h.join().ok(), a)
-    });
-    match checked {
-        Some(Ok(c)) => analysis.diagnostics = map_kilnc(&analysis, c),
-        Some(Err(e)) => {
-            analysis.diagnostics = vec![kiln_lexer::Diagnostic::error(
-                e,
-                kiln_lexer::Span::new(0, 0),
-            )]
-        }
-        None => {}
+    let mut root = root;
+    let mut res = crate::kilnc::index(k, &root, &ov);
+    let missing = |r: &Result<crate::kilnc::Checked, String>| match r {
+        Ok(c) => !c.files.iter().any(|(_, f)| same_file(f, path)),
+        Err(_) => true,
+    };
+    if missing(&res) && !same_file(&root, path) {
+        root = path.to_path_buf();
+        res = crate::kilnc::index(k, &root, &ov);
     }
-    Some((root, analysis))
+    let c = match res {
+        Ok(c) => c,
+        Err(e) => {
+            let a = Analysis {
+                diagnostics: vec![kiln_lexer::Diagnostic::error(
+                    e,
+                    kiln_lexer::Span::new(0, 0),
+                )],
+                ..Default::default()
+            };
+            return (root, a);
+        }
+    };
+    let files: Vec<(usize, PathBuf, String)> = c
+        .files
+        .iter()
+        .map(|(b, p)| {
+            let t = overlay(p)
+                .or_else(|| std::fs::read_to_string(p).ok())
+                .unwrap_or_default();
+            (*b, p.clone(), t)
+        })
+        .collect();
+    let mut a = crate::analysis::from_facts(&files, &c.facts);
+    a.diagnostics = map_kilnc(&a, c);
+    (root, a)
 }
 
 /// kilnc for diagnostics (set once by [`run_with`]).

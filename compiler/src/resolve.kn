@@ -102,6 +102,8 @@ pub struct FnRef {
 	pub attrs Vec<Attribute>,
 	pub name string,
 	pub span Span,
+	// The whole item (the `fun` or the `const`/`static` of a hidden function).
+	pub item_span Span,
 	pub module u32,
 	pub impl_idx option<usize>,
 	pub trait_def option<u32>,
@@ -884,7 +886,7 @@ impl Resolver {
 					match &it.kind {
 						ItemKind::Fn(f) => self.walk_fn(f, it, Some(idx), None, None),
 						ItemKind::Const { name, ty, value: Some(v) } => {
-							self.walk_synth(name.name.clone(), name, ty, v, Some(idx), None, &it.attrs)
+							self.walk_synth(name.name.clone(), name, ty, v, Some(idx), None, &it.attrs, it.span)
 							self.r.const_fn_set.insert(self.r.fns.len() - 1)
 						}
 						ItemKind::Const { ty, .. } => {
@@ -907,7 +909,7 @@ impl Resolver {
 					Some(d) => Some(*d),
 					None => None,
 				}
-				self.walk_synth("<const {name.name}>", name, ty, v, None, def, &item.attrs)
+				self.walk_synth("<const {name.name}>", name, ty, v, None, def, &item.attrs, item.span)
 				i := self.r.fns.len() - 1
 				self.r.const_fn_set.insert(i)
 				if let Some(d) = def {
@@ -923,7 +925,7 @@ impl Resolver {
 					Some(d) => Some(*d),
 					None => None,
 				}
-				self.walk_synth("<init {name.name}>", name, ty, value, None, def, &item.attrs)
+				self.walk_synth("<init {name.name}>", name, ty, value, None, def, &item.attrs, item.span)
 				if let Some(d) = def {
 					self.r.statics.push((d, self.r.fns.len() - 1))
 				}
@@ -979,7 +981,7 @@ impl Resolver {
 
 	// A hidden function `fun name() ty { return value }` for a constant or a
 	// static's initializer (the Rust resolver builds the declaration).
-	fun walk_synth(&mut self, fname string, name &Ident, ty &Type, value &Expr, impl_idx option<usize>, def option<u32>, attrs &Vec<Attribute>) {
+	fun walk_synth(&mut self, fname string, name &Ident, ty &Type, value &Expr, impl_idx option<usize>, def option<u32>, attrs &Vec<Attribute>, item_span Span) {
 		self.ty_params.push(Vec::new())
 		saved_scopes := std::mem::replace(&mut self.scopes, Vec::new())
 		saved_loops := std::mem::replace(&mut self.loops, Vec::new())
@@ -1007,6 +1009,7 @@ impl Resolver {
 			attrs: attrs.clone(),
 			name: fname,
 			span: name.span,
+			item_span: item_span,
 			module: self.module,
 			impl_idx: impl_idx,
 			trait_def: None,
@@ -1065,6 +1068,7 @@ impl Resolver {
 			attrs: item.attrs.clone(),
 			name: f.name.name.clone(),
 			span: f.name.span,
+			item_span: item.span,
 			module: self.module,
 			impl_idx: impl_idx,
 			trait_def: trait_def,

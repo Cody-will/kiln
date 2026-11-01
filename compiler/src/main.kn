@@ -27,6 +27,7 @@ mod inline
 mod codegen
 mod manifest
 mod testgen
+mod index
 
 import std::fs
 import std::hash::Hasher
@@ -564,7 +565,14 @@ fun put_diag(message &str, span Span, help &option<string>, notes &Vec<(string, 
 // it. Prints `file<TAB>base<TAB>path` per loaded file, then the first failing
 // phase's diagnostics as `error`/`note`/`help` lines with global spans.
 // Returns whether the program is free of errors.
-fun check(path &str, dir &str, overlays Vec<(string, string)>) bool {
+// Prints the navigation facts, each as `fact<TAB>...` (after `kilnc --check` lines).
+fun print_facts(facts Vec<string>) {
+	for l in index::finish(facts).lines() {
+		println("fact\t{l}")
+	}
+}
+
+fun check(path &str, dir &str, overlays Vec<(string, string)>, want_index bool) bool {
 	l mut := new_loader(overlays)
 	text := match l.read(path) {
 		Ok(s) => s,
@@ -586,18 +594,21 @@ fun check(path &str, dir &str, overlays Vec<(string, string)>) bool {
 	for i in 0..l.files.len() {
 		println("file\t{i << 32}\t{field(&l.files[i])}")
 	}
+	// The first failing phase is reported; `--index` still indexes the
+	// recovered syntax tree (the editor shows half-typed code).
+	bad mut := true
 	if l.diags.len() > 0 {
 		for (a, b, m) in &l.diags {
 			println("error\t{a}\t{b}\t{field(m)}")
 		}
-		return false
-	}
-	if l.errors.len() > 0 {
+	} else if l.errors.len() > 0 {
 		println("fatal\t{field(&l.errors[0])}")
-		return false
-	}
-	if let Some(e) = dep_err {
+	} else if let Some(e) = dep_err {
 		println("fatal\t{field(e.trim())}")
+	} else {
+		bad = false
+	}
+	if bad && !want_index {
 		return false
 	}
 	user := ast::File { items: items }
@@ -605,6 +616,21 @@ fun check(path &str, dir &str, overlays Vec<(string, string)>) bool {
 	pre := resolve::parse_at(&builtin, resolve::BUILTIN_BASE, &mut l.next)
 	r := resolve::resolve(&user, &pre.file)
 	none := Vec::new()
+	facts mut := Vec::new()
+	if want_index {
+		index::resolve_facts(&r, &builtin, &mut facts)
+		if bad || r.errors.len() > 0 {
+			if r.errors.len() == 0 {
+				index::type_facts(&typeck::typeck_lazy(r), &builtin, &mut facts)
+			} else if !bad {
+				for e in &r.errors {
+					put_diag(&e.message, e.span, &e.help, &none)
+				}
+			}
+			print_facts(facts)
+			return false
+		}
+	}
 	if r.errors.len() > 0 {
 		for e in &r.errors {
 			put_diag(&e.message, e.span, &e.help, &none)
@@ -612,6 +638,10 @@ fun check(path &str, dir &str, overlays Vec<(string, string)>) bool {
 		return false
 	}
 	c mut := typeck::typeck_lazy(r)
+	if want_index {
+		index::type_facts(&c, &builtin, &mut facts)
+		print_facts(facts)
+	}
 	if c.errors.len() > 0 {
 		for e in &c.errors {
 			put_diag(&e.message, e.span, &e.help, &none)
@@ -863,7 +893,7 @@ fun main() {
 		}
 		return
 	}
-	if args.len() > 1 && args[1] == "--check" {
+	if args.len() > 1 && (args[1] == "--check" || args[1] == "--index") {
 		dir := match os::getenv("KILNC_RESOLVE_DIR") {
 			Some(d) => d,
 			None => "crates/kiln_resolve".to_string(),
@@ -881,10 +911,10 @@ fun main() {
 			j += 1
 		}
 		if file.len() == 0 {
-			eprintln("usage: kilnc --check [--overlay <path> <file>]... <file.kn>")
+			eprintln("usage: kilnc --check|--index [--overlay <path> <file>]... <file.kn>")
 			os::exit(2)
 		}
-		if !check(&file, &dir, overlays) {
+		if !check(&file, &dir, overlays, args[1] == "--index") {
 			os::exit(1)
 		}
 		return

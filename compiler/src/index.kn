@@ -1,0 +1,306 @@
+// The navigation index (`kilnc --index`): the facts the language server
+// needs for hover, go to definition, references, rename, completion and the
+// outline. The same lines as crates/kiln_lsp/src/facts.rs (see its doc for
+// the format); tests/lsp_facts_diff.rs compares the two.
+
+import super::ast::*
+import super::resolve
+import super::resolve::{DefKind, Res, Resolved}
+import super::ty::Ty
+import super::typeck
+import super::typeck::Checker
+
+pub fun field(s &str) string {
+	return s.replace("\\", "\\\\").replace("\n", "\\n").replace("\t", "\\t")
+}
+
+fun kind_word(k &DefKind) string {
+	s := match k {
+		DefKind::Mod => "mod",
+		DefKind::Struct => "struct",
+		DefKind::Enum => "enum",
+		DefKind::Variant { .. } => "variant",
+		DefKind::Trait => "trait",
+		DefKind::Fn => "fun",
+		DefKind::Const => "const",
+		DefKind::Static => "static",
+		DefKind::TypeAlias => "type",
+		DefKind::External => "module",
+	}
+	return s.to_string()
+}
+
+fun is_ws(b u8) bool {
+	return b == 32 || b == 9 || b == 10 || b == 13
+}
+
+// `s` without leading and trailing ASCII whitespace.
+fun trim_ws(s &str) string {
+	b := s.as_bytes()
+	i mut := 0
+	j mut := b.len()
+	while i < j && is_ws(b[i]) {
+		i += 1
+	}
+	while j > i && is_ws(b[j - 1]) {
+		j -= 1
+	}
+	return s[i..j].to_string()
+}
+
+// Start of the line containing byte `at`.
+fun line_start(b &[u8], at usize) usize {
+	i mut := at
+	while i > 0 && b[i - 1] != 10 {
+		i -= 1
+	}
+	return i
+}
+
+// The first source line of an item, as a signature for hover.
+pub fun signature(src &str, start usize) string {
+	b := src.as_bytes()
+	ls := line_start(b, start)
+	e mut := ls
+	while e < b.len() && b[e] != 10 {
+		e += 1
+	}
+	line := trim_ws(&src[ls..e])
+	lb := line.as_bytes()
+	k mut := lb.len()
+	while k > 0 && lb[k - 1] == 123 {
+		k -= 1
+	}
+	return trim_ws(&line[..k])
+}
+
+// Doc comments (`//` lines directly above an item; attributes skipped).
+pub fun doc_above(src &str, start usize) string {
+	b := src.as_bytes()
+	docs mut := Vec::new()
+	end mut := line_start(b, start)
+	while end > 0 {
+		ps := line_start(b, end - 1)
+		line := trim_ws(&src[ps..end - 1])
+		if line.starts_with("//") {
+			lb := line.as_bytes()
+			k mut := 2
+			while k < lb.len() && lb[k] == 47 {
+				k += 1
+			}
+			docs.push(trim_ws(&line[k..]))
+			end = ps
+		} else if line.starts_with("@") {
+			end = ps
+		} else {
+			break
+		}
+	}
+	o mut := string::new()
+	i mut := docs.len()
+	while i > 0 {
+		i -= 1
+		o.push(&docs[i])
+		if i > 0 {
+			o.push("\n")
+		}
+	}
+	return o
+}
+
+pub fun hover_text(sig &str, doc &str) string {
+	if doc.len() == 0 {
+		return "```kiln\n{sig}\n```"
+	}
+	return "```kiln\n{sig}\n```\n\n{doc}"
+}
+
+fun user(s Span) bool {
+	return s.start < resolve::BUILTIN_BASE
+}
+
+fun std_off(builtin &str, s Span) option<usize> {
+	if s.start >= resolve::BUILTIN_BASE && s.start - resolve::BUILTIN_BASE < builtin.len() {
+		return Some(s.start - resolve::BUILTIN_BASE)
+	}
+	return None
+}
+
+fun std_sig(builtin &str, s Span) string {
+	return match std_off(builtin, s) {
+		Some(o) => signature(builtin, o),
+		None => string::new(),
+	}
+}
+
+fun std_ref(builtin &str, name &str, s Span) string {
+	hover := match std_off(builtin, s) {
+		Some(o) => hover_text(&signature(builtin, o), &doc_above(builtin, o)),
+		None => string::new(),
+	}
+	return "S\t{field("{name}#{s.start}")}\t{field(&hover)}"
+}
+
+// Definitions, prelude names, name resolutions and binding sites.
+pub fun resolve_facts(r &Resolved, builtin &str, out &mut Vec<string>) {
+	for d in &r.defs {
+		if d.is_prelude || !user(d.span) || d.span.start >= d.span.end {
+			continue
+		}
+		if let DefKind::Mod = d.kind {
+			if d.name.starts_with("<") {
+				continue
+			}
+		}
+		full := match &d.item {
+			Some(i) => i.span,
+			None => d.span,
+		}
+		root := if d.module == r.root { 1 } else { 0 }
+		out.push("def\t{kind_word(&d.kind)}\t{d.span.start}\t{d.span.end}\t{full.start}\t{full.end}\t{root}\t{field(&d.name)}")
+	}
+	if let Some(scope) = r.modules.get(&r.prelude) {
+		for (name, id) in scope.values.iter() {
+			pre_fact(r, builtin, name, *id, out)
+		}
+		for (name, id) in scope.types.iter() {
+			pre_fact(r, builtin, name, *id, out)
+		}
+	}
+	for (k, res) in r.paths.iter() {
+		if !user(Span::new(k.0, k.1)) {
+			continue
+		}
+		what := match res {
+			Res::Def(id) => {
+				d := r.def(*id)
+				if user(d.span) {
+					"D\t{d.span.start}\t{d.span.end}"
+				} else {
+					std_ref(builtin, &d.name, d.span)
+				}
+			},
+			Res::Local(l) => {
+				ls := r.locals[*l as usize].span
+				"L\t{ls.start}\t{ls.end}"
+			},
+			_ => continue,
+		}
+		out.push("ref\t{k.0}\t{k.1}\t{what}")
+	}
+	for (k, l) in r.bindings.iter() {
+		if user(Span::new(k.0, k.1)) {
+			ls := r.locals[*l as usize].span
+			out.push("bind\t{k.0}\t{k.1}\t{ls.start}\t{ls.end}")
+		}
+	}
+}
+
+fun pre_fact(r &Resolved, builtin &str, name &string, id u32, out &mut Vec<string>) {
+	if name.starts_with("kn_") || name.starts_with("_") {
+		return
+	}
+	d := r.def(id)
+	out.push("pre\t{kind_word(&d.kind)}\t{field(name)}\t{field(&std_sig(builtin, d.span))}")
+}
+
+fun type_name_of(r &Resolved, t &Type) option<string> {
+	return match r.paths.get(&(t.span.start, t.span.end)) {
+		Some(Res::Def(id)) => Some(r.def(*id).name.clone()),
+		Some(Res::Prim(p)) => Some(typeck::prim_name(p)),
+		_ => None,
+	}
+}
+
+fun strip(t &Ty) Ty {
+	return match t {
+		Ty::Ref(_, inner) => strip(inner),
+		_ => t.clone(),
+	}
+}
+
+fun adt_name(c &Checker, t &Ty) option<string> {
+	return match strip(t) {
+		Ty::Adt(id, _) => Some(c.r.def(id).name.clone()),
+		Ty::Prim(p) => Some(typeck::prim_name(&p)),
+		_ => None,
+	}
+}
+
+// Methods, local and expression types, fields and method calls.
+pub fun type_facts(c &Checker, builtin &str, out &mut Vec<string>) {
+	i mut := 0
+	while i < c.r.fns.len() {
+		f := &c.r.fns[i]
+		if let Some(ii) = f.impl_idx {
+			if let Some(tn) = type_name_of(&c.r, &c.r.impls[ii].decl.self_ty) {
+				ns := f.decl.name.span
+				sp := if f.decl.self_param.is_some() { 1 } else { 0 }
+				out.push("meth\t{field(&tn)}\t{ns.start}\t{ns.end}\t{f.item_span.start}\t{f.item_span.end}\t{sp}\t{field(&f.decl.name.name)}\t{field(&std_sig(builtin, ns))}")
+			}
+		}
+		if !user(f.item_span) {
+			i += 1
+			continue
+		}
+		fs := f.item_span
+		res := match &c.results[i] {
+			Some(x) => x,
+			None => {
+				i += 1
+				continue
+			},
+		}
+		out.push("scope\t{fs.start}\t{fs.end}")
+		for (l, t) in res.locals.iter() {
+			loc := &c.r.locals[*l as usize]
+			if user(loc.span) {
+				out.push("local\t{fs.start}\t{loc.span.start}\t{loc.span.end}\t{field(&loc.name)}\t{field(&c.fmt_ty(t))}")
+			}
+		}
+		for (k, t) in res.tys.iter() {
+			if !user(Span::new(k.0, k.1)) {
+				continue
+			}
+			adt := adt_name(c, t)
+			an := match &adt {
+				Some(a) => a.clone(),
+				None => string::new(),
+			}
+			out.push("ety\t{k.0}\t{k.1}\t{field(&c.fmt_ty(t))}\t{field(&an)}")
+			if adt.is_some() {
+				for (fname, fty) in c.adt_fields(&strip(t), None) {
+					out.push("field\t{field(&an)}\t{field(&fname)}\t{field(&c.fmt_ty(&fty))}")
+				}
+			}
+		}
+		for (k, m) in res.methods.iter() {
+			fi := match m.fn_idx {
+				Some(x) => x,
+				None => continue,
+			}
+			if !user(Span::new(k.0, k.1)) {
+				continue
+			}
+			callee := &c.r.fns[fi]
+			def := callee.decl.name.span
+			name := &callee.decl.name.name
+			what := if user(def) { "D\t{def.start}\t{def.end}" } else { std_ref(builtin, name, def) }
+			out.push("mref\t{k.0}\t{k.1}\t{field(name)}\t{what}")
+		}
+		i += 1
+	}
+}
+
+// The facts, sorted and deduplicated, one per line.
+pub fun finish(out Vec<string>) string {
+	v mut := out
+	v.sort()
+	v.dedup()
+	o mut := string::new()
+	for l in &v {
+		o.push(l)
+		o.push("\n")
+	}
+	return o
+}

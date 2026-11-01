@@ -25,6 +25,8 @@ pub struct Checked {
     pub diagnostics: Vec<Diagnostic>,
     /// An error without a location (a missing module file, a bad manifest).
     pub fatal: Option<String>,
+    /// Navigation facts (`kilnc --index` only; see [`crate::facts`]), one per line.
+    pub facts: String,
 }
 
 impl Checked {
@@ -56,6 +58,11 @@ fn unfield(s: &str) -> String {
 pub fn parse_output(out: &str) -> Checked {
     let mut c = Checked::default();
     for line in out.lines() {
+        if let Some(fact) = line.strip_prefix("fact\t") {
+            c.facts.push_str(fact);
+            c.facts.push('\n');
+            continue;
+        }
         let f: Vec<&str> = line.splitn(4, '\t').collect();
         let span = |a: &str, b: &str| -> Option<Span> {
             Some(Span::new(a.parse().ok()?, b.parse().ok()?))
@@ -90,8 +97,22 @@ pub fn parse_output(out: &str) -> Checked {
 /// Runs `kilnc --check` on `root`, reading `overlays` (path, text) instead
 /// of the files on disk.
 pub fn check(k: &Kilnc, root: &Path, overlays: &[(PathBuf, String)]) -> Result<Checked, String> {
+    run(k, "--check", root, overlays)
+}
+
+/// [`check`] plus the navigation facts (`kilnc --index`).
+pub fn index(k: &Kilnc, root: &Path, overlays: &[(PathBuf, String)]) -> Result<Checked, String> {
+    run(k, "--index", root, overlays)
+}
+
+fn run(
+    k: &Kilnc,
+    mode: &str,
+    root: &Path,
+    overlays: &[(PathBuf, String)],
+) -> Result<Checked, String> {
     let mut cmd = Command::new(&k.exe);
-    cmd.arg("--check");
+    cmd.arg(mode);
     let mut tmp = None;
     if !overlays.is_empty() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -122,7 +143,7 @@ pub fn check(k: &Kilnc, root: &Path, overlays: &[(PathBuf, String)]) -> Result<C
     // A crash (no verdict printed) is an error, not a clean program.
     if !o.status.success() && c.ok() {
         return Err(format!(
-            "kilnc --check failed: {}{}",
+            "kilnc {mode} failed: {}{}",
             String::from_utf8_lossy(&o.stderr),
             stdout
         ));
@@ -137,7 +158,7 @@ mod tests {
     #[test]
     fn parses_check_output() {
         let c = parse_output(
-            "file\t0\ta.kn\nerror\t52\t57\tuse of moved value: `x`\nnote\t41\t42\tvalue moved here\nnote\t-\t-\tplain\\tnote\nhelp\tclone it\n",
+            "file\t0\ta.kn\nerror\t52\t57\tuse of moved value: `x`\nnote\t41\t42\tvalue moved here\nnote\t-\t-\tplain\\tnote\nhelp\tclone it\nfact\tbind\t1\t2\t1\t2\n",
         );
         assert_eq!(c.files, vec![(0, PathBuf::from("a.kn"))]);
         assert_eq!(c.diagnostics.len(), 1);
@@ -150,5 +171,6 @@ mod tests {
         assert_eq!(d.notes[1], ("plain\tnote".into(), None));
         assert_eq!(d.help.as_deref(), Some("clone it"));
         assert!(!c.ok());
+        assert_eq!(c.facts, "bind\t1\t2\t1\t2\n");
     }
 }
