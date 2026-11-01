@@ -1,0 +1,38 @@
+// SPEC §4 Concurrency: spawn, channels, select, Arc<Mutex<T>>.
+import std::sync::{Arc, Mutex}
+
+fun main() {
+	(tx, rx) := chan::<i64>(0)
+	spawn move {
+		for i in 0..5 {
+			tx <- i
+		}
+		tx.close()
+	}
+	sum mut := 0
+	for v in rx {
+		sum += v
+	}
+	println(sum)
+
+	m := Arc::new(Mutex::new(0))
+	(dtx, drx) := chan::<i64>(10)
+	for i in 0..10 {
+		m2 := m.clone()
+		d := dtx.clone()
+		spawn move {
+			*m2.lock() += i
+			d <- i
+		}
+	}
+	for _ in 0..10 {
+		<-drx
+	}
+	println(*m.lock())
+
+	(qtx, qrx) := chan::<bool>(1)
+	qtx <- true
+	select {
+		v := <-qrx => println("got {v}"),
+	}
+}

@@ -429,6 +429,9 @@ fn build_to(
                     return r;
                 }
                 eprint!("{msg}");
+                if !msg.is_empty() && !msg.ends_with('\n') {
+                    eprintln!();
+                }
                 eprintln!("error: kilnc failed (set KILN_DEBUG_KILNC=1 for details; KILN_ALLOW_RUST_FALLBACK=1 to try the deprecated built-in compiler)");
                 return Err(ExitCode::from(1));
             }

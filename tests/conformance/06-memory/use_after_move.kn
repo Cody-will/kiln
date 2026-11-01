@@ -1,0 +1,8 @@
+// expect-error: moved
+// SPEC §6: ownership; using a moved value is rejected.
+fun main() {
+	s := "x".to_string()
+	t := s
+	println(s)
+	println(t)
+}

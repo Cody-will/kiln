@@ -1,0 +1,43 @@
+// SPEC §5: enums, option/result, patterns, derives, structural equality and ordering.
+@derive(Debug, Eq, Ord, Clone)
+enum Tok {
+	Num(i32),
+	Op(char),
+	End,
+}
+
+@derive(Debug, Eq, Clone)
+struct P {
+	x i32,
+	y i32,
+}
+
+fun describe(t &Tok) string {
+	return match t {
+		Tok::Num(n) if *n < 0 => "neg".to_string(),
+		Tok::Num(0..=9) => "digit".to_string(),
+		Tok::Num(_) => "num".to_string(),
+		Tok::Op('+' | '-') => "additive".to_string(),
+		Tok::Op(c) => "op {c}".to_string(),
+		Tok::End => "end".to_string(),
+	}
+}
+
+fun main() {
+	for t in [Tok::Num(-1), Tok::Num(4), Tok::Num(40), Tok::Op('+'), Tok::Op('*'), Tok::End].iter() {
+		println(describe(t))
+	}
+	println("{Tok::Num(1) == Tok::Num(1)} {Tok::Num(1) < Tok::Op('a')} {P { x: 1, y: 2 } == P { x: 1, y: 2 }}")
+	println("{P { x: 1, y: 2 }:?}")
+	let o option<i32> = Some(3)
+	if let Some(v) = o {
+		println(v)
+	}
+	let P { x, y } = P { x: 5, y: 6 }
+	println(x + y)
+	v := [1, 2, 3]
+	match &v[..] {
+		[first, .., last] => println("{first} {last}"),
+		_ => {},
+	}
+}

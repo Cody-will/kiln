@@ -1,0 +1,23 @@
+// SPEC §2: automatic semicolons, line continuation, nested block comments.
+/* outer /* nested */ still a comment */
+/// A doc comment.
+fun add(a i32,
+	b i32) i32 {
+		return a +
+			b
+	}
+
+fun main() {
+	v := [3, 1, 2]
+	n := v.iter()
+		.map(|x| *x * 10)
+		.fold(0, |a, b| a + b)
+	println(n)
+	println(add(1,
+		2))
+	x := [
+		1,
+		2,
+	]
+	println(x.len())
+}

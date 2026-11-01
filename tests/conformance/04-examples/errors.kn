@@ -1,0 +1,36 @@
+// SPEC §4 Errors: result, ?, custom errors, main returning result.
+enum MyErr {
+	TooBig(i32),
+}
+
+impl Display for MyErr {
+	fun to_string(&self) string {
+		return match self {
+			MyErr::TooBig(n) => "{n} is too big",
+		}
+	}
+}
+
+fun check(n i32) result<i32, MyErr> {
+	if n > 10 {
+		return Err(MyErr::TooBig(n))
+	}
+	return Ok(n * 2)
+}
+
+fun sum(a i32, b i32) result<i32, MyErr> {
+	return Ok(check(a)? + check(b)?)
+}
+
+fun main() result<void, MyErr> {
+	println("{sum(1, 2)?}")
+	match sum(1, 50) {
+		Ok(_) => println("no"),
+		Err(e) => println("err: {e}"),
+	}
+	x := i32::parse("42")
+	println("{x.is_ok()}")
+	sum(99, 1)?
+	println("unreachable")
+	return Ok(())
+}

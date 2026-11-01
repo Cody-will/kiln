@@ -1,0 +1,41 @@
+// SPEC §7: inline modules, pub visibility, imports, self/super paths, consts, statics.
+import std::sync::AtomicI64
+
+mod geometry {
+	import super::helpers::zero
+
+	pub const UNIT i32 = 1
+
+	pub struct Pt {
+		pub x i32,
+		pub y i32,
+	}
+
+	pub fun origin() Pt {
+		return Pt { x: 0, y: zero() }
+	}
+
+	pub mod inner {
+		pub fun twice(n i32) i32 {
+			return n * 2
+		}
+	}
+}
+
+mod helpers {
+	pub fun zero() i32 {
+		return 0
+	}
+}
+
+import geometry::{Pt, origin}
+import geometry::inner::twice
+
+static HITS AtomicI64 = AtomicI64::new(0)
+
+fun main() {
+	p := origin()
+	q := Pt { x: 3, y: geometry::UNIT }
+	HITS.add(2)
+	println("{p.x},{p.y} {q.x},{q.y} {twice(21)} {HITS.load()}")
+}

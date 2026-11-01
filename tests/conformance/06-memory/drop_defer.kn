@@ -1,0 +1,32 @@
+// SPEC §6: deterministic Drop, defer order and argument evaluation.
+struct Noisy {
+	name string,
+}
+
+impl Drop for Noisy {
+	fun drop(&mut self) {
+		println("drop {self.name}")
+	}
+}
+
+fun f() {
+	_a := Noisy { name: "a".to_string() }
+	for i in 0..3 {
+		defer println("defer {i}")
+	}
+	x mut := 1
+	defer println("x was {x}")
+	x = 2
+	{
+		_b := Noisy { name: "b".to_string() }
+	}
+	println("end of f, x={x}")
+}
+
+fun main() {
+	f()
+	v mut := Vec::new()
+	v.push(Noisy { name: "v1".to_string() })
+	drop(v)
+	println("done")
+}

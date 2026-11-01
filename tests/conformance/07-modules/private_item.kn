@@ -1,0 +1,11 @@
+// expect-error: private
+// SPEC §7: items are private to their module unless marked `pub`.
+mod m {
+	fun hidden() i32 {
+		return 1
+	}
+}
+
+fun main() {
+	println(m::hidden())
+}

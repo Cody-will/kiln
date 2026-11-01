@@ -1,0 +1,7 @@
+// expect-error: immutable
+// SPEC §3.3: `:=` never assigns; mutation needs `mut`.
+fun main() {
+	x := 1
+	x = 2
+	println(x)
+}

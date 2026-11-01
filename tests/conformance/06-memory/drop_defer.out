@@ -1,0 +1,9 @@
+drop b
+end of f, x=2
+x was 1
+defer 2
+defer 1
+defer 0
+drop a
+drop v1
+done

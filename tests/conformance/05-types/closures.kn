@@ -1,0 +1,27 @@
+// SPEC §5: fun and fun mut values, closure capture, passing callbacks.
+fun apply(f fun(i32) i32, x i32) i32 {
+	return f(x)
+}
+
+fun each(xs &[i32], f fun mut(i32)) {
+	for x in xs {
+		f(*x)
+	}
+}
+
+fun double(x i32) i32 {
+	return x * 2
+}
+
+fun main() {
+	println(apply(double, 4))
+	println(apply(|x| x + 100, 1))
+	total mut := 0
+	each(&[1, 2, 3], |x| {
+		total += x
+	})
+	println(total)
+	s := "owned".to_string()
+	g := move || s.len()
+	println(g())
+}

@@ -1,0 +1,6 @@
+// expect-error: out of range
+// SPEC §2: a literal that does not fit its type is a compile-time error.
+fun main() {
+	x := 3000000000
+	println(x)
+}

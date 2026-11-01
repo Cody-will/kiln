@@ -1,0 +1,13 @@
+// SPEC §2: integer, float, string, byte-string, char literals; format specs.
+fun main() {
+	println("{0xFF} {0b1010} {1_000} {42u8} {3i64} {3000000000i64}")
+	println("{3.5} {1e3}")
+	name := "kiln"
+	println("hi {name} {{braces}}")
+	println(r"raw {name}")
+	b := b"A\x42\n"
+	println("{b.len()} {b[0]} {b[1]} {b'x'}")
+	println("{'a'} {true} {false}")
+	println("[{42:>6}] [{42:<6}] [{42:^6}] [{7:03}] [{255:x}] [{255:#X}] [{5:b}] [{3.14159:.2}]")
+	println("[{"abcdef":.3}] [{-5:+}] [{5:+}]")
+}

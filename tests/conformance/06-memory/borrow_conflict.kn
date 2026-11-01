@@ -1,0 +1,8 @@
+// expect-error: borrow
+// SPEC §6: a shared borrow and a mutation cannot overlap.
+fun main() {
+	v mut := [1, 2, 3].to_vec()
+	first := &v[0]
+	v.push(4)
+	println(first)
+}

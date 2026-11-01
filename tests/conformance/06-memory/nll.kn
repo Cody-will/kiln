@@ -1,0 +1,21 @@
+// SPEC §6: non-lexical lifetimes, two-phase borrows, reborrowing &mut.
+import std::sync::Mutex
+
+fun bump(v &mut Vec<i32>) {
+	v.push(v.len() as i32)
+}
+
+fun main() {
+	v mut := [1, 2, 3].to_vec()
+	first := &v[0]
+	println(first)
+	v.push(4)
+	v.push(v.len() as i32)
+	r := &mut v
+	bump(r)
+	bump(r)
+	println("{v:?}")
+	c := Mutex::new(1)
+	*c.lock() += 1
+	println(*c.lock())
+}

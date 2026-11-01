@@ -1,0 +1,5 @@
+6
+err: 50 is too big
+true
+Error: 99 is too big
+[exit 1]

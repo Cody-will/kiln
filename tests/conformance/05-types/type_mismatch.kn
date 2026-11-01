@@ -1,0 +1,7 @@
+// expect-error: mismatched types
+// SPEC §5: no implicit numeric conversions.
+fun main() {
+	x := 1i64
+	y := 2i32
+	println(x + y)
+}

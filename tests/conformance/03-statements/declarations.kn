@@ -1,0 +1,22 @@
+// SPEC §3.3: let, :=, mut, shadowing, tuple short declarations.
+fun pair() (i32, string) {
+	return (7, "seven".to_string())
+}
+
+fun main() {
+	let x u8 = 5
+	y := 5u8
+	println(x + y)
+	z mut := 1
+	z += 2
+	println(z)
+	z := "shadowed"
+	println(z)
+	(n, s mut) := pair()
+	s.push("!")
+	println("{n} {s}")
+	(_, t) := pair()
+	println(t)
+	let (a, b) = (1, 2)
+	println(a + b)
+}

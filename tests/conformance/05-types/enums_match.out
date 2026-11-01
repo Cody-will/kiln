@@ -1,0 +1,11 @@
+neg
+digit
+num
+additive
+op *
+end
+true true true
+P { x: 1, y: 2 }
+3
+11
+1 3

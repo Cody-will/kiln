@@ -156,6 +156,90 @@ fn run_programs() {
     );
 }
 
+/// The conformance suite: `tests/conformance/<NN-section>/*.kn`, one
+/// directory per section of `docs/SPEC.md`. Programs run like `tests/run`;
+/// a first line `// expect-error: TEXT` instead requires `kiln build` to fail
+/// cleanly (exit 1, no crash) with TEXT in its diagnostics.
+#[test]
+fn conformance_suite() {
+    let base = root().join("tests/conformance");
+    let mut sections: Vec<PathBuf> = std::fs::read_dir(&base)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.is_dir())
+        .collect();
+    sections.sort();
+    let bless = std::env::var_os("KILN_BLESS").is_some();
+    let mut failures = Vec::new();
+    let mut count = 0;
+    for sec in &sections {
+        let tmp = scratch(&format!(
+            "conf-{}",
+            sec.file_name().unwrap().to_str().unwrap()
+        ));
+        let mut files: Vec<PathBuf> = std::fs::read_dir(sec)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|e| e == "kn"))
+            .collect();
+        files.sort();
+        for f in &files {
+            count += 1;
+            let text = std::fs::read_to_string(f).unwrap();
+            let want_err = text
+                .lines()
+                .next()
+                .and_then(|l| l.strip_prefix("// expect-error:"))
+                .map(|e| e.trim().to_string());
+            if let Some(want) = want_err {
+                let b = Command::new(kiln())
+                    .arg("build")
+                    .arg(f)
+                    .arg("-o")
+                    .arg(tmp.join("err"))
+                    .output()
+                    .unwrap();
+                let err = String::from_utf8_lossy(&b.stderr);
+                if b.status.code() != Some(1) || !err.contains(&want) || err.contains("panicked") {
+                    failures.push(format!(
+                        "{}: expected a clean build error containing `{want}`, got {:?}:\n{err}",
+                        f.display(),
+                        b.status.code()
+                    ));
+                }
+                continue;
+            }
+            let expected_path = f.with_extension("out");
+            match build_and_run(f, &tmp) {
+                Err(e) => failures.push(e),
+                Ok(actual) => {
+                    if bless {
+                        std::fs::write(&expected_path, &actual).unwrap();
+                        continue;
+                    }
+                    let expected = std::fs::read_to_string(&expected_path)
+                        .unwrap_or_default()
+                        .replace("\r\n", "\n");
+                    if actual.trim_end() != expected.trim_end() {
+                        failures.push(format!(
+                            "{}: output differs\n--- expected\n{expected}\n--- actual\n{actual}",
+                            f.display()
+                        ));
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+    assert!(count > 0, "no conformance programs in {}", base.display());
+    assert!(
+        failures.is_empty(),
+        "{} of {count} conformance programs failed:\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+}
+
 #[test]
 fn hello_example_runs() {
     let tmp = scratch("hello");

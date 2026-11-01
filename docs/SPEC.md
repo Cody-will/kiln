@@ -577,7 +577,7 @@ fun main() {
   - A function whose return type has an elided lifetime must have `&self`/`&mut self` or exactly one parameter with a lifetime; otherwise it needs explicit lifetimes (`'static` for borrowed constants such as string literals). Structs that hold references must declare lifetime parameters. Lifetime bounds are written `<'a, 'b: 'a>` or `where 'b: 'a` (`'b` outlives `'a`). A trait object without a lifetime (`Box<dyn Trait>`) is `'static`; write `Box<dyn Trait + 'a>` for one that borrows.
   - `Send` and `Sync` are auto traits: a struct or enum implements them when all of its fields do. Raw pointers implement neither; `&T` is `Send` only when `T: Sync`. A manual `unsafe impl Send for T {}` overrides this; `Send` and `Sync` are `unsafe trait`s, so implementing them without `unsafe` is an error (and `unsafe impl` of an ordinary trait is too).
   - The design targets a Polonius-style analysis but starts with NLL.
-- **Interior mutability**: `Cell`, `RefCell`, `Mutex`, `RwLock`, and `Atomic*`.
+- **Interior mutability**: `Mutex`, `RwLock`, `Once`, and `Atomic*` (`std::sync`). Single-task `Cell` and `RefCell` are planned but not yet in the standard library.
 - **Concurrency memory model**: C++11/Rust atomics orderings. Safe code cannot cause data races.
 - **`unsafe` blocks** permit the following, and the compiler rejects each of them outside `unsafe { }` or an `unsafe fun` body:
   - Dereferencing raw pointers.
