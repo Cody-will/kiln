@@ -1,0 +1,113 @@
+// Test harness generation for `kiln test` (port of
+// crates/kiln_parser/src/testgen.rs). `harness` finds `@test` functions (at
+// the top level and in inline modules), drops the program's own `main`, and
+// returns the source of a generated `main` that runs the one test named by
+// its first argument.
+
+import ast::{Item, ItemKind, Visibility}
+
+pub struct TestCase {
+	pub name string,
+	pub ignore bool,
+	// `@should_panic`; the inner value is the `expected = "..."` text.
+	pub should_panic option<option<string>>,
+}
+
+pub fun harness(items &mut Vec<Item>, tests &mut Vec<TestCase>, errors &mut Vec<(usize, usize, string)>) string {
+	calls mut := Vec::new()
+	collect(items, "", tests, &mut calls, errors)
+	i mut := 0
+	while i < items.len() {
+		is_main := match &items[i].kind {
+			ItemKind::Fn(f) => f.name.name == "main",
+			_ => false,
+		}
+		if is_main {
+			items.remove(i)
+		} else {
+			i += 1
+		}
+	}
+	src mut := "fun main() {{\n\targs := std::os::args()\n\tif args.len() < 2 {{\n\t\tstd::os::exit(2)\n\t}}\n\twhich := &args[1]\n".to_string()
+	for k in 0..tests.len() {
+		n := &tests[k].name
+		if calls[k] {
+			src.push("\tif which == \"{n}\" {{\n\t\tmatch {n}() {{\n\t\t\tOk(_) => return,\n\t\t\tErr(e) => {{\n\t\t\t\teprintln(\"error: {{e}}\")\n\t\t\t\tstd::os::exit(1)\n\t\t\t}},\n\t\t}}\n\t}}\n")
+		} else {
+			src.push("\tif which == \"{n}\" {{\n\t\t{n}()\n\t\treturn\n\t}}\n")
+		}
+	}
+	src.push("\teprintln(\"no such test: {{which}}\")\n\tstd::os::exit(2)\n}}\n")
+	return src
+}
+
+fun has_attr(it &Item, name &str) bool {
+	for a in &it.attrs {
+		if a.name.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// Test functions, and modules holding them, are made public so the
+// generated `main` can call them.
+fun collect(items &mut Vec<Item>, prefix &str, tests &mut Vec<TestCase>, calls &mut Vec<bool>, errors &mut Vec<(usize, usize, string)>) {
+	for it in items.iter_mut() {
+		is_test := has_attr(&*it, "test")
+		ignore := has_attr(&*it, "ignore")
+		sp mut := None
+		for a in &it.attrs {
+			if a.name.name == "should_panic" {
+				sp = Some(match &a.args {
+					Some(s) => expected(s),
+					None => None,
+				})
+			}
+		}
+		public mut := false
+		match &mut it.kind {
+			ItemKind::Mod { name, items: Some(inner) } => {
+				before := tests.len()
+				p := "{prefix}{name.name}::"
+				collect(inner, &p, tests, calls, errors)
+				public = tests.len() > before
+			},
+			ItemKind::Fn(f) => {
+				if is_test {
+					if f.params.len() > 0 || f.self_param.is_some() || f.generics.params.len() > 0 {
+						errors.push((f.name.span.start, f.name.span.end, "a `@test` function must not take parameters or generic arguments".to_string()))
+						continue
+					}
+					tests.push(TestCase { name: "{prefix}{f.name.name}", ignore: ignore, should_panic: sp })
+					calls.push(f.ret.is_some())
+					public = true
+				}
+			},
+			_ => {},
+		}
+		if public {
+			it.vis = Visibility::Public
+		}
+	}
+}
+
+// The string in `expected = "..."`.
+fun expected(args &str) option<string> {
+	rest := match args.trim().strip_prefix("expected") {
+		Some(r) => r.trim_start(),
+		None => return None,
+	}
+	rest2 := match rest.strip_prefix("=") {
+		Some(r) => r.trim(),
+		None => return None,
+	}
+	inner := match rest2.strip_prefix("\"") {
+		Some(r) => match r.strip_suffix("\"") {
+			Some(x) => x,
+			None => return None,
+		},
+		None => return None,
+	}
+	return Some(inner.replace("\\\"", "\"").replace("\\\\", "\\"))
+}
