@@ -307,11 +307,20 @@ pub struct Parser<'s> {
 	in_extern bool,
 	// Name-span starts of foreign functions declared with a trailing `...`.
 	variadic Vec<usize>,
+	// Current nesting of expressions, types, patterns, and blocks; capped at
+	// MAX_NESTING so hostile input reports an error instead of overflowing
+	// the stack here or in later passes.
+	depth usize,
+	// Deepest `depth` reached; operator chains use it to measure height.
+	peak usize,
 }
+
+// Deepest nesting of expressions, types, patterns, and blocks accepted.
+const MAX_NESTING usize = 64
 
 impl<'s> Parser<'s> {
 	pub fun new(src &'s str, tokens Vec<Token>, docs Vec<(usize, usize, string)>) Parser<'s> {
-		return Parser { src: src, base: 0, tokens: tokens, pos: 0, docs: docs, doc_idx: 0, errors: Vec::new(), no_struct: false, angle_depth: 0, in_extern: false, variadic: Vec::new() }
+		return Parser { src: src, base: 0, tokens: tokens, pos: 0, docs: docs, doc_idx: 0, errors: Vec::new(), no_struct: false, angle_depth: 0, in_extern: false, variadic: Vec::new(), depth: 0, peak: 0 }
 	}
 
 	pub fun set_base(&mut self, base usize) {
@@ -436,6 +445,19 @@ impl<'s> Parser<'s> {
 	fun error_at<R>(&mut self, msg string, sp Span) result<R, Reported> {
 		self.push_error(msg, sp)
 		return Err(Reported {})
+	}
+
+	// Enters one nesting level, or reports that the input nests too deeply.
+	fun enter(&mut self) result<void, Reported> {
+		if self.depth >= MAX_NESTING {
+			sp := self.span()
+			return self.error_at("nesting is too deep (the limit is {MAX_NESTING} levels)".to_string(), sp)
+		}
+		self.depth += 1
+		if self.depth > self.peak {
+			self.peak = self.depth
+		}
+		return Ok(())
 	}
 
 	fun unexpected<R>(&mut self, expected &str) result<R, Reported> {
@@ -1537,6 +1559,13 @@ impl<'s> Parser<'s> {
 	}
 
 	pub fun parse_type(&mut self) result<Type, Reported> {
+		self.enter()?
+		r := self.parse_type_nested()
+		self.depth -= 1
+		return r
+	}
+
+	fun parse_type_nested(&mut self) result<Type, Reported> {
 		start := self.span()
 		if self.at("&") || self.at("&&") {
 			double := self.at("&&")
@@ -1674,6 +1703,13 @@ impl<'s> Parser<'s> {
 	// ----- patterns -----
 
 	pub fun parse_pattern(&mut self) result<Pattern, Reported> {
+		self.enter()?
+		r := self.parse_pattern_nested()
+		self.depth -= 1
+		return r
+	}
+
+	fun parse_pattern_nested(&mut self) result<Pattern, Reported> {
 		self.eat("|")
 		first := self.parse_pattern_no_or()?
 		if !self.at("|") {
@@ -1872,6 +1908,13 @@ impl<'s> Parser<'s> {
 	// ----- blocks and statements -----
 
 	pub fun parse_block(&mut self) result<Block, Reported> {
+		self.enter()?
+		r := self.parse_block_nested()
+		self.depth -= 1
+		return r
+	}
+
+	fun parse_block_nested(&mut self) result<Block, Reported> {
 		start := self.expect("{{")?
 		old := self.no_struct
 		self.no_struct = false
@@ -1958,7 +2001,11 @@ impl<'s> Parser<'s> {
 	fun parse_stmt(&mut self) result<Stmt, Reported> {
 		start := self.span()
 		kind := if self.at_item_start() {
-			StmtKind::Item(Box::new(self.parse_item()?))
+			item := self.parse_item()?
+			if let ItemKind::Mod { .. } = item.kind {
+				return self.error_at("modules must be declared at module level, not inside a function body".to_string(), item.span)
+			}
+			StmtKind::Item(Box::new(item))
 		} else if self.eat_kw("let") {
 			first := self.parse_binding_pattern()?
 			pat := if self.at("|") {
@@ -2085,31 +2132,49 @@ impl<'s> Parser<'s> {
 	}
 
 	fun parse_bin(&mut self, min u8) result<Expr, Reported> {
+		// An operator chain is built in a loop, but each operator still
+		// deepens the tree, so track the tree's height (via `peak`) and keep
+		// it within MAX_NESTING as well.
+		saved := self.depth
+		outer_peak := self.peak
+		self.peak = saved
 		lhs mut := self.parse_unary()?
+		h mut := self.peak - saved
 		loop {
 			if self.at_kw("as") && CAST_PREC >= min {
 				self.bump()
 				t := self.parse_type()?
+				h += 1
 				sp := lhs.span.to(t.span)
+				if saved + h > MAX_NESTING {
+					return self.error_at("nesting is too deep (the limit is {MAX_NESTING} levels)".to_string(), sp)
+				}
 				lhs = Expr { kind: ExprKind::Cast(Box::new(lhs), t), span: sp }
 				continue
 			}
 			(op, prec) := match binop(self.peek()) {
 				Some(x) => x,
-				None => return Ok(lhs),
+				None => break,
 			}
 			if prec < min {
-				return Ok(lhs)
+				break
 			}
 			self.bump()
 			self.skip_implicit_semis()
+			self.peak = saved
 			rhs := self.parse_bin(prec + 1)?
+			hr := self.peak - saved
+			h = if hr > h { hr + 1 } else { h + 1 }
 			sp := lhs.span.to(rhs.span)
+			if saved + h > MAX_NESTING {
+				return self.error_at("nesting is too deep (the limit is {MAX_NESTING} levels)".to_string(), sp)
+			}
 			lhs = Expr { kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)), span: sp }
 		}
+		self.peak = if saved + h > outer_peak { saved + h } else { outer_peak }
+		return Ok(lhs)
 	}
 
-	// `spawn f(args)` / `spawn [move] { ... }` (after `spawn`).
 	fun parse_spawn(&mut self, start Span) result<Expr, Reported> {
 		is_move := self.eat_kw("move")
 		target := if self.at("{{") {
@@ -2131,6 +2196,13 @@ impl<'s> Parser<'s> {
 	}
 
 	fun parse_unary(&mut self) result<Expr, Reported> {
+		self.enter()?
+		r := self.parse_unary_nested()
+		self.depth -= 1
+		return r
+	}
+
+	fun parse_unary_nested(&mut self) result<Expr, Reported> {
 		start := self.span()
 		if self.eat_kw("spawn") {
 			return self.parse_spawn(start)

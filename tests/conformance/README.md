@@ -10,6 +10,7 @@ One directory per section of [`docs/SPEC.md`](../../docs/SPEC.md):
 | `05-types` | §5 Type System |
 | `06-memory` | §6 Memory Model |
 | `07-modules` | §7 Modules, Packages, Build Tool |
+| `08-limits` | §2/§7 implementation limits (nesting depth, item placement) |
 
 Each `X.kn` runs and its output is compared with `X.out` (stdout, stderr,
 then `[exit N]` for a nonzero exit), exactly like `tests/run`. A program whose

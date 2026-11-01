@@ -1,0 +1,21 @@
+[package]
+name = "kiln_fuzz"
+description = "Mutation fuzzer for the Kiln front ends (lexer, parser, resolve, type check, borrow check)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kiln-fuzz"
+path = "src/main.rs"
+
+[dependencies]
+kiln_lexer = { path = "../kiln_lexer" }
+kiln_parser = { path = "../kiln_parser" }
+kiln_borrowck = { path = "../kiln_borrowck" }
+kiln_fmt = { path = "../kiln_fmt" }
+
+[lints]
+workspace = true

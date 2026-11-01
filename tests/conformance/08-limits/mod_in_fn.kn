@@ -1,0 +1,6 @@
+// expect-error: modules must be declared at module level
+fun main() {
+	mod inner {
+		fun f() {}
+	}
+}

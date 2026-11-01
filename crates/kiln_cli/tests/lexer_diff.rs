@@ -15,7 +15,8 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     for e in rd.flatten() {
         let p = e.path();
         let name = e.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') || name == "target" {
+        // 08-limits holds deliberately pathological inputs (nesting limits).
+        if name.starts_with('.') || name == "target" || name == "08-limits" {
             continue;
         }
         if p.is_dir() {

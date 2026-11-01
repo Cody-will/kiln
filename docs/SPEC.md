@@ -88,6 +88,14 @@ Kiln uses Rust's operator set: `+ - * / % & | ^ << >> && || ! == != < <= > >= = 
 | `:=` | Short declaration (`x := v`, `x mut := v`) |
 | `=>` | Match arm |
 
+### Implementation limits
+
+Expressions, types, patterns, and blocks may nest at most 64 levels deep
+(including the height of a binary-operator chain); deeper input is rejected
+with "nesting is too deep" rather than overflowing the compiler's stack.
+`mod` declarations are only allowed at module level, not inside a function
+body.
+
 ## 3. Statements, Declarations, and Returns
 
 ### 3.1 Explicit `return` (decided)
