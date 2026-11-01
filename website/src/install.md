@@ -38,7 +38,28 @@ The prebuilt binaries need glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 
 cd packaging/arch && makepkg -si
 ```
 
-It installs `/usr/bin/kiln` and `/usr/lib/kiln`, and puts the nvim plugin on the system package path.
+It installs `/usr/bin/kiln` and `/usr/lib/kiln`, shell completions for bash, zsh and fish, and puts the nvim plugin on the system package path. Update it with pacman; `kiln self` refuses to touch a `/usr` install.
+
+### Updating and uninstalling
+
+For an `install.sh` installation:
+
+```sh
+kiln self update                 # the latest release (--version v0.2.0 for a given one)
+kiln self update --dry-run       # show what would be downloaded
+kiln self uninstall              # list what would be removed
+kiln self uninstall --yes        # remove bin/kiln, lib/kiln and the installer's PATH lines
+```
+
+`kiln self update` verifies the release's `.sha256` and swaps the files in place. `KILN_DOWNLOAD_URL` points it elsewhere (a mirror, or a `file://` directory holding `kiln-<arch>-linux.tar.gz`).
+
+### Shell completions
+
+```sh
+kiln completions bash > ~/.local/share/bash-completion/completions/kiln
+kiln completions zsh  > "${fpath[1]}/_kiln"
+kiln completions fish > ~/.config/fish/completions/kiln.fish
+```
 
 ## Build from source
 

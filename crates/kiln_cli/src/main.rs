@@ -18,11 +18,13 @@
 //! Exit status is 0 on success, 1 when the file has errors, and 2 on usage errors
 //! (`kiln run` exits with the program's status).
 
+mod completions;
 mod editor;
 mod fmt;
 mod install;
 mod package;
 mod registry;
+mod selfcmd;
 mod selfhost;
 mod test;
 
@@ -97,6 +99,10 @@ USAGE:
     kiln doctor             Check the C toolchain/linker and build a test program
     kiln editor install <vscode|nvim>
                             Install editor support (VS Code extension or nvim plugin)
+    kiln self update [--version <tag>] [--dry-run] | kiln self uninstall [--yes]
+                            Update or remove an install.sh installation
+    kiln completions <bash|zsh|fish>
+                            Print a shell completion script
     kiln help               Show this message
     kiln --version          Show the version";
 
@@ -322,6 +328,8 @@ fn main() -> ExitCode {
         }
         [cmd] if cmd == "doctor" => install::doctor(),
         [cmd, rest @ ..] if cmd == "editor" => editor::run(rest),
+        [cmd, rest @ ..] if cmd == "self" => selfcmd::run(rest),
+        [cmd, rest @ ..] if cmd == "completions" => completions::run(rest),
         [cmd, dir] if cmd == "__install-lib" => install::install_lib(std::path::Path::new(dir)),
         [cmd] if cmd == "help" || cmd == "--help" || cmd == "-h" => {
             println!("{USAGE}");

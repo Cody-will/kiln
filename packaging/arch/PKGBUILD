@@ -32,6 +32,12 @@ package() {
 	install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
 	install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
 	install -Dm644 README.md "$pkgdir/usr/share/doc/kiln/README.md"
+	# Releases before `kiln completions` existed ship none.
+	if ./bin/kiln completions bash >/dev/null 2>&1; then
+		./bin/kiln completions bash | install -Dm644 /dev/stdin "$pkgdir/usr/share/bash-completion/completions/kiln"
+		./bin/kiln completions zsh | install -Dm644 /dev/stdin "$pkgdir/usr/share/zsh/site-functions/_kiln"
+		./bin/kiln completions fish | install -Dm644 /dev/stdin "$pkgdir/usr/share/fish/vendor_completions.d/kiln.fish"
+	fi
 	# nvim picks the plugin up from the system package path.
 	install -dm755 "$pkgdir/usr/share/nvim/site/pack/kiln/start"
 	ln -s /usr/lib/kiln/editors/nvim "$pkgdir/usr/share/nvim/site/pack/kiln/start/kiln.nvim"
