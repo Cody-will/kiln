@@ -14,6 +14,9 @@ $env:CARGO_TARGET_DIR = Join-Path $root 'target\dist-cargo'
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force (Join-Path $stage 'bin') | Out-Null
 
+# The C runtime uses GNU C extensions (__int128), so build it with
+# clang-cl rather than MSVC's cl.exe.
+if (-not $env:CC) { $env:CC = 'clang-cl' }
 Write-Host "== kiln $version ($arch-windows), without LLVM"
 cargo build --release --locked -p kiln_cli
 if ($LASTEXITCODE) { throw 'cargo build failed' }
