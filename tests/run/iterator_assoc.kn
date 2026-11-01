@@ -1,0 +1,56 @@
+// `Iterator` has an associated `Item`; the positional `Iterator<T>` form still works.
+struct Countdown {
+	n i32,
+}
+
+impl Iterator for Countdown {
+	type Item = i32
+	fun next(&mut self) option<Self::Item> {
+		if self.n == 0 {
+			return None
+		}
+		self.n -= 1
+		return Some(self.n + 1)
+	}
+}
+
+struct Ones {
+	left i32,
+}
+
+impl Iterator<i32> for Ones {
+	fun next(&mut self) option<i32> {
+		if self.left == 0 {
+			return None
+		}
+		self.left -= 1
+		return Some(1)
+	}
+}
+
+fun total<I: Iterator<Item = i32>>(it I) i32 {
+	return it.sum()
+}
+
+fun firsts<I: Iterator>(it I) Vec<I::Item> {
+	return it.take(2).collect()
+}
+
+fun old_style<I: Iterator<T>, T>(it I) usize {
+	return it.count()
+}
+
+fun main() {
+	cd := Countdown { n: 3 }
+	for x in cd {
+		println(x)
+	}
+	println(total(Countdown { n: 4 }))
+	println(total(Ones { left: 5 }))
+	f := firsts(Countdown { n: 9 })
+	println("{f:?}")
+	println(old_style(Ones { left: 7 }))
+	c3 := Countdown { n: 3 }
+	m := c3.map(|x| x * 10).collect()
+	println("{m:?}")
+}

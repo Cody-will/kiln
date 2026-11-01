@@ -231,64 +231,66 @@ pub trait From<T> {
 // works for any iterator. Adapters such as `map` and `filter` are lazy: nothing
 // runs until the iterator is consumed (by `for`, `collect`, `count`, ...).
 // The adapter types live in `std::iter`.
-pub trait Iterator<T> {
+pub trait Iterator {
+	type Item
+
 	// The next value, or None when the sequence is done.
-	fun next(&mut self) option<T>
+	fun next(&mut self) option<Self::Item>
 
 	// ----- adapters ---------------------------------------------------------------
 
 	// Each value passed through `f`.
-	fun map<U>(self, f fun mut(T) U) std::iter::Map<Self, T, U> {
+	fun map<U>(self, f fun mut(Self::Item) U) std::iter::Map<Self, Self::Item, U> {
 		return std::iter::Map { inner: self, f: f }
 	}
 
 	// Only the values for which `keep` returns true.
-	fun filter(self, keep fun mut(&T) bool) std::iter::Filter<Self, T> {
+	fun filter(self, keep fun mut(&Self::Item) bool) std::iter::Filter<Self, Self::Item> {
 		return std::iter::Filter { inner: self, keep: keep }
 	}
 
 	// The `Some` results of `f`, skipping the `None`s.
-	fun filter_map<U>(self, f fun mut(T) option<U>) std::iter::FilterMap<Self, T, U> {
+	fun filter_map<U>(self, f fun mut(Self::Item) option<U>) std::iter::FilterMap<Self, Self::Item, U> {
 		return std::iter::FilterMap { inner: self, f: f }
 	}
 
 	// Each value with its position: `(0, a), (1, b), ...`.
-	fun enumerate(self) std::iter::Enumerate<Self, T> {
+	fun enumerate(self) std::iter::Enumerate<Self, Self::Item> {
 		return std::iter::Enumerate { inner: self, n: 0 }
 	}
 
 	// Pairs of values from both iterators; stops when either does.
-	fun zip<J: Iterator<U>, U>(self, other J) std::iter::Zip<Self, J, T, U> {
+	fun zip<J: Iterator<U>, U>(self, other J) std::iter::Zip<Self, J, Self::Item, U> {
 		return std::iter::Zip { a: self, b: other }
 	}
 
 	// This iterator's values, then `other`'s.
-	fun chain<J: Iterator<T>>(self, other J) std::iter::Chain<Self, J, T> {
+	fun chain<J: Iterator<Self::Item>>(self, other J) std::iter::Chain<Self, J, Self::Item> {
 		return std::iter::Chain { a: self, b: other, first: true }
 	}
 
 	// At most the first `n` values.
-	fun take(self, n usize) std::iter::Take<Self, T> {
+	fun take(self, n usize) std::iter::Take<Self, Self::Item> {
 		return std::iter::Take { inner: self, left: n }
 	}
 
 	// All but the first `n` values.
-	fun skip(self, n usize) std::iter::Skip<Self, T> {
+	fun skip(self, n usize) std::iter::Skip<Self, Self::Item> {
 		return std::iter::Skip { inner: self, n: n }
 	}
 
 	// Values while `f` holds; stops at the first that fails.
-	fun take_while(self, f fun mut(&T) bool) std::iter::TakeWhile<Self, T> {
+	fun take_while(self, f fun mut(&Self::Item) bool) std::iter::TakeWhile<Self, Self::Item> {
 		return std::iter::TakeWhile { inner: self, f: f, done: false }
 	}
 
 	// Skips values while `f` holds, then yields the rest.
-	fun skip_while(self, f fun mut(&T) bool) std::iter::SkipWhile<Self, T> {
+	fun skip_while(self, f fun mut(&Self::Item) bool) std::iter::SkipWhile<Self, Self::Item> {
 		return std::iter::SkipWhile { inner: self, f: f, started: false }
 	}
 
 	// Every `n`th value, starting with the first.
-	fun step_by(self, n usize) std::iter::StepBy<Self, T> {
+	fun step_by(self, n usize) std::iter::StepBy<Self, Self::Item> {
 		if n == 0 {
 			panic("step_by: the step must be positive")
 		}
@@ -296,24 +298,24 @@ pub trait Iterator<T> {
 	}
 
 	// The values of the iterators `f` returns, one after another.
-	fun flat_map<J: Iterator<U>, U>(self, f fun mut(T) J) std::iter::FlatMap<Self, T, J, U> {
+	fun flat_map<J: Iterator<U>, U>(self, f fun mut(Self::Item) J) std::iter::FlatMap<Self, Self::Item, J, U> {
 		return std::iter::FlatMap { inner: self, f: f, cur: None }
 	}
 
 	// An iterator that can look at the next value without taking it.
-	fun peekable(self) std::iter::Peekable<Self, T> {
+	fun peekable(self) std::iter::Peekable<Self, Self::Item> {
 		return std::iter::Peekable { inner: self, peeked: None }
 	}
 
 	// Calls `f` on each value as it passes through.
-	fun inspect(self, f fun mut(&T)) std::iter::Inspect<Self, T> {
+	fun inspect(self, f fun mut(&Self::Item)) std::iter::Inspect<Self, Self::Item> {
 		return std::iter::Inspect { inner: self, f: f }
 	}
 
 	// ----- consumers ---------------------------------------------------------------
 
 	// All the values, in a vector.
-	fun collect(self) Vec<T> {
+	fun collect(self) Vec<Self::Item> {
 		it mut := self
 		out mut := Vec::new()
 		while let Some(x) = it.next() {
@@ -333,7 +335,7 @@ pub trait Iterator<T> {
 	}
 
 	// The last value.
-	fun last(self) option<T> {
+	fun last(self) option<Self::Item> {
 		it mut := self
 		last mut := None
 		while let Some(x) = it.next() {
@@ -343,7 +345,7 @@ pub trait Iterator<T> {
 	}
 
 	// The value at position `n` (counting from 0), consuming those before it.
-	fun nth(&mut self, n usize) option<T> {
+	fun nth(&mut self, n usize) option<Self::Item> {
 		i mut := 0
 		while let Some(x) = self.next() {
 			if i == n {
@@ -355,7 +357,7 @@ pub trait Iterator<T> {
 	}
 
 	// Combines the values from left to right: `f(f(f(init, a), b), c)`.
-	fun fold<A>(self, init A, f fun mut(A, T) A) A {
+	fun fold<A>(self, init A, f fun mut(A, Self::Item) A) A {
 		it mut := self
 		acc mut := init
 		while let Some(x) = it.next() {
@@ -365,7 +367,7 @@ pub trait Iterator<T> {
 	}
 
 	// Calls `f` on each value.
-	fun for_each(self, f fun mut(T)) {
+	fun for_each(self, f fun mut(Self::Item)) {
 		it mut := self
 		while let Some(x) = it.next() {
 			f(x)
@@ -373,7 +375,7 @@ pub trait Iterator<T> {
 	}
 
 	// Whether `f` holds for some value (stops at the first).
-	fun any(&mut self, f fun mut(T) bool) bool {
+	fun any(&mut self, f fun mut(Self::Item) bool) bool {
 		while let Some(x) = self.next() {
 			if f(x) {
 				return true
@@ -383,7 +385,7 @@ pub trait Iterator<T> {
 	}
 
 	// Whether `f` holds for every value (stops at the first that fails).
-	fun all(&mut self, f fun mut(T) bool) bool {
+	fun all(&mut self, f fun mut(Self::Item) bool) bool {
 		while let Some(x) = self.next() {
 			if !f(x) {
 				return false
@@ -393,7 +395,7 @@ pub trait Iterator<T> {
 	}
 
 	// The first value for which `f` holds.
-	fun find(&mut self, f fun mut(&T) bool) option<T> {
+	fun find(&mut self, f fun mut(&Self::Item) bool) option<Self::Item> {
 		while let Some(x) = self.next() {
 			if f(&x) {
 				return Some(x)
@@ -403,7 +405,7 @@ pub trait Iterator<T> {
 	}
 
 	// The position of the first value for which `f` holds.
-	fun position(&mut self, f fun mut(T) bool) option<usize> {
+	fun position(&mut self, f fun mut(Self::Item) bool) option<usize> {
 		i mut := 0
 		while let Some(x) = self.next() {
 			if f(x) {
@@ -415,7 +417,7 @@ pub trait Iterator<T> {
 	}
 
 	// The smallest value (the first of equals).
-	fun min(self) option<T> where T: Ord {
+	fun min(self) option<Self::Item> where Self::Item: Ord {
 		it mut := self
 		best mut := it.next()?
 		while let Some(x) = it.next() {
@@ -427,7 +429,7 @@ pub trait Iterator<T> {
 	}
 
 	// The largest value (the last of equals).
-	fun max(self) option<T> where T: Ord {
+	fun max(self) option<Self::Item> where Self::Item: Ord {
 		it mut := self
 		best mut := it.next()?
 		while let Some(x) = it.next() {
@@ -439,7 +441,7 @@ pub trait Iterator<T> {
 	}
 
 	// The value for which `key` is smallest (the first of equals).
-	fun min_by_key<K: Ord>(self, key fun mut(&T) K) option<T> {
+	fun min_by_key<K: Ord>(self, key fun mut(&Self::Item) K) option<Self::Item> {
 		it mut := self
 		best mut := it.next()?
 		bk mut := key(&best)
@@ -454,7 +456,7 @@ pub trait Iterator<T> {
 	}
 
 	// The value for which `key` is largest (the last of equals).
-	fun max_by_key<K: Ord>(self, key fun mut(&T) K) option<T> {
+	fun max_by_key<K: Ord>(self, key fun mut(&Self::Item) K) option<Self::Item> {
 		it mut := self
 		best mut := it.next()?
 		bk mut := key(&best)
@@ -469,9 +471,9 @@ pub trait Iterator<T> {
 	}
 
 	// The total of the values (0 when there are none).
-	fun sum(self) T where T: Num {
+	fun sum(self) Self::Item where Self::Item: Num {
 		it mut := self
-		acc mut := T::zero()
+		acc mut := std::iter::num_zero::<Self::Item>()
 		while let Some(x) = it.next() {
 			acc = acc.add(x)
 		}
@@ -479,9 +481,9 @@ pub trait Iterator<T> {
 	}
 
 	// The product of the values (1 when there are none).
-	fun product(self) T where T: Num {
+	fun product(self) Self::Item where Self::Item: Num {
 		it mut := self
-		acc mut := T::one()
+		acc mut := std::iter::num_one::<Self::Item>()
 		while let Some(x) = it.next() {
 			acc = acc.mul(x)
 		}

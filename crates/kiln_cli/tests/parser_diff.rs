@@ -133,6 +133,10 @@ fn diff_all(flag: &str, dump: fn(&str) -> String, what: &str) {
                 dumps.push(line.to_string());
             }
         }
+        // A lone file with an empty dump produces no lines at all.
+        if chunk.len() == 1 && dumps.is_empty() {
+            dumps.push(String::new());
+        }
         assert_eq!(dumps.len(), chunk.len(), "one dump per file");
         for (f, got) in chunk.iter().zip(&dumps) {
             let src = std::fs::read_to_string(f).expect("read");

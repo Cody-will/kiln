@@ -78,7 +78,7 @@ Type checking on top of `Resolved`.
 
 It also exports per-function results (`Typed`, `FnResults`: expression and local types, method resolutions with autoderef steps, callees) and trait queries (`is_copy`, `implements`, `has_drop_impl`) for later phases. `Send`/`Sync` are auto traits computed structurally over fields (with a cycle guard); explicit impls override.
 
-Known gaps: associated types (`T::Item`), `impl Trait` (treated as `dyn`), array lengths, `Send`/`Sync` field analysis, and std (external) items are opaque (`{unknown}` types that unify with anything). Exhaustiveness checks only top-level variants.
+Known gaps: `T::Item` in impl headers and expression position (`T::Item::f()`), array lengths, `Send`/`Sync` field analysis, and std (external) items are opaque (`{unknown}` types that unify with anything). Exhaustiveness checks only top-level variants.
 
 ### `kiln_mir`
 

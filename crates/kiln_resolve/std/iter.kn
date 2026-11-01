@@ -472,3 +472,13 @@ impl<T> Iterator<T> for Once<T> {
 		return self.value.take()
 	}
 }
+
+// `N::zero()` / `N::one()` as functions, for code that names `N` through a
+// projection such as `Self::Item` (used by `Iterator::sum` and `product`).
+pub fun num_zero<N: Num>() N {
+	return N::zero()
+}
+
+pub fun num_one<N: Num>() N {
+	return N::one()
+}

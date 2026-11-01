@@ -14,7 +14,7 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 | Code generation (Cranelift): functions, structs/enums/`match`, generics (monomorphized), traits and `dyn`, closures, `result`/`?`, `defer`, `Drop`, `string`, `Vec`, `Box` | ✅ Implemented (`kiln build`, `kiln run`; optional LLVM backend for `--release`) |
 | Fixed-size arrays `[T; N]` | ✅ Implemented |
 | `impl Trait` return types | ✅ Monomorphized (concrete type inferred from the body, no boxing); not in trait methods or recursive functions |
-| Associated types | 🚧 Not yet (`Iterator<T>` takes the item type as a parameter) |
+| Associated types | ✅ `type Item` in traits/impls, `Self::Item` / `T::Item`, `Iterator<Item = X>` bounds; positional `Iterator<T>` still accepted |
 | Patterns | ✅ Nested enum/struct/tuple patterns, slice patterns (`[a, .., b]` on arrays, slices, `Vec`), `|` patterns with bindings; exhaustiveness checks all of them |
 | Debug info | ✅ DWARF line tables in debug builds on Linux (`gdb`, `addr2line`, `perf` show `file.kn:line`); 🚧 no variable info, none for LLVM release builds yet |
 | Integer overflow | ✅ Panics in debug builds, wraps with `--release` |
