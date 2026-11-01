@@ -20,15 +20,14 @@ Status key: ✅ done · 🚧 in progress · ⬜ not started
 1. **Standard library phase 2:** ✅ done (strings through `context`, `kiln test`, net timeouts). Since done: HTTP client/server timeouts, duration parsing and flags, website sections for every phase 2 module, HTTPS via rustls (`std::net::tls`). Backend libraries: HTTP/2 (`std::net::http2`, ALPN), WebSockets (`std::net::websocket`) and a PostgreSQL client with a pool (`std::db::postgres`). Leftovers: DNS lookups aren't cancellable beyond connect timeouts, Unicode case folding in `regexp`, TLS client certificates (mTLS) and OS trust stores.
 2. **Standard library phase 3:** `compress`, `mime`, `url`, templates.
 3. **Runtime refinements:** growable task stacks, per-task panics that `join` reports as `Err(Panic)` instead of ending the program, IOCP on Windows (stack overflow is now detected and reported; frames over 4 MiB are rejected at compile time). Codegen still copies large array temporaries (a 1 MB local array uses ~4 MB of frame).
-4. **Type checker gaps:** associated types, `impl Trait` as a distinct type, deeper exhaustiveness (nested patterns, integer ranges), method resolution on integer literals before defaulting.
-5. **Codegen gaps:** `static` items, destructors on panic (locals leak; `recover` and `defer` on panic are done, Unix only), and debug info beyond line tables (variables, types) and for LLVM builds. Done: the optimizing LLVM backend for release builds (`crates/kiln_llvm`, docs/LLVM.md), slice patterns, `|` patterns with bindings, `defer` on panic (Unix), and DWARF line tables in Cranelift debug builds (Linux).
+4. **Type checker gaps:** associated types, `impl Trait` as a distinct type, method resolution on integer literals before defaulting.
+5. **Codegen gaps:** destructors on panic (locals leak; `recover` and `defer` on panic are done, Unix only), and debug info beyond line tables (variables, types) and for LLVM builds. Done: `static` items, the optimizing LLVM backend for release builds (`crates/kiln_llvm`, docs/LLVM.md), slice patterns, `|` patterns with bindings, `defer` on panic (Unix), and DWARF line tables in Cranelift debug builds (Linux).
 6. **Lossless CST decision:** choose whether to build a lossless syntax tree (in the rowan style) before the formatter and language server depend on the AST.
 7. **Borrow checker refinements:** lifetime variance, higher-ranked lifetimes; reading a `&'t` field through `&self` should keep lifetime `'t` (today it borrows `self`).
 8. **Self-hosting:** kilnc is the daily driver (see docs/SELF_HOSTING.md). `kiln check`, `kiln test`, native `[link]` and LSP diagnostics run on kilnc. Remaining: seed-only bootstrap docs in release notes, the LSP navigation index via kilnc, then relocate Rust crates under `bootstrap/reference/` and delete unused codegen.
 
 ## Known parser gaps
 
-- **`extern` blocks and FFI declarations:** not parsed yet (the `extern` keyword is reserved).
 - **Macros:** none (an open question in the spec). Built-ins like `println` are parsed as ordinary calls.
 - **`scope |s| { ... }` sugar:** not special syntax. Use `scope(|s| { ... })` as an ordinary call.
 - **Labeled blocks:** not supported. Only `loop`, `while`, and `for` take labels.

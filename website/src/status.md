@@ -40,7 +40,7 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 - Unknown names, fields, and methods; wrong argument counts
 - Trait impls that are missing methods or have mismatched signatures, and unsatisfied bounds such as `T: Ord`
 - `?` used in a function that doesn't return `result`/`option`, or with an error type that has no `From` conversion
-- Non-exhaustive `match`, looking inside nested patterns (enum variants, tuples, structs, `bool`)
+- Non-exhaustive `match`, looking inside nested patterns (enum variants, tuples, structs, `bool`, integer literals and ranges), naming a missing case such as `Some(false)` or `i32::MIN..=-1`
 - Assigning to, or taking `&mut` of, a variable not declared `mut`
 - Sending on a receive-only channel, or receiving on a send-only one
 - Using a value after it was moved (with a note showing where), including partial moves and moves in loops

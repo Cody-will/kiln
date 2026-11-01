@@ -192,6 +192,8 @@ pub struct Checker {
 	b Body,
 	// The longest slice length the current match distinguishes.
 	slice_max usize,
+	// Where the current match's integer patterns start and stop.
+	int_cuts Vec<i128>,
 }
 
 // Names of the generic type parameters declared in `g`.
@@ -372,6 +374,7 @@ impl Checker {
 			results: Vec::new(),
 			b: Body::new(Vec::new()),
 			slice_max: 0,
+			int_cuts: Vec::new(),
 		}
 	}
 
@@ -4890,7 +4893,11 @@ impl Checker {
 		match &t {
 			Ty::Prim(p) => {
 				if p != "Bool" {
-					return None
+					(lo, hi) := int_range(p)?
+					for (a, b) in int_pieces(lo, hi, &self.int_cuts) {
+						v.push((XCtor::Int(a, b), Vec::new()))
+					}
+					return Some(v)
 				}
 				v.push((XCtor::Bool(true), Vec::new()))
 				v.push((XCtor::Bool(false), Vec::new()))
@@ -5034,6 +5041,18 @@ impl Checker {
 				return XPat::Or(v)
 			}
 			PatternKind::Lit(Lit::Bool(b)) => return XPat::Ctor(XCtor::Bool(*b), Vec::new()),
+			PatternKind::Lit(Lit::Int { .. }) => {
+				match int_pat_value(p) {
+					Some(v) => return self.x_int(t, v, v),
+					None => return XPat::Opaque,
+				}
+			}
+			PatternKind::Range { lo, hi, inclusive } => {
+				match (int_pat_value(lo), int_pat_value(hi)) {
+					(Some(a), Some(b)) => return self.x_int(t, a, if *inclusive { b } else { b - 1 }),
+					_ => return XPat::Opaque,
+				}
+			}
 			PatternKind::Slice(ps) => {
 				elem := match self.zs(t) {
 					Ty::Array(e, _) | Ty::Slice(e) => *e,
@@ -5261,6 +5280,208 @@ impl Checker {
 		}
 	}
 
+	// An integer pattern covering `a..=b`: the pieces of `t`'s range inside it.
+	fun x_int(&self, t &Ty, a i128, b i128) XPat {
+		p := match self.zs(t) {
+			Ty::Prim(p) => p,
+			_ => return XPat::Opaque,
+		}
+		(lo, hi) := match int_range(&p) {
+			Some(r) => r,
+			None => return XPat::Opaque,
+		}
+		alts mut := Vec::new()
+		for (x, y) in int_pieces(lo, hi, &self.int_cuts) {
+			if x >= a && y <= b {
+				alts.push(XPat::Ctor(XCtor::Int(x, y), Vec::new()))
+			}
+		}
+		if alts.len() == 1 {
+			return alts[0].clone()
+		}
+		return XPat::Or(alts)
+	}
+
+	// A row of patterns (one per type in `tys`) that no row of `rows`
+	// matches, or None when `rows` covers every value: the witness half of
+	// the usefulness algorithm, for a wildcard query.
+	fun x_witness(&self, rows &Vec<Vec<XPat>>, tys &[Ty]) option<Vec<XPat>> {
+		if tys.len() == 0 {
+			return if rows.is_empty() { Some(Vec::new()) } else { None }
+		}
+		flat := flatten_or(rows)
+		seen mut := Vec::new()
+		for r in &flat {
+			if let XPat::Ctor(k, _) = &r[0] {
+				if !ctor_in(&seen, *k) {
+					seen.push(*k)
+				}
+			}
+		}
+		all := self.x_ctors(&tys[0])
+		if let Some(cs) = &all {
+			complete mut := !cs.is_empty()
+			for (k, _) in cs {
+				if !ctor_in(&seen, *k) {
+					complete = false
+				}
+			}
+			if complete {
+				for (k, ftys) in cs {
+					nt mut := ftys.clone()
+					for x in &tys[1..] {
+						nt.push(x.clone())
+					}
+					if let Some(w) = self.x_witness(&specialize(&flat, *k, ftys.len()), &nt[..]) {
+						out mut := Vec::new()
+						out.push(XPat::Ctor(*k, w[..ftys.len()].to_vec()))
+						for x in &w[ftys.len()..] {
+							out.push(x.clone())
+						}
+						return Some(out)
+					}
+				}
+				return None
+			}
+		}
+		default mut := Vec::new()
+		for r in &flat {
+			if let XPat::Wild = &r[0] {
+				default.push(r[1..].to_vec())
+			}
+		}
+		w := self.x_witness(&default, &tys[1..])?
+		head mut := XPat::Wild
+		if let Some(cs) = &all {
+			if !seen.is_empty() {
+				for (k, ftys) in cs {
+					if !ctor_in(&seen, *k) {
+						head = XPat::Ctor(*k, wilds(ftys.len()))
+						break
+					}
+				}
+			}
+		}
+		out mut := Vec::new()
+		out.push(head)
+		for x in w {
+			out.push(x)
+		}
+		return Some(out)
+	}
+
+	fun x_render_sub(&self, args &Vec<XPat>, tys &Vec<Ty>, i usize) string {
+		if i >= args.len() {
+			return "_".to_string()
+		}
+		t := if i < tys.len() { tys[i].clone() } else { Ty::Unknown }
+		return self.x_render(&args[i], &t)
+	}
+
+	fun x_render_list(&self, args &Vec<XPat>, tys &Vec<Ty>, n usize) string {
+		parts mut := Vec::new()
+		i mut := 0
+		while i < n {
+			parts.push(self.x_render_sub(args, tys, i))
+			i += 1
+		}
+		return join(&parts, ", ")
+	}
+
+	// Writes a witness pattern the way a user would.
+	fun x_render(&self, p &XPat, t &Ty) string {
+		t := self.zs(t)
+		(k, args) := match p {
+			XPat::Ctor(k, args) => (*k, args.clone()),
+			_ => return "_".to_string(),
+		}
+		tys mut := Vec::new()
+		if let Some(cs) = self.x_ctors(&t) {
+			for (c, ts) in cs {
+				if c == k {
+					tys = ts
+					break
+				}
+			}
+		}
+		match k {
+			XCtor::Bool(b) => return if b { "true".to_string() } else { "false".to_string() },
+			XCtor::Int(a, b) => {
+				pt := match &t {
+					Ty::Prim(pt) => pt.clone(),
+					_ => return "_".to_string(),
+				}
+				(lo, hi) := match int_range(&pt) {
+					Some(r) => r,
+					None => (a, b),
+				}
+				if a == b {
+					return "{a}"
+				}
+				name := self.fmt(&t)
+				sa := if a == lo { "{name}::MIN" } else if a == hi { "{name}::MAX" } else { "{a}" }
+				sb := if b == lo { "{name}::MIN" } else if b == hi { "{name}::MAX" } else { "{b}" }
+				return "{sa}..={sb}"
+			}
+			XCtor::Len(n) => return "[{self.x_render_list(&args, &tys, n)}]",
+			XCtor::Long => return "[{self.x_render_list(&args, &tys, args.len())}, ..]",
+			_ => {},
+		}
+		name mut := "".to_string()
+		fields mut := Vec::new()
+		match &t {
+			Ty::Tuple(_) => {
+				if args.len() == 1 {
+					return "({self.x_render_sub(&args, &tys, 0)},)"
+				}
+				return "({self.x_render_list(&args, &tys, args.len())})"
+			}
+			Ty::Unit => return "()".to_string(),
+			Ty::Adt(d, _) => {
+				match k {
+					XCtor::Variant(i) => {
+						match self.adts.get(d) {
+							Some(info) => {
+								if i >= info.variants.len() {
+									return "_".to_string()
+								}
+								v := info.variants[i].0
+								name = self.r.def(v).name.clone()
+								fields = self.x_fields(&t, Some(v))
+							}
+							None => return "_".to_string(),
+						}
+					}
+					_ => {
+						name = self.r.def(*d).name.clone()
+						fields = self.x_fields(&t, None)
+					},
+				}
+			}
+			_ => return "_".to_string(),
+		}
+		if fields.is_empty() {
+			return name
+		}
+		f0 := fields[0].0.as_bytes()
+		if f0.len() > 0 && f0[0] >= 48 && f0[0] <= 57 {
+			return "{name}({self.x_render_list(&args, &tys, fields.len())})"
+		}
+		parts mut := Vec::new()
+		i mut := 0
+		while i < fields.len() {
+			r := self.x_render_sub(&args, &tys, i)
+			if r != "_" {
+				parts.push("{fields[i].0}: {r}")
+			}
+			i += 1
+		}
+		if parts.len() < fields.len() {
+			parts.push("..".to_string())
+		}
+		return "{name} {{ {join(&parts, ", ")} }}"
+	}
+
 	fun check_exhaustive(&mut self, st &Ty, arms &Vec<MatchArm>, span Span) {
 		max mut := 0
 		for a in arms {
@@ -5275,6 +5496,13 @@ impl Checker {
 			}
 		}
 		self.slice_max = max
+		cuts mut := Vec::new()
+		for a in arms {
+			pattern_int_cuts(&a.pat, &mut cuts)
+		}
+		cuts.sort()
+		cuts.dedup()
+		self.int_cuts = cuts
 		rows mut := Vec::new()
 		for a in arms {
 			if a.guard.is_none() {
@@ -5295,46 +5523,37 @@ impl Checker {
 			Ty::Unknown | Ty::Never => return,
 			_ => {},
 		}
-		names mut := None
-		match &t {
-			Ty::Adt(d, _) => {
-				match self.adts.get(d) {
-					Some(info) => {
-						if info.is_enum {
-							ns mut := Vec::new()
-							for (v, _) in &info.variants {
-								ns.push(self.r.def(*v).name.clone())
-							}
-							names = Some(ns)
-						}
-					}
-					None => {},
-				}
-			}
-			Ty::Prim(p) => {
-				if p == "Bool" {
-					ns mut := Vec::new()
-					ns.push("true".to_string())
-					ns.push("false".to_string())
-					names = Some(ns)
-				}
-			}
-			_ => {},
-		}
+		// Name the missing cases: per top-level constructor for enums and
+		// `bool`, else one witness.
+		flat := flatten_or(&rows)
 		missing mut := Vec::new()
-		match (names, self.x_ctors(&t)) {
-			(Some(names), Some(cs)) => {
-				i mut := 0
-				while i < cs.len() && i < names.len() {
-					q mut := Vec::new()
-					q.push(XPat::Ctor(cs[i].0, wilds(cs[i].1.len())))
-					if self.x_useful(&rows, &q, &tys) {
-						missing.push("`{names[i]}`")
-					}
-					i += 1
+		split := match &t {
+			Ty::Adt(d, _) => match self.adts.get(d) {
+				Some(info) => info.is_enum,
+				None => false,
+			},
+			Ty::Prim(p) => p == "Bool",
+			_ => false,
+		}
+		cs := self.x_ctors(&t)
+		if split && cs.is_some() {
+			for (k, ftys) in cs.as_ref().unwrap() {
+				if let Some(w) = self.x_witness(&specialize(&flat, *k, ftys.len()), &ftys[..]) {
+					missing.push("`{self.x_render(&XPat::Ctor(*k, w), &t)}`")
 				}
 			}
-			_ => {},
+		} else {
+			if let Some(w) = self.x_witness(&rows, &tys[..]) {
+				r := self.x_render(&w[0], &t)
+				if r != "_" {
+					missing.push("`{r}`")
+				}
+			}
+		}
+		if missing.len() > 3 {
+			more := missing.len() - 3
+			missing.truncate(3)
+			missing.push("and {more} more")
 		}
 		if missing.is_empty() {
 			f := self.fmt(&t)
@@ -5430,6 +5649,137 @@ fun specialize(flat &Vec<Vec<XPat>>, k XCtor, arity usize) Vec<Vec<XPat>> {
 	return o
 }
 
+// The values of an integer type up to 64 bits, as `(MIN, MAX)`.
+fun int_range(p &str) option<(i128, i128)> {
+	if p == "I8" {
+		return Some((-128, 127))
+	} else if p == "I16" {
+		return Some((-32768, 32767))
+	} else if p == "I32" {
+		return Some((-2147483648, 2147483647))
+	} else if p == "I64" || p == "Isize" {
+		return Some((-9223372036854775807 - 1, 9223372036854775807))
+	} else if p == "U8" {
+		return Some((0, 255))
+	} else if p == "U16" {
+		return Some((0, 65535))
+	} else if p == "U32" {
+		return Some((0, 4294967295))
+	} else if p == "U64" || p == "Usize" {
+		return Some((0, 18446744073709551615))
+	}
+	return None
+}
+
+// `lo..=hi` split at `cuts` (each cut starts a new piece).
+fun int_pieces(lo i128, hi i128, cuts &Vec<i128>) Vec<(i128, i128)> {
+	starts mut := Vec::new()
+	starts.push(lo)
+	for x in cuts {
+		if *x > lo && *x <= hi {
+			starts.push(*x)
+		}
+	}
+	out mut := Vec::new()
+	i mut := 0
+	while i < starts.len() {
+		b := if i + 1 < starts.len() { starts[i + 1] - 1 } else { hi }
+		out.push((starts[i], b))
+		i += 1
+	}
+	return out
+}
+
+// The value of an integer literal pattern (`-3`, `7u8`).
+fun int_pat_value(p &Pattern) option<i128> {
+	match &p.kind {
+		PatternKind::Lit(Lit::Int { value, negative, .. }) => {
+			if *value > 170141183460469231731687303715884105727u128 {
+				return None
+			}
+			v := *value as i128
+			return Some(if *negative { -v } else { v })
+		}
+		_ => return None,
+	}
+}
+
+// Collects where `p`'s integer patterns start and stop.
+fun pattern_int_cuts(p &Pattern, out &mut Vec<i128>) {
+	match &p.kind {
+		PatternKind::Lit(_) => {
+			if let Some(v) = int_pat_value(p) {
+				out.push(v)
+				out.push(v + 1)
+			}
+		}
+		PatternKind::Range { lo, hi, inclusive } => {
+			match (int_pat_value(lo), int_pat_value(hi)) {
+				(Some(a), Some(b)) => {
+					out.push(a)
+					out.push(if *inclusive { b + 1 } else { b })
+				}
+				_ => {},
+			}
+		}
+		PatternKind::Slice(ps) | PatternKind::Tuple(ps) | PatternKind::TupleStruct(_, ps) | PatternKind::Or(ps) => {
+			for x in ps {
+				pattern_int_cuts(x, out)
+			}
+		}
+		PatternKind::Struct { fields, .. } => {
+			for f in fields {
+				pattern_int_cuts(&f.pat, out)
+			}
+		}
+		PatternKind::Ref { inner, .. } => pattern_int_cuts(inner, out),
+		PatternKind::Ident { sub: Some(s), .. } => pattern_int_cuts(s, out),
+		_ => {},
+	}
+}
+
+fun ctor_in(v &Vec<XCtor>, k XCtor) bool {
+	for x in v {
+		if *x == k {
+			return true
+		}
+	}
+	return false
+}
+
+// `rows` with the or-patterns in the first column expanded (rows that ran
+// out early are dropped).
+fun flatten_or(rows &Vec<Vec<XPat>>) Vec<Vec<XPat>> {
+	flat mut := Vec::new()
+	stack mut := Vec::new()
+	i mut := rows.len()
+	while i > 0 {
+		i -= 1
+		stack.push(rows[i].clone())
+	}
+	while let Some(r) = stack.pop() {
+		if r.is_empty() {
+			continue
+		}
+		match &r[0] {
+			XPat::Or(alts) => {
+				j mut := alts.len()
+				while j > 0 {
+					j -= 1
+					v mut := Vec::new()
+					v.push(alts[j].clone())
+					for x in &r[1..] {
+						v.push(x.clone())
+					}
+					stack.push(v)
+				}
+			}
+			_ => flat.push(r.clone()),
+		}
+	}
+	return flat
+}
+
 // The constructors of a slice of `e`: every length up to `max`, then all
 // longer ones together.
 fun slice_ctors(e &Ty, max usize) Vec<(XCtor, Vec<Ty>)> {
@@ -5459,6 +5809,7 @@ enum XCtor {
 	Single,
 	Len(usize),
 	Long,
+	Int(i128, i128),
 }
 
 fun max_slice_len(ps &Vec<Pattern>) usize {

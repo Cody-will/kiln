@@ -294,18 +294,18 @@ fn enum_match_with_ref_ergonomics() {
 fn non_exhaustive_match() {
     err1(
         &with_shapes("fun f(s Shape) i32 {\n match s {\n Shape::Circle(_) => return 1,\n Shape::Empty => return 2,\n }\n}\nfun main() {}"),
-        "non-exhaustive match: `Rect` not covered",
+        "non-exhaustive match: `Rect { .. }` not covered",
     );
     err1(
         "fun f(x i32) {\n match x {\n 1 => {},\n }\n}\nfun main() {}",
-        "not all values of `i32`",
+        "non-exhaustive match: `i32::MIN..=0` not covered",
     );
     ok("fun f(b bool) i32 {\n match b {\n true => return 1,\n false => return 0,\n }\n}\nfun main() {}");
 }
 
 #[test]
 fn guarded_arms_do_not_count() {
-    has("fun f(x option<i32>) {\n match x {\n Some(v) if v > 0 => {},\n None => {},\n }\n}\nfun main() {}", "`Some` not covered");
+    has("fun f(x option<i32>) {\n match x {\n Some(v) if v > 0 => {},\n None => {},\n }\n}\nfun main() {}", "`Some(_)` not covered");
 }
 
 #[test]
@@ -677,19 +677,28 @@ fn exhaustiveness_looks_inside_patterns() {
         &format!(
             "{opt}fun f(e E) i32 {{\n return match e {{\n E::A(true) => 1,\n E::B => 3,\n }}\n}}"
         ),
-        "non-exhaustive match: `A` not covered",
+        "non-exhaustive match: `A(false)` not covered",
     );
     // Nested enums, tuples, and the unit pattern.
     ok("fun f(r result<void, option<i32>>) i32 {\n return match r {\n Ok() => 0,\n Err(Some(_)) => 1,\n Err(None) => 2,\n }\n}");
     ok("fun f(p (bool, bool)) i32 {\n return match p {\n (true, _) => 1,\n (false, true) => 2,\n (false, false) => 3,\n }\n}");
     has(
         "fun f(p (bool, bool)) i32 {\n return match p {\n (true, _) => 1,\n (false, true) => 2,\n }\n}",
-        "non-exhaustive match: not all values of `(bool, bool)` are covered",
+        "non-exhaustive match: `(false, false)` not covered",
     );
-    // Integers need a wildcard.
+    // Integer ranges are split where the patterns start and stop.
     has(
         "fun f(n i32) i32 {\n return match n {\n 0 => 1,\n 1 => 2,\n }\n}",
-        "non-exhaustive match: not all values of `i32` are covered",
+        "non-exhaustive match: `i32::MIN..=-1` not covered",
+    );
+    ok("fun f(n u8) i32 {\n return match n {\n 0..=99 => 1,\n 100..200 => 2,\n 200..=255 => 3,\n }\n}");
+    has(
+        "fun f(n i8) i32 {\n return match n {\n -128..=-1 => 0,\n 0 => 1,\n 1..127 => 2,\n }\n}",
+        "non-exhaustive match: `127` not covered",
+    );
+    has(
+        "fun f(x option<option<bool>>) i32 {\n return match x {\n None => 0,\n Some(None) => 1,\n Some(Some(true)) => 2,\n }\n}",
+        "non-exhaustive match: `Some(Some(false))` not covered",
     );
 }
 
@@ -700,7 +709,7 @@ fn exhaustiveness_of_slice_patterns() {
     ok("fun f(v Vec<option<i32>>) i32 {\n return match v {\n [Some(x), ..] => x,\n [None, ..] => 1,\n [] => 0,\n }\n}");
     has(
         "fun f(v &[i32]) i32 {\n return match v {\n [] => 0,\n [x, y] => *x + *y,\n [x, .., 9] => *x,\n }\n}",
-        "non-exhaustive match: not all values of `[i32]` are covered",
+        "non-exhaustive match: `[_]` not covered",
     );
     has(
         "fun f(v [bool; 2]) i32 {\n return match v {\n [true, _] => 1,\n [_, true] => 2,\n }\n}",

@@ -3482,6 +3482,12 @@ impl Body<'_, '_, '_> {
                 (XCtor::Bool(true), vec![]),
                 (XCtor::Bool(false), vec![]),
             ]),
+            Ty::Prim(p) => int_range(*p).map(|(lo, hi)| {
+                int_pieces(lo, hi)
+                    .into_iter()
+                    .map(|(a, b)| (XCtor::Int(a, b), vec![]))
+                    .collect()
+            }),
             Ty::Unit => Some(vec![(XCtor::Single, vec![])]),
             Ty::Tuple(ts) => Some(vec![(XCtor::Single, ts.clone())]),
             Ty::Array(e, n) => Some(vec![(
@@ -3592,6 +3598,16 @@ impl Body<'_, '_, '_> {
             PatternKind::Ref { inner, .. } => self.x_lower(inner, t),
             PatternKind::Or(ps) => XPat::Or(ps.iter().map(|x| self.x_lower(x, t)).collect()),
             PatternKind::Lit(Lit::Bool(b)) => XPat::Ctor(XCtor::Bool(*b), vec![]),
+            PatternKind::Lit(Lit::Int { .. }) => match int_pat_value(p) {
+                Some(v) => self.x_int(t, v, v),
+                None => XPat::Opaque,
+            },
+            PatternKind::Range { lo, hi, inclusive } => {
+                match (int_pat_value(lo), int_pat_value(hi)) {
+                    (Some(a), Some(b)) => self.x_int(t, a, if *inclusive { b } else { b - 1 }),
+                    _ => XPat::Opaque,
+                }
+            }
             PatternKind::Slice(ps) => {
                 let elem = match self.c.infer.zonk(&self.strip_refs(t)) {
                     Ty::Array(e, _) | Ty::Slice(e) => *e,
@@ -3741,6 +3757,152 @@ impl Body<'_, '_, '_> {
         }
     }
 
+    /// An integer pattern covering `a..=b`: the pieces of `t`'s range inside it.
+    fn x_int(&self, t: &Ty, a: i128, b: i128) -> XPat {
+        let Ty::Prim(p) = self.c.infer.zonk(&self.strip_refs(t)) else {
+            return XPat::Opaque;
+        };
+        let Some((lo, hi)) = int_range(p) else {
+            return XPat::Opaque;
+        };
+        let alts: Vec<XPat> = int_pieces(lo, hi)
+            .into_iter()
+            .filter(|&(x, y)| x >= a && y <= b)
+            .map(|(x, y)| XPat::Ctor(XCtor::Int(x, y), vec![]))
+            .collect();
+        if alts.len() == 1 {
+            return alts[0].clone();
+        }
+        XPat::Or(alts)
+    }
+
+    /// A row of patterns (one per type in `tys`) that no row of `rows`
+    /// matches, or `None` when `rows` covers every value: the witness half
+    /// of the usefulness algorithm, for a wildcard query.
+    fn x_witness(&self, rows: &[Vec<XPat>], tys: &[Ty]) -> Option<Vec<XPat>> {
+        if tys.is_empty() {
+            return if rows.is_empty() { Some(vec![]) } else { None };
+        }
+        let flat = flatten_or(rows);
+        let mut seen: Vec<XCtor> = vec![];
+        for r in &flat {
+            if let XPat::Ctor(k, _) = &r[0] {
+                if !seen.contains(k) {
+                    seen.push(*k);
+                }
+            }
+        }
+        let all = self.x_ctors(&tys[0]);
+        if let Some(all) = &all {
+            if !all.is_empty() && all.iter().all(|(k, _)| seen.contains(k)) {
+                for (k, ftys) in all {
+                    let mut nt = ftys.clone();
+                    nt.extend_from_slice(&tys[1..]);
+                    if let Some(w) = self.x_witness(&specialize_rows(&flat, *k, ftys.len()), &nt) {
+                        let mut out = vec![XPat::Ctor(*k, w[..ftys.len()].to_vec())];
+                        out.extend_from_slice(&w[ftys.len()..]);
+                        return Some(out);
+                    }
+                }
+                return None;
+            }
+        }
+        let default: Vec<Vec<XPat>> = flat
+            .iter()
+            .filter(|r| matches!(r[0], XPat::Wild))
+            .map(|r| r[1..].to_vec())
+            .collect();
+        let w = self.x_witness(&default, &tys[1..])?;
+        let head = match &all {
+            Some(all) if !seen.is_empty() => match all.iter().find(|(k, _)| !seen.contains(k)) {
+                Some((k, ftys)) => XPat::Ctor(*k, vec![XPat::Wild; ftys.len()]),
+                None => XPat::Wild,
+            },
+            _ => XPat::Wild,
+        };
+        let mut out = vec![head];
+        out.extend(w);
+        Some(out)
+    }
+
+    /// Writes a witness pattern the way a user would.
+    fn x_render(&self, p: &XPat, t: &Ty) -> String {
+        let t = self.c.infer.zonk(&self.strip_refs(t));
+        let XPat::Ctor(k, args) = p else {
+            return "_".into();
+        };
+        let tys: Vec<Ty> = self
+            .x_ctors(&t)
+            .and_then(|cs| cs.into_iter().find(|(c, _)| c == k).map(|(_, ts)| ts))
+            .unwrap_or_default();
+        let sub = |i: usize| -> String {
+            match args.get(i) {
+                Some(a) => self.x_render(a, tys.get(i).unwrap_or(&Ty::Unknown)),
+                None => "_".into(),
+            }
+        };
+        let list = |n: usize| -> String { (0..n).map(sub).collect::<Vec<_>>().join(", ") };
+        match k {
+            XCtor::Bool(b) => b.to_string(),
+            XCtor::Int(a, b) => {
+                let Ty::Prim(pt) = &t else {
+                    return "_".into();
+                };
+                let (lo, hi) = int_range(*pt).unwrap_or((*a, *b));
+                let name = self.fmt(&t);
+                let end = |v: i128| {
+                    if v == lo {
+                        format!("{name}::MIN")
+                    } else if v == hi {
+                        format!("{name}::MAX")
+                    } else {
+                        v.to_string()
+                    }
+                };
+                if a == b {
+                    a.to_string()
+                } else {
+                    format!("{}..={}", end(*a), end(*b))
+                }
+            }
+            XCtor::Len(n) => format!("[{}]", list(*n)),
+            XCtor::Long => format!("[{}, ..]", list(args.len())),
+            XCtor::Single | XCtor::Variant(_) => {
+                let (name, fields) = match (&t, k) {
+                    (Ty::Tuple(_), _) if args.len() == 1 => return format!("({},)", sub(0)),
+                    (Ty::Tuple(_), _) => return format!("({})", list(args.len())),
+                    (Ty::Unit, _) => return "()".into(),
+                    (Ty::Adt(d, _), XCtor::Variant(i)) => match self.c.adts.get(d) {
+                        Some(info) if *i < info.variants.len() => {
+                            let v = info.variants[*i].0;
+                            (self.c.r.def(v).name.clone(), self.x_fields(&t, Some(v)))
+                        }
+                        _ => return "_".into(),
+                    },
+                    (Ty::Adt(d, _), _) => (self.c.r.def(*d).name.clone(), self.x_fields(&t, None)),
+                    _ => return "_".into(),
+                };
+                if fields.is_empty() {
+                    return name;
+                }
+                if fields[0].0.starts_with(|c: char| c.is_ascii_digit()) {
+                    return format!("{name}({})", list(fields.len()));
+                }
+                let mut parts: Vec<String> = vec![];
+                for (i, (f, _)) in fields.iter().enumerate() {
+                    let r = sub(i);
+                    if r != "_" {
+                        parts.push(format!("{f}: {r}"));
+                    }
+                }
+                if parts.len() < fields.len() {
+                    parts.push("..".into());
+                }
+                format!("{name} {{ {} }}", parts.join(", "))
+            }
+        }
+    }
+
     fn check_exhaustive(&mut self, st: &Ty, arms: &[MatchArm], span: Span) {
         let mut max = arms
             .iter()
@@ -3751,6 +3913,13 @@ impl Body<'_, '_, '_> {
             max = max.max(n as usize);
         }
         SLICE_MAX.with(|c| c.set(max));
+        let mut cuts = vec![];
+        for a in arms {
+            pattern_int_cuts(&a.pat, &mut cuts);
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        INT_CUTS.with(|c| *c.borrow_mut() = cuts);
         let rows: Vec<Vec<XPat>> = arms
             .iter()
             .filter(|a| a.guard.is_none())
@@ -3764,30 +3933,37 @@ impl Body<'_, '_, '_> {
         if matches!(t, Ty::Unknown | Ty::Never) {
             return;
         }
-        // Name the top-level constructors that are not fully covered.
-        let names: Option<Vec<String>> = match &t {
-            Ty::Adt(d, _) if self.c.adts.get(d).is_some_and(|i| i.is_enum) => Some(
-                self.c.adts[d]
-                    .variants
-                    .iter()
-                    .map(|(v, _)| self.c.r.def(*v).name.clone())
-                    .collect(),
-            ),
-            Ty::Prim(PrimTy::Bool) => Some(vec!["true".into(), "false".into()]),
-            _ => None,
+        // Name the missing cases: per top-level constructor for enums and
+        // `bool` (as before), else one witness.
+        let flat = flatten_or(&rows);
+        let mut missing: Vec<String> = vec![];
+        let split = match &t {
+            Ty::Adt(d, _) => self.c.adts.get(d).is_some_and(|i| i.is_enum),
+            Ty::Prim(PrimTy::Bool) => true,
+            _ => false,
         };
-        let missing: Vec<String> = match (names, self.x_ctors(&t)) {
-            (Some(names), Some(cs)) => cs
-                .iter()
-                .zip(names)
-                .filter(|((k, ftys), _)| {
-                    let q = vec![XPat::Ctor(*k, vec![XPat::Wild; ftys.len()])];
-                    self.x_useful(&rows, &q, &tys)
-                })
-                .map(|(_, n)| format!("`{n}`"))
-                .collect(),
-            _ => vec![],
-        };
+        match self.x_ctors(&t) {
+            Some(cs) if split => {
+                for (k, ftys) in &cs {
+                    if let Some(w) = self.x_witness(&specialize_rows(&flat, *k, ftys.len()), ftys) {
+                        missing.push(format!("`{}`", self.x_render(&XPat::Ctor(*k, w), &t)));
+                    }
+                }
+            }
+            _ => {
+                if let Some(w) = self.x_witness(&rows, &tys) {
+                    let r = self.x_render(&w[0], &t);
+                    if r != "_" {
+                        missing.push(format!("`{r}`"));
+                    }
+                }
+            }
+        }
+        if missing.len() > 3 {
+            let more = missing.len() - 3;
+            missing.truncate(3);
+            missing.push(format!("and {more} more"));
+        }
         if missing.is_empty() {
             let f = self.fmt(&t);
             self.error_help(
@@ -3839,6 +4015,15 @@ enum XCtor {
     /// ([`SLICE_MAX`]); its arity is `SLICE_MAX + 1`, with prefixes at the
     /// start and suffixes at the end.
     Long,
+    /// The integers `lo..=hi`: one piece of the type's range, split at
+    /// every boundary the match's literal and range patterns mention.
+    Int(i128, i128),
+}
+
+thread_local! {
+    /// Where the current match's integer patterns start and stop (each
+    /// value starts a new piece of an integer type's range).
+    static INT_CUTS: std::cell::RefCell<Vec<i128>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 thread_local! {
@@ -3850,6 +4035,127 @@ thread_local! {
 
 fn slice_max() -> usize {
     SLICE_MAX.with(|c| c.get())
+}
+
+/// The values of an integer type up to 64 bits, as `(MIN, MAX)`.
+fn int_range(p: PrimTy) -> Option<(i128, i128)> {
+    Some(match p {
+        PrimTy::I8 => (-128, 127),
+        PrimTy::I16 => (-32768, 32767),
+        PrimTy::I32 => (-2147483648, 2147483647),
+        PrimTy::I64 | PrimTy::Isize => (-9223372036854775808, 9223372036854775807),
+        PrimTy::U8 => (0, 255),
+        PrimTy::U16 => (0, 65535),
+        PrimTy::U32 => (0, 4294967295),
+        PrimTy::U64 | PrimTy::Usize => (0, 18446744073709551615),
+        _ => return None,
+    })
+}
+
+/// `lo..=hi` split at the current match's [`INT_CUTS`].
+fn int_pieces(lo: i128, hi: i128) -> Vec<(i128, i128)> {
+    let mut starts = vec![lo];
+    INT_CUTS.with(|c| {
+        for &x in c.borrow().iter() {
+            if x > lo && x <= hi {
+                starts.push(x);
+            }
+        }
+    });
+    let mut out = vec![];
+    for (i, &a) in starts.iter().enumerate() {
+        let b = match starts.get(i + 1) {
+            Some(n) => n - 1,
+            None => hi,
+        };
+        out.push((a, b));
+    }
+    out
+}
+
+/// The value of an integer literal pattern (`-3`, `7u8`).
+fn int_pat_value(p: &Pattern) -> Option<i128> {
+    match &p.kind {
+        PatternKind::Lit(Lit::Int {
+            value, negative, ..
+        }) => {
+            let v = i128::try_from(*value).ok()?;
+            Some(if *negative { -v } else { v })
+        }
+        _ => None,
+    }
+}
+
+/// Collects where `p`'s integer patterns start and stop.
+fn pattern_int_cuts(p: &Pattern, out: &mut Vec<i128>) {
+    match &p.kind {
+        PatternKind::Lit(_) => {
+            if let Some(v) = int_pat_value(p) {
+                out.push(v);
+                out.push(v + 1);
+            }
+        }
+        PatternKind::Range { lo, hi, inclusive } => {
+            if let (Some(a), Some(b)) = (int_pat_value(lo), int_pat_value(hi)) {
+                out.push(a);
+                out.push(if *inclusive { b + 1 } else { b });
+            }
+        }
+        PatternKind::Slice(ps)
+        | PatternKind::Tuple(ps)
+        | PatternKind::TupleStruct(_, ps)
+        | PatternKind::Or(ps) => {
+            for x in ps {
+                pattern_int_cuts(x, out);
+            }
+        }
+        PatternKind::Struct { fields, .. } => {
+            for f in fields {
+                pattern_int_cuts(&f.pat, out);
+            }
+        }
+        PatternKind::Ref { inner, .. } => pattern_int_cuts(inner, out),
+        PatternKind::Ident { sub: Some(s), .. } => pattern_int_cuts(s, out),
+        _ => {}
+    }
+}
+
+/// `rows` with the or-patterns in the first column expanded (rows that
+/// ran out early are dropped).
+fn flatten_or(rows: &[Vec<XPat>]) -> Vec<Vec<XPat>> {
+    let mut flat: Vec<Vec<XPat>> = vec![];
+    let mut stack: Vec<Vec<XPat>> = rows.iter().rev().cloned().collect();
+    while let Some(r) = stack.pop() {
+        if r.is_empty() {
+            continue;
+        }
+        match &r[0] {
+            XPat::Or(alts) => {
+                for a in alts.iter().rev() {
+                    let mut v = vec![a.clone()];
+                    v.extend_from_slice(&r[1..]);
+                    stack.push(v);
+                }
+            }
+            _ => flat.push(r),
+        }
+    }
+    flat
+}
+
+/// The rows of `flat` that match constructor `k`, with its fields spread out.
+fn specialize_rows(flat: &[Vec<XPat>], k: XCtor, arity: usize) -> Vec<Vec<XPat>> {
+    flat.iter()
+        .filter_map(|r| {
+            let mut v = match &r[0] {
+                XPat::Ctor(k2, args) if *k2 == k => args.clone(),
+                XPat::Wild => vec![XPat::Wild; arity],
+                _ => return None,
+            };
+            v.extend_from_slice(&r[1..]);
+            Some(v)
+        })
+        .collect()
 }
 
 /// The longest length `p` distinguishes (see [`SLICE_MAX`]).

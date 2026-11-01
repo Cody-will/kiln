@@ -214,6 +214,8 @@ fun describe(s &Shape) {
 }
 ```
 
+A `match` must be exhaustive. The checker looks inside nested patterns (variants, structs, tuples, slices, `bool`) and treats integer literals and ranges (`0..=9`, `10..20`) as covering exact value sets, so `0..=127` and `128..=255` cover all of `u8` without a `_` arm. A non-exhaustive match names missing cases, such as `` `Some(false)` not covered `` or `` `i32::MIN..=-1` not covered ``. Guarded arms never count toward coverage.
+
 ### Traits and generics
 
 ```kiln
