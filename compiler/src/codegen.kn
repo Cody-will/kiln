@@ -158,6 +158,7 @@ enum Work {
 	Clone(string, Ty),
 	Drop(string, Ty),
 	Shim { name string, target string, nargs usize },
+	CWrap { name string, fn_idx usize },
 }
 
 pub struct LocalInfo {
@@ -175,6 +176,8 @@ enum Target {
 	Virtual(usize),
 	Intrinsic(string),
 	Extern(string),
+	// A C variadic function and its number of named parameters.
+	Variadic(string, usize),
 	Missing(string),
 }
 
@@ -937,6 +940,152 @@ impl Cg {
 		return name
 	}
 
+	fun has_attr(&self, idx usize, name &str) bool {
+		for a in &self.c.r.fns[idx].attrs {
+			if a.name.name == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	// The C-ABI entry point of an `extern "C" fun` defined in Kiln: its own
+	// name when `@export`ed, otherwise a private one.
+	fun c_wrapper(&mut self, idx usize) string {
+		key := "cabi/{idx}"
+		if let Some(n) = self.shims.get(&key) {
+			return n.clone()
+		}
+		name := if self.has_attr(idx, "export") { self.c.r.fns[idx].decl.name.name.clone() } else { self.fresh_name("cabi") }
+		self.shims.insert(key, name.clone())
+		self.queue.push(Work::CWrap { name: name.clone(), fn_idx: idx })
+		return name
+	}
+
+	// The C signature types of a foreign or `extern "C"` function.
+	fun c_sig(&mut self, idx usize) option<(Vec<string>, string)> {
+		(ps, ret) := self.c.signature(idx)
+		o mut := Vec::new()
+		for p in &ps {
+			match self.scalar(p) {
+				Some(s) => o.push(s),
+				None => return None,
+			}
+		}
+		r := match &ret {
+			Ty::Unit | Ty::Never => "void".to_string(),
+			t => match self.scalar(t) {
+				Some(s) => s,
+				None => return None,
+			},
+		}
+		return Some((o, r))
+	}
+
+	// The address of a C-callable function, for `f as extern "C" fun(..)`.
+	fun c_fn_addr(&mut self, idx usize) V {
+		name := self.c.r.fns[idx].decl.name.name.clone()
+		if self.c.r.fns[idx].decl.body.is_some() {
+			w := self.c_wrapper(idx)
+			return val("@{w}", "ptr")
+		}
+		(ps, ret) := match self.c_sig(idx) {
+			Some(s) => s,
+			None => {
+				self.error("`{name}` has a parameter or return type C cannot call through a function pointer")
+				return val("null".to_string(), "ptr")
+			},
+		}
+		pt mut := string::new()
+		for (i, p) in ps.iter().enumerate() {
+			if i > 0 {
+				pt.push(", ")
+			}
+			pt.push(p)
+		}
+		if self.has_attr(idx, "variadic") {
+			pt.push(", ...")
+		}
+		self.declare(&name, "declare {ret} @{name}({pt})")
+		return val("@{name}", "ptr")
+	}
+
+	fun define_cwrap(&mut self, name &str, idx usize) {
+		fname := self.c.r.fns[idx].decl.name.name.clone()
+		(ps, ret) := match self.c_sig(idx) {
+			Some(s) => s,
+			None => {
+				self.error("`extern \"C\" fun {fname}` has a parameter or return type C cannot pass")
+				return
+			},
+		}
+		(pt, rt) := self.c.signature(idx)
+		inst := self.instance(idx, 0, HashMap::new(), Abi::Plain)
+		self.body = empty_body(self.span)
+		self.substs = HashMap::new()
+		self.locals = Vec::new()
+		self.defer_stack = None
+		self.panic_frame = None
+		self.preempt = None
+		self.begin_fn()
+		d := self.slot_for(&rt)
+		args mut := Vec::new()
+		args.push(d.clone())
+		params mut := string::new()
+		for (i, p) in ps.iter().enumerate() {
+			if i > 0 {
+				params.push(", ")
+			}
+			params.push("{p} %a{i}")
+			s := self.slot_for(&pt[i])
+			self.store(&val("%a{i}", p), &s, 0)
+			args.push(s)
+		}
+		self.call_fn(&inst, &args)
+		if ret == "void" {
+			self.ret_void()
+		} else {
+			v := self.load(&ret, &d, 0)
+			self.term("ret {ret} {v.n}")
+		}
+		link := if self.has_attr(idx, "export") { "" } else { "internal " }
+		self.end_fn("define {link}{ret} @{name}({params})")
+	}
+
+	// A call through an `extern "C" fun` pointer.
+	fun c_indirect_call(&mut self, args &Vec<Operand>, dest &V, dt &Ty) {
+		code := self.op_scalar(&args[0])
+		vals mut := Vec::new()
+		for a in &args[1..] {
+			t := self.op_ty(a)
+			if let None = self.scalar(&t) {
+				tn := self.fmt_ty(&t)
+				return self.error("a C function pointer cannot take a `{tn}`")
+			}
+			vals.push(self.op_scalar(a))
+		}
+		ret := match dt {
+			Ty::Unit | Ty::Never => "void".to_string(),
+			t => match self.scalar(t) {
+				Some(st) => st,
+				None => {
+					tn := self.fmt_ty(t)
+					return self.error("a C function pointer cannot return a `{tn}`")
+				},
+			},
+		}
+		at := Cg::args_text(&vals)
+		if ret == "void" {
+			self.emit("call void {code.n}({at})")
+		} else {
+			v := self.inst(&ret, "call {ret} {code.n}({at})")
+			self.store(&v, dest, 0)
+		}
+		if let Ty::Never = dt {
+			self.trap()
+		}
+	}
+
 	fun glue_name(&mut self, kind &str, t &Ty) string {
 		key := ty_key(t)
 		found := match kind {
@@ -997,6 +1146,7 @@ impl Cg {
 				Work::Debug(n, t) => self.define_glue(&n, "debug", &t),
 				Work::Clone(n, t) => self.define_glue(&n, "clone", &t),
 				Work::Shim { name, target, nargs } => self.define_shim(&name, &target, nargs),
+				Work::CWrap { name, fn_idx } => self.define_cwrap(&name, fn_idx),
 			}
 			if self.st.on && self.funcs.len() - self.st.flushed >= SHARD_FUNCS {
 				self.flush_shard(false)
@@ -3337,12 +3487,19 @@ impl Cg {
 		}
 		if self.c.r.fns[idx].decl.body.is_none() {
 			foreign mut := false
+			variadic mut := false
 			for a in &self.c.r.fns[idx].attrs {
 				if a.name.name == "extern" {
 					foreign = true
 				}
+				if a.name.name == "variadic" {
+					variadic = true
+				}
 			}
 			name := self.c.r.fns[idx].decl.name.name.clone()
+			if foreign && variadic && impl_idx.is_none() {
+				return Target::Variadic(name, self.c.r.fns[idx].decl.params.len())
+			}
 			if (foreign || name.starts_with("kn_")) && impl_idx.is_none() {
 				return Target::Extern(name)
 			}
@@ -3363,8 +3520,14 @@ impl Cg {
 			}
 			Callee::Value => {
 				if args.len() > 0 {
-					if let Ty::Fn(_, r, _) = self.op_ty(&args[0]) {
-						return *r
+					match self.op_ty(&args[0]) {
+						Ty::Fn(_, r, _) => return *r,
+						Ty::Ptr(_, inner) => {
+							if let Ty::Fn(_, r, _) = *inner {
+								return *r
+							}
+						}
+						_ => {},
 					}
 				}
 				return Ty::Unit
@@ -3418,10 +3581,16 @@ impl Cg {
 						self.intrinsic(&name, args, dest, dt)
 					}
 					Target::Extern(name) => self.extern_call(&name, args, dest, dt),
+					Target::Variadic(name, fixed) => self.variadic_call(&name, fixed, args, dest, dt),
 					Target::Missing(m) => self.error(m),
 				}
 			}
 			Callee::Value => {
+				if let Ty::Ptr(_, inner) = self.op_ty(&args[0]) {
+					if let Ty::Fn(..) = *inner {
+						return self.c_indirect_call(args, dest, dt)
+					}
+				}
 				fa := self.op_addr(&args[0])
 				code := self.load("i64", &fa, 0)
 				env := self.load("i64", &fa, 8)
@@ -3476,6 +3645,71 @@ impl Cg {
 			self.emit("call void @{name}({at})")
 		} else {
 			v := self.inst(&ret, "call {ret} @{name}({at})")
+			self.store(&v, dest, 0)
+		}
+		if let Ty::Never = dt {
+			self.trap()
+		}
+	}
+
+	// A call to a C variadic function: `declare T @f(fixed, ...)` and the
+	// C default argument promotions (small integers and `bool` to `i32`,
+	// `f32` to `f64`) on the trailing arguments.
+	fun variadic_call(&mut self, name &str, fixed usize, args &Vec<Operand>, dest &V, dt &Ty) {
+		vals mut := Vec::new()
+		ftys mut := string::new()
+		for (i, a) in args.iter().enumerate() {
+			t := self.op_ty(a)
+			st := match self.scalar(&t) {
+				Some(st) => st,
+				None => {
+					tn := self.fmt_ty(&t)
+					return self.error("variadic C function `{name}` cannot take a `{tn}`")
+				},
+			}
+			v := self.op_scalar(a)
+			if i < fixed {
+				if i > 0 {
+					ftys.push(", ")
+				}
+				ftys.push(&v.t)
+				vals.push(v)
+				continue
+			}
+			p := match &t {
+				Ty::Prim(p) => p.clone(),
+				_ => string::new(),
+			}
+			if p == "I8" || p == "I16" {
+				vals.push(self.inst("i32", "sext {v.t} {v.n} to i32"))
+			} else if p == "U8" || p == "U16" || p == "Bool" {
+				vals.push(self.inst("i32", "zext {v.t} {v.n} to i32"))
+			} else if st == "float" {
+				vals.push(self.inst("double", "fpext float {v.n} to double"))
+			} else {
+				vals.push(v)
+			}
+		}
+		if fixed > 0 {
+			ftys.push(", ")
+		}
+		ftys.push("...")
+		ret := match dt {
+			Ty::Unit | Ty::Never => "void".to_string(),
+			t => match self.scalar(t) {
+				Some(st) => st,
+				None => {
+					tn := self.fmt_ty(t)
+					return self.error("variadic C function `{name}` cannot return a `{tn}`")
+				},
+			},
+		}
+		self.declare(name, "declare {ret} @{name}({ftys})")
+		at := Cg::args_text(&vals)
+		if ret == "void" {
+			self.emit("call void ({ftys}) @{name}({at})")
+		} else {
+			v := self.inst(&ret, "call {ret} ({ftys}) @{name}({at})")
 			self.store(&v, dest, 0)
 		}
 		if let Ty::Never = dt {
@@ -3562,6 +3796,17 @@ impl Cg {
 			}
 			Op::Cast(to) => {
 				to := self.subst(to)
+				if let Ty::Ptr(_, inner) = &to {
+					if let Ty::Fn(..) = **inner {
+						if let Operand::Const(k) = &ops[0] {
+							if let ConstKind::Fn(i, _) = &k.kind {
+								a := self.c_fn_addr(*i)
+								self.store(&a, dest, 0)
+								return
+							}
+						}
+					}
+				}
 				ot := self.op_ty(&ops[0])
 				is_ptr_to := match &to {
 					Ty::Ptr(_, _) => true,
@@ -6392,6 +6637,11 @@ pub fun compile(c Checker, checked bool, lowered Vec<(usize, Vec<Body>)>, files 
 		cg.bodies.insert(i, b)
 	}
 	user_main := cg.instance(main_idx, 0, HashMap::new(), Abi::Plain)
+	for i in 0..cg.c.r.fns.len() {
+		if cg.c.r.fns[i].decl.body.is_some() && cg.c.r.fns[i].impl_idx.is_none() && cg.has_attr(i, "extern") && cg.has_attr(i, "export") {
+			cg.c_wrapper(i)
+		}
+	}
 	cg.entry_display = cg.main_error_display(main_idx)
 	cg.drain()
 	inits mut := Vec::new()

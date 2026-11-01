@@ -124,3 +124,12 @@ fun main() {
 
 fun ret() i32 { return 1 }
 fun gen<T>(x T) T where T: Clone { x }
+
+extern "C" {
+	fun printf(fmt *const u8, ...) i32
+	fun qsort(p *mut u8, n usize, w usize, f extern "C" fun(*const u8, *const u8) i32)
+}
+
+@export
+extern "C" fun exported(x i32) i32 { return x }
+extern fun default_abi(p extern fun()) {}

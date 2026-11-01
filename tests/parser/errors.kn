@@ -44,6 +44,12 @@ extern {
 impl (i32, i32) for X {}
 struct Bad { a i32 b i32 }
 enum E { A B }
+fun var(x i32, ...) {}
+extern "C" { fun nov(...) }
+extern "C" fun nobody(x i32) i32
+extern "C" fun gen<T>(x T) {}
+@export
+fun notc() {}
 select { x => 1 }
 fun sel() {
 	select { x => 1 }

@@ -24,6 +24,10 @@ pub(crate) struct Parser<'s> {
     /// Number of generic `<...>` lists currently open; lets `chan<- T>`
     /// take an optional closing `>` without stealing an enclosing one.
     angle_depth: usize,
+    /// Inside an `extern` block (variadic `...` is allowed).
+    in_extern: bool,
+    /// Name-span starts of foreign functions declared with a trailing `...`.
+    variadic: Vec<usize>,
 }
 
 /// Binding power of binary operators (higher binds tighter).
@@ -84,6 +88,8 @@ impl<'s> Parser<'s> {
             errors: Vec::new(),
             no_struct: false,
             angle_depth: 0,
+            in_extern: false,
+            variadic: Vec::new(),
         }
     }
 
@@ -398,7 +404,10 @@ impl<'s> Parser<'s> {
                 return items;
             }
             let before = self.pos;
-            if self.at_kw(Kw::Extern) && matches!(self.nth(1), T::Str(_) | T::LBrace) {
+            if self.at_kw(Kw::Extern)
+                && matches!(self.nth(1), T::Str(_) | T::LBrace)
+                && *self.nth(2) != T::Keyword(Kw::Fn)
+            {
                 match self.parse_extern_block() {
                     Ok(fs) => items.extend(fs),
                     Err(Reported) => {
@@ -450,7 +459,9 @@ impl<'s> Parser<'s> {
             _ => "C".to_string(),
         };
         self.expect(&T::LBrace)?;
+        let outer = std::mem::replace(&mut self.in_extern, true);
         let inner = self.parse_items(false);
+        self.in_extern = outer;
         self.expect(&T::RBrace)?;
         let mut out = Vec::new();
         for mut it in inner {
@@ -483,6 +494,16 @@ impl<'s> Parser<'s> {
                         args: Some(abi.clone()),
                         span: start,
                     });
+                    if self.variadic.contains(&f.name.span.start) {
+                        it.attrs.push(Attribute {
+                            name: Ident {
+                                name: "variadic".into(),
+                                span: start,
+                            },
+                            args: None,
+                            span: start,
+                        });
+                    }
                     out.push(it);
                 }
                 _ => self.errors.push(Diagnostic::error(
@@ -592,6 +613,54 @@ impl<'s> Parser<'s> {
         }
         let vis = self.parse_vis();
         let kind = match self.peek() {
+            // `extern "C" fun f(..) R { .. }`: a Kiln function with the C
+            // calling convention (with `@export`, under its own symbol name).
+            T::Keyword(Kw::Extern) => {
+                let kw = self.bump().span;
+                let mut abi = "C".to_string();
+                if let T::Str(parts) = self.peek().clone() {
+                    let span = self.span();
+                    self.bump();
+                    abi = parts
+                        .iter()
+                        .map(|p| match p {
+                            StrPart::Text(t) => t.clone(),
+                            _ => String::new(),
+                        })
+                        .collect();
+                    if abi != "C" {
+                        self.errors.push(
+                            Diagnostic::error(format!("unsupported ABI `\"{abi}\"`"), span)
+                                .with_help("Kiln supports `extern \"C\"`"),
+                        );
+                    }
+                }
+                let f = self.parse_fn(false)?;
+                if f.body.is_none() {
+                    self.errors.push(
+                        Diagnostic::error(
+                            "an `extern \"C\" fun` definition needs a body",
+                            f.name.span,
+                        )
+                        .with_help("declare foreign functions in an `extern \"C\" { ... }` block"),
+                    );
+                }
+                if !f.generics.params.is_empty() {
+                    self.errors.push(Diagnostic::error(
+                        "`extern \"C\"` functions cannot be generic",
+                        f.name.span,
+                    ));
+                }
+                attrs.push(Attribute {
+                    name: Ident {
+                        name: "extern".into(),
+                        span: kw,
+                    },
+                    args: Some(abi),
+                    span: kw,
+                });
+                ItemKind::Fn(f)
+            }
             T::Keyword(Kw::Fn) => ItemKind::Fn(self.parse_fn(false)?),
             T::Ident(n) if n == "fn" && matches!(self.nth(1), T::Ident(_)) => {
                 ItemKind::Fn(self.parse_fn(false)?)
@@ -678,6 +747,14 @@ impl<'s> Parser<'s> {
                     .unexpected("item (`fun`, `struct`, `enum`, `trait`, `impl`, `import`, ...)")
             }
         };
+        if let Some(a) = attrs.iter().find(|a| a.name.name == "export") {
+            if !attrs.iter().any(|a| a.name.name == "extern") {
+                self.errors.push(Diagnostic::error(
+                    "`@export` applies to `extern \"C\" fun` definitions",
+                    a.span,
+                ));
+            }
+        }
         Ok(Item {
             kind,
             vis,
@@ -769,9 +846,9 @@ impl<'s> Parser<'s> {
             Some(_) if self.eat(&T::RParen) => Vec::new(),
             Some(_) => {
                 self.expect(&T::Comma)?;
-                self.comma_list(&T::RParen, Self::parse_param)?
+                self.parse_params(&name)?
             }
-            None => self.comma_list(&T::RParen, Self::parse_param)?,
+            None => self.parse_params(&name)?,
         };
         let ret = self.parse_ret()?;
         generics.where_clause = self.parse_where()?;
@@ -789,6 +866,53 @@ impl<'s> Parser<'s> {
             ret,
             body,
         })
+    }
+
+    /// Parses the parameters after `(` through `)`. A trailing `...`
+    /// (C variadic) is allowed in `extern` blocks and recorded in `variadic`.
+    fn parse_params(&mut self, name: &Ident) -> PResult<Vec<Param>> {
+        let mut out = Vec::new();
+        loop {
+            self.skip_implicit_semis();
+            if self.eat(&T::RParen) {
+                return Ok(out);
+            }
+            if self.at(&T::DotDot) && matches!(self.nth(1), T::Dot) {
+                let span = self.span();
+                self.bump();
+                self.bump();
+                self.skip_implicit_semis();
+                self.eat(&T::Comma);
+                self.skip_implicit_semis();
+                self.expect(&T::RParen)?;
+                if !self.in_extern {
+                    self.errors.push(
+                        Diagnostic::error(
+                            "variadic `...` parameters are only allowed in `extern \"C\"` declarations",
+                            span,
+                        )
+                        .with_help("take a slice (`xs &[T]`) instead"),
+                    );
+                } else if out.is_empty() {
+                    self.errors.push(Diagnostic::error(
+                        "a variadic foreign function needs at least one named parameter",
+                        span,
+                    ));
+                } else {
+                    self.variadic.push(name.span.start);
+                }
+                return Ok(out);
+            }
+            out.push(self.parse_param()?);
+            self.skip_implicit_semis();
+            if self.eat(&T::Comma) {
+                continue;
+            }
+            if self.eat(&T::RParen) {
+                return Ok(out);
+            }
+            return self.unexpected("`,` or `)`");
+        }
     }
 
     /// Parses `self`, `mut self`, `&self`, `&mut self`, `&'a self`, `&'a mut self`.
@@ -1330,6 +1454,43 @@ impl<'s> Parser<'s> {
                     });
                 }
                 TypeKind::Tuple(elems)
+            }
+            // `extern "C" fun(A) R`: a C function pointer, the same type as
+            // `*const fun(A) R`.
+            T::Keyword(Kw::Extern) => {
+                self.bump();
+                if let T::Str(parts) = self.peek().clone() {
+                    let span = self.span();
+                    self.bump();
+                    let text: String = parts
+                        .iter()
+                        .map(|p| match p {
+                            StrPart::Text(t) => t.clone(),
+                            _ => String::new(),
+                        })
+                        .collect();
+                    if text != "C" {
+                        self.errors.push(
+                            Diagnostic::error(format!("unsupported ABI `\"{text}\"`"), span)
+                                .with_help("Kiln supports `extern \"C\"`"),
+                        );
+                    }
+                }
+                let fstart = self.expect_kw(Kw::Fn)?;
+                self.expect(&T::LParen)?;
+                let params = self.comma_list(&T::RParen, Self::parse_type)?;
+                let ret = self.parse_ret()?.map(Box::new);
+                TypeKind::Ptr {
+                    mutable: false,
+                    inner: Box::new(Type {
+                        kind: TypeKind::Fn {
+                            params,
+                            ret,
+                            is_mut: false,
+                        },
+                        span: fstart.to(self.prev_span()),
+                    }),
+                }
             }
             T::Keyword(Kw::Fn) => {
                 self.bump();

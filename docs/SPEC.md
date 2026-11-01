@@ -583,7 +583,7 @@ fun main() {
   - Calling `unsafe fun` and FFI functions.
   - Accessing `static mut`.
   - Implementing `unsafe trait`s (`Send` and `Sync`).
-- **FFI**: `extern "C" { fun ... }` and `@export extern "C" fun`.
+- **FFI**: `extern "C" { fun ... }` (including variadic `...`), `extern "C" fun(A) R` function pointers, and `@export extern "C" fun` (§7.1).
 - **Allocator**: the global allocator is pluggable (`@global_allocator`). Without the runtime, `no_std` mode supports embedded and kernel targets (see §11).
 
 ## 7. Modules, Packages, Build Tool
@@ -648,10 +648,30 @@ fun main() {
 - Parameters and results must have a C equivalent. Allowed: integers and floats except `i128`/`u128`, `bool`, `void`, and raw pointers `*const T` / `*mut T`. Not allowed:
   - `str`/`string`: pass `*const u8` plus a length;
   - references: cast them with `r as *const T`;
-  - Kiln function values;
+  - Kiln function values (use a C function pointer, below);
   - non-`@repr(C)` types.
 
   A struct crosses the boundary through a pointer, never by value.
+- **Variadic functions**: a declaration may end with `...` after at least one named parameter, as in `fun printf(fmt *const u8, ...) i32`. The extra arguments must be integers, floats, `bool`, or raw pointers. They get C's default promotions: integers narrower than 32 bits widen to `i32`, and `f32` widens to `f64`. `...` is rejected outside an `extern "C"` block, and the deprecated Cranelift backend cannot call variadic functions.
+- **C function pointers**: the type `extern "C" fun(A, B) R` is a C function pointer (the same type as `*const fun(A, B) R`). It is FFI-safe, so C callbacks such as `qsort`'s comparator can be passed. Only an `extern "C"` function converts to it, with `f as extern "C" fun(A, B) R`; the signature must match. Calling through one is `unsafe`.
+- **Defining C-callable functions**: `extern "C" fun name(x i32) i32 { ... }` is an ordinary Kiln function with a C-ABI entry point, and its signature must be FFI-safe. It cannot be generic. With `@export` before it, the entry point is the global symbol `name`, which C sources can call. Without `@export`, the entry point is private and only reachable through a function pointer. A panic inside such a function ends the program, as everywhere else. Function pointers and `extern "C" fun` definitions need kilnc (the default compiler).
+
+```kiln
+extern "C" {
+	fun qsort(base *mut i32, n usize, size usize, cmp extern "C" fun(*const i32, *const i32) i32)
+}
+
+extern "C" fun by_value(a *const i32, b *const i32) i32 {
+	unsafe {
+		return *a - *b
+	}
+}
+
+@export
+extern "C" fun kiln_twice(x i32) i32 {
+	return x * 2
+}
+```
 - `@repr(C)` lays a struct out exactly as C does: fields in declaration order with C alignment and padding. The struct must be non-generic and have at least one field, and every field must be FFI-safe: arrays of FFI-safe types are allowed, and nested structs must also be `@repr(C)`. The compiler reports each offending field.
 
 The **`[link]`** section of `kiln.toml` tells the linker what to add:

@@ -521,6 +521,15 @@ pub fn compile(typed: Typed<'_, '_>, opts: Options) -> Result<Vec<u8>, Vec<Diagn
         )]);
     };
     let user_main = cg.instance(main_idx, 0, HashMap::new(), Abi::Plain);
+    for f in &r.fns {
+        let has = |n: &str| f.item.attrs.iter().any(|a| a.name.name == n);
+        if f.decl.body.is_some() && has("extern") && has("export") {
+            cg.error_at(
+                "`@export extern \"C\" fun` is not supported by the Cranelift backend; build with kilnc (the default compiler)",
+                f.decl.name.span,
+            );
+        }
+    }
     // How a `main` that returns `Err(e)` prints `e`.
     cg.entry_display = cg.main_error_display(main_idx);
     cg.drain();

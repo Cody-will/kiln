@@ -1,0 +1,27 @@
+extern "C" {
+	fun qsort(base *mut i32, n usize, size usize, cmp extern "C" fun(*const i32, *const i32) i32)
+	fun snprintf(buf *mut u8, n usize, fmt *const u8, ...) i32
+	fun abs(x i32) i32
+}
+
+extern "C" fun by_value(a *const i32, b *const i32) i32 {
+	unsafe {
+		return *a - *b
+	}
+}
+
+fun main() {
+	v mut := Vec::new()
+	for x in [5, -2, 9, 0, 3] {
+		v.push(x)
+	}
+	buf mut := [0u8; 32]
+	fmt := "%d|%5.2f|%c\0"
+	unsafe {
+		g := abs as extern "C" fun(i32) i32
+		qsort(&mut v[0] as *mut i32, 5, 4, by_value as extern "C" fun(*const i32, *const i32) i32)
+		n := snprintf(&mut buf[0] as *mut u8, 32, &fmt.as_bytes()[0] as *const u8, -7, 2.5, 65)
+		println("{v:?} {n} {g(-12)}")
+	}
+	println("{string::from_utf8(buf[0..10].to_vec()).unwrap()}")
+}

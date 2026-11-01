@@ -303,11 +303,15 @@ pub struct Parser<'s> {
 	// Number of generic `<...>` lists currently open; lets `chan<- T>`
 	// take an optional closing `>` without stealing an enclosing one.
 	angle_depth usize,
+	// Inside an `extern` block (variadic `...` is allowed).
+	in_extern bool,
+	// Name-span starts of foreign functions declared with a trailing `...`.
+	variadic Vec<usize>,
 }
 
 impl<'s> Parser<'s> {
 	pub fun new(src &'s str, tokens Vec<Token>, docs Vec<(usize, usize, string)>) Parser<'s> {
-		return Parser { src: src, base: 0, tokens: tokens, pos: 0, docs: docs, doc_idx: 0, errors: Vec::new(), no_struct: false, angle_depth: 0 }
+		return Parser { src: src, base: 0, tokens: tokens, pos: 0, docs: docs, doc_idx: 0, errors: Vec::new(), no_struct: false, angle_depth: 0, in_extern: false, variadic: Vec::new() }
 	}
 
 	pub fun set_base(&mut self, base usize) {
@@ -690,7 +694,7 @@ impl<'s> Parser<'s> {
 			if self.at_kw("extern") && (self.nth_is(1, "{{") || match self.nth(1) {
 				TokenKind::Str(_) => true,
 				_ => false,
-			}) {
+			}) && !is_kw(self.nth(2), "fun") {
 				match self.parse_extern_block() {
 					Ok(fs) => {
 						for f in fs {
@@ -742,12 +746,16 @@ impl<'s> Parser<'s> {
 			_ => {},
 		}
 		self.expect("{{")?
+		outer := self.in_extern
+		self.in_extern = true
 		inner := self.parse_items(false)
+		self.in_extern = outer
 		self.expect("}}")?
 		out mut := Vec::new()
 		for it in inner {
 			item mut := it
 			ok mut := false
+			variadic mut := false
 			match &mut item.kind {
 				ItemKind::Fn(f) => {
 					match &f.body {
@@ -762,11 +770,15 @@ impl<'s> Parser<'s> {
 					}
 					f.is_unsafe = true
 					ok = true
+					variadic = self.variadic.contains(&f.name.span.start)
 				}
 				_ => {},
 			}
 			if ok {
 				item.attrs.push(Attribute { name: Ident { name: "extern".to_string(), span: start }, args: Some(abi.clone()), span: start })
+				if variadic {
+					item.attrs.push(Attribute { name: Ident { name: "variadic".to_string(), span: start }, args: None, span: start })
+				}
 				out.push(item)
 			} else {
 				self.push_error("only function declarations may appear in an `extern` block".to_string(), item.span)
@@ -862,7 +874,56 @@ impl<'s> Parser<'s> {
 			self.skip_semis()
 		}
 		vis := self.parse_vis()
-		kind := self.parse_item_kind()?
+		kind := if self.at_kw("extern") {
+			// `extern "C" fun f(..) R { .. }`: a Kiln function with the C
+			// calling convention (with `@export`, under its own symbol name).
+			kw := self.bump_span()
+			abi mut := "C".to_string()
+			match self.peek().clone() {
+				TokenKind::Str(parts) => {
+					sp := self.span()
+					self.bump()
+					text mut := string::new()
+					for p in &parts {
+						match p {
+							StrPart::Text(t) => text.push(t),
+							_ => {},
+						}
+					}
+					if text != "C" {
+						self.push_error("unsupported ABI `\"{text}\"`", sp)
+					}
+					abi = text
+				}
+				_ => {},
+			}
+			f := self.parse_fn(false)?
+			if f.body.is_none() {
+				self.push_error("an `extern \"C\" fun` definition needs a body".to_string(), f.name.span)
+			}
+			if !f.generics.params.is_empty() {
+				self.push_error("`extern \"C\"` functions cannot be generic".to_string(), f.name.span)
+			}
+			attrs.push(Attribute { name: Ident { name: "extern".to_string(), span: kw }, args: Some(abi), span: kw })
+			ItemKind::Fn(f)
+		} else {
+			self.parse_item_kind()?
+		}
+		export_at mut := None
+		has_extern mut := false
+		for a in &attrs {
+			if a.name.name == "export" {
+				export_at = Some(a.span)
+			}
+			if a.name.name == "extern" {
+				has_extern = true
+			}
+		}
+		if let Some(sp) = export_at {
+			if !has_extern {
+				self.push_error("`@export` applies to `extern \"C\" fun` definitions".to_string(), sp)
+			}
+		}
 		return Ok(Item { kind: kind, vis: vis, attrs: attrs, doc: doc, span: start.to(self.prev_span()) })
 	}
 
@@ -977,10 +1038,27 @@ impl<'s> Parser<'s> {
 		return Ok(None)
 	}
 
-	fun parse_params(&mut self) result<Vec<Param>, Reported> {
+	fun parse_params(&mut self, name_start usize) result<Vec<Param>, Reported> {
 		out mut := Vec::new()
 		loop {
 			if self.comma_start(")") {
+				break
+			}
+			if self.at("..") && self.nth_is(1, ".") {
+				sp := self.span()
+				self.bump()
+				self.bump()
+				self.skip_implicit_semis()
+				self.eat(",")
+				self.skip_implicit_semis()
+				self.expect(")")?
+				if !self.in_extern {
+					self.push_error("variadic `...` parameters are only allowed in `extern \"C\"` declarations".to_string(), sp)
+				} else if out.is_empty() {
+					self.push_error("a variadic foreign function needs at least one named parameter".to_string(), sp)
+				} else {
+					self.variadic.push(name_start)
+				}
 				break
 			}
 			out.push(self.parse_param()?)
@@ -1013,10 +1091,10 @@ impl<'s> Parser<'s> {
 				Vec::new()
 			} else {
 				self.expect(",")?
-				self.parse_params()?
+				self.parse_params(name.span.start)?
 			}
 		} else {
-			self.parse_params()?
+			self.parse_params(name.span.start)?
 		}
 		ret := self.parse_ret()?
 		generics.where_clause = self.parse_where()?
@@ -1516,6 +1594,34 @@ impl<'s> Parser<'s> {
 				return Ok(Type { kind: inner.kind, span: start.to(self.prev_span()) })
 			}
 			TypeKind::Tuple(elems)
+		} else if self.eat_kw("extern") {
+			// `extern "C" fun(A) R`: a C function pointer, the same type as
+			// `*const fun(A) R`.
+			match self.peek().clone() {
+				TokenKind::Str(parts) => {
+					sp := self.span()
+					self.bump()
+					text mut := string::new()
+					for p in &parts {
+						match p {
+							StrPart::Text(t) => text.push(t),
+							_ => {},
+						}
+					}
+					if text != "C" {
+						self.push_error("unsupported ABI `\"{text}\"`", sp)
+					}
+				}
+				_ => {},
+			}
+			fstart := self.expect_kw("fun")?
+			self.expect("(")?
+			params := self.parse_types_until(")")?
+			ret := match self.parse_ret()? {
+				Some(t) => Some(Box::new(t)),
+				None => None,
+			}
+			TypeKind::Ptr { mutable: false, inner: Box::new(Type { kind: TypeKind::Fn { params: params, ret: ret, is_mut: false }, span: fstart.to(self.prev_span()) }) }
 		} else if self.eat_kw("fun") {
 			is_mut := self.eat_kw("mut")
 			self.expect("(")?

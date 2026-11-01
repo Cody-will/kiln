@@ -2616,7 +2616,9 @@ impl Checker {
 			ExprKind::Cast(x, t) => {
 				from := self.expr(x)
 				to := self.lower(t)
-				self.check_cast(&from, &to, e.span)
+				if !self.c_fn_cast(x, &from, &to, e.span) {
+					self.check_cast(&from, &to, e.span)
+				}
 				return to
 			}
 			ExprKind::Call(f, args) => {
@@ -3442,6 +3444,51 @@ impl Checker {
 		}
 	}
 
+	// Whether `f` names a foreign function declared with a trailing `...`.
+	fun is_variadic_fn(&self, f &Expr) bool {
+		match &f.kind {
+			ExprKind::Path(p) => {
+				match self.r.path(p.span) {
+					Res::Def(d) => {
+						match &self.r.def(d).item {
+							Some(it) => {
+								for a in &it.attrs {
+									if a.name.name == "variadic" {
+										return true
+									}
+								}
+								return false
+							}
+							None => return false,
+						}
+					}
+					_ => return false,
+				}
+			}
+			_ => return false,
+		}
+	}
+
+	// The arguments a variadic C function receives after its named
+	// parameters: integers, floats, `bool`, and raw pointers only.
+	fun variadic_args(&mut self, args &Vec<Expr>, from usize) {
+		i mut := from
+		while i < args.len() {
+			a := &args[i]
+			t := self.expr(a)
+			ok := match self.shallow(&t) {
+				Ty::Prim(p) => p != "Str" && p != "Char" && p != "I128" && p != "U128",
+				Ty::Ptr(..) | Ty::Var(_) | Ty::Unknown => true,
+				_ => false,
+			}
+			if !ok {
+				s := self.fmt(&t)
+				self.error_help("`{s}` cannot be passed to a variadic C function", a.span, "pass an integer, a float, `bool`, or a raw pointer".to_string())
+			}
+			i += 1
+		}
+	}
+
 	fun call_expect(&mut self, f &Expr, args &Vec<Expr>, span Span, expected option<Ty>) Ty {
 		match &f.kind {
 			ExprKind::Path(p) => {
@@ -3504,6 +3551,19 @@ impl Checker {
 			self.b.fn_derefs.insert(key(f.span), derefs)
 		}
 		match self.shallow(&ft) {
+			Ty::Ptr(_, inner) => {
+				match self.shallow(&inner) {
+					Ty::Fn(params, ret, _) => {
+						self.require_unsafe("calling a C function pointer", span)
+						self.check_args(&params, args, span)
+						return *ret
+					}
+					_ => {},
+				}
+			}
+			_ => {},
+		}
+		match self.shallow(&ft) {
 			Ty::Fn(params, ret, _) => {
 				match (&expected, &f.kind) {
 					(Some(exp), ExprKind::Path(p)) => {
@@ -3522,7 +3582,16 @@ impl Checker {
 					}
 					_ => {},
 				}
-				self.check_args(&params, args, span)
+				if args.len() > params.len() && self.is_variadic_fn(f) {
+					head mut := Vec::new()
+					for i in 0..params.len() {
+						head.push(args[i].clone())
+					}
+					self.check_args(&params, &head, span)
+					self.variadic_args(args, params.len())
+				} else {
+					self.check_args(&params, args, span)
+				}
 				self.solve_arg_obligations()
 				return *ret
 			}
@@ -4198,6 +4267,58 @@ impl Checker {
 			}
 			UnOp::Recv => return self.recv_elem(&t, x.span),
 		}
+	}
+
+	// `f as extern "C" fun(A) R`: the address of an `extern "C"` function
+	// (foreign or defined in Kiln). Returns false if `to` is not a C
+	// function pointer type.
+	fun c_fn_cast(&mut self, x &Expr, from &Ty, to &Ty, span Span) bool {
+		inner := match self.shallow(to) {
+			Ty::Ptr(_, i) => *i,
+			_ => return false,
+		}
+		(ps, r) := match self.shallow(&inner) {
+			Ty::Fn(ps, r, _) => (ps, r),
+			_ => return false,
+		}
+		is_c mut := false
+		match &x.kind {
+			ExprKind::Path(p) => {
+				match self.r.path(p.span) {
+					Res::Def(d) => {
+						match &self.r.def(d).item {
+							Some(it) => {
+								for a in &it.attrs {
+									if a.name.name == "extern" {
+										is_c = true
+									}
+								}
+							}
+							None => {},
+						}
+					}
+					_ => {},
+				}
+			}
+			_ => {},
+		}
+		match self.shallow(from) {
+			Ty::Fn(..) => {},
+			_ => return false,
+		}
+		if !is_c {
+			self.error_help("only `extern \"C\"` functions can be used as C function pointers".to_string(), span, "define the callback as `extern \"C\" fun name(...) {{ ... }}`".to_string())
+			return true
+		}
+		want := Ty::Fn(ps, r, false)
+		if self.infer.can_unify(from, &want) {
+			self.infer.unify(from, &want)
+		} else {
+			a := self.fmt(from)
+			b := self.fmt(to)
+			self.error("invalid cast from `{a}` to `{b}`", span)
+		}
+		return true
 	}
 
 	fun check_cast(&mut self, from &Ty, to &Ty, span Span) {

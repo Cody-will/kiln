@@ -1776,6 +1776,12 @@ impl FnCx<'_, '_, '_, '_> {
         }
         if f.decl.body.is_none() {
             let foreign = f.item.attrs.iter().any(|a| a.name.name == "extern");
+            if foreign && f.item.attrs.iter().any(|a| a.name.name == "variadic") {
+                return Target::Missing(format!(
+                    "calling the variadic C function `{}` is not supported by the Cranelift backend; build with kilnc (the default compiler)",
+                    f.decl.name.name
+                ));
+            }
             if (foreign || f.decl.name.name.starts_with("kn_")) && f.impl_idx.is_none() {
                 return Target::Extern(f.decl.name.name.clone());
             }
@@ -1887,6 +1893,9 @@ impl FnCx<'_, '_, '_, '_> {
                     Target::Missing(m) => self.error(m),
                 }
             }
+            Callee::Value if matches!(self.op_ty(&args[0]), Ty::Ptr(..)) => {
+                self.error("calling a C function pointer is not supported by the Cranelift backend; build with kilnc (the default compiler)");
+            }
             Callee::Value => {
                 let fa = self.op_addr(&args[0]);
                 let code = self.load(types::I64, fa, 0);
@@ -1995,6 +2004,10 @@ impl FnCx<'_, '_, '_, '_> {
             Op::Cast(to) => {
                 let to = self.subst(to);
                 let ot = self.op_ty(&ops[0]);
+                if matches!(ot, Ty::Fn(..)) {
+                    self.error("C function pointers (`extern \"C\" fun` types) are not supported by the Cranelift backend; build with kilnc (the default compiler)");
+                    return;
+                }
                 // Pointer casts (`&x as *const T`, `p as *mut u8`, `p as usize`)
                 // use the address itself.
                 let (v, from) = if matches!(to, Ty::Ptr(..)) || matches!(ot, Ty::Ptr(..)) {
