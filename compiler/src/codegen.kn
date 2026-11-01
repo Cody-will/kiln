@@ -340,7 +340,7 @@ fun runtime_sig(name &str) option<(Vec<string>, string)> {
 		"kn_defer_push" => "i64,i32,i64:",
 		"kn_defer_pop" => "i64:i64",
 		"kn_go" => "i64,i64,i64,i64,i64:i64",
-		"kn_task_join" => "i64,i64:",
+		"kn_task_join" => "i64,i64,i64:i32",
 		"kn_task_drop" => "i64:",
 		"kn_scope_new" => ":i64",
 		"kn_catch_panic" => "i64,i64:i32",
@@ -5802,9 +5802,12 @@ impl Cg {
 			h := self.load("i64", &s, 0)
 			(off, _) := self.field(dt, "Ok.0")
 			p := self.iadd_imm(dest, off as i64)
-			self.call_rt("kn_task_join", &vec2(h, p))
-			z := val("0".to_string(), "i32")
-			self.store(&z, dest, 0)
+			(eoff, _) := self.field(dt, "Err.0")
+			e := self.iadd_imm(dest, eoff as i64)
+			v mut := vec2(h, p)
+			v.push(e)
+			r := self.call_rt("kn_task_join", &v).unwrap()
+			self.set_tag(dest, &r)
 			return
 		}
 		if sh == "catch_panic" {

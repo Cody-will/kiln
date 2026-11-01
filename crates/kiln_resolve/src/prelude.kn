@@ -184,9 +184,11 @@ impl<T> Task<T> {
 	pub fun join(self) result<T, Panic>
 }
 
-// A task's panic. Panics currently end the whole program, so `join` never
-// returns one yet.
-pub struct Panic
+// A task's panic, as `join` reports it. A task whose handle is dropped
+// without `join` still ends the program when it panics.
+pub struct Panic {
+	pub message string,
+}
 
 // Why `tx.try_send(v)` failed; the value is handed back.
 pub enum TrySendError<T> {

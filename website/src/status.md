@@ -19,7 +19,7 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 | Slice patterns, `\|` patterns with bindings | 🚧 Not yet in codegen (reported as errors) |
 | Panics | ✅ Pending `defer` calls run (innermost first, as in Go), then the message is printed and the process exits with status 101; `std::panic::recover` stops a panic and returns `Err(message)`. Destructors don't run on panic (no unwinding; locals leak). `defer` on panic and `recover` are Unix-only so far |
 | Concurrency: `spawn` and `Task<T>`, channels, `select`, `scope`/`spawn`, M:N work-stealing scheduler, deadlock detection | ✅ Implemented on Linux, macOS, and Windows |
-| A panic inside a task | 🚧 Ends the whole program (exit 101); `join` never returns `Err` yet |
+| A panic inside a task | ✅ `join` returns `Err(Panic)` with the message (Unix); a detached task's panic ends the program |
 | Preemption | ✅ Loops yield after a task has run 10 ms while others wait; tasks also switch at channels, `select`, `join`, locks, timers, and I/O |
 | Standard library phase 1: `time`, `sync`, `io`, `fs`, `path`, `os`, `net` (TCP/UDP on the netpoller), `net::http` (server and client), `log`, `fmt`, `mem`, `ptr` | ✅ Implemented on Linux, macOS, and Windows; written in Kiln on the C runtime ([reference](stdlib.md)) |
 | Standard library phase 2: `strings`, `strconv`, `bytes`, `collections`, `math`, `rand`, `errors`, `flag`, `encoding` (JSON with `@derive(Json)`, base64, hex, CSV), `crypto`, `regexp`, `context`, net timeouts | ✅ Implemented |

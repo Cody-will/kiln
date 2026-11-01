@@ -247,8 +247,7 @@ typedef struct {
 _Static_assert(offsetof(KnCatchFrame, jb) == sizeof(KnPanicFrame), "jmp_buf follows the frame");
 #endif
 
-int32_t kn_catch_panic(KnCatchCode code, void *env) {
-	uint64_t ret[4] = {0};
+int32_t kn_catch_call(KnCatchCode code, void *ret, void *env) {
 #if !defined(_WIN32)
 	KnPanicState *ps = panic_state();
 	KnCatchFrame fr;
@@ -269,6 +268,25 @@ int32_t kn_catch_panic(KnCatchCode code, void *env) {
 	return 0;
 #endif
 }
+
+int32_t kn_catch_panic(KnCatchCode code, void *env) {
+	uint64_t ret[4] = {0};
+	return kn_catch_call(code, ret, env);
+}
+
+/* A malloc'd copy of the last caught panic's message (for Task.join). */
+uint8_t *kn_panic_copy(size_t *len) {
+	KnPanicState *ps = panic_state();
+	size_t n = ps && ps->msg ? ps->len : 0;
+	uint8_t *m = (uint8_t *)malloc(n ? n : 1);
+	if (m && n)
+		memcpy(m, ps->msg, n);
+	*len = m ? n : 0;
+	return m;
+}
+
+/* Ends the program for a task panic nobody joined. */
+KN_NORETURN void kn_panic_die(const uint8_t *msg, size_t len) { panic_die(msg, len); }
 
 /* The message of the last panic caught on this task. */
 void kn_panic_message(KnVec *out) {

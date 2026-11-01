@@ -320,7 +320,11 @@ const RUNTIME: &[(&str, &[Type], Option<Type>)] = &[
         &[types::I64, types::I64, types::I64, types::I64, types::I64],
         Some(types::I64),
     ),
-    ("kn_task_join", &[types::I64, types::I64], None),
+    (
+        "kn_task_join",
+        &[types::I64, types::I64, types::I64],
+        Some(types::I32),
+    ),
     ("kn_task_drop", &[types::I64], None),
     ("kn_scope_new", &[], Some(types::I64)),
     (

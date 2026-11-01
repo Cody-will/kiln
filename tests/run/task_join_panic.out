@@ -1,0 +1,6 @@
+deferred 3
+err boom 3
+deferred 1
+10
+deferred 4
+after

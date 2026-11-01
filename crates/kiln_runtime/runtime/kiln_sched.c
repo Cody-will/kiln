@@ -905,8 +905,20 @@ static void shared_complete(KnShared *sh);
 static void scope_done(KnScope *s);
 
 /* First code run on a new task's stack. */
+int32_t kn_catch_call(KnCode code, void *ret, void *env);
+uint8_t *kn_panic_copy(size_t *len);
+KN_NORETURN void kn_panic_die(const uint8_t *msg, size_t len);
+void kn_string_push(void *s, const uint8_t *p, size_t len);
+static void shared_panicked(KnShared *sh);
+
 void kn_task_start(KnTask *t) {
-	t->code(t->ret, t->env);
+	/* A task with a Task handle hands its panic to `join`. */
+	if (t->shared) {
+		if (kn_catch_call(t->code, t->ret, t->env))
+			shared_panicked(t->shared);
+	} else {
+		t->code(t->ret, t->env);
+	}
 	if (t->free_env)
 		kn_free_env(t->env);
 	if (t->shared)
@@ -924,8 +936,10 @@ void kn_task_start(KnTask *t) {
 
 struct KnShared {
 	kn_mutex lock;
-	int32_t done, joined;
+	int32_t done, joined, panicked;
 	KnTask *waiter;
+	uint8_t *msg; /* the panic message, when panicked */
+	size_t msg_len;
 	volatile int64_t refs; /* the handle and the running task */
 	size_t size;
 	void (*drop)(void *);
@@ -934,10 +948,19 @@ struct KnShared {
 
 static void shared_release(KnShared *sh) {
 	if (at_add(&sh->refs, -1) == 0) {
-		if (sh->done && !sh->joined && sh->drop)
+		/* A panic nobody joined still ends the program. */
+		if (sh->panicked && !sh->joined)
+			kn_panic_die(sh->msg, sh->msg_len);
+		if (sh->done && !sh->joined && !sh->panicked && sh->drop)
 			sh->drop(sh->result);
+		free(sh->msg);
 		free(sh);
 	}
+}
+
+static void shared_panicked(KnShared *sh) {
+	sh->msg = kn_panic_copy(&sh->msg_len);
+	sh->panicked = 1;
 }
 
 static void shared_complete(KnShared *sh) {
@@ -971,8 +994,10 @@ void *kn_go(KnCode code, void *env, size_t env_size, size_t ret_size, void (*dro
 	return sh;
 }
 
-/* `task.join()`: waits for the task and moves its result to `out`. */
-void kn_task_join(void *h, void *out) {
+/* `task.join()`: waits for the task and moves its result to `out`, or,
+ * if the task panicked, appends the message to the string `err` and
+ * returns 1. */
+int32_t kn_task_join(void *h, void *out, void *err) {
 	KnShared *sh = (KnShared *)h;
 	mutex_lock(&sh->lock);
 	if (!sh->done) {
@@ -981,9 +1006,16 @@ void kn_task_join(void *h, void *out) {
 	} else {
 		mutex_unlock(&sh->lock);
 	}
-	memcpy(out, sh->result, sh->size);
+	int32_t r = sh->panicked;
+	if (r) {
+		memset(err, 0, 24);
+		kn_string_push(err, sh->msg, sh->msg_len);
+	} else {
+		memcpy(out, sh->result, sh->size);
+	}
 	sh->joined = 1;
 	shared_release(sh);
+	return r;
 }
 
 /* Dropping a Task handle detaches the task. */

@@ -1,9 +1,12 @@
+import std::time
+
 fun boom(v Vec<i32>) i32 {
 	return v[5]
 }
 
 fun main() {
-	t := spawn boom(Vec::new())
-	t.join()
+	// Nobody joins this task, so its panic ends the program.
+	spawn boom(Vec::new())
+	time::sleep(time::millis(200))
 	println("unreachable")
 }

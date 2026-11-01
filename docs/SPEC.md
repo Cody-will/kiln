@@ -361,7 +361,7 @@ match r {
 - `recover` calls `body`. If `body` returns, the result is `Ok(value)`. If it panics, the `defer`s between the panic and the `recover` run, and the result is `Err(message)`. `panic::catch_panic(body fun mut()) bool` is the untyped form, and `panic::last_message()` reads the message.
 - There is no unwinding: locals of the functions a panic leaves are **not dropped**. Their memory leaks, and a `MutexGuard` held there stays locked. This keeps the non-panicking path free of landing pads. Cleanup that must also happen on panic belongs in a `defer`. Treat `recover` as a way to contain a failed request or plugin, not as control flow.
 - A panic inside a deferred call while panicking keeps the first message. A recovered panic is over: later panics are reported normally.
-- Each task recovers its own panics. A panic in a spawned task that it does not recover still ends the program. `recover` is Unix-only so far; on Windows a panic always exits.
+- Each task recovers its own panics. A panic that a spawned task does not recover ends that task (after its `defer`s) and `join` returns `Err(Panic)`, whose `message` field holds the panic message. If the task's handle was dropped without `join`, or the task was started in a `scope`, the panic still ends the program. `recover` and `join` errors are Unix-only so far; on Windows a panic always exits.
 
 ### Concurrency: `spawn`, channels, `select`
 

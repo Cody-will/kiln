@@ -36,9 +36,7 @@ fun main() {
 
 `spawn` is an expression: it returns a `Task<T>` handle, where `T` is what the call or block returns. `t.join()` waits for the task and gives back `result<T, Panic>`. Like Go, a program ends when `main` returns, even if other tasks are still running, so join the tasks you need to finish. Dropping a `Task` without joining detaches it.
 
-<div class="status">
-🚧 A panic in any task currently ends the whole program (exit status 101), so <code>join</code> never returns <code>Err</code> yet.
-</div>
+If the task panics, its `defer`s run and `join` returns `Err(p)`, where `p.message` is the panic message. A panic in a task whose handle was dropped (or in a `scope` task) still ends the program with exit status 101. On Windows every panic ends the program for now.
 
 A task may keep running after the function that started it returns, so it must **own** everything it uses:
 

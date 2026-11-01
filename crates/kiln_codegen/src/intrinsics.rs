@@ -503,15 +503,17 @@ impl FnCx<'_, '_, '_, '_> {
                 self.store(h, dest, 0);
             }
             ("Task", "join") => {
-                // Result<T, Panic>: Ok = 0. (Panics end the program, so never Err.)
+                // Result<T, Panic>: the runtime returns 1 (Err) when the task
+                // panicked, after writing the message to `Err.0.message`.
                 let s = self.slot(8, 8);
                 self.store_op(&args[0], s);
                 let h = self.load(types::I64, s, 0);
                 let (off, _) = self.cg.field(dt, "Ok.0");
                 let p = self.b.ins().iadd_imm(dest, off as i64);
-                self.call_rt("kn_task_join", &[h, p]);
-                let z = self.b.ins().iconst(types::I32, 0);
-                self.set_tag(dest, z);
+                let (eoff, _) = self.cg.field(dt, "Err.0");
+                let e = self.b.ins().iadd_imm(dest, eoff as i64);
+                let r = self.call_rt("kn_task_join", &[h, p, e]).unwrap();
+                self.set_tag(dest, r);
             }
             (_, "catch_panic") => {
                 // std::panic::catch_panic(body): 1 if body panicked.

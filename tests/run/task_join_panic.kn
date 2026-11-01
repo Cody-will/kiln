@@ -1,0 +1,20 @@
+fun work(n i64) i64 {
+	defer println("deferred {n}")
+	if n > 2 {
+		panic("boom {n}")
+	}
+	return n * 10
+}
+
+fun main() {
+	t := spawn work(3)
+	match t.join() {
+		Ok(v) => println("ok {v}"),
+		Err(p) => println("err {p.message}"),
+	}
+	u := spawn work(1)
+	println("{u.join().unwrap_or(0)}")
+	w := spawn work(4)
+	w.join()
+	println("after")
+}
