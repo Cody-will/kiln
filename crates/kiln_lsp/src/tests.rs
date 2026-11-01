@@ -248,3 +248,64 @@ fn analyze_timing_shapes() {
         elapsed.as_secs_f64() * 1000.0 / n as f64
     );
 }
+
+/// Applies a fix's edits to `src` (single-file analysis: offsets match).
+fn apply(src: &str, f: &crate::analysis::Fix) -> String {
+    let mut out = src.to_string();
+    let mut edits = f.edits.clone();
+    edits.sort_by_key(|(s, _)| std::cmp::Reverse(s.start));
+    for (s, t) in edits {
+        out.replace_range(s.start..s.end, &t);
+    }
+    out
+}
+
+#[test]
+fn quick_fix_missing_match_arms() {
+    let src = "enum E { A, B(i32), C { x i32 } }\n\nfun main() {\n\te := E::A\n\tmatch e {\n\t\tE::A => {},\n\t}\n}\n";
+    let a = analyze(src);
+    assert_eq!(a.diagnostics.len(), 1, "{:?}", a.diagnostics);
+    let fixes = a.fixes(0, src.len());
+    assert_eq!(fixes[0].title, "Add missing match arms");
+    let fixed = apply(src, &fixes[0]);
+    assert!(
+        fixed.contains("\t\tE::B(_) => panic(\"todo\"),\n\t\tE::C { .. } => panic(\"todo\"),\n\t}"),
+        "{fixed}"
+    );
+    assert!(analyze(&fixed).diagnostics.is_empty(), "{fixed}");
+    assert_eq!(fixes[1].title, "Add a `_` arm");
+    assert!(analyze(&apply(src, &fixes[1])).diagnostics.is_empty());
+}
+
+#[test]
+fn quick_fix_import() {
+    let src = "fun main() {\n\tm mut := HashMap::new()\n\tm.insert(1, 2)\n}\n";
+    let a = analyze(src);
+    let fixes = a.fixes(0, src.len());
+    let f = fixes
+        .iter()
+        .find(|f| f.title == "Import `std::collections::HashMap`")
+        .unwrap_or_else(|| panic!("{fixes:?}"));
+    let fixed = apply(src, f);
+    assert!(fixed.starts_with("import std::collections::HashMap\n\nfun main"));
+    assert!(analyze(&fixed).diagnostics.is_empty(), "{fixed}");
+}
+
+#[test]
+fn semantic_token_kinds() {
+    let a = analyze(SRC);
+    let toks = a.semantic_tokens(0, SRC.len());
+    let kind = |needle: &str, nth: usize| {
+        let s = at(needle, nth);
+        toks.iter()
+            .find(|(sp, _, _)| sp.start == s)
+            .map(|(_, t, d)| (crate::analysis::TOKEN_TYPES[*t as usize], *d))
+    };
+    assert_eq!(kind("Point {", 0), Some(("struct", true)));
+    assert_eq!(kind("add(a", 0), Some(("function", true)));
+    assert_eq!(kind("add(p", 0), Some(("function", false)));
+    assert_eq!(kind("double()", 0), Some(("method", false)));
+    assert_eq!(kind("p := ", 0), Some(("variable", true)));
+    assert_eq!(kind("println", 0), Some(("function", false)));
+    assert!(toks.windows(2).all(|w| w[0].0.end <= w[1].0.start));
+}

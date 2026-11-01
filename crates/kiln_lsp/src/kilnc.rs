@@ -97,12 +97,26 @@ pub fn parse_output(out: &str) -> Checked {
 /// Runs `kilnc --check` on `root`, reading `overlays` (path, text) instead
 /// of the files on disk.
 pub fn check(k: &Kilnc, root: &Path, overlays: &[(PathBuf, String)]) -> Result<Checked, String> {
-    run(k, "--check", root, overlays)
+    run(k, "--check", root, overlays, &|| false)
 }
 
 /// [`check`] plus the navigation facts (`kilnc --index`).
 pub fn index(k: &Kilnc, root: &Path, overlays: &[(PathBuf, String)]) -> Result<Checked, String> {
-    run(k, "--index", root, overlays)
+    run(k, "--index", root, overlays, &|| false)
+}
+
+/// The error of a run stopped by its `cancel` callback.
+pub const CANCELLED: &str = "kilnc: cancelled";
+
+/// [`index`], killing kilnc (and returning `Err(CANCELLED)`) as soon as
+/// `cancel` returns true (newer edits made this run stale).
+pub fn index_cancellable(
+    k: &Kilnc,
+    root: &Path,
+    overlays: &[(PathBuf, String)],
+    cancel: &dyn Fn() -> bool,
+) -> Result<Checked, String> {
+    run(k, "--index", root, overlays, cancel)
 }
 
 fn run(
@@ -110,6 +124,7 @@ fn run(
     mode: &str,
     root: &Path,
     overlays: &[(PathBuf, String)],
+    cancel: &dyn Fn() -> bool,
 ) -> Result<Checked, String> {
     let mut cmd = Command::new(&k.exe);
     cmd.arg(mode);
@@ -133,11 +148,11 @@ fn run(
     }
     cmd.arg(root);
     cmd.env("KILNC_RESOLVE_DIR", &k.resolve_dir);
-    let o = cmd.output();
+    let o = wait(cmd, cancel);
     if let Some(d) = tmp {
         let _ = std::fs::remove_dir_all(d);
     }
-    let o = o.map_err(|e| format!("cannot run {}: {e}", k.exe.display()))?;
+    let o = o?.ok_or_else(|| CANCELLED.to_string())?;
     let stdout = String::from_utf8_lossy(&o.stdout);
     let c = parse_output(&stdout);
     // A crash (no verdict printed) is an error, not a clean program.
@@ -149,6 +164,54 @@ fn run(
         ));
     }
     Ok(c)
+}
+
+/// Runs `cmd` to completion (`Ok(None)` if `cancel` fired and it was killed).
+fn wait(
+    mut cmd: Command,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Option<std::process::Output>, String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let exe = cmd.get_program().to_string_lossy().to_string();
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("cannot run {exe}: {e}"))?;
+    // Drain both pipes on threads so a large output cannot block kilnc.
+    let drain = |p: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut v = Vec::new();
+            if let Some(mut p) = p {
+                let _ = p.read_to_end(&mut v);
+            }
+            v
+        })
+    };
+    let out = drain(child.stdout.take().map(|p| Box::new(p) as _));
+    let err = drain(child.stderr.take().map(|p| Box::new(p) as _));
+    let status = loop {
+        if let Some(st) = child.try_wait().map_err(|e| e.to_string())? {
+            break Some(st);
+        }
+        if cancel() {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    let (stdout, stderr) = (
+        out.join().unwrap_or_default(),
+        err.join().unwrap_or_default(),
+    );
+    Ok(status.map(|status| std::process::Output {
+        status,
+        stdout,
+        stderr,
+    }))
 }
 
 #[cfg(test)]
@@ -172,5 +235,18 @@ mod tests {
         assert_eq!(d.help.as_deref(), Some("clone it"));
         assert!(!c.ok());
         assert_eq!(c.facts, "bind\t1\t2\t1\t2\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancel_kills_the_child() {
+        let t = std::time::Instant::now();
+        let mut cmd = Command::new("sleep");
+        cmd.arg("10");
+        let r = wait(cmd, &|| t.elapsed() > std::time::Duration::from_millis(50)).unwrap();
+        assert!(r.is_none());
+        assert!(t.elapsed() < std::time::Duration::from_secs(5));
+        let r = wait(Command::new("true"), &|| false).unwrap().unwrap();
+        assert!(r.status.success());
     }
 }

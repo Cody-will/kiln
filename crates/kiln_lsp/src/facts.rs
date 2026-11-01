@@ -154,6 +154,36 @@ pub fn rust(file: &kiln_parser::ast::File) -> String {
             field(&d.name)
         ));
     }
+    // Importable names (for "import" quick fixes): `pub` items outside
+    // the root module and the prelude, with their module path.
+    for d in &r.defs {
+        if matches!(
+            d.kind,
+            DefKind::Mod | DefKind::Variant { .. } | DefKind::External
+        ) || d.vis == kiln_parser::ast::Visibility::Private
+            || d.module == r.root
+            || d.module == r.prelude
+            || d.name.starts_with(['_', '<'])
+        {
+            continue;
+        }
+        let mut path = Vec::new();
+        let mut m = d.module;
+        while let Some(p) = r.modules.get(&m).and_then(|s| s.parent) {
+            path.push(r.def(m).name.as_str());
+            m = p;
+        }
+        if path.iter().any(|n| n.starts_with('<')) {
+            continue;
+        }
+        path.reverse();
+        out.push(format!(
+            "path\t{}\t{}\t{}",
+            field(&d.name),
+            kind_name(d.kind),
+            field(&path.join("::"))
+        ));
+    }
     if let Some(scope) = r.modules.get(&r.prelude) {
         for (name, id) in scope.values.iter().chain(scope.types.iter()) {
             if name.starts_with("kn_") || name.starts_with('_') {

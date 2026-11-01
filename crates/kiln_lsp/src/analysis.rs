@@ -80,6 +80,49 @@ pub struct Analysis {
     pub scopes: Vec<(Span, Vec<Span>)>,
     /// Each file's global span base, offset in `text`, and length.
     pub bases: Vec<(usize, usize, usize)>,
+    /// What each definition name span defines ("fun", "struct", "method", ...).
+    pub def_kinds: HashMap<Span, &'static str>,
+    /// Kinds of prelude names.
+    pub pre_kinds: HashMap<String, &'static str>,
+    /// Importable names: (name, kind, module path), for import quick fixes.
+    pub importable: Vec<(String, &'static str, String)>,
+}
+
+/// A quick fix: a title and the edits (span in [`Analysis::text`], new text).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fix {
+    /// Shown in the editor's light-bulb menu.
+    pub title: String,
+    /// Replacements, all in one file.
+    pub edits: Vec<(Span, String)>,
+}
+
+/// Semantic token types, in legend order (see [`Analysis::semantic_tokens`]).
+pub const TOKEN_TYPES: [&str; 9] = [
+    "namespace",
+    "type",
+    "struct",
+    "enum",
+    "interface",
+    "enumMember",
+    "function",
+    "method",
+    "variable",
+];
+
+fn token_type(kind: &str) -> Option<u32> {
+    Some(match kind {
+        "mod" | "module" => 0,
+        "type" => 1,
+        "struct" => 2,
+        "enum" => 3,
+        "trait" => 4,
+        "variant" => 5,
+        "fun" => 6,
+        "method" => 7,
+        "const" | "static" | "local" => 8,
+        _ => return None,
+    })
 }
 
 fn ident_at_end(src: &str, sp: Span) -> Span {
@@ -245,6 +288,7 @@ pub fn from_facts(files: &[(usize, std::path::PathBuf, String)], facts: &str) ->
                 let kind = kind_static(f[1]);
                 let sig = signature(src, ds.start);
                 a.def_names.insert(ds, name.clone());
+                a.def_kinds.insert(ds, kind);
                 a.def_hover
                     .insert(ds, hover_text(&sig, &doc_above(src, ds.start)));
                 let root = f[6] == "1";
@@ -266,11 +310,15 @@ pub fn from_facts(files: &[(usize, std::path::PathBuf, String)], facts: &str) ->
                     });
                 }
             }
-            "pre" => a.globals.push(Completion {
-                label: txt(2),
-                kind: kind_static(f[1]),
-                detail: txt(3),
-            }),
+            "pre" => {
+                a.pre_kinds.insert(txt(2), kind_static(f[1]));
+                a.globals.push(Completion {
+                    label: txt(2),
+                    kind: kind_static(f[1]),
+                    detail: txt(3),
+                })
+            }
+            "path" => a.importable.push((txt(1), kind_static(f[2]), txt(3))),
             "ref" => {
                 let Some(at) = a.map_span(sp(1)) else {
                     continue;
@@ -322,6 +370,7 @@ pub fn from_facts(files: &[(usize, std::path::PathBuf, String)], facts: &str) ->
                 if let (Some(ns), Some(full)) = (ns, a.map_span(sp(4))) {
                     let sig = signature(src, ns.start);
                     a.def_names.insert(ns, name.clone());
+                    a.def_kinds.insert(ns, "method");
                     a.def_hover
                         .insert(ns, hover_text(&sig, &doc_above(src, ns.start)));
                     a.symbols.push(Symbol {
@@ -403,6 +452,173 @@ pub fn from_facts(files: &[(usize, std::path::PathBuf, String)], facts: &str) ->
 }
 
 impl Analysis {
+    /// Semantic tokens in `lo..hi` of [`Analysis::text`]: (span, index in
+    /// [`TOKEN_TYPES`], is a declaration), sorted and non-overlapping.
+    pub fn semantic_tokens(&self, lo: usize, hi: usize) -> Vec<(Span, u32, bool)> {
+        let mut out: Vec<(Span, u32, bool)> = Vec::new();
+        let inside = |s: &Span| s.start >= lo && s.end <= hi && s.start < s.end;
+        for (s, k) in &self.def_kinds {
+            if let (true, Some(t)) = (inside(s), token_type(k)) {
+                out.push((*s, t, true));
+            }
+        }
+        for (s, target) in &self.refs {
+            if !inside(s) {
+                continue;
+            }
+            let kind = match target {
+                Target::Def(d) => self.def_kinds.get(d).copied(),
+                Target::Local(_) => Some("local"),
+                Target::Std(key) => {
+                    let name = key.split('#').next().unwrap_or("");
+                    let method = self.text.get(..s.start).is_some_and(|t| t.ends_with('.'));
+                    if method {
+                        Some("method")
+                    } else if let Some(k) = self.pre_kinds.get(name) {
+                        Some(*k)
+                    } else if name.starts_with(char::is_uppercase) {
+                        Some("type")
+                    } else {
+                        Some("fun")
+                    }
+                }
+            };
+            if let Some(t) = kind.and_then(token_type) {
+                out.push((*s, t, matches!(target, Target::Local(l) if l == s)));
+            }
+        }
+        out.sort_by_key(|(s, _, _)| (s.start, s.end));
+        out.dedup_by(|b, a| b.0.start < a.0.end);
+        out
+    }
+
+    /// Quick fixes for the diagnostics overlapping `lo..hi`.
+    pub fn fixes(&self, lo: usize, hi: usize) -> Vec<Fix> {
+        let mut out = Vec::new();
+        for d in &self.diagnostics {
+            if d.span.end < lo || d.span.start > hi {
+                continue;
+            }
+            if let Some(missing) = d.message.strip_prefix("non-exhaustive match: ") {
+                out.extend(self.match_fixes(d.span, missing));
+            } else if let Some(name) = unresolved_name(&d.message) {
+                out.extend(self.import_fixes(d.span.start, name));
+            }
+        }
+        out
+    }
+
+    fn file_of(&self, at: usize) -> Option<(usize, usize)> {
+        self.files
+            .iter()
+            .rfind(|(v, _, len)| *v <= at && at <= v + len)
+            .map(|(v, _, len)| (*v, *len))
+    }
+
+    /// `import path::name` for each importable `name`, after the file's
+    /// last top-level import (else at its top).
+    fn import_fixes(&self, at: usize, name: &str) -> Vec<Fix> {
+        let Some((v, len)) = self.file_of(at) else {
+            return Vec::new();
+        };
+        let text = &self.text[v..v + len];
+        let mut insert = 0;
+        let mut off = 0;
+        for line in text.split_inclusive('\n') {
+            if line.starts_with("import ") {
+                insert = off + line.len();
+            }
+            off += line.len();
+        }
+        let mut paths: Vec<&String> = self
+            .importable
+            .iter()
+            .filter(|(n, _, _)| n == name)
+            .map(|(_, _, p)| p)
+            .collect();
+        paths.sort();
+        paths.dedup();
+        paths
+            .into_iter()
+            .map(|p| {
+                let line = format!("import {p}::{name}\n");
+                let (at, text) = if insert == 0 && !text.is_empty() {
+                    (v, format!("{line}\n"))
+                } else {
+                    (v + insert, line)
+                };
+                Fix {
+                    title: format!("Import `{p}::{name}`"),
+                    edits: vec![(Span::new(at, at), text)],
+                }
+            })
+            .collect()
+    }
+
+    /// Arms for the cases a `match` misses (`missing`: the rest of the
+    /// diagnostic), and a catch-all `_` arm.
+    fn match_fixes(&self, m: Span, missing: &str) -> Vec<Fix> {
+        let Some(body) = self.text.get(m.start..m.end) else {
+            return Vec::new();
+        };
+        let Some(close) = body.rfind('}') else {
+            return Vec::new();
+        };
+        let close = m.start + close;
+        let ls = self.text[..close].rfind('\n').map_or(0, |i| i + 1);
+        let before = &self.text[ls..close];
+        let (at, indent, lead) = if before.trim().is_empty() {
+            (ls, format!("{before}\t"), String::new())
+        } else {
+            (close, String::new(), " ".to_string())
+        };
+        // `E::A => ...`: missing cases get the same `E::` prefix.
+        let prefix = body
+            .find('{')
+            .and_then(|o| body[o + 1..].split("=>").next())
+            .map(str::trim)
+            .and_then(|pat| {
+                let head = pat.split(['(', '{', ' ']).next()?;
+                head.rfind("::").map(|i| head[..i + 2].to_string())
+            })
+            .unwrap_or_default();
+        let arm = |pat: &str| {
+            if indent.is_empty() {
+                format!("{lead}{pat} => panic(\"todo\"), ")
+            } else {
+                format!("{indent}{pat} => panic(\"todo\"),\n")
+            }
+        };
+        let mut out = Vec::new();
+        let cases: Vec<&str> = missing
+            .trim_end_matches(" not covered")
+            .split(", ")
+            .filter_map(|c| c.strip_prefix('`')?.strip_suffix('`'))
+            .collect();
+        if !cases.is_empty() && !missing.contains(" more") {
+            let text: String = cases
+                .iter()
+                .map(|c| {
+                    let qualified = c.starts_with(char::is_uppercase) && !c.contains("::");
+                    arm(&if qualified {
+                        format!("{prefix}{c}")
+                    } else {
+                        c.to_string()
+                    })
+                })
+                .collect();
+            out.push(Fix {
+                title: "Add missing match arms".into(),
+                edits: vec![(Span::new(at, at), text)],
+            });
+        }
+        out.push(Fix {
+            title: "Add a `_` arm".into(),
+            edits: vec![(Span::new(at, at), arm("_"))],
+        });
+        out
+    }
+
     /// The definition a position refers to: a span in this file.
     pub fn definition(&self, at: usize) -> Option<Span> {
         if let Some(s) = self.def_names.keys().find(|s| s.start <= at && at <= s.end) {
@@ -561,3 +777,14 @@ const KEYWORDS: &[&str] = &[
     "select", "self", "Self", "static", "struct", "trait", "true", "type", "unsafe", "where",
     "while",
 ];
+
+/// `x` in "cannot find value `x` in this scope" (and type, module).
+fn unresolved_name(msg: &str) -> Option<&str> {
+    let rest = msg.strip_prefix("cannot find ")?;
+    if !rest.ends_with("` in this scope") {
+        return None;
+    }
+    let start = rest.find('`')? + 1;
+    let end = start + rest[start..].find('`')?;
+    Some(&rest[start..end])
+}

@@ -21,6 +21,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// Counts edits; an analysis started at an older count is stale, and its
+/// kilnc run is killed.
+static EDITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// How long to wait after the last `didChange` before re-analyzing.
 pub(crate) const CHANGE_DEBOUNCE: Duration = Duration::from_millis(200);
 
@@ -332,6 +336,7 @@ impl State {
 fn analyze_with_overlays(
     path: &Path,
     overlays: &HashMap<PathBuf, String>,
+    stale: &dyn Fn() -> bool,
 ) -> Option<(PathBuf, Analysis)> {
     let overlay = |p: &Path| -> Option<String> {
         overlays
@@ -341,7 +346,7 @@ fn analyze_with_overlays(
     };
     let (root, deps) = program_for(path);
     if let Some(k) = KILNC.get().and_then(|k| k.as_ref()) {
-        return Some(index_with_kilnc(k, path, root, overlays, &overlay));
+        return index_with_kilnc(k, path, root, overlays, &overlay, stale);
     }
     // No kilnc: the Rust front end.
     let (mut root, mut deps) = (root, deps);
@@ -368,23 +373,26 @@ fn index_with_kilnc(
     root: PathBuf,
     overlays: &HashMap<PathBuf, String>,
     overlay: &dyn Fn(&Path) -> Option<String>,
-) -> (PathBuf, Analysis) {
+    stale: &dyn Fn() -> bool,
+) -> Option<(PathBuf, Analysis)> {
     let ov: Vec<(PathBuf, String)> = overlays
         .iter()
         .map(|(p, t)| (p.clone(), t.clone()))
         .collect();
     let mut root = root;
-    let mut res = crate::kilnc::index(k, &root, &ov);
+    let mut res = crate::kilnc::index_cancellable(k, &root, &ov, stale);
     let missing = |r: &Result<crate::kilnc::Checked, String>| match r {
         Ok(c) => !c.files.iter().any(|(_, f)| same_file(f, path)),
         Err(_) => true,
     };
     if missing(&res) && !same_file(&root, path) {
         root = path.to_path_buf();
-        res = crate::kilnc::index(k, &root, &ov);
+        res = crate::kilnc::index_cancellable(k, &root, &ov, stale);
     }
     let c = match res {
         Ok(c) => c,
+        // Newer edits: the result would be dropped anyway.
+        Err(e) if e == crate::kilnc::CANCELLED => return None,
         Err(e) => {
             let a = Analysis {
                 diagnostics: vec![kiln_lexer::Diagnostic::error(
@@ -393,7 +401,7 @@ fn index_with_kilnc(
                 )],
                 ..Default::default()
             };
-            return (root, a);
+            return Some((root, a));
         }
     };
     let files: Vec<(usize, PathBuf, String)> = c
@@ -408,7 +416,7 @@ fn index_with_kilnc(
         .collect();
     let mut a = crate::analysis::from_facts(&files, &c.facts);
     a.diagnostics = map_kilnc(&a, c);
-    (root, a)
+    Some((root, a))
 }
 
 /// kilnc for diagnostics (set once by [`run_with`]).
@@ -461,10 +469,12 @@ fn spawn_analysis(st: &mut State, trigger: Uri, done: &Sender<JobResult>) {
     let overlays = st.overlay_texts();
     let versions = st.open_versions();
     let tx = done.clone();
+    let gen = EDITS.load(std::sync::atomic::Ordering::SeqCst);
     std::thread::Builder::new()
         .name("kiln-lsp-analyze".into())
         .spawn(move || {
-            let out = analyze_with_overlays(&path, &overlays);
+            let stale = || EDITS.load(std::sync::atomic::Ordering::SeqCst) != gen;
+            let out = analyze_with_overlays(&path, &overlays, &stale);
             let (root, analysis) = match out {
                 Some((r, a)) => (Some(r), Some(a)),
                 None => (None, None),
@@ -523,6 +533,21 @@ pub fn run_with(kilnc: Option<Kilnc>) -> Result<(), Box<dyn std::error::Error + 
         })),
         document_formatting_provider: Some(OneOf::Left(true)),
         inlay_hint_provider: Some(OneOf::Left(true)),
+        code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+        semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+            SemanticTokensOptions {
+                legend: SemanticTokensLegend {
+                    token_types: crate::analysis::TOKEN_TYPES
+                        .iter()
+                        .map(|t| SemanticTokenType::new(t))
+                        .collect(),
+                    token_modifiers: vec![SemanticTokenModifier::DECLARATION],
+                },
+                full: Some(SemanticTokensFullOptions::Bool(true)),
+                range: Some(false),
+                ..Default::default()
+            },
+        )),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec![".".into(), ":".into()]),
             ..Default::default()
@@ -714,6 +739,7 @@ fn handle_notification(st: &mut State, n: Notification) {
             };
             d.text = text;
             d.version = p.text_document.version;
+            EDITS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             st.schedule(uri, CHANGE_DEBOUNCE);
         }
         notification::DidSaveTextDocument::METHOD => {
@@ -906,6 +932,65 @@ fn handle_request(st: &State, req: Request) -> Response {
                 })
                 .collect();
             ok(id, DocumentSymbolResponse::Flat(syms))
+        }
+        request::CodeActionRequest::METHOD => {
+            let Ok(p) = serde_json::from_value::<CodeActionParams>(req.params.clone()) else {
+                return none;
+            };
+            let lo = base + lines.offset(p.range.start);
+            let hi = base + lines.offset(p.range.end);
+            let actions: Vec<CodeActionOrCommand> = a
+                .fixes(lo, hi)
+                .into_iter()
+                .map(|f| {
+                    let edits = f
+                        .edits
+                        .into_iter()
+                        .map(|(s, t)| TextEdit::new(local(s), t))
+                        .collect();
+                    CodeActionOrCommand::CodeAction(CodeAction {
+                        title: f.title,
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        edit: Some(WorkspaceEdit {
+                            changes: Some(HashMap::from([(uri.clone(), edits)])),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    })
+                })
+                .collect();
+            ok(id, actions)
+        }
+        request::SemanticTokensFullRequest::METHOD => {
+            let mut data = Vec::new();
+            let (mut pl, mut pc) = (0u32, 0u32);
+            for (s, ty, decl) in a.semantic_tokens(base, base + ftext.len()) {
+                let r = local(s);
+                if r.start.line != r.end.line {
+                    continue;
+                }
+                let dl = r.start.line - pl;
+                let dc = if dl == 0 {
+                    r.start.character - pc
+                } else {
+                    r.start.character
+                };
+                data.push(SemanticToken {
+                    delta_line: dl,
+                    delta_start: dc,
+                    length: r.end.character - r.start.character,
+                    token_type: ty,
+                    token_modifiers_bitset: u32::from(decl),
+                });
+                (pl, pc) = (r.start.line, r.start.character);
+            }
+            ok(
+                id,
+                SemanticTokensResult::Tokens(SemanticTokens {
+                    result_id: None,
+                    data,
+                }),
+            )
         }
         request::InlayHintRequest::METHOD => {
             let end = base + ftext.len();

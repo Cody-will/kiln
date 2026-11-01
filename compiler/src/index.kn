@@ -159,6 +159,56 @@ pub fun resolve_facts(r &Resolved, builtin &str, out &mut Vec<string>) {
 		root := if d.module == r.root { 1 } else { 0 }
 		out.push("def\t{kind_word(&d.kind)}\t{d.span.start}\t{d.span.end}\t{full.start}\t{full.end}\t{root}\t{field(&d.name)}")
 	}
+	// Importable names (for "import" quick fixes): `pub` items outside
+	// the root module and the prelude, with their module path.
+	for d in &r.defs {
+		skip := match d.kind {
+			DefKind::Mod => true,
+			DefKind::Variant { .. } => true,
+			DefKind::External => true,
+			_ => false,
+		}
+		priv := match d.vis {
+			Visibility::Private => true,
+			_ => false,
+		}
+		if skip || priv || d.module == r.root || d.module == r.prelude || d.name.starts_with("_") || d.name.starts_with("<") {
+			continue
+		}
+		path mut := Vec::new()
+		m mut := d.module
+		odd mut := false
+		loop {
+			parent := match r.modules.get(&m) {
+				Some(sc) => sc.parent,
+				None => None,
+			}
+			match parent {
+				Some(p) => {
+					n := r.def(m).name.clone()
+					if n.starts_with("<") {
+						odd = true
+					}
+					path.push(n)
+					m = p
+				},
+				None => break,
+			}
+		}
+		if odd {
+			continue
+		}
+		joined mut := string::new()
+		i mut := path.len()
+		while i > 0 {
+			i -= 1
+			joined.push(&path[i])
+			if i > 0 {
+				joined.push("::")
+			}
+		}
+		out.push("path\t{field(&d.name)}\t{kind_word(&d.kind)}\t{field(&joined)}")
+	}
 	if let Some(scope) = r.modules.get(&r.prelude) {
 		for (name, id) in scope.values.iter() {
 			pre_fact(r, builtin, name, *id, out)
