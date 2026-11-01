@@ -1,0 +1,35 @@
+import std::url
+
+fun show(s &str) {
+	match url::parse(s) {
+		Ok(u) => println("{s} -> scheme={u.scheme} user={u.user:?} pw={u.password:?} host={u.host} port={u.port():?} path={u.path} q={u.raw_query} frag={u.fragment:?} opaque={u.opaque} => {u}"),
+		Err(e) => println("{s} -> {e}"),
+	}
+}
+
+fun main() result<void, url::Error> {
+	for s in ["https://bob:p%40ss@Example.com:8443/a%20b/c?q=1&x=y+z#top", "http://[::1]:80/", "mailto:joe@example.com", "/rel/path?x", "//cdn.example/x.js", "http://h:99999/", "http://h/%zz", "foo bar://x", ":nope"].iter() {
+		show(*s)
+	}
+	base := url::parse("http://a/b/c/d;p?q")?
+	for r in ["g:h", "g", "./g", "g/", "/g", "//g", "?y", "g?y", "#s", "g#s", "..", "../g", "../..", "../../../g", "./../g", "g/./h", "g/../h", ""].iter() {
+		println("{r} => {base.join(*r)?}")
+	}
+	u := url::parse("https://x.io/search?q=kiln+lang&tag=a&tag=b&e=%E2%9C%93")?
+	q := u.query()
+	(a, b, c, d) := (q.get("q"), q.get_all("tag"), q.get("e"), q.get("none"))
+	println("{a:?} {b:?} {c:?} {d:?} {u.request_uri()} {u.hostname()} {u.host_port()}")
+	v mut := url::Values::new()
+	v.add("name", "Ana María")
+	v.add("x", "1&2=3")
+	v.set("x", "ok/?")
+	println(v.encode())
+	println("{url::parse_query(&v.encode())?:?}")
+	(e1, e2, e3, e4) := (url::query_escape("a b&c/d"), url::path_escape("a b/c"), url::query_unescape("a+b%2Fc")?, url::path_unescape("a+b")?)
+	println("{e1} {e2} {e3} {e4}")
+	match url::query_unescape("%4") {
+		Ok(s) => println("unexpected {s}"),
+		Err(e) => println("{e}"),
+	}
+	return Ok()
+}

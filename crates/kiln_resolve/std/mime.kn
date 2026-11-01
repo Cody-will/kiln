@@ -1,0 +1,400 @@
+// Media (MIME) types, like Go's `mime` plus `http.DetectContentType`.
+//
+//	mime::type_by_extension(".html")      // Some("text/html; charset=utf-8")
+//	mime::extensions_by_type("image/png")  // [".png"]
+//	m := mime::parse("text/plain; charset=\"utf-8\"")?
+//	m.essence()                            // "text/plain"
+//	m.param("charset")                     // Some("utf-8")
+//	mime::detect(&bytes)                   // "image/png", "text/plain; charset=utf-8", ...
+
+import super::super::Error as ErrorTrait
+
+// Why a media type could not be parsed.
+@derive(Debug, Clone)
+pub struct Error {
+	pub msg string,
+}
+
+impl Display for Error {
+	fun to_string(&self) string {
+		return "mime: {self.msg}"
+	}
+}
+
+impl ErrorTrait for Error {}
+
+// A parsed media type: `type/subtype; key=value...`. Type, subtype and
+// parameter names are lower-cased.
+@derive(Debug, Clone)
+pub struct MediaType {
+	pub kind string,
+	pub subtype string,
+	pub params Vec<(string, string)>,
+}
+
+impl MediaType {
+	// `type/subtype` without parameters.
+	pub fun essence(&self) string {
+		return "{self.kind}/{self.subtype}"
+	}
+
+	// The value of a parameter (name compared case-insensitively).
+	pub fun param(&self, name &str) option<string> {
+		n := name.to_lower()
+		for (k, v) in self.params.iter() {
+			if *k == n {
+				return Some(v.clone())
+			}
+		}
+		return None
+	}
+}
+
+impl Display for MediaType {
+	// The canonical form; values are quoted when needed.
+	fun to_string(&self) string {
+		out mut := self.essence()
+		for (k, v) in self.params.iter() {
+			out.push("; ")
+			out.push(k)
+			out.push("=")
+			if is_token(v) {
+				out.push(v)
+			} else {
+				out.push("\"")
+				for c in v.as_bytes() {
+					if *c == 34 || *c == 92 {
+						out.push("\\")
+					}
+					out.push_char(*c as char)
+				}
+				out.push("\"")
+			}
+		}
+		return out
+	}
+}
+
+fun tspecial(c u8) bool {
+	// ()<>@,;:\"/[]?=
+	return c == 40 || c == 41 || c == 60 || c == 62 || c == 64 || c == 44 || c == 59 || c == 58 || c == 92 || c == 34 || c == 47 || c == 91 || c == 93 || c == 63 || c == 61
+}
+
+fun token_char(c u8) bool {
+	return c > 32 && c < 127 && !tspecial(c)
+}
+
+fun is_token(s &str) bool {
+	if s.is_empty() {
+		return false
+	}
+	for c in s.as_bytes() {
+		if !token_char(*c) {
+			return false
+		}
+	}
+	return true
+}
+
+fun bad(msg &str) result<MediaType, Error> {
+	return Err(Error { msg: msg.to_string() })
+}
+
+// Parses a Content-Type style value (RFC 2045 / 7231).
+pub fun parse(s &str) result<MediaType, Error> {
+	b := s.as_bytes()
+	i mut := 0
+	skip_ws(b, &mut i)
+	start := i
+	while i < b.len() && token_char(b[i]) {
+		i += 1
+	}
+	kind := s[start..i].to_lower()
+	if kind.is_empty() || i >= b.len() || b[i] != 47 {
+		return bad("expected type/subtype")
+	}
+	i += 1
+	start2 := i
+	while i < b.len() && token_char(b[i]) {
+		i += 1
+	}
+	subtype := s[start2..i].to_lower()
+	if subtype.is_empty() {
+		return bad("missing subtype")
+	}
+	m mut := MediaType { kind: kind, subtype: subtype, params: Vec::new() }
+	loop {
+		skip_ws(b, &mut i)
+		if i >= b.len() {
+			break
+		}
+		if b[i] != 59 {
+			return bad("expected ';' between parameters")
+		}
+		i += 1
+		skip_ws(b, &mut i)
+		if i >= b.len() {
+			// A trailing ';' is tolerated.
+			break
+		}
+		ks := i
+		while i < b.len() && token_char(b[i]) {
+			i += 1
+		}
+		key := s[ks..i].to_lower()
+		if key.is_empty() || i >= b.len() || b[i] != 61 {
+			return bad("invalid parameter")
+		}
+		i += 1
+		val mut := Vec::new()
+		if i < b.len() && b[i] == 34 {
+			i += 1
+			closed mut := false
+			while i < b.len() {
+				if b[i] == 92 && i + 1 < b.len() {
+					val.push(b[i + 1])
+					i += 2
+					continue
+				}
+				if b[i] == 34 {
+					closed = true
+					i += 1
+					break
+				}
+				val.push(b[i])
+				i += 1
+			}
+			if !closed {
+				return bad("unterminated quoted string")
+			}
+		} else {
+			while i < b.len() && token_char(b[i]) {
+				val.push(b[i])
+				i += 1
+			}
+			if val.is_empty() {
+				return bad("empty parameter value")
+			}
+		}
+		for (k, _) in m.params.iter() {
+			if *k == key {
+				return bad(&"duplicate parameter \"{key}\"")
+			}
+		}
+		m.params.push((key, string::from_utf8_lossy(&val)))
+	}
+	return Ok(m)
+}
+
+fun skip_ws(b &[u8], i &mut usize) {
+	while *i < b.len() && (b[*i] == 32 || b[*i] == 9) {
+		*i += 1
+	}
+}
+
+// Extension (with dot, lower case) to media type.
+fun table() [(&'static str, &'static str); 46] {
+	return [
+		(".html", "text/html; charset=utf-8"),
+		(".htm", "text/html; charset=utf-8"),
+		(".css", "text/css; charset=utf-8"),
+		(".js", "text/javascript; charset=utf-8"),
+		(".mjs", "text/javascript; charset=utf-8"),
+		(".json", "application/json"),
+		(".xml", "text/xml; charset=utf-8"),
+		(".txt", "text/plain; charset=utf-8"),
+		(".md", "text/markdown; charset=utf-8"),
+		(".csv", "text/csv; charset=utf-8"),
+		(".svg", "image/svg+xml"),
+		(".png", "image/png"),
+		(".jpg", "image/jpeg"),
+		(".jpeg", "image/jpeg"),
+		(".gif", "image/gif"),
+		(".webp", "image/webp"),
+		(".avif", "image/avif"),
+		(".ico", "image/vnd.microsoft.icon"),
+		(".bmp", "image/bmp"),
+		(".pdf", "application/pdf"),
+		(".zip", "application/zip"),
+		(".gz", "application/gzip"),
+		(".tar", "application/x-tar"),
+		(".wasm", "application/wasm"),
+		(".woff", "font/woff"),
+		(".woff2", "font/woff2"),
+		(".ttf", "font/ttf"),
+		(".otf", "font/otf"),
+		(".mp3", "audio/mpeg"),
+		(".wav", "audio/wav"),
+		(".ogg", "audio/ogg"),
+		(".mp4", "video/mp4"),
+		(".webm", "video/webm"),
+		(".avi", "video/x-msvideo"),
+		(".bin", "application/octet-stream"),
+		(".exe", "application/octet-stream"),
+		(".yaml", "application/yaml"),
+		(".yml", "application/yaml"),
+		(".toml", "application/toml"),
+		(".kn", "text/x-kiln; charset=utf-8"),
+		(".rss", "application/rss+xml"),
+		(".atom", "application/atom+xml"),
+		(".ics", "text/calendar; charset=utf-8"),
+		(".rtf", "application/rtf"),
+		(".jsonld", "application/ld+json"),
+		(".webmanifest", "application/manifest+json"),
+	]
+}
+
+// The media type for a file extension (".png" or "png", any case).
+pub fun type_by_extension(ext &str) option<&'static str> {
+	e mut := ext.to_lower()
+	if !e.starts_with(".") {
+		e = ".{e}"
+	}
+	for (k, v) in table().iter() {
+		if *k == e.as_str() {
+			return Some(*v)
+		}
+	}
+	return None
+}
+
+// The known extensions for a media type (parameters are ignored).
+pub fun extensions_by_type(t &str) Vec<&'static str> {
+	out mut := Vec::new()
+	want := match parse(t) {
+		Ok(m) => m.essence(),
+		Err(_) => return out,
+	}
+	for (k, v) in table().iter() {
+		if let Ok(m) = parse(*v) {
+			if m.essence() == want {
+				out.push(*k)
+			}
+		}
+	}
+	return out
+}
+
+fun has_prefix(data &[u8], p &[u8]) bool {
+	if data.len() < p.len() {
+		return false
+	}
+	i mut := 0
+	while i < p.len() {
+		if data[i] != p[i] {
+			return false
+		}
+		i += 1
+	}
+	return true
+}
+
+// Guesses the media type of content from at most its first 512 bytes
+// (a subset of the WHATWG sniffing algorithm). Falls back to
+// "application/octet-stream".
+pub fun detect(data &[u8]) &'static str {
+	d := if data.len() > 512 {
+		&data[..512]
+	} else {
+		data
+	}
+	if has_prefix(d, &[137u8, 80, 78, 71, 13, 10, 26, 10]) {
+		return "image/png"
+	}
+	if has_prefix(d, &[255u8, 216, 255]) {
+		return "image/jpeg"
+	}
+	if has_prefix(d, "GIF87a".as_bytes()) || has_prefix(d, "GIF89a".as_bytes()) {
+		return "image/gif"
+	}
+	if has_prefix(d, "RIFF".as_bytes()) && d.len() >= 12 && has_prefix(&d[8..], "WEBP".as_bytes()) {
+		return "image/webp"
+	}
+	if has_prefix(d, "RIFF".as_bytes()) && d.len() >= 12 && has_prefix(&d[8..], "WAVE".as_bytes()) {
+		return "audio/wav"
+	}
+	if has_prefix(d, "BM".as_bytes()) {
+		return "image/bmp"
+	}
+	if has_prefix(d, "%PDF-".as_bytes()) {
+		return "application/pdf"
+	}
+	if has_prefix(d, &[80u8, 75, 3, 4]) {
+		return "application/zip"
+	}
+	if has_prefix(d, &[31u8, 139, 8]) {
+		return "application/x-gzip"
+	}
+	if has_prefix(d, &[0u8, 97, 115, 109]) {
+		return "application/wasm"
+	}
+	if has_prefix(d, "wOFF".as_bytes()) {
+		return "font/woff"
+	}
+	if has_prefix(d, "wOF2".as_bytes()) {
+		return "font/woff2"
+	}
+	if has_prefix(d, "OggS".as_bytes()) {
+		return "application/ogg"
+	}
+	if has_prefix(d, "ID3".as_bytes()) {
+		return "audio/mpeg"
+	}
+	if d.len() >= 12 && has_prefix(&d[4..], "ftyp".as_bytes()) {
+		return "video/mp4"
+	}
+	if has_prefix(d, &[26u8, 69, 223, 163]) {
+		return "video/webm"
+	}
+	// Text: skip leading whitespace and look for markup.
+	i mut := 0
+	while i < d.len() && (d[i] == 32 || d[i] == 9 || d[i] == 10 || d[i] == 13 || d[i] == 12) {
+		i += 1
+	}
+	rest := &d[i..]
+	for tag in ["<!doctype html", "<html", "<head", "<body", "<script", "<div", "<p", "<!--", "<title", "<table"].iter() {
+		if prefix_fold(rest, *tag) {
+			return "text/html; charset=utf-8"
+		}
+	}
+	if has_prefix(rest, "<?xml".as_bytes()) {
+		return "text/xml; charset=utf-8"
+	}
+	if has_prefix(d, &[239u8, 187, 191]) {
+		return "text/plain; charset=utf-8"
+	}
+	if has_prefix(d, &[254u8, 255]) {
+		return "text/plain; charset=utf-16be"
+	}
+	if has_prefix(d, &[255u8, 254]) {
+		return "text/plain; charset=utf-16le"
+	}
+	for c in d {
+		// Binary data bytes per WHATWG: 0x00-0x08, 0x0B, 0x0E-0x1A, 0x1C-0x1F.
+		if *c <= 8 || *c == 11 || (*c >= 14 && *c <= 26) || (*c >= 28 && *c <= 31) {
+			return "application/octet-stream"
+		}
+	}
+	return "text/plain; charset=utf-8"
+}
+
+// `data` starts with ASCII `tag` (case-insensitive) followed by a space or `>`.
+fun prefix_fold(data &[u8], tag &str) bool {
+	t := tag.as_bytes()
+	if data.len() <= t.len() {
+		return false
+	}
+	i mut := 0
+	while i < t.len() {
+		c mut := data[i]
+		if c >= 65 && c <= 90 {
+			c += 32
+		}
+		if c != t[i] {
+			return false
+		}
+		i += 1
+	}
+	e := data[t.len()]
+	return e == 32 || e == 62 || t[t.len() - 1] == 45
+}

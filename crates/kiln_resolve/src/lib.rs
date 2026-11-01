@@ -73,6 +73,8 @@ pub const STD_MODULES: &[(&str, &str)] = &[
     ("net::http2", include_str!("../std/http2.kn")),
     ("net::websocket", include_str!("../std/websocket.kn")),
     ("db::postgres", include_str!("../std/postgres.kn")),
+    ("url", include_str!("../std/url.kn")),
+    ("mime", include_str!("../std/mime.kn")),
     ("log", include_str!("../std/log.kn")),
     ("panic", include_str!("../std/panic.kn")),
 ];

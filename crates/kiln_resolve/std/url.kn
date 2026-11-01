@@ -1,0 +1,585 @@
+// URLs (RFC 3986), like Go's `net/url`.
+//
+//	u := url::parse("https://bob:pw@example.com:8443/a%20b?q=1&x=y#top")?
+//	u.host            // "example.com"
+//	u.port()          // Some(8443)
+//	u.path            // "/a b" (decoded)
+//	u.query().get("q") // Some("1")
+//	u.join("../c?d")?.to_string()
+//	url::query_escape("a b&c")  // "a+b%26c"
+//
+// `path`, `user` and `password` hold decoded text; `raw_query` and
+// `fragment` are kept as written (decode the query with `query()`).
+
+import std::encoding::hex
+import std::strconv
+import super::super::Error as ErrorTrait
+
+// Why a URL could not be parsed or decoded.
+@derive(Debug, Clone)
+pub struct Error {
+	pub msg string,
+}
+
+impl Display for Error {
+	fun to_string(&self) string {
+		return "url: {self.msg}"
+	}
+}
+
+impl ErrorTrait for Error {}
+
+fun err<T>(msg &str) result<T, Error> {
+	return Err(Error { msg: msg.to_string() })
+}
+
+// A parsed URL: `scheme://user:password@host:port/path?raw_query#fragment`.
+@derive(Debug, Clone)
+pub struct Url {
+	// Lower-cased, without the `:` ("" for a relative reference).
+	pub scheme string,
+	pub user option<string>,
+	pub password option<string>,
+	// Host name or IP; IPv6 literals keep their brackets ("[::1]").
+	pub host string,
+	// The port as written ("" when absent).
+	pub port_text string,
+	// Decoded path ("/a b").
+	pub path string,
+	// Query without the `?`, still encoded.
+	pub raw_query string,
+	// Whether the URL had a `?` (even with an empty query).
+	pub force_query bool,
+	pub fragment option<string>,
+	// Opaque data for URLs like `mailto:x@y` (no `//`).
+	pub opaque string,
+}
+
+// Parses an absolute URL or a relative reference.
+pub fun parse(s &str) result<Url, Error> {
+	u mut := Url {
+		scheme: string::new(),
+		user: None,
+		password: None,
+		host: string::new(),
+		port_text: string::new(),
+		path: string::new(),
+		raw_query: string::new(),
+		force_query: false,
+		fragment: None,
+		opaque: string::new(),
+	}
+	for c in s.as_bytes() {
+		if *c < 32 || *c == 127 {
+			return err("invalid control character in URL")
+		}
+	}
+	rest mut := s.to_string()
+	if let Some(h) = rest.find("#") {
+		u.fragment = Some(unescape(&rest[h + 1..], false)?)
+		rest = rest[..h].to_string()
+	}
+	if let Some(q) = rest.find("?") {
+		u.raw_query = rest[q + 1..].to_string()
+		u.force_query = true
+		rest = rest[..q].to_string()
+	}
+	// Scheme: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":"
+	b := rest.as_bytes()
+	i mut := 0
+	while i < b.len() && (is_alpha(b[i]) || (i > 0 && (is_digit(b[i]) || b[i] == 43 || b[i] == 45 || b[i] == 46))) {
+		i += 1
+	}
+	if i > 0 && i < b.len() && b[i] == 58 {
+		u.scheme = rest[..i].to_lower()
+		rest = rest[i + 1..].to_string()
+	} else if i == 0 && b.len() > 0 && b[0] == 58 {
+		return err("missing protocol scheme")
+	}
+	if rest.starts_with("//") {
+		auth mut := rest[2..].to_string()
+		rest = string::new()
+		if let Some(sl) = auth.find("/") {
+			rest = auth[sl..].to_string()
+			auth = auth[..sl].to_string()
+		}
+		if let Some(at) = last_index(&auth, 64) {
+			info := auth[..at].to_string()
+			auth = auth[at + 1..].to_string()
+			match info.find(":") {
+				Some(c) => {
+					u.user = Some(unescape(&info[..c], false)?)
+					u.password = Some(unescape(&info[c + 1..], false)?)
+				},
+				None => u.user = Some(unescape(&info, false)?),
+			}
+		}
+		// host[:port], with [v6] literals.
+		hb := auth.as_bytes()
+		host_end mut := auth.len()
+		if hb.len() > 0 && hb[0] == 91 {
+			match auth.find("]") {
+				Some(e) => host_end = e + 1,
+				None => return err("missing ']' in host"),
+			}
+			if host_end < hb.len() && hb[host_end] != 58 {
+				return err("invalid character after IPv6 host")
+			}
+		} else if let Some(c) = last_index(&auth, 58) {
+			host_end = c
+		}
+		u.host = unescape(&auth[..host_end], false)?
+		if host_end < auth.len() {
+			p := auth[host_end + 1..].to_string()
+			for c in p.as_bytes() {
+				if !is_digit(*c) {
+					return err(&"invalid port \"{p}\"")
+				}
+			}
+			if p.len() > 5 || (p.len() > 0 && strconv::parse_uint(&p).unwrap_or(70000) > 65535) {
+				return err(&"invalid port \"{p}\"")
+			}
+			u.port_text = p
+		}
+	} else if u.scheme.len() > 0 && !rest.starts_with("/") {
+		u.opaque = rest
+		return Ok(u)
+	}
+	u.path = unescape(&rest, false)?
+	return Ok(u)
+}
+
+fun is_alpha(c u8) bool {
+	return (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+}
+
+fun is_digit(c u8) bool {
+	return c >= 48 && c <= 57
+}
+
+fun last_index(s &str, c u8) option<usize> {
+	b := s.as_bytes()
+	i mut := b.len()
+	while i > 0 {
+		i -= 1
+		if b[i] == c {
+			return Some(i)
+		}
+	}
+	return None
+}
+
+impl Url {
+	// The port as a number, if one was given.
+	pub fun port(&self) option<u16> {
+		if self.port_text.is_empty() {
+			return None
+		}
+		return match strconv::parse_uint(&self.port_text) {
+			Ok(p) => Some(p as u16),
+			Err(_) => None,
+		}
+	}
+
+	// The host without IPv6 brackets.
+	pub fun hostname(&self) string {
+		b := self.host.as_bytes()
+		if b.len() >= 2 && b[0] == 91 && b[b.len() - 1] == 93 {
+			return self.host[1..self.host.len() - 1].to_string()
+		}
+		return self.host.clone()
+	}
+
+	// `host:port` (just the host when no port was given).
+	pub fun host_port(&self) string {
+		if self.port_text.is_empty() {
+			return self.host.clone()
+		}
+		return "{self.host}:{self.port_text}"
+	}
+
+	// Whether the URL has a scheme.
+	pub fun is_absolute(&self) bool {
+		return !self.scheme.is_empty()
+	}
+
+	// The decoded query parameters (malformed escapes are kept as written).
+	pub fun query(&self) Values {
+		return parse_query_lossy(&self.raw_query)
+	}
+
+	// The encoded path ("/" when empty and there is a host).
+	pub fun escaped_path(&self) string {
+		p := path_escape_keep_slash(&self.path)
+		if p.is_empty() && !self.host.is_empty() {
+			return "/".to_string()
+		}
+		return p
+	}
+
+	// The path plus `?query`, as sent in an HTTP request line.
+	pub fun request_uri(&self) string {
+		out mut := if self.opaque.is_empty() {
+			self.escaped_path()
+		} else {
+			self.opaque.clone()
+		}
+		if out.is_empty() {
+			out = "/".to_string()
+		}
+		if self.force_query || !self.raw_query.is_empty() {
+			out.push("?")
+			out.push(&self.raw_query)
+		}
+		return out
+	}
+
+	// Resolves a reference against this URL (RFC 3986 section 5.2).
+	pub fun join(&self, reference &str) result<Url, Error> {
+		r := parse(reference)?
+		return Ok(self.resolve(&r))
+	}
+
+	// Resolves a parsed reference against this URL.
+	pub fun resolve(&self, r &Url) Url {
+		t mut := r.clone()
+		if !r.scheme.is_empty() {
+			t.path = remove_dots(&r.path)
+			return t
+		}
+		t.scheme = self.scheme.clone()
+		if !r.host.is_empty() || r.user.is_some() {
+			t.path = remove_dots(&r.path)
+			return t
+		}
+		t.user = self.user.clone()
+		t.password = self.password.clone()
+		t.host = self.host.clone()
+		t.port_text = self.port_text.clone()
+		if r.path.is_empty() && r.opaque.is_empty() {
+			t.path = self.path.clone()
+			if !r.force_query {
+				t.raw_query = self.raw_query.clone()
+				t.force_query = self.force_query
+			}
+			return t
+		}
+		if r.path.starts_with("/") {
+			t.path = remove_dots(&r.path)
+		} else {
+			base mut := string::new()
+			if !self.host.is_empty() && self.path.is_empty() {
+				base.push("/")
+			} else if let Some(s) = last_index(&self.path, 47) {
+				base.push(&self.path[..s + 1])
+			}
+			base.push(&r.path)
+			t.path = remove_dots(&base)
+		}
+		return t
+	}
+}
+
+impl Display for Url {
+	// The URL in its encoded form.
+	fun to_string(&self) string {
+		out mut := string::new()
+		if !self.scheme.is_empty() {
+			out.push(&self.scheme)
+			out.push(":")
+		}
+		if !self.opaque.is_empty() {
+			out.push(&self.opaque)
+		} else {
+			if !self.scheme.is_empty() || !self.host.is_empty() || self.user.is_some() {
+				if !self.host.is_empty() || !self.path.is_empty() || self.user.is_some() {
+					out.push("//")
+				}
+				if let Some(name) = &self.user {
+					out.push(&escape(name, Mode::UserInfo))
+					if let Some(pw) = &self.password {
+						out.push(":")
+						out.push(&escape(pw, Mode::UserInfo))
+					}
+					out.push("@")
+				}
+				out.push(&escape(&self.host, Mode::Host))
+				if !self.port_text.is_empty() {
+					out.push(":")
+					out.push(&self.port_text)
+				}
+			}
+			p := path_escape_keep_slash(&self.path)
+			if !p.is_empty() && !p.starts_with("/") && !self.host.is_empty() {
+				out.push("/")
+			}
+			out.push(&p)
+		}
+		if self.force_query || !self.raw_query.is_empty() {
+			out.push("?")
+			out.push(&self.raw_query)
+		}
+		if let Some(f) = &self.fragment {
+			out.push("#")
+			out.push(&escape(f, Mode::Fragment))
+		}
+		return out
+	}
+}
+
+// Removes `.` and `..` segments (RFC 3986 section 5.2.4).
+fun remove_dots(p &str) string {
+	if p.is_empty() {
+		return string::new()
+	}
+	segs mut := Vec::new()
+	parts := p.split("/")
+	n := parts.len()
+	i mut := 0
+	for s in parts.iter() {
+		last := i + 1 == n
+		if *s == "." {
+			if last {
+				segs.push("")
+			}
+		} else if *s == ".." {
+			if segs.len() > 1 {
+				segs.pop()
+			}
+			if last {
+				segs.push("")
+			}
+		} else {
+			segs.push(*s)
+		}
+		i += 1
+	}
+	out mut := string::new()
+	k mut := 0
+	for s in segs.iter() {
+		if k > 0 {
+			out.push("/")
+		}
+		out.push(*s)
+		k += 1
+	}
+	if p.starts_with("/") && !out.starts_with("/") {
+		out = "/{out}"
+	}
+	return out
+}
+
+// ----- escaping -----
+
+enum Mode {
+	Path,
+	PathSegment,
+	Query,
+	UserInfo,
+	Host,
+	Fragment,
+}
+
+fun unreserved(c u8) bool {
+	return is_alpha(c) || is_digit(c) || c == 45 || c == 46 || c == 95 || c == 126
+}
+
+fun keep(c u8, m &Mode) bool {
+	if unreserved(c) {
+		return true
+	}
+	// $ & + , / : ; = ? @
+	sub := c == 36 || c == 38 || c == 43 || c == 44 || c == 47 || c == 58 || c == 59 || c == 61 || c == 63 || c == 64
+	return match m {
+		Mode::Query => false,
+		Mode::Path => sub && c != 63,
+		Mode::PathSegment => sub && c != 47 && c != 59 && c != 44 && c != 63,
+		Mode::UserInfo => sub && c != 47 && c != 63 && c != 64 && c != 58,
+		Mode::Host => sub || c == 91 || c == 93 || c == 33 || c == 40 || c == 41 || c == 42,
+		Mode::Fragment => sub || c == 33 || c == 40 || c == 41 || c == 42,
+	}
+}
+
+fun escape(s &str, m Mode) string {
+	out mut := Vec::new()
+	digits := "0123456789ABCDEF".as_bytes()
+	for c in s.as_bytes() {
+		if keep(*c, &m) {
+			out.push(*c)
+		} else if *c == 32 && match m {
+			Mode::Query => true,
+			_ => false,
+		} {
+			out.push(43u8)
+		} else {
+			out.push(37u8)
+			out.push(digits[(*c >> 4) as usize])
+			out.push(digits[(*c & 15) as usize])
+		}
+	}
+	return string::from_utf8_lossy(&out)
+}
+
+fun path_escape_keep_slash(s &str) string {
+	return escape(s, Mode::Path)
+}
+
+fun unescape(s &str, plus bool) result<string, Error> {
+	b := s.as_bytes()
+	if !s.contains("%") && !(plus && s.contains("+")) {
+		return Ok(s.to_string())
+	}
+	o mut := Vec::new()
+	i mut := 0
+	while i < b.len() {
+		if b[i] == 37 {
+			if i + 2 >= b.len() {
+				return err(&"invalid escape \"{&s[i..]}\"")
+			}
+			match hex::decode(&s[i + 1..i + 3]) {
+				Ok(v) => o.push(v[0]),
+				Err(_) => return err(&"invalid escape \"{&s[i..i + 3]}\""),
+			}
+			i += 3
+			continue
+		}
+		if plus && b[i] == 43 {
+			o.push(32u8)
+		} else {
+			o.push(b[i])
+		}
+		i += 1
+	}
+	return Ok(string::from_utf8_lossy(&o))
+}
+
+// Escapes `s` for a query value: spaces become `+`, everything but
+// unreserved bytes becomes `%XX`.
+pub fun query_escape(s &str) string {
+	return escape(s, Mode::Query)
+}
+
+// Reverses `query_escape` (`+` is a space).
+pub fun query_unescape(s &str) result<string, Error> {
+	return unescape(s, true)
+}
+
+// Escapes `s` for use as one path segment (`/` becomes `%2F`).
+pub fun path_escape(s &str) string {
+	return escape(s, Mode::PathSegment)
+}
+
+// Reverses `path_escape` (`+` stays `+`).
+pub fun path_unescape(s &str) result<string, Error> {
+	return unescape(s, false)
+}
+
+// ----- query strings -----
+
+// Query parameters in order; a key may repeat.
+@derive(Debug, Clone)
+pub struct Values {
+	pub pairs Vec<(string, string)>,
+}
+
+impl Values {
+	pub fun new() Values {
+		return Values { pairs: Vec::new() }
+	}
+
+	// The first value for `key`.
+	pub fun get(&self, key &str) option<string> {
+		for (k, v) in self.pairs.iter() {
+			if k.as_str() == key {
+				return Some(v.clone())
+			}
+		}
+		return None
+	}
+
+	// Every value for `key`.
+	pub fun get_all(&self, key &str) Vec<string> {
+		out mut := Vec::new()
+		for (k, v) in self.pairs.iter() {
+			if k.as_str() == key {
+				out.push(v.clone())
+			}
+		}
+		return out
+	}
+
+	pub fun has(&self, key &str) bool {
+		return self.get(key).is_some()
+	}
+
+	// Adds a value (keeps existing ones).
+	pub fun add(&mut self, key &str, value &str) {
+		self.pairs.push((key.to_string(), value.to_string()))
+	}
+
+	// Replaces every value for `key` with `value`.
+	pub fun set(&mut self, key &str, value &str) {
+		self.remove(key)
+		self.add(key, value)
+	}
+
+	// Removes every value for `key`.
+	pub fun remove(&mut self, key &str) {
+		i mut := 0
+		while i < self.pairs.len() {
+			if self.pairs[i].0.as_str() == key {
+				self.pairs.remove(i)
+			} else {
+				i += 1
+			}
+		}
+	}
+
+	pub fun len(&self) usize {
+		return self.pairs.len()
+	}
+
+	// `k=v&k2=v2`, escaped, in insertion order.
+	pub fun encode(&self) string {
+		out mut := string::new()
+		for (k, v) in self.pairs.iter() {
+			if !out.is_empty() {
+				out.push("&")
+			}
+			out.push(&query_escape(k))
+			out.push("=")
+			out.push(&query_escape(v))
+		}
+		return out
+	}
+}
+
+// Parses `a=1&b=2` (`;` is not a separator). Fails on a bad escape.
+pub fun parse_query(q &str) result<Values, Error> {
+	v mut := Values::new()
+	for part in q.split("&").iter() {
+		if part.is_empty() {
+			continue
+		}
+		match part.split_once("=") {
+			Some((k, x)) => v.add(&query_unescape(k)?, &query_unescape(x)?),
+			None => v.add(&query_unescape(*part)?, ""),
+		}
+	}
+	return Ok(v)
+}
+
+fun parse_query_lossy(q &str) Values {
+	v mut := Values::new()
+	for part in q.split("&").iter() {
+		if part.is_empty() {
+			continue
+		}
+		(k, x) := match part.split_once("=") {
+			Some(p) => p,
+			None => (*part, ""),
+		}
+		v.add(&query_unescape(k).unwrap_or(k.to_string()), &query_unescape(x).unwrap_or(x.to_string()))
+	}
+	return v
+}

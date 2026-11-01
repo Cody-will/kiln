@@ -1,0 +1,35 @@
+import std::mime
+
+fun main() result<void, mime::Error> {
+	m := mime::parse("Text/HTML; Charset=\"utf-8\" ; q=0.5")?
+	(cs, nope) := (m.param("CHARSET"), m.param("x"))
+	println("{m.essence()} {cs:?} {nope:?} => {m}")
+	m2 := mime::parse("multipart/form-data; boundary=\"a b\\\"c\"")?
+	println("{m2} {m2.params:?}")
+	for bad in ["text", "text/", "/x", "a/b; k", "a/b; k=\"x", "a/b; k=1; K=2", "a/b x"].iter() {
+		match mime::parse(*bad) {
+			Ok(v) => println("unexpected {v}"),
+			Err(e) => println("{bad}: {e}"),
+		}
+	}
+	for e in [".html", "PNG", "json", ".nope", ".kn"].iter() {
+		println("{e} {mime::type_by_extension(*e):?}")
+	}
+	(a, b, c) := (mime::extensions_by_type("image/jpeg"), mime::extensions_by_type("text/html; charset=latin1"), mime::extensions_by_type("x/y"))
+	println("{a:?} {b:?} {c:?}")
+	samples := [
+		"  <!DOCTYPE html><html></html>".as_bytes().to_vec(),
+		"<?xml version=\"1.0\"?><a/>".as_bytes().to_vec(),
+		"hello, world\n".as_bytes().to_vec(),
+		[137u8, 80, 78, 71, 13, 10, 26, 10, 0, 0].to_vec(),
+		[31u8, 139, 8, 0].to_vec(),
+		"%PDF-1.7".as_bytes().to_vec(),
+		[0u8, 1, 2, 3].to_vec(),
+		"GIF89a..".as_bytes().to_vec(),
+		Vec::new(),
+	]
+	for s in samples.iter() {
+		println(mime::detect(s))
+	}
+	return Ok()
+}

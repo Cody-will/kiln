@@ -1,0 +1,24 @@
+text/html Some("utf-8") None => text/html; charset=utf-8; q=0.5
+multipart/form-data; boundary="a b\"c" [("boundary", "a b\"c")]
+text: mime: expected type/subtype
+text/: mime: missing subtype
+/x: mime: expected type/subtype
+a/b; k: mime: invalid parameter
+a/b; k="x: mime: unterminated quoted string
+a/b; k=1; K=2: mime: duplicate parameter "k"
+a/b x: mime: expected ';' between parameters
+.html Some("text/html; charset=utf-8")
+PNG Some("image/png")
+json Some("application/json")
+.nope None
+.kn Some("text/x-kiln; charset=utf-8")
+[".jpg", ".jpeg"] [".html", ".htm"] []
+text/html; charset=utf-8
+text/xml; charset=utf-8
+text/plain; charset=utf-8
+image/png
+application/x-gzip
+application/pdf
+application/octet-stream
+image/gif
+text/plain; charset=utf-8

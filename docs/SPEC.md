@@ -716,6 +716,8 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 | `std::sync` | `Arc`, `Mutex`, `RwLock`, `WaitGroup`, `Once`, `AtomicI64`, `AtomicBool`, `AtomicUsize` | ✅ |
 | `std::io` | `Read`/`Write`, `BufReader` (`next_line`, `peek`, `read_byte`, `read_char`, `discard`), `BufWriter` (`buffered`, `available`), `Scanner` (lines/words/chars, Go's `bufio.Scanner`; bufio lives in `io` as in Rust), `Cursor`, `copy`, stdin/stdout/stderr, `Error`/`ErrorKind` | ✅ |
 | `std::fs` | `File`, `OpenOptions`, `read_to_string`, `write`, `read_dir`, `metadata`, `create_dir_all`, `remove_dir_all`, ... | ✅ |
+| `std::url` | RFC 3986 `parse` → `Url` (scheme, userinfo, host incl. `[v6]`, port, decoded path, raw query, fragment, opaque), `to_string`, `join`/`resolve` (RFC 3986 §5.2), `request_uri`, `Values` (`get`/`get_all`/`add`/`set`/`remove`/`encode`), `parse_query`, `query_escape`/`path_escape` and their inverses | ✅ |
+| `std::mime` | `parse` → `MediaType` (`essence`, `param`, canonical `to_string` with quoting), `type_by_extension`, `extensions_by_type`, `detect` (content sniffing: images, PDF, archives, fonts, audio/video, HTML/XML/text) | ✅ |
 | `std::path` | string paths: `join`, `base`, `dir`, `ext`, `stem`, `clean`, `is_absolute` | ✅ |
 | `std::os` | `args`, `getenv`/`setenv`, `exit`, working directory, `Command` (run programs, capture output) | ✅ |
 | `std::net` | `TcpListener`, `TcpStream`, `UdpSocket`, `split_host_port` (DNS through the OS resolver); `connect_timeout`, per-socket read/write/accept timeouts (Rust's per-operation model: a wait longer than the timeout fails with `TimedOut`, the socket stays usable) | ✅ |

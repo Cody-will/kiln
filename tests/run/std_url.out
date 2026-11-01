@@ -1,0 +1,32 @@
+https://bob:p%40ss@Example.com:8443/a%20b/c?q=1&x=y+z#top -> scheme=https user=Some("bob") pw=Some("p@ss") host=Example.com port=Some(8443) path=/a b/c q=q=1&x=y+z frag=Some("top") opaque= => https://bob:p%40ss@Example.com:8443/a%20b/c?q=1&x=y+z#top
+http://[::1]:80/ -> scheme=http user=None pw=None host=[::1] port=Some(80) path=/ q= frag=None opaque= => http://[::1]:80/
+mailto:joe@example.com -> scheme=mailto user=None pw=None host= port=None path= q= frag=None opaque=joe@example.com => mailto:joe@example.com
+/rel/path?x -> scheme= user=None pw=None host= port=None path=/rel/path q=x frag=None opaque= => /rel/path?x
+//cdn.example/x.js -> scheme= user=None pw=None host=cdn.example port=None path=/x.js q= frag=None opaque= => //cdn.example/x.js
+http://h:99999/ -> url: invalid port "99999"
+http://h/%zz -> url: invalid escape "%zz"
+foo bar://x -> scheme= user=None pw=None host= port=None path=foo bar://x q= frag=None opaque= => foo%20bar://x
+:nope -> url: missing protocol scheme
+g:h => g:h
+g => http://a/b/c/g
+./g => http://a/b/c/g
+g/ => http://a/b/c/g/
+/g => http://a/g
+//g => http://g
+?y => http://a/b/c/d;p?y
+g?y => http://a/b/c/g?y
+#s => http://a/b/c/d;p?q#s
+g#s => http://a/b/c/g#s
+.. => http://a/b/
+../g => http://a/b/g
+../.. => http://a/
+../../../g => http://a/g
+./../g => http://a/b/g
+g/./h => http://a/b/c/g/h
+g/../h => http://a/b/c/h
+ => http://a/b/c/d;p?q
+Some("kiln lang") ["a", "b"] Some("✓") None /search?q=kiln+lang&tag=a&tag=b&e=%E2%9C%93 x.io x.io
+name=Ana+Mar%C3%ADa&x=ok%2F%3F
+Values { pairs: [("name", "Ana María"), ("x", "ok/?")] }
+a+b%26c%2Fd a%20b%2Fc a b/c a+b
+url: invalid escape "%4"
