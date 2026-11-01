@@ -1,0 +1,292 @@
+// The gzip format (RFC 1952): DEFLATE with a header and a CRC-32 trailer.
+// `.gz` files and HTTP's `Content-Encoding: gzip` use it.
+//
+//	gz := gzip::compress(data, compress::DEFAULT)
+//	plain := gzip::decompress(&gz)?            // all members, concatenated
+//	h := gzip::Header::new().with_name("notes.txt")
+//	gz2 := gzip::compress_with(data, compress::BEST, &h)
+//	r := gzip::Reader::new(file)?              // io::Read of the plain bytes
+
+import std::io
+import std::io::{Read, Write}
+import super::{crc32, error, flate, Error}
+
+// The optional fields of a gzip header.
+@derive(Debug, Clone)
+pub struct Header {
+	// Original file name (FNAME).
+	pub name option<string>,
+	// Free-form comment (FCOMMENT).
+	pub comment option<string>,
+	// Modification time in Unix seconds (0 = unknown).
+	pub mtime u32,
+	// Operating system byte (255 = unknown).
+	pub os u8,
+}
+
+impl Header {
+	pub fun new() Header {
+		return Header { name: None, comment: None, mtime: 0, os: 255 }
+	}
+
+	pub fun with_name(self, name &str) Header {
+		h mut := self
+		h.name = Some(name.to_string())
+		return h
+	}
+
+	pub fun with_comment(self, c &str) Header {
+		h mut := self
+		h.comment = Some(c.to_string())
+		return h
+	}
+
+	pub fun with_mtime(self, t u32) Header {
+		h mut := self
+		h.mtime = t
+		return h
+	}
+}
+
+// Compresses `data` into one gzip member with an empty header.
+pub fun compress(data &[u8], level u32) Vec<u8> {
+	return compress_with(data, level, &Header::new())
+}
+
+// Compresses `data` into one gzip member with header `h`.
+pub fun compress_with(data &[u8], level u32, h &Header) Vec<u8> {
+	out mut := Vec::new()
+	out.push(31u8)
+	out.push(139u8)
+	out.push(8u8)
+	flags mut := 0u8
+	if h.name.is_some() {
+		flags |= 8
+	}
+	if h.comment.is_some() {
+		flags |= 16
+	}
+	out.push(flags)
+	put32(&mut out, h.mtime)
+	out.push(if level >= 9 {
+		2u8
+	} else if level == 1 {
+		4u8
+	} else {
+		0u8
+	})
+	out.push(h.os)
+	if let Some(n) = &h.name {
+		push_cstr(&mut out, n)
+	}
+	if let Some(c) = &h.comment {
+		push_cstr(&mut out, c)
+	}
+	out.extend_from_slice(&flate::compress(data, level))
+	put32(&mut out, crc32(data))
+	put32(&mut out, data.len() as u32)
+	return out
+}
+
+fun push_cstr(out &mut Vec<u8>, s &str) {
+	for b in s.as_bytes() {
+		if *b != 0 {
+			out.push(*b)
+		}
+	}
+	out.push(0u8)
+}
+
+fun put32(out &mut Vec<u8>, v u32) {
+	out.push((v & 255) as u8)
+	out.push(((v >> 8) & 255) as u8)
+	out.push(((v >> 16) & 255) as u8)
+	out.push((v >> 24) as u8)
+}
+
+fun get32(d &[u8], i usize) u32 {
+	return (d[i] as u32) | ((d[i + 1] as u32) << 8) | ((d[i + 2] as u32) << 16) | ((d[i + 3] as u32) << 24)
+}
+
+// Decompresses every member of a gzip stream, checking each CRC-32 and size.
+pub fun decompress(data &[u8]) result<Vec<u8>, Error> {
+	return decompress_limit(data, 0)
+}
+
+// Like `decompress`, failing once the output would exceed `max` bytes
+// (0 = no limit).
+pub fun decompress_limit(data &[u8], max usize) result<Vec<u8>, Error> {
+	(out, _) := decode(data, max)?
+	return Ok(out)
+}
+
+// Decompresses and also returns the first member's header.
+pub fun decompress_header(data &[u8]) result<(Vec<u8>, Header), Error> {
+	return decode(data, 0)
+}
+
+fun decode(data &[u8], max usize) result<(Vec<u8>, Header), Error> {
+	out mut := Vec::new()
+	first mut := Header::new()
+	pos mut := 0usize
+	members mut := 0
+	while pos < data.len() {
+		d := &data[pos..]
+		if d.len() < 18 || d[0] != 31 || d[1] != 139 {
+			if members > 0 && all_zero(d) {
+				// Trailing zero padding (as written by some tape tools).
+				break
+			}
+			return Err(error("gzip: invalid header"))
+		}
+		if d[2] != 8 {
+			return Err(error("gzip: unsupported compression method"))
+		}
+		flags := d[3]
+		if flags & 224 != 0 {
+			return Err(error("gzip: reserved flag bits set"))
+		}
+		h mut := Header::new()
+		h.mtime = get32(d, 4)
+		h.os = d[9]
+		i mut := 10usize
+		if flags & 4 != 0 {
+			if i + 2 > d.len() {
+				return Err(error("gzip: truncated header"))
+			}
+			xlen := (d[i] as usize) | ((d[i + 1] as usize) << 8)
+			i += 2 + xlen
+		}
+		if flags & 8 != 0 {
+			(s, n) := cstr(d, i)?
+			h.name = Some(s)
+			i = n
+		}
+		if flags & 16 != 0 {
+			(s, n) := cstr(d, i)?
+			h.comment = Some(s)
+			i = n
+		}
+		if flags & 2 != 0 {
+			i += 2
+		}
+		if i > d.len() {
+			return Err(error("gzip: truncated header"))
+		}
+		limit := if max == 0 {
+			0
+		} else {
+			max - out.len() + 1
+		}
+		(chunk, used) := flate::inflate(&d[i..], limit)?
+		t := i + used
+		if t + 8 > d.len() {
+			return Err(error("gzip: missing trailer"))
+		}
+		if crc32(&chunk) != get32(d, t) {
+			return Err(error("gzip: CRC-32 mismatch"))
+		}
+		if chunk.len() as u32 != get32(d, t + 4) {
+			return Err(error("gzip: size mismatch"))
+		}
+		if max > 0 && out.len() + chunk.len() > max {
+			return Err(error("output exceeds the size limit"))
+		}
+		out.extend_from_slice(&chunk)
+		if members == 0 {
+			first = h
+		}
+		members += 1
+		pos += t + 8
+	}
+	if members == 0 {
+		return Err(error("gzip: empty input"))
+	}
+	return Ok((out, first))
+}
+
+fun all_zero(d &[u8]) bool {
+	for b in d {
+		if *b != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+fun cstr(d &[u8], start usize) result<(string, usize), Error> {
+	i mut := start
+	while i < d.len() {
+		if d[i] == 0 {
+			return Ok((string::from_utf8_lossy(&d[start..i]), i + 1))
+		}
+		i += 1
+	}
+	return Err(error("gzip: truncated header"))
+}
+
+// An `io::Read` of the decompressed bytes of a gzip stream. The
+// compressed input is read and checked up front.
+pub struct Reader {
+	data Vec<u8>,
+	pos usize,
+	pub header Header,
+}
+
+impl Reader {
+	pub fun new<R: Read>(r R) result<Reader, io::Error> {
+		src mut := r
+		raw mut := Vec::new()
+		src.read_to_end(&mut raw)?
+		return match decompress_header(&raw) {
+			Ok((d, h)) => Ok(Reader { data: d, pos: 0, header: h }),
+			Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, &e.to_string())),
+		}
+	}
+}
+
+impl Read for Reader {
+	fun read(&mut self, buf &mut [u8]) result<usize, io::Error> {
+		n mut := self.data.len() - self.pos
+		if n > buf.len() {
+			n = buf.len()
+		}
+		i mut := 0
+		while i < n {
+			buf[i] = self.data[self.pos + i]
+			i += 1
+		}
+		self.pos += n
+		return Ok(n)
+	}
+}
+
+// Collects what is written and, on `finish`, writes one gzip member to
+// the inner writer (the whole stream is held in memory).
+pub struct Writer<W: Write> {
+	inner W,
+	buf Vec<u8>,
+	level u32,
+	pub header Header,
+}
+
+impl<W: Write> Writer<W> {
+	pub fun new(inner W, level u32) Writer<W> {
+		return Writer { inner: inner, buf: Vec::new(), level: level, header: Header::new() }
+	}
+
+	// Compresses and writes everything; returns the inner writer.
+	pub fun finish(self) result<W, io::Error> {
+		w mut := self.inner
+		w.write_all(&compress_with(&self.buf, self.level, &self.header))?
+		w.flush()?
+		return Ok(w)
+	}
+}
+
+impl<W: Write> Write for Writer<W> {
+	fun write(&mut self, b &[u8]) result<usize, io::Error> {
+		self.buf.extend_from_slice(b)
+		return Ok(b.len())
+	}
+}

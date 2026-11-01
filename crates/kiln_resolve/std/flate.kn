@@ -1,0 +1,815 @@
+// Raw DEFLATE (RFC 1951), the format inside zlib, gzip and zip.
+//
+//	packed := flate::compress(data, compress::DEFAULT)
+//	plain := flate::decompress(&packed)?
+//
+// The compressor does LZ77 with hash chains (longer searches at higher
+// levels) and picks stored, fixed or dynamic Huffman coding per block,
+// whichever is smallest.
+
+import super::Error
+import super::error
+
+// ----- decompression -----
+
+struct Bits {
+	pos usize,
+	buf u64,
+	n u32,
+}
+
+fun need(s &mut Bits, d &[u8], k u32) result<void, Error> {
+	while s.n < k {
+		if s.pos >= d.len() {
+			return Err(error("unexpected end of data"))
+		}
+		s.buf |= (d[s.pos] as u64) << s.n
+		s.pos += 1
+		s.n += 8
+	}
+	return Ok()
+}
+
+fun bits(s &mut Bits, d &[u8], k u32) result<u32, Error> {
+	if k == 0 {
+		return Ok(0)
+	}
+	need(s, d, k)?
+	v := (s.buf & ((1u64 << k) - 1)) as u32
+	s.buf = s.buf >> k
+	s.n -= k
+	return Ok(v)
+}
+
+// A canonical Huffman code: how many codes of each length, and the
+// symbols in code order.
+struct Huff {
+	counts Vec<u32>,
+	symbols Vec<u32>,
+}
+
+fun huff(lengths &[u32]) result<Huff, Error> {
+	counts mut := Vec::new()
+	counts.resize(16, 0u32)
+	for l in lengths {
+		counts[*l as usize] += 1
+	}
+	if counts[0] as usize == lengths.len() {
+		return Ok(Huff { counts: counts, symbols: Vec::new() })
+	}
+	left mut := 1i64
+	k mut := 1
+	while k < 16 {
+		left = left * 2 - counts[k] as i64
+		if left < 0 {
+			return Err(error("over-subscribed Huffman code"))
+		}
+		k += 1
+	}
+	offs mut := Vec::new()
+	offs.resize(16, 0u32)
+	k = 1
+	while k < 15 {
+		offs[k + 1] = offs[k] + counts[k]
+		k += 1
+	}
+	symbols mut := Vec::new()
+	symbols.resize(lengths.len(), 0u32)
+	i mut := 0
+	while i < lengths.len() {
+		if lengths[i] != 0 {
+			l := lengths[i] as usize
+			symbols[offs[l] as usize] = i as u32
+			offs[l] += 1
+		}
+		i += 1
+	}
+	counts[0] = 0
+	return Ok(Huff { counts: counts, symbols: symbols })
+}
+
+fun decode(s &mut Bits, d &[u8], h &Huff) result<u32, Error> {
+	code mut := 0i64
+	first mut := 0i64
+	index mut := 0i64
+	len mut := 1
+	while len < 16 {
+		code |= bits(s, d, 1)? as i64
+		count := h.counts[len] as i64
+		if code - count < first {
+			return Ok(h.symbols[(index + (code - first)) as usize])
+		}
+		index += count
+		first += count
+		first = first << 1
+		code = code << 1
+		len += 1
+	}
+	return Err(error("invalid Huffman code"))
+}
+
+fun len_base() [u32; 29] {
+	return [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]
+}
+
+fun len_extra() [u32; 29] {
+	return [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0]
+}
+
+fun dist_base() [u32; 30] {
+	return [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577]
+}
+
+fun dist_extra() [u32; 30] {
+	return [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13]
+}
+
+fun order() [usize; 19] {
+	return [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
+}
+
+fun fixed_lengths() (Vec<u32>, Vec<u32>) {
+	l mut := Vec::new()
+	i mut := 0
+	while i < 288 {
+		l.push(if i < 144 {
+			8u32
+		} else if i < 256 {
+			9u32
+		} else if i < 280 {
+			7u32
+		} else {
+			8u32
+		})
+		i += 1
+	}
+	dl mut := Vec::new()
+	dl.resize(30, 5u32)
+	return (l, dl)
+}
+
+// Decompresses raw DEFLATE data.
+pub fun decompress(data &[u8]) result<Vec<u8>, Error> {
+	(out, _) := inflate(data, 0)?
+	return Ok(out)
+}
+
+// Like `decompress`, but fails once the output would exceed `max` bytes
+// (a guard against decompression bombs).
+pub fun decompress_limit(data &[u8], max usize) result<Vec<u8>, Error> {
+	(out, _) := inflate(data, max)?
+	return Ok(out)
+}
+
+// Inflates the DEFLATE stream at the start of `d`; returns the output and
+// how many input bytes the stream used. `max` = 0 means no limit.
+pub fun inflate(d &[u8], max usize) result<(Vec<u8>, usize), Error> {
+	s mut := Bits { pos: 0, buf: 0, n: 0 }
+	out mut := Vec::new()
+	(fl, fd) := fixed_lengths()
+	fixed_l := huff(&fl)?
+	fixed_d := huff(&fd)?
+	(lb, le, db, de) := (len_base(), len_extra(), dist_base(), dist_extra())
+	loop {
+		last := bits(&mut s, d, 1)?
+		kind := bits(&mut s, d, 2)?
+		if kind == 0 {
+			// Stored: skip to a byte boundary, then LEN, NLEN, bytes.
+			s.buf = 0
+			s.n = 0
+			if s.pos + 4 > d.len() {
+				return Err(error("unexpected end of data"))
+			}
+			n := (d[s.pos] as usize) | ((d[s.pos + 1] as usize) << 8)
+			nn := (d[s.pos + 2] as usize) | ((d[s.pos + 3] as usize) << 8)
+			if n != (nn ^ 65535) {
+				return Err(error("stored block length mismatch"))
+			}
+			s.pos += 4
+			if s.pos + n > d.len() {
+				return Err(error("unexpected end of data"))
+			}
+			if max > 0 && out.len() + n > max {
+				return Err(error("output exceeds the size limit"))
+			}
+			out.extend_from_slice(&d[s.pos..s.pos + n])
+			s.pos += n
+		} else if kind == 3 {
+			return Err(error("invalid block type"))
+		} else {
+			dyn_l mut := Huff { counts: Vec::new(), symbols: Vec::new() }
+			dyn_d mut := Huff { counts: Vec::new(), symbols: Vec::new() }
+			if kind == 2 {
+				nlen := bits(&mut s, d, 5)? as usize + 257
+				ndist := bits(&mut s, d, 5)? as usize + 1
+				ncode := bits(&mut s, d, 4)? as usize + 4
+				if nlen > 286 || ndist > 30 {
+					return Err(error("bad code counts"))
+				}
+				cl mut := Vec::new()
+				cl.resize(19, 0u32)
+				ord := order()
+				i mut := 0
+				while i < ncode {
+					cl[ord[i]] = bits(&mut s, d, 3)?
+					i += 1
+				}
+				ch := huff(&cl)?
+				lens mut := Vec::new()
+				while lens.len() < nlen + ndist {
+					sym := decode(&mut s, d, &ch)?
+					if sym < 16 {
+						lens.push(sym)
+						continue
+					}
+					(val, rep) := if sym == 16 {
+						if lens.is_empty() {
+							return Err(error("repeat with no previous length"))
+						}
+						(lens[lens.len() - 1], 3 + bits(&mut s, d, 2)?)
+					} else if sym == 17 {
+						(0u32, 3 + bits(&mut s, d, 3)?)
+					} else {
+						(0u32, 11 + bits(&mut s, d, 7)?)
+					}
+					if lens.len() + rep as usize > nlen + ndist {
+						return Err(error("too many code lengths"))
+					}
+					k mut := 0
+					while k < rep {
+						lens.push(val)
+						k += 1
+					}
+				}
+				if lens[256] == 0 {
+					return Err(error("missing end-of-block code"))
+				}
+				dyn_l = huff(&lens[..nlen])?
+				dyn_d = huff(&lens[nlen..])?
+			}
+			(hl, hd) := if kind == 1 {
+				(&fixed_l, &fixed_d)
+			} else {
+				(&dyn_l, &dyn_d)
+			}
+			loop {
+				sym := decode(&mut s, d, hl)?
+				if sym < 256 {
+					if max > 0 && out.len() >= max {
+						return Err(error("output exceeds the size limit"))
+					}
+					out.push(sym as u8)
+				} else if sym == 256 {
+					break
+				} else {
+					li := (sym - 257) as usize
+					if li >= 29 {
+						return Err(error("invalid length code"))
+					}
+					n := (lb[li] + bits(&mut s, d, le[li])?) as usize
+					di := decode(&mut s, d, hd)? as usize
+					if di >= 30 {
+						return Err(error("invalid distance code"))
+					}
+					dist := (db[di] + bits(&mut s, d, de[di])?) as usize
+					if dist > out.len() {
+						return Err(error("distance too far back"))
+					}
+					if max > 0 && out.len() + n > max {
+						return Err(error("output exceeds the size limit"))
+					}
+					start := out.len() - dist
+					k mut := 0
+					while k < n {
+						out.push(out[start + k])
+						k += 1
+					}
+				}
+			}
+		}
+		if last == 1 {
+			break
+		}
+	}
+	return Ok((out, s.pos))
+}
+
+// ----- compression -----
+
+struct Out {
+	bytes Vec<u8>,
+	buf u64,
+	n u32,
+}
+
+fun put(o &mut Out, v u32, k u32) {
+	o.buf |= (v as u64) << o.n
+	o.n += k
+	while o.n >= 8 {
+		o.bytes.push((o.buf & 255) as u8)
+		o.buf = o.buf >> 8
+		o.n -= 8
+	}
+}
+
+fun align(o &mut Out) {
+	if o.n > 0 {
+		o.bytes.push((o.buf & 255) as u8)
+	}
+	o.buf = 0
+	o.n = 0
+}
+
+fun reverse(code u32, len u32) u32 {
+	r mut := 0u32
+	c mut := code
+	i mut := 0
+	while i < len {
+		r = (r << 1) | (c & 1)
+		c = c >> 1
+		i += 1
+	}
+	return r
+}
+
+// Bit-reversed canonical codes for `lengths`.
+fun codes(lengths &[u32]) Vec<u32> {
+	count mut := Vec::new()
+	count.resize(16, 0u32)
+	for l in lengths {
+		count[*l as usize] += 1
+	}
+	count[0] = 0
+	next mut := Vec::new()
+	next.resize(16, 0u32)
+	code mut := 0u32
+	b mut := 1
+	while b < 16 {
+		code = (code + count[b - 1]) << 1
+		next[b] = code
+		b += 1
+	}
+	out mut := Vec::new()
+	for l in lengths {
+		if *l == 0 {
+			out.push(0u32)
+		} else {
+			out.push(reverse(next[*l as usize], *l))
+			next[*l as usize] += 1
+		}
+	}
+	return out
+}
+
+// Huffman code lengths for `freq`, none longer than `limit`. Unused
+// symbols get 0; a lone used symbol is paired with a dummy so the code
+// stays complete.
+fun lengths(freq &[u32], limit u32) Vec<u32> {
+	f mut := freq.to_vec()
+	used mut := 0
+	for x in f.iter() {
+		if *x > 0 {
+			used += 1
+		}
+	}
+	if used == 0 {
+		f[0] = 1
+		f[1] = 1
+	} else if used == 1 {
+		if f[0] == 0 {
+			f[0] = 1
+		} else {
+			f[1] = 1
+		}
+	}
+	loop {
+		l := tree_lengths(&f)
+		mx mut := 0u32
+		for x in l.iter() {
+			if *x > mx {
+				mx = *x
+			}
+		}
+		if mx <= limit {
+			return l
+		}
+		for x in f.iter_mut() {
+			if *x > 0 {
+				*x = (*x + 1) / 2
+			}
+		}
+	}
+}
+
+fun tree_lengths(f &[u32]) Vec<u32> {
+	// Nodes: leaves first, then internal nodes; parent links give depths.
+	weight mut := Vec::new()
+	parent mut := Vec::new()
+	live mut := Vec::new()
+	i mut := 0
+	while i < f.len() {
+		weight.push(f[i] as u64)
+		parent.push(usize::MAX)
+		if f[i] > 0 {
+			live.push(i)
+		}
+		i += 1
+	}
+	while live.len() > 1 {
+		// The two lightest live nodes (ties broken by index for stability).
+		a mut := 0
+		b mut := 1
+		if weight[live[b]] < weight[live[a]] {
+			a = 1
+			b = 0
+		}
+		k mut := 2
+		while k < live.len() {
+			w := weight[live[k]]
+			if w < weight[live[a]] {
+				b = a
+				a = k
+			} else if w < weight[live[b]] {
+				b = k
+			}
+			k += 1
+		}
+		na := live[a]
+		nb := live[b]
+		id := weight.len()
+		weight.push(weight[na] + weight[nb])
+		parent.push(usize::MAX)
+		parent[na] = id
+		parent[nb] = id
+		hi := if a > b {
+			a
+		} else {
+			b
+		}
+		lo := if a > b {
+			b
+		} else {
+			a
+		}
+		live.remove(hi)
+		live[lo] = id
+	}
+	out mut := Vec::new()
+	i = 0
+	while i < f.len() {
+		if f[i] == 0 {
+			out.push(0u32)
+		} else {
+			d mut := 0u32
+			p mut := parent[i]
+			while p != usize::MAX {
+				d += 1
+				p = parent[p]
+			}
+			out.push(d)
+		}
+		i += 1
+	}
+	return out
+}
+
+fun len_code(n u32) usize {
+	lb := len_base()
+	i mut := 28
+	while lb[i] > n {
+		i -= 1
+	}
+	return i
+}
+
+fun dist_code(d u32) usize {
+	db := dist_base()
+	i mut := 29
+	while db[i] > d {
+		i -= 1
+	}
+	return i
+}
+
+// One LZ77 symbol: a literal (`dist` 0) or a back-reference.
+struct Tok {
+	lit_len u32,
+	dist u32,
+}
+
+fun chain_for(level u32) u32 {
+	return [0u32, 4, 8, 16, 32, 64, 128, 256, 1024, 4096][level as usize]
+}
+
+fun tokenize(data &[u8], level u32) Vec<Tok> {
+	toks mut := Vec::new()
+	n := data.len()
+	if n < 3 {
+		for b in data {
+			toks.push(Tok { lit_len: *b as u32, dist: 0 })
+		}
+		return toks
+	}
+	max_chain := chain_for(level)
+	hbits := 15u32
+	head mut := Vec::new()
+	head.resize(1 << hbits, -1i64)
+	prev mut := Vec::new()
+	prev.resize(n, -1i64)
+	i mut := 0
+	while i < n {
+		best_len mut := 0usize
+		best_dist mut := 0usize
+		if i + 2 < n {
+			h := hash3(data, i, hbits)
+			cand mut := head[h]
+			chain mut := 0u32
+			while cand >= 0 && chain < max_chain {
+				c := cand as usize
+				dist := i - c
+				if dist > 32768 {
+					break
+				}
+				if data[c + best_len] == data[i + best_len] {
+					l mut := 0
+					while l < 258 && i + l < n && data[c + l] == data[i + l] {
+						l += 1
+					}
+					if l > best_len {
+						best_len = l
+						best_dist = dist
+						if l == 258 || i + l == n {
+							break
+						}
+					}
+				}
+				cand = prev[c]
+				chain += 1
+			}
+			prev[i] = head[h]
+			head[h] = i as i64
+		}
+		if best_len >= 3 {
+			toks.push(Tok { lit_len: best_len as u32, dist: best_dist as u32 })
+			// Index the skipped positions too (cheap levels skip long ones).
+			end := i + best_len
+			i += 1
+			while i < end {
+				if i + 2 < n && (level > 3 || best_len < 32) {
+					h := hash3(data, i, hbits)
+					prev[i] = head[h]
+					head[h] = i as i64
+				}
+				i += 1
+			}
+		} else {
+			toks.push(Tok { lit_len: data[i] as u32, dist: 0 })
+			i += 1
+		}
+	}
+	return toks
+}
+
+fun hash3(d &[u8], i usize, hbits u32) usize {
+	v := ((d[i] as u32) << 16) | ((d[i + 1] as u32) << 8) | (d[i + 2] as u32)
+	return (v.wrapping_mul(2654435761u32) >> (32 - hbits)) as usize
+}
+
+// Compresses `data` to raw DEFLATE at `level` (0-9; higher is clamped).
+pub fun compress(data &[u8], level u32) Vec<u8> {
+	o mut := Out { bytes: Vec::new(), buf: 0, n: 0 }
+	lv := if level > 9 {
+		9u32
+	} else {
+		level
+	}
+	if lv == 0 || data.len() == 0 {
+		write_stored(&mut o, data, true)
+		return o.bytes
+	}
+	toks := tokenize(data, lv)
+	// Blocks of up to 16K symbols, each with its own codes.
+	start mut := 0usize
+	pos mut := 0usize
+	while start < toks.len() {
+		end := if start + 16384 < toks.len() {
+			start + 16384
+		} else {
+			toks.len()
+		}
+		raw mut := 0usize
+		k mut := start
+		while k < end {
+			raw += if toks[k].dist == 0 {
+				1
+			} else {
+				toks[k].lit_len as usize
+			}
+			k += 1
+		}
+		write_block(&mut o, &toks[start..end], &data[pos..pos + raw], end == toks.len())
+		pos += raw
+		start = end
+	}
+	align(&mut o)
+	return o.bytes
+}
+
+fun write_stored(o &mut Out, raw &[u8], last bool) {
+	i mut := 0
+	loop {
+		n := if raw.len() - i > 65535 {
+			65535
+		} else {
+			raw.len() - i
+		}
+		fin := last && i + n == raw.len()
+		put(o, if fin {
+			1
+		} else {
+			0
+		}, 3)
+		align(o)
+		o.bytes.push((n & 255) as u8)
+		o.bytes.push((n >> 8) as u8)
+		o.bytes.push((!n & 255) as u8)
+		o.bytes.push(((!n >> 8) & 255) as u8)
+		o.bytes.extend_from_slice(&raw[i..i + n])
+		i += n
+		if i >= raw.len() {
+			break
+		}
+	}
+}
+
+fun write_block(o &mut Out, toks &[Tok], raw &[u8], last bool) {
+	(le, de) := (len_extra(), dist_extra())
+	lf mut := Vec::new()
+	lf.resize(286, 0u32)
+	df mut := Vec::new()
+	df.resize(30, 0u32)
+	extra mut := 0u64
+	for t in toks {
+		if t.dist == 0 {
+			lf[t.lit_len as usize] += 1
+		} else {
+			lc := len_code(t.lit_len)
+			dc := dist_code(t.dist)
+			lf[257 + lc] += 1
+			df[dc] += 1
+			extra += (le[lc] + de[dc]) as u64
+		}
+	}
+	lf[256] = 1
+	ll := lengths(&lf, 15)
+	dl := lengths(&df, 15)
+	// Trim trailing zero lengths (at least 257 / 1 codes).
+	nlen mut := 286
+	while nlen > 257 && ll[nlen - 1] == 0 {
+		nlen -= 1
+	}
+	ndist mut := 30
+	while ndist > 1 && dl[ndist - 1] == 0 {
+		ndist -= 1
+	}
+	all mut := ll[..nlen].to_vec()
+	all.extend_from_slice(&dl[..ndist])
+	rle := run_lengths(&all)
+	cf mut := Vec::new()
+	cf.resize(19, 0u32)
+	for (sym, _) in rle.iter() {
+		cf[*sym as usize] += 1
+	}
+	cl := lengths(&cf, 7)
+	ord := order()
+	ncode mut := 19
+	while ncode > 4 && cl[ord[ncode - 1]] == 0 {
+		ncode -= 1
+	}
+	// Sizes in bits.
+	dyn_bits mut := 3u64 + 14 + 3 * ncode as u64 + extra
+	for (sym, _) in rle.iter() {
+		dyn_bits += cl[*sym as usize] as u64 + if *sym == 16 {
+			2
+		} else if *sym == 17 {
+			3
+		} else if *sym == 18 {
+			7
+		} else {
+			0
+		}
+	}
+	(fl, fd) := fixed_lengths()
+	fix_bits mut := 3u64 + extra
+	i mut := 0
+	while i < 286 {
+		dyn_bits += lf[i] as u64 * ll[i] as u64
+		fix_bits += lf[i] as u64 * fl[i] as u64
+		i += 1
+	}
+	i = 0
+	while i < 30 {
+		dyn_bits += df[i] as u64 * dl[i] as u64
+		fix_bits += df[i] as u64 * fd[i] as u64
+		i += 1
+	}
+	stored_bits := (raw.len() as u64 + 5 * (raw.len() as u64 / 65535 + 1)) * 8 + 7
+	if stored_bits <= dyn_bits && stored_bits <= fix_bits {
+		write_stored(o, raw, last)
+		return
+	}
+	fin := if last {
+		1u32
+	} else {
+		0u32
+	}
+	if fix_bits <= dyn_bits {
+		put(o, fin | (1 << 1), 3)
+		emit(o, toks, &codes(&fl), &fl, &codes(&fd), &fd)
+		return
+	}
+	put(o, fin | (2 << 1), 3)
+	put(o, (nlen - 257) as u32, 5)
+	put(o, (ndist - 1) as u32, 5)
+	put(o, (ncode - 4) as u32, 4)
+	i = 0
+	while i < ncode {
+		put(o, cl[ord[i]], 3)
+		i += 1
+	}
+	cc := codes(&cl)
+	for (sym, ext) in rle.iter() {
+		put(o, cc[*sym as usize], cl[*sym as usize])
+		if *sym == 16 {
+			put(o, *ext, 2)
+		} else if *sym == 17 {
+			put(o, *ext, 3)
+		} else if *sym == 18 {
+			put(o, *ext, 7)
+		}
+	}
+	emit(o, toks, &codes(&ll), &ll, &codes(&dl), &dl)
+}
+
+// Code-length symbols with their extra-bit values (RFC 1951 3.2.7).
+fun run_lengths(l &[u32]) Vec<(u32, u32)> {
+	out mut := Vec::new()
+	i mut := 0
+	while i < l.len() {
+		v := l[i]
+		run mut := 1
+		while i + run < l.len() && l[i + run] == v {
+			run += 1
+		}
+		i += run
+		if v == 0 {
+			while run >= 11 {
+				n := if run > 138 {
+					138
+				} else {
+					run
+				}
+				out.push((18u32, (n - 11) as u32))
+				run -= n
+			}
+			if run >= 3 {
+				out.push((17u32, (run - 3) as u32))
+				run = 0
+			}
+		} else {
+			out.push((v, 0u32))
+			run -= 1
+			while run >= 3 {
+				n := if run > 6 {
+					6
+				} else {
+					run
+				}
+				out.push((16u32, (n - 3) as u32))
+				run -= n
+			}
+		}
+		while run > 0 {
+			out.push((v, 0u32))
+			run -= 1
+		}
+	}
+	return out
+}
+
+fun emit(o &mut Out, toks &[Tok], lc &[u32], ll &[u32], dc &[u32], dl &[u32]) {
+	(lb, le, db, de) := (len_base(), len_extra(), dist_base(), dist_extra())
+	for t in toks {
+		if t.dist == 0 {
+			put(o, lc[t.lit_len as usize], ll[t.lit_len as usize])
+		} else {
+			l := len_code(t.lit_len)
+			put(o, lc[257 + l], ll[257 + l])
+			put(o, t.lit_len - lb[l], le[l])
+			d := dist_code(t.dist)
+			put(o, dc[d], dl[d])
+			put(o, t.dist - db[d], de[d])
+		}
+	}
+	put(o, lc[256], ll[256])
+}

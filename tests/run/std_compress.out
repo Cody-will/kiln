@@ -1,0 +1,18 @@
+crc32=1095738169 adler32=300286872
+len 0: L0=5/true L1=5/true L6=5/true L9=5/true
+len 1: L0=6/true L1=3/true L6=3/true L9=3/true
+len 21: L0=26/true L1=6/true L6=6/true L9=6/true
+len 1000: L0=1005/true L1=461/true L6=442/true L9=442/true
+len 100000: L0=100010/true L1=39402/true L6=35568/true L9=34919/true
+len 200000: L0=200020/true L1=75870/true L6=69399/true L9=68127/true
+268 true Hello, Kiln! | abcabcabcabcabcabcabcabcabcabcabcabc
+one two Some("notes.txt") Some("hi") 1700000000
+compress: gzip: CRC-32 mismatch
+compress: unexpected end of data
+compress: gzip: invalid header
+compress: gzip: invalid header
+compress: zlib: header checksum mismatch
+compress: invalid block type
+compress: output exceeds the size limit
+limit ok: 100000
+streamed text true

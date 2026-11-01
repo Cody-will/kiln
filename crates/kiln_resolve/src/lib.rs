@@ -75,6 +75,10 @@ pub const STD_MODULES: &[(&str, &str)] = &[
     ("db::postgres", include_str!("../std/postgres.kn")),
     ("url", include_str!("../std/url.kn")),
     ("mime", include_str!("../std/mime.kn")),
+    ("compress", include_str!("../std/compress.kn")),
+    ("compress::flate", include_str!("../std/flate.kn")),
+    ("compress::zlib", include_str!("../std/zlib.kn")),
+    ("compress::gzip", include_str!("../std/gzip.kn")),
     ("log", include_str!("../std/log.kn")),
     ("panic", include_str!("../std/panic.kn")),
 ];

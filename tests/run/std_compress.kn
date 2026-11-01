@@ -1,0 +1,90 @@
+import std::compress
+import std::compress::{flate, gzip, zlib}
+import std::encoding::hex
+import std::io
+import std::io::{Read, Write}
+
+fun sample(n usize) Vec<u8> {
+	// Text-like data with repeats, plus a pseudo-random tail.
+	out mut := Vec::new()
+	words := ["kiln ", "fire ", "clay ", "glaze ", "pot\n", "the "]
+	x mut := 12345u32
+	while out.len() < n {
+		x = x.wrapping_mul(1103515245u32).wrapping_add(12345u32)
+		if out.len() > n * 3 / 4 {
+			out.push((x >> 16) as u8)
+		} else {
+			out.extend_from_slice(words[((x >> 16) % 6) as usize].as_bytes())
+		}
+	}
+	out.truncate(n)
+	return out
+}
+
+fun main() result<void, compress::Error> {
+	(c1, a1) := (compress::crc32("The quick brown fox jumps over the lazy dog".as_bytes()), compress::adler32("Wikipedia".as_bytes()))
+	println("crc32={c1} adler32={a1}")
+	inputs := [Vec::new(), "a".as_bytes().to_vec(), "abcabcabcabcabcabcabc".as_bytes().to_vec(), sample(1000), sample(100000), sample(200000)]
+	for d in inputs.iter() {
+		line mut := "len {d.len()}:"
+		for lv in [0u32, 1, 6, 9].iter() {
+			f := flate::compress(d, *lv)
+			z := zlib::compress(d, *lv)
+			g := gzip::compress(d, *lv)
+			ok := flate::decompress(&f)? == *d && zlib::decompress(&z)? == *d && gzip::decompress(&g)? == *d
+			line.push(" L{lv}={f.len()}/{ok}")
+		}
+		println(line)
+	}
+	// Streams written by other implementations (Python's gzip and zlib).
+	g := hex::decode("1f8b08000000000002fff348cdc9c9d751f0ceccc95354f018999c928c5485d4bc142e00bf77d5980c010000").unwrap()
+	z := hex::decode("78daf348cdc9c9d751f0ceccc95354f018999c928c5485d4bc142e00264853cf").unwrap()
+	z1 := hex::decode("78014b4c4a4e248400ff000dc9").unwrap()
+	a := gzip::decompress(&g)?
+	b := zlib::decompress(&z)?
+	println("{a.len()} {a == b} {string::from_utf8_lossy(&a[..13])}| {string::from_utf8_lossy(&zlib::decompress(&z1)?)}")
+	// Concatenated members and header fields.
+	h := gzip::Header::new().with_name("notes.txt").with_comment("hi").with_mtime(1700000000)
+	two mut := gzip::compress_with("one ".as_bytes(), 6, &h)
+	two.extend_from_slice(&gzip::compress("two".as_bytes(), 1))
+	(both, hd) := gzip::decompress_header(&two)?
+	println("{string::from_utf8_lossy(&both)} {hd.name:?} {hd.comment:?} {hd.mtime}")
+	// Corrupt and hostile input.
+	bad_crc mut := g.clone()
+	n := bad_crc.len()
+	bad_crc[n - 5] ^= 1
+	big := gzip::compress(&sample(100000), 9)
+	cases := [bad_crc, g[..20].to_vec(), "not gzip at all, sorry".as_bytes().to_vec(), [0x78u8, 0x9c, 0xff, 0xff, 0, 0].to_vec()]
+	for c in cases.iter() {
+		match gzip::decompress(c) {
+			Ok(_) => println("unexpected ok"),
+			Err(e) => println("{e}"),
+		}
+	}
+	match zlib::decompress(&[0x78u8, 0x9d, 3, 0, 0, 0, 0, 1]) {
+		Ok(_) => println("unexpected ok"),
+		Err(e) => println("{e}"),
+	}
+	match flate::decompress(&[7u8]) {
+		Ok(_) => println("unexpected ok"),
+		Err(e) => println("{e}"),
+	}
+	match gzip::decompress_limit(&big, 50000) {
+		Ok(_) => println("unexpected ok"),
+		Err(e) => println("{e}"),
+	}
+	println("limit ok: {gzip::decompress_limit(&big, 100000)?.len()}")
+	// Reader / Writer.
+	w mut := gzip::Writer::new(Vec::new(), 6)
+	w.write_all("streamed ".as_bytes()).unwrap()
+	w.write_all("text".as_bytes()).unwrap()
+	packed := w.finish().unwrap()
+	r mut := gzip::Reader::new(io::Cursor::new(packed)).unwrap()
+	s mut := string::new()
+	r.read_to_string(&mut s).unwrap()
+	zw mut := zlib::Writer::new(Vec::new(), 9)
+	zw.write_all(&sample(5000)).unwrap()
+	zp := zw.finish().unwrap()
+	println("{s} {zlib::decompress(&zp)? == sample(5000)}")
+	return Ok()
+}

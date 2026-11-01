@@ -1,0 +1,101 @@
+// Compression formats, in pure Kiln: `flate` (raw DEFLATE, RFC 1951),
+// `zlib` (RFC 1950) and `gzip` (RFC 1952), plus the `crc32` and
+// `adler32` checksums they use.
+//
+//	packed := gzip::compress(data, compress::DEFAULT)
+//	plain := gzip::decompress(&packed)?
+//	z := zlib::compress(data, compress::BEST)
+//	raw := flate::decompress_limit(&body, 10 << 20)?  // refuse > 10 MiB
+//
+// Levels run from 0 (`STORE`, no compression) to 9 (`BEST`); 1 is
+// `FASTEST` and 6 the `DEFAULT`.
+
+import super::super::Error as ErrorTrait
+
+// No compression (stored blocks).
+pub const STORE u32 = 0
+pub const FASTEST u32 = 1
+pub const DEFAULT u32 = 6
+pub const BEST u32 = 9
+
+// Why decompression failed: corrupt or truncated input, a checksum
+// mismatch, or output beyond a size limit.
+@derive(Debug, Clone)
+pub struct Error {
+	pub msg string,
+}
+
+impl Display for Error {
+	fun to_string(&self) string {
+		return "compress: {self.msg}"
+	}
+}
+
+impl ErrorTrait for Error {}
+
+pub fun error(msg &str) Error {
+	return Error { msg: msg.to_string() }
+}
+
+fun crc_table() Vec<u32> {
+	t mut := Vec::with_capacity(256)
+	n mut := 0u32
+	while n < 256 {
+		c mut := n
+		k mut := 0
+		while k < 8 {
+			if c & 1 == 1 {
+				c = 3988292384u32 ^ (c >> 1)
+			} else {
+				c = c >> 1
+			}
+			k += 1
+		}
+		t.push(c)
+		n += 1
+	}
+	return t
+}
+
+// The CRC-32 (IEEE) of `data`.
+pub fun crc32(data &[u8]) u32 {
+	return crc32_update(0, data)
+}
+
+// Continues a CRC-32: `crc32_update(crc32(a), b) == crc32(a ++ b)`.
+pub fun crc32_update(crc u32, data &[u8]) u32 {
+	t := crc_table()
+	c mut := crc ^ 4294967295u32
+	for b in data {
+		c = t[((c ^ (*b as u32)) & 255) as usize] ^ (c >> 8)
+	}
+	return c ^ 4294967295u32
+}
+
+// The Adler-32 checksum of `data`.
+pub fun adler32(data &[u8]) u32 {
+	return adler32_update(1, data)
+}
+
+// Continues an Adler-32 (start from 1).
+pub fun adler32_update(adler u32, data &[u8]) u32 {
+	a mut := adler & 65535
+	b mut := adler >> 16
+	i mut := 0
+	while i < data.len() {
+		// 5552 bytes keep the sums below 2^32 before the reduction.
+		end := if i + 5552 < data.len() {
+			i + 5552
+		} else {
+			data.len()
+		}
+		while i < end {
+			a += data[i] as u32
+			b += a
+			i += 1
+		}
+		a = a % 65521
+		b = b % 65521
+	}
+	return (b << 16) | a
+}

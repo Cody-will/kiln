@@ -1,0 +1,98 @@
+// The zlib format (RFC 1950): a 2-byte header, raw DEFLATE, and an
+// Adler-32 trailer. HTTP's `Content-Encoding: deflate` uses it.
+//
+//	z := zlib::compress(data, compress::DEFAULT)
+//	plain := zlib::decompress(&z)?
+
+import std::io
+import std::io::{Read, Write}
+import super::{adler32, error, flate, Error}
+
+// Compresses `data` into a zlib stream.
+pub fun compress(data &[u8], level u32) Vec<u8> {
+	cmf := 120u32
+	lv := if level == 0 || level == 1 {
+		0u32
+	} else if level < 6 {
+		1u32
+	} else if level == 6 {
+		2u32
+	} else {
+		3u32
+	}
+	flg0 := lv << 6
+	flg := flg0 + (31 - ((cmf * 256 + flg0) % 31)) % 31
+	out mut := Vec::new()
+	out.push(cmf as u8)
+	out.push(flg as u8)
+	out.extend_from_slice(&flate::compress(data, level))
+	a := adler32(data)
+	out.push((a >> 24) as u8)
+	out.push(((a >> 16) & 255) as u8)
+	out.push(((a >> 8) & 255) as u8)
+	out.push((a & 255) as u8)
+	return out
+}
+
+// Decompresses a zlib stream, checking the header and Adler-32.
+pub fun decompress(data &[u8]) result<Vec<u8>, Error> {
+	return decompress_limit(data, 0)
+}
+
+// Like `decompress`, failing once the output would exceed `max` bytes
+// (0 = no limit).
+pub fun decompress_limit(data &[u8], max usize) result<Vec<u8>, Error> {
+	if data.len() < 6 {
+		return Err(error("zlib: stream too short"))
+	}
+	cmf := data[0] as u32
+	flg := data[1] as u32
+	if cmf & 15 != 8 || (cmf >> 4) > 7 {
+		return Err(error("zlib: unsupported compression method"))
+	}
+	if (cmf * 256 + flg) % 31 != 0 {
+		return Err(error("zlib: header checksum mismatch"))
+	}
+	if flg & 32 != 0 {
+		return Err(error("zlib: preset dictionaries are not supported"))
+	}
+	(out, used) := flate::inflate(&data[2..], max)?
+	t := 2 + used
+	if t + 4 > data.len() {
+		return Err(error("zlib: missing Adler-32 trailer"))
+	}
+	want := ((data[t] as u32) << 24) | ((data[t + 1] as u32) << 16) | ((data[t + 2] as u32) << 8) | (data[t + 3] as u32)
+	if adler32(&out) != want {
+		return Err(error("zlib: Adler-32 mismatch"))
+	}
+	return Ok(out)
+}
+
+// Collects what is written and, on `finish`, writes it zlib-compressed
+// to the inner writer (the whole stream is held in memory).
+pub struct Writer<W: Write> {
+	inner W,
+	buf Vec<u8>,
+	level u32,
+}
+
+impl<W: Write> Writer<W> {
+	pub fun new(inner W, level u32) Writer<W> {
+		return Writer { inner: inner, buf: Vec::new(), level: level }
+	}
+
+	// Compresses and writes everything; returns the inner writer.
+	pub fun finish(self) result<W, io::Error> {
+		w mut := self.inner
+		w.write_all(&compress(&self.buf, self.level))?
+		w.flush()?
+		return Ok(w)
+	}
+}
+
+impl<W: Write> Write for Writer<W> {
+	fun write(&mut self, b &[u8]) result<usize, io::Error> {
+		self.buf.extend_from_slice(b)
+		return Ok(b.len())
+	}
+}
