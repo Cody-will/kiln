@@ -48,6 +48,19 @@ pub struct FnSig {
 	// The bounds of a return-position `impl Trait`. Its concrete type,
 	// found by checking the body, replaces `ret`.
 	pub opaque option<Vec<(u32, Vec<Ty>)>>,
+	// Associated-type projections in scope (`I::Item` for `I: Iterator`),
+	// instantiated like generic parameters.
+	pub proj Vec<string>,
+}
+
+// How `trait_args` fills associated types not bound explicitly.
+pub enum Fill {
+	// From an impl's `type Name = T` items.
+	Impl(Vec<(string, Ty)>),
+	// As the projection `{param}::{Name}`.
+	Param(string),
+	// Left open (`Unknown`).
+	Unknown,
 }
 
 @derive(Clone)
@@ -56,6 +69,7 @@ pub struct ImplInfo {
 	pub self_ty Ty,
 	pub trait_ref option<(u32, Vec<Ty>)>,
 	pub bounds Vec<(string, u32)>,
+	pub assoc Vec<(string, Ty)>,
 	pub methods HashMap<string, usize>,
 }
 
@@ -195,6 +209,11 @@ pub struct Checker {
 	// Functions returning `impl Trait`: false while checking, true once the
 	// concrete type is known.
 	opaque_done HashMap<usize, bool>,
+	// What `Self::Name` and `T::Name` mean while lowering a signature or
+	// body: the impl or trait, and the projections in scope.
+	cur_impl option<usize>,
+	cur_trait option<u32>,
+	cur_proj option<HashMap<string, Ty>>,
 	b Body,
 	// The longest slice length the current match distinguishes.
 	slice_max usize,
@@ -379,6 +398,9 @@ impl Checker {
 			errors: Vec::new(),
 			results: Vec::new(),
 			opaque_done: HashMap::new(),
+			cur_impl: None,
+			cur_trait: None,
+			cur_proj: None,
 			b: Body::new(Vec::new()),
 			slice_max: 0,
 			int_cuts: Vec::new(),
@@ -657,8 +679,163 @@ impl Checker {
 					_ => return Ty::Unknown,
 				}
 			}
+			Res::Assoc(base, name) => return self.lower_projection(&base, &name, p.span),
 			_ => return Ty::Unknown,
 		}
+	}
+
+	// `Self::Name` or `T::Name` in a type.
+	fun lower_projection(&mut self, base &Res, name &str, span Span) Ty {
+		match base {
+			Res::SelfTy => {
+				if let Some(idx) = self.cur_impl {
+					for (n, t) in &self.impls[idx].assoc {
+						if n == name {
+							return t.clone()
+						}
+					}
+				} else if let Some(t) = self.cur_trait {
+					for n in &self.trait_assoc(t) {
+						if n == name {
+							return Ty::Param(name.to_string())
+						}
+					}
+				}
+				self.error("no associated type `{name}` for `Self`", span)
+				return Ty::Unknown
+			}
+			Res::TyParam(p) => {
+				key := "{p}::{name}"
+				match &self.cur_proj {
+					Some(m) => {
+						match m.get(&key) {
+							Some(t) => return t.clone(),
+							None => {
+								self.error_help("no associated type `{name}` for `{p}`", span, "add a bound on `{p}` for a trait with `type {name}`")
+								return Ty::Unknown
+							},
+						}
+					}
+					None => {
+						self.error("`{key}` is only supported in function signatures and bodies for now; add a type parameter instead", span)
+						return Ty::Unknown
+					},
+				}
+			}
+			_ => return Ty::Unknown,
+		}
+	}
+
+	// The associated type names a trait declares (`type Item`), in order.
+	pub fun trait_assoc(&self, d u32) Vec<string> {
+		o mut := Vec::new()
+		if let Some(ItemKind::Trait(td)) = self.item_kind(d) {
+			for it in &td.items {
+				if let ItemKind::TypeAlias { name, ty: None, .. } = &it.kind {
+					o.push(name.name.clone())
+				}
+			}
+		}
+		return o
+	}
+
+	// A trait's parameters: its generics, then its associated types.
+	fun trait_params(&self, d u32) Vec<string> {
+		v mut := match self.item_kind(d) {
+			Some(ItemKind::Trait(td)) => generic_names(&td.generics),
+			_ => Vec::new(),
+		}
+		for a in self.trait_assoc(d) {
+			v.push(a)
+		}
+		return v
+	}
+
+	// Lowers the arguments of a trait reference `Trait<A, Name = B>`:
+	// positional arguments, then one per associated type (bound by name,
+	// given positionally, or filled by `fill`).
+	pub fun trait_args(&mut self, d u32, gargs &Vec<GenericArg>, self_ty option<&Ty>, fill Fill, span Span) Vec<Ty> {
+		args mut := self.lower_args(gargs, self_ty, false)
+		assoc := self.trait_assoc(d)
+		n := self.trait_params(d).len() - assoc.len()
+		for a in gargs {
+			if let GenericArg::Binding { name, .. } = a {
+				if !assoc.contains(&name.name) {
+					t := self.r.def(d).name.clone()
+					self.error("trait `{t}` has no associated type `{name.name}`", name.span)
+				}
+			}
+		}
+		if assoc.is_empty() || args.len() >= n + assoc.len() {
+			return args
+		}
+		start mut := if args.len() > n { args.len() - n } else { 0 }
+		if start > assoc.len() {
+			start = assoc.len()
+		}
+		j mut := start
+		while j < assoc.len() {
+			a := assoc[j].clone()
+			j += 1
+			bound mut := None
+			for g in gargs {
+				if let GenericArg::Binding { name, ty } = g {
+					if bound.is_none() && name.name == a {
+						bound = Some(ty.clone())
+					}
+				}
+			}
+			t := match bound {
+				Some(bt) => self.lower_ty(&bt, self_ty, false),
+				None => match &fill {
+					Fill::Impl(items) => {
+						found mut := None
+						for (nm, it) in items {
+							if found.is_none() && *nm == a {
+								found = Some(it.clone())
+							}
+						}
+						match found {
+							Some(ft) => ft,
+							None => {
+								tn := self.r.def(d).name.clone()
+								self.error("missing `type {a} = ...` in this impl of `{tn}`", span)
+								Ty::Unknown
+							},
+						}
+					}
+					Fill::Param(p) => Ty::Param("{p}::{a}"),
+					Fill::Unknown => Ty::Unknown,
+				},
+			}
+			args.push(t)
+		}
+		return args
+	}
+
+	// The projections `P::Name` a function's bounds introduce: those left
+	// open (instantiated like generics), and what each one means.
+	pub fun projections(&self, bound_args &Vec<(string, u32, Vec<Ty>)>) (Vec<string>, HashMap<string, Ty>) {
+		open mut := Vec::new()
+		map mut := HashMap::new()
+		for (p, d, args) in bound_args {
+			assoc := self.trait_assoc(*d)
+			n := self.trait_params(*d).len() - assoc.len()
+			j mut := 0
+			while j < assoc.len() && n + j < args.len() {
+				key := "{p}::{assoc[j]}"
+				t := args[n + j].clone()
+				j += 1
+				if map.contains_key(&key) {
+					continue
+				}
+				if t == Ty::Param(key.clone()) {
+					open.push(key.clone())
+				}
+				map.insert(key, t)
+			}
+		}
+		return (open, map)
 	}
 
 	fun adt_generic_count(&self, d u32) usize {
@@ -746,7 +923,11 @@ impl Checker {
 		while i < self.r.defs.len() {
 			match self.item_kind(i as u32) {
 				Some(ItemKind::Trait(t)) => {
-					info := TraitInfo { generics: generic_names(&t.generics), supertraits: self.bound_traits(&t.supertraits), methods: HashMap::new() }
+					g mut := generic_names(&t.generics)
+					for a in self.trait_assoc(i as u32) {
+						g.push(a)
+					}
+					info := TraitInfo { generics: g, supertraits: self.bound_traits(&t.supertraits), methods: HashMap::new() }
 					self.traits.insert(i as u32, info)
 				}
 				_ => {},
@@ -761,13 +942,29 @@ impl Checker {
 			k += 1
 			generics := generic_names(&decl.generics)
 			self_ty := self.lower_ty(&decl.self_ty, None, false)
+			assoc mut := Vec::new()
+			for it in &decl.items {
+				if let ItemKind::TypeAlias { name, ty: Some(t), .. } = &it.kind {
+					at := self.lower_ty(t, Some(&self_ty), false)
+					assoc.push((name.name.clone(), at))
+				}
+			}
 			trait_ref mut := None
 			match &decl.trait_ref {
 				Some(p) => {
 					match self.r.path(p.span) {
 						Res::Def(d) => {
 							if self.r.def(d).kind == DefKind::Trait {
-								args := self.lower_args(&p.segments[p.segments.len() - 1].args, Some(&self_ty), false)
+								args := self.trait_args(d, &p.segments[p.segments.len() - 1].args, Some(&self_ty), Fill::Impl(assoc.clone()), p.span)
+								names := self.trait_assoc(d)
+								for it in &decl.items {
+									if let ItemKind::TypeAlias { name, .. } = &it.kind {
+										if !names.contains(&name.name) {
+											tn := self.r.def(d).name.clone()
+											self.error("type `{name.name}` is not a member of trait `{tn}`", name.span)
+										}
+									}
+								}
 								trait_ref = Some((d, args))
 							}
 						}
@@ -808,7 +1005,7 @@ impl Checker {
 			}
 			bounds mut := Vec::new()
 			self.push_bounds(&decl.generics, None, &mut bounds)
-			self.impls.push(ImplInfo { generics: generics, self_ty: self_ty, trait_ref: trait_ref, bounds: bounds, methods: HashMap::new() })
+			self.impls.push(ImplInfo { generics: generics, self_ty: self_ty, trait_ref: trait_ref, bounds: bounds, assoc: assoc, methods: HashMap::new() })
 		}
 		// Function signatures.
 		i = 0
@@ -893,6 +1090,9 @@ impl Checker {
 		decl := self.r.fns[i].decl.clone()
 		impl_idx := self.r.fns[i].impl_idx
 		trait_def := self.r.fns[i].trait_def
+		self.cur_impl = impl_idx
+		self.cur_trait = trait_def
+		self.cur_proj = None
 		bounds mut := Vec::new()
 		bound_args mut := Vec::new()
 		outer_generics mut := Vec::new()
@@ -909,10 +1109,7 @@ impl Checker {
 				match trait_def {
 					Some(t) => {
 						bounds.push(("Self".to_string(), t))
-						match self.item_kind(t) {
-							Some(ItemKind::Trait(td)) => outer_generics = generic_names(&td.generics),
-							_ => {},
-						}
+						outer_generics = self.trait_params(t)
 						own mut := Vec::new()
 						for g in &outer_generics {
 							own.push(Ty::Param(g.clone()))
@@ -926,6 +1123,8 @@ impl Checker {
 		sty := self_ty.as_ref()
 		self.push_bounds(&decl.generics, sty, &mut bounds)
 		self.push_bound_args(&decl.generics, sty, &mut bound_args)
+		(proj, proj_map) := self.projections(&bound_args)
+		self.cur_proj = Some(proj_map)
 		params mut := Vec::new()
 		for p in &decl.params {
 			params.push(self.lower_ty(&p.ty, sty, false))
@@ -943,7 +1142,7 @@ impl Checker {
 						if !*maybe {
 							if let Res::Def(d) = self.r.path(path.span) {
 								if self.r.def(d).kind == DefKind::Trait {
-									args := self.lower_args(&path.segments[path.segments.len() - 1].args, sty, false)
+									args := self.trait_args(d, &path.segments[path.segments.len() - 1].args, sty, Fill::Unknown, path.span)
 									v.push((d, args))
 								}
 							}
@@ -957,7 +1156,11 @@ impl Checker {
 				}
 			}
 		}
+		self.cur_impl = None
+		self.cur_trait = None
+		self.cur_proj = None
 		return FnSig {
+			proj: proj,
 			opaque: opaque,
 			generics: generic_names(&decl.generics),
 			outer_generics: outer_generics,
@@ -978,7 +1181,7 @@ impl Checker {
 						match self.r.path(path.span) {
 							Res::Def(d) => {
 								if self.r.def(d).kind == DefKind::Trait {
-									args := self.lower_args(&path.segments[path.segments.len() - 1].args, self_ty, false)
+									args := self.trait_args(d, &path.segments[path.segments.len() - 1].args, self_ty, Fill::Param(name.to_string()), path.span)
 									out.push((name.to_string(), d, args))
 								}
 							}
@@ -1349,6 +1552,21 @@ impl Checker {
 	}
 
 	fun check_fn(&mut self, i usize) {
+		s_impl := self.cur_impl
+		s_trait := self.cur_trait
+		s_proj := self.cur_proj.take()
+		self.cur_impl = self.r.fns[i].impl_idx
+		self.cur_trait = self.r.fns[i].trait_def
+		ba := self.sigs[i].bound_args.clone()
+		(_, pm) := self.projections(&ba)
+		self.cur_proj = Some(pm)
+		self.check_fn_inner(i)
+		self.cur_impl = s_impl
+		self.cur_trait = s_trait
+		self.cur_proj = s_proj
+	}
+
+	fun check_fn_inner(&mut self, i usize) {
 		decl := self.r.fns[i].decl.clone()
 		impl_idx := self.r.fns[i].impl_idx
 		trait_def := self.r.fns[i].trait_def
@@ -2108,6 +2326,12 @@ impl Checker {
 			}
 		}
 		for g in &sig.outer_generics {
+			if !subst.contains_key(g) {
+				v := self.fresh()
+				subst.insert(g.clone(), v)
+			}
+		}
+		for g in &sig.proj {
 			if !subst.contains_key(g) {
 				v := self.fresh()
 				subst.insert(g.clone(), v)

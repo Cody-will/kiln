@@ -859,3 +859,44 @@ fn repr_c_fields_must_be_ffi_safe() {
         "`@repr(C)` applies to structs",
     );
 }
+
+#[test]
+fn impl_trait_return_errors() {
+    has(
+        "trait Shape {\n fun area(&self) f64\n}\nfun bad() impl Shape {\n return 3\n}\nfun main() {}",
+        "the trait `Shape` is not implemented for `i32`",
+    );
+    has(
+        "trait Shape {\n fun area(&self) f64\n}\nfun rec(n i32) impl Shape {\n return rec(n)\n}\nfun main() {}",
+        "returns `impl Trait` and is used before its concrete type is known",
+    );
+}
+
+#[test]
+fn associated_types() {
+    let tr = "trait Source {\n type Item\n fun get(&mut self) option<Self::Item>\n}\n";
+    ok(&format!(
+        "{tr}struct C {{}}\nimpl Source for C {{\n type Item = i32\n fun get(&mut self) option<Self::Item> {{\n return Some(1)\n }}\n}}\nfun first<S: Source>(s &mut S) option<S::Item> {{\n return s.get()\n}}\nfun sum<S: Source<Item = i32>>(s &mut S) i32 {{\n return s.get().unwrap_or(0)\n}}\nfun main() {{\n c mut := C {{}}\n x := first(&mut c)\n y := sum(&mut c)\n}}"
+    ));
+    has(
+        &format!("{tr}struct C {{}}\nimpl Source for C {{\n fun get(&mut self) option<i32> {{\n return None\n }}\n}}\nfun main() {{}}"),
+        "missing `type Item = ...` in this impl of `Source`",
+    );
+    has(
+        &format!("{tr}struct C {{}}\nimpl Source for C {{\n type Item = i32\n type Elem = i32\n fun get(&mut self) option<i32> {{\n return None\n }}\n}}\nfun main() {{}}"),
+        "type `Elem` is not a member of trait `Source`",
+    );
+    has(
+        "fun f<T>(x T) T::Item {\n return x\n}\nfun main() {}",
+        "no associated type `Item` for `T`",
+    );
+    has(
+        &format!("{tr}fun g<S: Source<Thing = i32>>(s S) {{}}\nfun main() {{}}"),
+        "trait `Source` has no associated type `Thing`",
+    );
+    // A sum over `S::Item` with a mismatched binding.
+    has(
+        &format!("{tr}fun h<S: Source<Item = i32>>(s &mut S) string {{\n return s.get().unwrap()\n}}\nfun main() {{}}"),
+        "mismatched types",
+    );
+}

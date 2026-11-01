@@ -279,6 +279,15 @@ impl Checker<'_, '_> {
     fn check_fn(&mut self, i: usize) {
         let f = self.r.fns[i].clone();
         let sig = self.sigs[i].clone();
+        let saved = (self.cur_impl, self.cur_trait, self.cur_proj.take());
+        self.cur_impl = f.impl_idx;
+        self.cur_trait = f.trait_def;
+        self.cur_proj = Some(self.projections(&sig.bound_args).1);
+        self.check_fn_inner(i, f, sig);
+        (self.cur_impl, self.cur_trait, self.cur_proj) = saved;
+    }
+
+    fn check_fn_inner(&mut self, i: usize, f: kiln_resolve::FnRef<'_>, sig: crate::collect::FnSig) {
         let self_ty = match (f.impl_idx, f.trait_def) {
             (Some(idx), _) => Some(self.impls[idx].self_ty.clone()),
             (None, Some(_)) => Some(Ty::Param("Self".into())),
@@ -1008,7 +1017,12 @@ impl Body<'_, '_, '_> {
             self.c.ensure_opaque(i);
         }
         let sig = self.c.sigs[i].clone();
-        for g in sig.generics.iter().chain(&sig.outer_generics) {
+        for g in sig
+            .generics
+            .iter()
+            .chain(&sig.outer_generics)
+            .chain(&sig.proj)
+        {
             if !subst.contains_key(g) {
                 let v = self.fresh();
                 subst.insert(g.clone(), v);

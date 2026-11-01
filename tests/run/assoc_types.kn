@@ -1,0 +1,72 @@
+trait Source {
+	type Item
+	fun get(&mut self) option<Self::Item>
+	fun first_two(&mut self) (option<Self::Item>, option<Self::Item>) {
+		a := self.get()
+		b := self.get()
+		return (a, b)
+	}
+}
+
+struct Count {
+	n i32,
+}
+
+impl Source for Count {
+	type Item = i32
+	fun get(&mut self) option<Self::Item> {
+		self.n += 1
+		if self.n > 3 {
+			return None
+		}
+		return Some(self.n)
+	}
+}
+
+struct Words {
+	i usize,
+}
+
+impl Source for Words {
+	type Item = string
+	fun get(&mut self) option<string> {
+		self.i += 1
+		return if self.i < 3 { Some("w{self.i}") } else { None }
+	}
+}
+
+fun total<S: Source<Item = i32>>(s &mut S) i32 {
+	t mut := 0
+	while true {
+		match s.get() {
+			Some(x) => t += x,
+			None => break,
+		}
+	}
+	return t
+}
+
+fun drain<S: Source>(s &mut S) Vec<S::Item> {
+	v mut := Vec::new()
+	while true {
+		x := s.get()
+		match x {
+			Some(y) => v.push(y),
+			None => break,
+		}
+	}
+	return v
+}
+
+fun main() {
+	c mut := Count { n: 0 }
+	println("{total(&mut c)}")
+	c2 mut := Count { n: 1 }
+	(a, b) := c2.first_two()
+	println("{a:?} {b:?}")
+	w mut := Words { i: 0 }
+	ws := drain(&mut w)
+	println("{ws:?}")
+	c3 mut := Count { n: 0 }
+	println("{drain(&mut c3):?}")
+}

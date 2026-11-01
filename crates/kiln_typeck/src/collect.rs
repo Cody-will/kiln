@@ -49,6 +49,9 @@ pub(crate) struct FnSig {
     /// The bounds of a return-position `impl Trait`. Its concrete type,
     /// found by checking the body, replaces `ret`.
     pub opaque: Option<Vec<(DefId, Vec<Ty>)>>,
+    /// Associated-type projections in scope (`I::Item` for `I: Iterator`),
+    /// instantiated like generic parameters.
+    pub proj: Vec<String>,
 }
 
 /// A lowered `impl` block.
@@ -59,6 +62,8 @@ pub(crate) struct ImplInfo {
     pub trait_ref: Option<(DefId, Vec<Ty>)>,
     /// Bounds on the impl's generic parameters (`impl<T: Send> ...`).
     pub bounds: Vec<(String, DefId)>,
+    /// `type Name = T` items.
+    pub assoc: Vec<(String, Ty)>,
     /// Method name → index into [`Checker::sigs`] / `Resolved::fns`.
     pub methods: HashMap<String, usize>,
 }
@@ -85,6 +90,21 @@ pub(crate) struct Checker<'r, 'a> {
     /// Functions returning `impl Trait`: `false` while checking, `true` once
     /// the concrete type is known.
     pub opaque_done: HashMap<usize, bool>,
+    /// What `Self::Name` and `T::Name` mean while lowering a signature or
+    /// body: the impl or trait, and the projections in scope.
+    pub cur_impl: Option<usize>,
+    pub cur_trait: Option<DefId>,
+    pub cur_proj: Option<HashMap<String, Ty>>,
+}
+
+/// How [`Checker::trait_args`] fills associated types not bound explicitly.
+pub(crate) enum Fill<'x> {
+    /// From an impl's `type Name = T` items.
+    Impl(&'x [(String, Ty)]),
+    /// As the projection `{param}::{Name}`.
+    Param(&'x str),
+    /// Left open (`Unknown`).
+    Unknown,
 }
 
 /// Names of the generic type parameters declared in `g`.
@@ -110,6 +130,9 @@ impl<'r, 'a> Checker<'r, 'a> {
             errors: Vec::new(),
             results: Vec::new(),
             opaque_done: HashMap::new(),
+            cur_impl: None,
+            cur_trait: None,
+            cur_proj: None,
         }
     }
 
@@ -266,8 +289,129 @@ impl<'r, 'a> Checker<'r, 'a> {
                 }
                 _ => Ty::Unknown,
             },
+            Res::Assoc { base, name } => self.lower_projection(&base, &name, p.span),
             _ => Ty::Unknown,
         }
+    }
+
+    /// `Self::Name` or `T::Name` in a type.
+    fn lower_projection(&mut self, base: &Res, name: &str, span: Span) -> Ty {
+        match base {
+            Res::SelfTy => {
+                if let Some(idx) = self.cur_impl {
+                    if let Some((_, t)) = self.impls[idx].assoc.iter().find(|(n, _)| n == name) {
+                        return t.clone();
+                    }
+                } else if let Some(t) = self.cur_trait {
+                    if self.trait_assoc(t).iter().any(|n| n == name) {
+                        return Ty::Param(name.to_string());
+                    }
+                }
+                self.error(format!("no associated type `{name}` for `Self`"), span);
+                Ty::Unknown
+            }
+            Res::TyParam(p) => {
+                let key = format!("{p}::{name}");
+                match self.cur_proj.as_ref().map(|m| m.get(&key).cloned()) {
+                    Some(Some(t)) => t,
+                    Some(None) => {
+                        self.error_help(
+                            format!("no associated type `{name}` for `{p}`"),
+                            span,
+                            format!("add a bound on `{p}` for a trait with `type {name}`"),
+                        );
+                        Ty::Unknown
+                    }
+                    None => {
+                        self.error(
+                            format!("`{key}` is only supported in function signatures and bodies for now; add a type parameter instead"),
+                            span,
+                        );
+                        Ty::Unknown
+                    }
+                }
+            }
+            _ => Ty::Unknown,
+        }
+    }
+
+    /// The associated type names a trait declares (`type Item`), in order.
+    pub(crate) fn trait_assoc(&self, d: DefId) -> Vec<String> {
+        match self.r.def(d).item.map(|i| &i.kind) {
+            Some(ItemKind::Trait(td)) => td
+                .items
+                .iter()
+                .filter_map(|it| match &it.kind {
+                    ItemKind::TypeAlias { name, ty: None, .. } => Some(name.name.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => vec![],
+        }
+    }
+
+    /// A trait's parameters: its generics, then its associated types.
+    fn trait_params(&self, d: DefId) -> Vec<String> {
+        let mut v = match self.r.def(d).item.map(|i| &i.kind) {
+            Some(ItemKind::Trait(td)) => generic_names(&td.generics),
+            _ => vec![],
+        };
+        v.extend(self.trait_assoc(d));
+        v
+    }
+
+    /// Lowers the arguments of a trait reference `Trait<A, Name = B>`:
+    /// positional arguments, then one per associated type (bound by name,
+    /// given positionally, or filled by `fill`).
+    pub(crate) fn trait_args(
+        &mut self,
+        d: DefId,
+        gargs: &[GenericArg],
+        self_ty: Option<&Ty>,
+        fill: Fill,
+        span: Span,
+    ) -> Vec<Ty> {
+        let mut args = self.lower_args(gargs, self_ty, false);
+        let assoc = self.trait_assoc(d);
+        let n = self.trait_params(d).len() - assoc.len();
+        for a in gargs {
+            if let GenericArg::Binding { name, .. } = a {
+                if !assoc.contains(&name.name) {
+                    let t = self.r.def(d).name.clone();
+                    self.error(
+                        format!("trait `{t}` has no associated type `{}`", name.name),
+                        name.span,
+                    );
+                }
+            }
+        }
+        if assoc.is_empty() || args.len() >= n + assoc.len() {
+            return args;
+        }
+        for a in &assoc[args.len().saturating_sub(n).min(assoc.len())..] {
+            let bound = gargs.iter().find_map(|g| match g {
+                GenericArg::Binding { name, ty } if name.name == *a => Some(ty),
+                _ => None,
+            });
+            let t = match (bound, &fill) {
+                (Some(t), _) => self.lower_ty(t, self_ty, false),
+                (None, Fill::Impl(items)) => match items.iter().find(|(n, _)| n == a) {
+                    Some((_, t)) => t.clone(),
+                    None => {
+                        let tn = self.r.def(d).name.clone();
+                        self.error(
+                            format!("missing `type {a} = ...` in this impl of `{tn}`"),
+                            span,
+                        );
+                        Ty::Unknown
+                    }
+                },
+                (None, Fill::Param(p)) => Ty::Param(format!("{p}::{a}")),
+                (None, Fill::Unknown) => Ty::Unknown,
+            };
+            args.push(t);
+        }
+        args
     }
 
     fn adt_generic_count(&self, d: DefId) -> usize {
@@ -378,7 +522,11 @@ impl<'r, 'a> Checker<'r, 'a> {
         for (i, def) in self.r.defs.iter().enumerate() {
             if let Some(ItemKind::Trait(t)) = def.item.map(|i| &i.kind) {
                 let info = TraitInfo {
-                    generics: generic_names(&t.generics),
+                    generics: {
+                        let mut g = generic_names(&t.generics);
+                        g.extend(self.trait_assoc(DefId(i as u32)));
+                        g
+                    },
                     supertraits: self.bound_traits(&t.supertraits),
                     methods: HashMap::new(),
                 };
@@ -389,17 +537,44 @@ impl<'r, 'a> Checker<'r, 'a> {
         for imp in &self.r.impls {
             let generics = generic_names(&imp.decl.generics);
             let self_ty = self.lower_ty(&imp.decl.self_ty, None, false);
+            let mut assoc = Vec::new();
+            for it in &imp.decl.items {
+                if let ItemKind::TypeAlias {
+                    name, ty: Some(t), ..
+                } = &it.kind
+                {
+                    let t = self.lower_ty(t, Some(&self_ty), false);
+                    assoc.push((name.name.clone(), t));
+                }
+            }
             let trait_ref = imp
                 .decl
                 .trait_ref
                 .as_ref()
                 .and_then(|p| match self.r.path(p.span) {
                     Res::Def(d) if self.r.def(d).kind == DefKind::Trait => {
-                        let args = self.lower_args(
+                        let args = self.trait_args(
+                            d,
                             &p.segments.last().unwrap().args,
                             Some(&self_ty),
-                            false,
+                            Fill::Impl(&assoc),
+                            p.span,
                         );
+                        let names = self.trait_assoc(d);
+                        for it in &imp.decl.items {
+                            if let ItemKind::TypeAlias { name, .. } = &it.kind {
+                                if !names.contains(&name.name) {
+                                    let tn = self.r.def(d).name.clone();
+                                    self.error(
+                                        format!(
+                                            "type `{}` is not a member of trait `{tn}`",
+                                            name.name
+                                        ),
+                                        name.span,
+                                    );
+                                }
+                            }
+                        }
                         Some((d, args))
                     }
                     _ => None,
@@ -449,6 +624,7 @@ impl<'r, 'a> Checker<'r, 'a> {
                 self_ty,
                 trait_ref,
                 bounds,
+                assoc,
                 methods: HashMap::new(),
             });
         }
@@ -516,6 +692,9 @@ impl<'r, 'a> Checker<'r, 'a> {
 
     fn lower_sig(&mut self, i: usize) -> FnSig {
         let f = self.r.fns[i].clone();
+        self.cur_impl = f.impl_idx;
+        self.cur_trait = f.trait_def;
+        self.cur_proj = None;
         let mut bounds = Vec::new();
         let mut bound_args = Vec::new();
         let mut outer_generics = Vec::new();
@@ -527,9 +706,7 @@ impl<'r, 'a> Checker<'r, 'a> {
             Some(self.impls[idx].self_ty.clone())
         } else if let Some(t) = f.trait_def {
             bounds.push(("Self".to_string(), t));
-            if let Some(ItemKind::Trait(td)) = self.r.def(t).item.map(|i| &i.kind) {
-                outer_generics = generic_names(&td.generics);
-            }
+            outer_generics = self.trait_params(t);
             // Inside a trait, `Self: Trait<its own parameters>`.
             let own = outer_generics.iter().cloned().map(Ty::Param).collect();
             bound_args.push(("Self".to_string(), t, own));
@@ -540,6 +717,8 @@ impl<'r, 'a> Checker<'r, 'a> {
         let sty = self_ty.as_ref();
         self.push_bounds(&f.decl.generics, sty, &mut bounds);
         self.push_bound_args(&f.decl.generics, sty, &mut bound_args);
+        let (proj, proj_map) = self.projections(&bound_args);
+        self.cur_proj = Some(proj_map);
         let params = f
             .decl
             .params
@@ -563,8 +742,13 @@ impl<'r, 'a> Checker<'r, 'a> {
                 if let Bound::Trait { path, maybe: false } = b {
                     if let Res::Def(d) = self.r.path(path.span) {
                         if self.r.def(d).kind == DefKind::Trait {
-                            let args =
-                                self.lower_args(&path.segments.last().unwrap().args, sty, false);
+                            let args = self.trait_args(
+                                d,
+                                &path.segments.last().unwrap().args,
+                                sty,
+                                Fill::Unknown,
+                                path.span,
+                            );
                             v.push((d, args));
                         }
                     }
@@ -579,7 +763,11 @@ impl<'r, 'a> Checker<'r, 'a> {
                 opaque = Some(v);
             }
         }
+        self.cur_impl = None;
+        self.cur_trait = None;
+        self.cur_proj = None;
         FnSig {
+            proj,
             opaque,
             generics: generic_names(&f.decl.generics),
             outer_generics,
@@ -590,6 +778,31 @@ impl<'r, 'a> Checker<'r, 'a> {
             ret,
             has_body: f.decl.body.is_some(),
         }
+    }
+
+    /// The projections `P::Name` a function's bounds introduce: those left
+    /// open (instantiated like generics), and what each one means.
+    pub(crate) fn projections(
+        &self,
+        bound_args: &[(String, DefId, Vec<Ty>)],
+    ) -> (Vec<String>, HashMap<String, Ty>) {
+        let mut open = Vec::new();
+        let mut map = HashMap::new();
+        for (p, d, args) in bound_args {
+            let assoc = self.trait_assoc(*d);
+            let n = self.trait_params(*d).len() - assoc.len();
+            for (a, t) in assoc.iter().zip(args.iter().skip(n)) {
+                let key = format!("{p}::{a}");
+                if map.contains_key(&key) {
+                    continue;
+                }
+                if *t == Ty::Param(key.clone()) {
+                    open.push(key.clone());
+                }
+                map.insert(key, t.clone());
+            }
+        }
+        (open, map)
     }
 
     /// Like [`push_bounds`], keeping each bound's trait arguments.
@@ -604,8 +817,13 @@ impl<'r, 'a> Checker<'r, 'a> {
                 if let Bound::Trait { path, maybe: false } = b {
                     if let Res::Def(d) = s.r.path(path.span) {
                         if s.r.def(d).kind == DefKind::Trait {
-                            let args =
-                                s.lower_args(&path.segments.last().unwrap().args, self_ty, false);
+                            let args = s.trait_args(
+                                d,
+                                &path.segments.last().unwrap().args,
+                                self_ty,
+                                Fill::Param(name),
+                                path.span,
+                            );
                             out.push((name.to_string(), d, args));
                         }
                     }

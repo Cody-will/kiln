@@ -469,12 +469,19 @@ impl Resolver {
 					if !self.impl_idx.contains_key(&key(item.span)) {
 						self.impl_idx.insert(key(item.span), idx)
 					}
+					// The header, with only its `type` items (methods are in `fns`).
+					types mut := Vec::new()
+					for it in &decl.items {
+						if let ItemKind::TypeAlias { .. } = &it.kind {
+							types.push(it.clone())
+						}
+					}
 					head := ImplDecl {
 						is_unsafe: decl.is_unsafe,
 						generics: decl.generics.clone(),
 						trait_ref: decl.trait_ref.clone(),
 						self_ty: decl.self_ty.clone(),
-						items: Vec::new(),
+						items: types,
 					}
 					self.r.impls.push(ImplRef { decl: head, span: item.span, module: module, is_prelude: self.in_prelude })
 				}
