@@ -13,7 +13,7 @@ Status key: ✅ done · 🚧 in progress · ⬜ not started
 | **M6: Tooling** | `kiln fmt` (gofmt-style, tabs, trailing commas), `kiln-ls` MVP (diagnostics, hover, go-to-def, completion) | ✅ `kiln fmt` (token-based, self-verifying, idempotence-tested over the repo) and `kiln lsp` (single-file: diagnostics, hover, definition, references, rename, completion, symbols, formatting, inlay hints; VS Code client). Next: multi-file workspaces, semantic tokens, code actions, incremental analysis |
 | **M7: Backend-ready** | `std::net::http`, JSON, testing framework; dogfood a real service | 🚧 `http`/`http2`/`json`/`kiln test` done; dogfood service next |
 | **M8: 1.0 hardening** | Compiler fuzzing, conformance suite, performance, docs, stability guarantees | ⬜ |
-| **Self-hosting** | Rewrite the compiler in Kiln; kilnc daily driver; retire Rust codegen (docs/SELF_HOSTING.md) | 🚧 **kilnc is the default** for `build`/`run`; bootstrap + differential tests still use Rust crates; `--compiler=rust` deprecated. Next: `check`/LSP on kilnc, then move/delete Rust codegen |
+| **Self-hosting** | Rewrite the compiler in Kiln; kilnc daily driver; retire Rust codegen (docs/SELF_HOSTING.md) | 🚧 **kilnc is the compiler for every normal workflow** (`build`/`run` incl. `[link]` and `--backend=llvm`, `check`, `test`, LSP diagnostics); Rust crates remain only as bootstrap seed and differential-test reference (`--compiler=rust`). Next: LSP navigation index on kilnc, then move Rust crates under `bootstrap/reference/` |
 
 ## Next up
 
@@ -24,7 +24,7 @@ Status key: ✅ done · 🚧 in progress · ⬜ not started
 5. **Codegen gaps:** `static` items, unwinding (destructors on panic, `recover`), and debug info beyond line tables (variables, types) and for LLVM builds. Done: the optimizing LLVM backend for release builds (`crates/kiln_llvm`, docs/LLVM.md), slice patterns, `|` patterns with bindings, `defer` on panic (Unix), and DWARF line tables in Cranelift debug builds (Linux).
 6. **Lossless CST decision:** choose whether to build a lossless syntax tree (in the rowan style) before the formatter and language server depend on the AST.
 7. **Borrow checker refinements:** lifetime variance, higher-ranked lifetimes; reading a `&'t` field through `&self` should keep lifetime `'t` (today it borrows `self`).
-8. **Self-hosting:** kilnc is the daily driver (see docs/SELF_HOSTING.md). Remaining: seed-only bootstrap docs in release notes, `kiln check`/LSP via kilnc, then relocate Rust crates under `bootstrap/reference/` and delete unused codegen.
+8. **Self-hosting:** kilnc is the daily driver (see docs/SELF_HOSTING.md). `kiln check`, `kiln test`, native `[link]` and LSP diagnostics run on kilnc. Remaining: seed-only bootstrap docs in release notes, the LSP navigation index via kilnc, then relocate Rust crates under `bootstrap/reference/` and delete unused codegen.
 9. **Parser:** `Vec<chan<- T>>` fails to parse (the `>>` after a channel type); use a `type` alias for now.
 
 ## Known parser gaps

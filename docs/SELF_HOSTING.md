@@ -1,15 +1,18 @@
 # Self-hosting
 
-**kilnc** (the Kiln package in `compiler/`) is the daily-driver code
-generator for `kiln build` / `kiln run`. The Rust crates under `crates/`
-remain as the differential-test reference and as the bootstrap path that
-builds stage 1 of kilnc; they are not the default codegen anymore.
+**kilnc** (the Kiln package in `compiler/`) is the compiler for every
+normal workflow: `kiln build` / `kiln run` (including native `[link]`
+C sources and libraries, and `--backend=llvm`), `kiln check`, `kiln test`
+and the diagnostics of `kiln lsp`. The Rust crates under `crates/` are
+kept only as the **bootstrap seed** (stage 1 of `make bootstrap`) and the
+**differential-test reference** (`*_diff.rs`).
 
 `--compiler=rust` / `KILN_COMPILER=rust` is deprecated. Use it only for
-bootstrap stage 1, differential tests, or packages that need native
-`[link]` / `--backend=` (not yet supported by kilnc). Silent fallback
-from a kilnc failure to the Rust codegen is off unless
-`KILN_ALLOW_RUST_FALLBACK=1`.
+bootstrap stage 1 and differential tests. `--backend=cranelift` exists
+only in the Rust compiler, so it selects it. Silent fallback from a
+kilnc failure to the Rust codegen is off unless
+`KILN_ALLOW_RUST_FALLBACK=1`. When no kilnc is installed (e.g. a plain
+`cargo build` checkout), the CLI falls back to the Rust crates.
 
 ## Layout
 
@@ -236,16 +239,41 @@ Debug builds split the IR into hidden-linkage shards, compiled with `clang -O0` 
 With `--release`, kilnc emits LLVM attributes for Kiln's guarantees (codegen.kn `end_release_fn`). Every function `f` gets an `f.v` body that takes small scalar arguments, thin references and `(ptr, len)` fat references by value, and returns 1/2/4/8/16-byte results by value. `f` itself keeps the uniform slot signature (function pointers and vtables still use it) as an always-inlined wrapper. See bench/RESULTS.md for the numbers.
 
 ## kilnc as the daily driver
-`install.sh` builds kilnc with the Rust compiler (stage 1), rebuilds it with itself (stage 2), and installs stage 2 as `<prefix>/lib/kiln/kilnc`. `--no-kilnc` skips this; so does a missing `clang`, which kilnc needs. `kiln build` and `kiln run` then compile with kilnc only. kiln writes kilnc's inputs (std sources and runtime libraries) once to `$TMPDIR/kiln-<version>-<hash>`. Intermediate files go to `target/<profile>/kilnc/` (packages) or `$TMPDIR/kiln-work-<hash>` (single files), so rebuilds are incremental.
+`install.sh` builds kilnc with the Rust compiler (stage 1), rebuilds it with itself (stage 2), and installs stage 2 as `<prefix>/lib/kiln/kilnc`. `--no-kilnc` skips this; so does a missing `clang`, which kilnc needs. `kiln build` and `kiln run` then compile with kilnc only. kiln writes kilnc's inputs (std sources and runtime libraries) once to `$TMPDIR/kiln-<version>-<hash>`. Intermediate files go to `target/<profile>/.kilnc-work/` (packages) or `$TMPDIR/kiln-work-<hash>` (single files), so rebuilds are incremental.
 
 The built-in Rust codegen is used only when:
-- `--compiler=rust` or `KILN_COMPILER=rust` is set (deprecated; prints a warning), or `--backend=` is given;
-- the package has native `[link]` settings (kilnc does not compile C sources or pass `-l` yet);
+- `--compiler=rust` or `KILN_COMPILER=rust` is set (deprecated; prints a warning), or `--backend=cranelift` is given;
+- no kilnc is installed;
 - kilnc fails **and** `KILN_ALLOW_RUST_FALLBACK=1` is set. Otherwise the build errors. `KILN_DEBUG_KILNC=1` shows kilnc's output.
 
-Path `[dependencies]` are resolved by kilnc; they no longer force the Rust codegen.
+Path `[dependencies]` are resolved by kilnc; they no longer force the Rust codegen. Native `[link]` settings are passed through: `c-sources` as `--c-source`, `libs` / `search` as `-l` / `-L` (linked after the runtime).
 
-kiln looks for kilnc in `$KILNC`, then next to the `kiln` executable, then in `<prefix>/lib/kiln/kilnc`. `kiln doctor` shows which one it found, and `--compiler=kilnc` asks for it explicitly. `kiln test`, `kiln check` and the LSP still use the Rust front end (resolution / typeck / borrowck); retiring those is a later step. The Rust crates stay in-tree for differential tests (`*_diff.rs`) until that lands — see "Retiring the Rust compiler" below.
+kiln looks for kilnc in `$KILNC`, then next to the `kiln` executable, then in `<prefix>/lib/kiln/kilnc`. `kiln doctor` shows which one it found, and `--compiler=kilnc` asks for it explicitly.
+
+### check, test and the LSP
+
+- **`kiln check`** runs `kilnc --check <file>`: parse, resolve, type check and
+  borrow check, stopping at the first failing phase like `kiln build`. kilnc
+  prints machine-readable lines (`file\t<span base>\t<path>`, then
+  `error\t<start>\t<end>\t<msg>`, `note ...`, `help ...` or `fatal ...`, with
+  `\\`, `\n` and `\t` escaped); the CLI renders them with the usual
+  source snippets (`kiln_lsp::kilnc`).
+- **`kiln test`** runs `kilnc --build --tests <list>`: kilnc generates the test
+  harness (`compiler/src/testgen.kn`, a port of `kiln_parser::testgen`) and
+  writes one `name\tignore\tshould_panic` line per test; the CLI runs each
+  test in its own process as before. On a build error it re-runs `--check`
+  to show rendered diagnostics.
+- **`kiln lsp`** gets its diagnostics from `kilnc --check --overlay <path>
+  <file> ...` (unsaved buffers are written to a temp dir and substituted).
+  It runs on the existing debounced background analysis thread, in
+  parallel with the Rust index used for navigation, so latency is the max
+  of the two, not the sum.
+
+Still on the Rust crates: the LSP's navigation tables (hover, go to
+definition, references, completion, rename, semantic tokens) come from the
+Rust resolve / typeck index — kilnc has no dump of those yet; the CLI's
+package discovery, manifest and `kiln.lock` handling; `kiln fmt`; the
+Cranelift backend; and bootstrap stage 1.
 
 ## Bootstrap seed (no Rust as the daily path)
 
@@ -285,9 +313,11 @@ runs the stage1→stage2 bootstrap and packs `kilnc` into the tarball.
 | `--compiler=rust` deprecated warning | ✅ |
 | No silent Rust fallback | ✅ (`KILN_ALLOW_RUST_FALLBACK=1` to opt in) |
 | Pinned seed in releases | ✅ (tarball `kilnc`; see above) |
-| Native `[link]` / `--backend=` in kilnc | ⬜ still forces Rust codegen |
-| Differential tests still on Rust crates | ✅ keep `crates/kiln_*` until fronts move |
-| `kiln check` / LSP / `kiln test` on kilnc | ⬜ later |
+| Native `[link]` / `--backend=llvm` in kilnc | ✅ (`--backend=cranelift` stays Rust-only) |
+| Differential tests still on Rust crates | ✅ keep `crates/kiln_*` as the reference |
+| `kiln check` / `kiln test` on kilnc | ✅ |
+| LSP diagnostics on kilnc | ✅ |
+| LSP navigation index on kilnc | ⬜ needs resolve/typeck dumps from kilnc |
 | Move Rust crates under `bootstrap/reference/` | ⬜ after check/LSP no longer need them |
 | Delete Rust codegen crates | ⬜ last |
 
