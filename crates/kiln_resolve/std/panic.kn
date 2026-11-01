@@ -1,0 +1,40 @@
+// Recovering from panics, as with Go's `recover`.
+//
+//	r := panic::recover(|| parse_config(text))
+//	match r {
+//		Ok(cfg) => use(cfg),
+//		Err(msg) => println("config rejected: {msg}"),
+//	}
+//
+// A panic inside the closure runs the `defer`s of every function between
+// the panic and the `recover` (innermost first), then `recover` returns
+// `Err` with the panic message. Locals of those functions are not dropped:
+// whatever they own leaks, and a held `MutexGuard` stays locked. Put cleanup
+// that must happen on panic in a `defer`. Panics in other tasks are not
+// caught; each task recovers its own.
+
+fun kn_panic_message(out &mut Vec<u8>)
+
+// Runs `body`; true when it panicked (the panic is then over).
+pub fun catch_panic(body fun mut()) bool
+
+// The message of the last panic caught on this task, or "".
+pub fun last_message() string {
+	b mut := Vec::new()
+	kn_panic_message(&mut b)
+	return string::from_utf8_lossy(&b[..])
+}
+
+// Calls `body` and returns its result, or `Err` with the message if it
+// panicked.
+pub fun recover<T>(body fun mut() T) result<T, string> {
+	out mut := None
+	f mut := body
+	if catch_panic(|| { out = Some(f()) }) {
+		return Err(last_message())
+	}
+	return match out {
+		Some(v) => Ok(v),
+		None => Err(last_message()),
+	}
+}

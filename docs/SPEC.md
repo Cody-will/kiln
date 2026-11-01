@@ -344,6 +344,23 @@ fun main() {
 
 `main` may return `result<void, E>` where `E: Error`. If it returns `Err`, the program prints the error and exits with code 1. `panic` exists only for unrecoverable bugs.
 
+**Panics and `recover`.** A panic (an explicit `panic(msg)`, a failed bounds check, an overflow in a debug build, and so on) runs the pending `defer` calls of each function on the task's stack, innermost first, as in Go. If nothing recovers it, the program prints `panic: msg` and exits with status 101. `std::panic::recover(body)` stops a panic, like a deferred `recover()` in Go:
+
+```kiln
+import std::panic
+
+r := panic::recover(|| risky(input))   // result<T, string>
+match r {
+    Ok(v) => use(v),
+    Err(msg) => log::warn("risky failed: {msg}"),
+}
+```
+
+- `recover` calls `body`. If `body` returns, the result is `Ok(value)`. If it panics, the `defer`s between the panic and the `recover` run, and the result is `Err(message)`. `panic::catch_panic(body fun mut()) bool` is the untyped form, and `panic::last_message()` reads the message.
+- There is no unwinding: locals of the functions a panic leaves are **not dropped**. Their memory leaks, and a `MutexGuard` held there stays locked. This keeps the non-panicking path free of landing pads. Cleanup that must also happen on panic belongs in a `defer`. Treat `recover` as a way to contain a failed request or plugin, not as control flow.
+- A panic inside a deferred call while panicking keeps the first message. A recovered panic is over: later panics are reported normally.
+- Each task recovers its own panics. A panic in a spawned task that it does not recover still ends the program. `recover` is Unix-only so far; on Windows a panic always exits.
+
 ### Concurrency: `spawn`, channels, `select`
 
 ```kiln
@@ -710,7 +727,7 @@ Resolved in this revision: explicit `return`, the canonical formatter, the `.kn`
 2. **Import keyword**: `import` (Go-like) or `use` (Rust-like)? The draft uses `import` and keeps `use` reserved.
 3. **Macros**: none for 1.0 (built-in `println` and derive only), hygienic macros, or Zig-style `comptime`?
 4. **Task cancellation**: Go-style `Context` passed explicitly, or structured cancellation tied to `scope`?
-5. **Panic policy**: unwind (recoverable at task boundaries) or abort by default?
+5. **Panic policy**: *Decided:* Go's model. `defer`s run, `std::panic::recover` stops a panic, and an unrecovered panic exits with status 101. Locals are not dropped on panic (see "Panics and `recover`" under Errors).
 6. **Runtime in `no_std`**: should embedded targets get a minimal single-threaded scheduler?
 7. **Bootstrapping**: should the compiler eventually self-host in Kiln? *In progress:* the lexer is ported (`compiler/`, see docs/SELF_HOSTING.md).
 8. **License and governance**: MIT/Apache-2.0 dual license?

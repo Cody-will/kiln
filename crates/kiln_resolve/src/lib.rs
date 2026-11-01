@@ -74,6 +74,7 @@ pub const STD_MODULES: &[(&str, &str)] = &[
     ("net::websocket", include_str!("../std/websocket.kn")),
     ("db::postgres", include_str!("../std/postgres.kn")),
     ("log", include_str!("../std/log.kn")),
+    ("panic", include_str!("../std/panic.kn")),
 ];
 
 /// The prelude and standard library as one source text, plus each file's

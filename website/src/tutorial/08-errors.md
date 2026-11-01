@@ -105,3 +105,16 @@ If `main` returns `Err`, the program prints the error and exits with status 1.
 ## Panics
 
 `panic("message")` stops the program. Use it only for bugs ("this can't happen"), not for errors a caller could handle. `.unwrap()` and `.expect("why")` on `option`/`result` panic on `None`/`Err`.
+
+A server that must survive a bug in one request can contain it with `std::panic::recover`, Kiln's version of Go's `recover`. The panic's `defer`s run, then `recover` returns the message as an `Err`:
+
+```kiln
+import std::panic
+
+fun main() {
+	r := panic::recover(|| [1, 2, 3][5])
+	println("{r:?}") // Err("index out of bounds: the length is 3 but the index is 5")
+}
+```
+
+Locals in the functions the panic leaves are not dropped (their memory leaks), so reach for `recover` at a boundary such as one request, not as everyday control flow.

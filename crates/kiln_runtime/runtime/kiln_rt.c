@@ -10,6 +10,7 @@
  *   String, Vec<T>:  { uint8_t *ptr; size_t cap; size_t len; }   (24 bytes)
  *   &str, &[T]:      { const uint8_t *ptr; size_t len; }          (16 bytes)
  */
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -212,6 +213,7 @@ KN_NORETURN void kn_panic(const uint8_t *msg, size_t len) {
 		if (!ps->unwinding) {
 			/* Keep the first message; a panic inside a deferred call
 			 * just moves on to the next frame. */
+			free(ps->msg);
 			ps->msg = (uint8_t *)malloc(len ? len : 1);
 			if (ps->msg)
 				memcpy(ps->msg, msg, len);
@@ -224,6 +226,55 @@ KN_NORETURN void kn_panic(const uint8_t *msg, size_t len) {
 		panic_die(ps->msg, ps->len);
 #endif
 	panic_die(msg, len);
+}
+
+/* ----- recover --------------------------------------------------------------
+ *
+ * kn_catch_panic(code, env) calls the closure `code(ret, env)` under a catch
+ * frame. A panic inside it runs the defers of the frames in between (each
+ * frame's kn_frame_leave passes the panic on), then lands here: the panic is
+ * over, its message is kept for kn_panic_message, and the call returns 1.
+ * Returns 0 when the closure finishes normally. Locals of the unwound frames
+ * are not dropped (they leak), as on the exiting path. */
+typedef void (*KnCatchCode)(void *ret, void *env);
+void kn_string_push(KnVec *s, const uint8_t *p, size_t len);
+
+#if !defined(_WIN32)
+typedef struct {
+	KnPanicFrame f;
+	jmp_buf jb;
+} KnCatchFrame;
+_Static_assert(offsetof(KnCatchFrame, jb) == sizeof(KnPanicFrame), "jmp_buf follows the frame");
+#endif
+
+int32_t kn_catch_panic(KnCatchCode code, void *env) {
+	uint64_t ret[4] = {0};
+#if !defined(_WIN32)
+	KnPanicState *ps = panic_state();
+	KnCatchFrame fr;
+	kn_frame_enter(&fr.f);
+	if (_setjmp(fr.jb)) {
+		ps = panic_state();
+		ps->head = fr.f.prev;
+		ps->landed = NULL;
+		ps->unwinding = 0;
+		return 1;
+	}
+	code(ret, env);
+	ps = panic_state();
+	ps->head = fr.f.prev;
+	return 0;
+#else
+	code(ret, env);
+	return 0;
+#endif
+}
+
+/* The message of the last panic caught on this task. */
+void kn_panic_message(KnVec *out) {
+	KnPanicState *ps = panic_state();
+	if (ps && ps->msg)
+		kn_string_push(out, ps->msg, ps->len);
 }
 
 KN_NORETURN void kn_panic_bounds(size_t idx, size_t len) {

@@ -343,6 +343,7 @@ fun runtime_sig(name &str) option<(Vec<string>, string)> {
 		"kn_task_join" => "i64,i64:",
 		"kn_task_drop" => "i64:",
 		"kn_scope_new" => ":i64",
+		"kn_catch_panic" => "i64,i64:i32",
 		"kn_scope_spawn" => "i64,i64,i64:",
 		"kn_scope_wait" => "i64:",
 		"kn_chan_new" => "i64,i64,i64:i64",
@@ -5804,6 +5805,16 @@ impl Cg {
 			self.call_rt("kn_task_join", &vec2(h, p))
 			z := val("0".to_string(), "i32")
 			self.store(&z, dest, 0)
+			return
+		}
+		if sh == "catch_panic" {
+			// std::panic::catch_panic(body): the runtime calls body under
+			// a catch frame and returns 1 if it panicked.
+			fa := self.op_addr(&args[0])
+			code := self.load("i64", &fa, 0)
+			env := self.load("i64", &fa, 8)
+			r := self.call_rt("kn_catch_panic", &vec2(code, env)).unwrap()
+			self.bool_out(&r, dest)
 			return
 		}
 		if sh == "scope" {

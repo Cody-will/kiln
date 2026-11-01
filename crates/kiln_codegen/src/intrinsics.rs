@@ -513,6 +513,14 @@ impl FnCx<'_, '_, '_, '_> {
                 let z = self.b.ins().iconst(types::I32, 0);
                 self.set_tag(dest, z);
             }
+            (_, "catch_panic") => {
+                // std::panic::catch_panic(body): 1 if body panicked.
+                let fa = self.op_addr(&args[0]);
+                let code = self.load(types::I64, fa, 0);
+                let env = self.load(types::I64, fa, 8);
+                let r = self.call_rt("kn_catch_panic", &[code, env]).unwrap();
+                self.bool_out(r, dest);
+            }
             (_, "scope") => {
                 // scope(body): run `body(&scope)`, then wait for the scope's tasks.
                 let sc = self.call_rt("kn_scope_new", &[]).unwrap();

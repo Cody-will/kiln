@@ -1,0 +1,11 @@
+inner defer 2
+middle defer
+Ok(6)
+inner defer 0
+middle defer
+Err("boom at zero")
+Err("index out of bounds: the length is 3 but the index is 7")
+inner got Err("deep")
+Ok(())
+Err("first")
+still running

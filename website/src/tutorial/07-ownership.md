@@ -206,5 +206,5 @@ Arguments follow the usual ownership rules at the `defer`: a `string` passed by 
 When values with a `Drop` impl hold references, the borrow checker uses drop order: a value declared *before* the thing it borrows would be dropped *after* it, which is reported as "does not live long enough".
 
 <div class="status">
-✅ <code>defer</code> and <code>Drop</code> are checked and run in compiled programs. 🚧 A panic exits immediately: deferred calls and destructors do not run on panic yet.
+✅ <code>defer</code> and <code>Drop</code> are checked and run in compiled programs. On a panic, pending deferred calls run (innermost first). 🚧 Destructors of locals do not run on panic; put cleanup that must happen in a <code>defer</code>.
 </div>

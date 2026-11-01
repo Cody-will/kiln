@@ -1,0 +1,38 @@
+import std::panic
+
+fun inner(n i64) i64 {
+	defer println("inner defer {n}")
+	if n == 0 {
+		panic("boom at zero")
+	}
+	return 10 / n
+}
+
+fun middle(n i64) i64 {
+	defer println("middle defer")
+	return inner(n) + 1
+}
+
+fun main() {
+	r := panic::recover(|| middle(2))
+	println("{r:?}")
+	e := panic::recover(|| middle(0))
+	println("{e:?}")
+	xs := [1, 2, 3]
+	idx := 7
+	b := panic::recover(|| xs[idx])
+	println("{b:?}")
+	// nested: the inner recover catches; the outer sees Ok
+	o := panic::recover(|| {
+		i := panic::recover::<i64>(|| panic("deep"))
+		println("inner got {i:?}")
+	})
+	println("{o:?}")
+	// a panic in a deferred call during recovery keeps the first message
+	d := panic::recover::<()>(|| {
+		defer panic("second")
+		panic("first")
+	})
+	println("{d:?}")
+	println("still running")
+}
