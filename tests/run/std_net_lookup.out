@@ -1,0 +1,13 @@
+1
+::1
+true
+true
+true
+true
+lookup example.invalid: i/o timeout
+lookup: empty host name
+lookup localhost: context canceled
+dial tcp localhost:1: context canceled
+true
+true
+done

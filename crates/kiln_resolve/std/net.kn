@@ -15,7 +15,7 @@
 
 import std::io
 import std::io::{Read, Write}
-import std::time::Duration
+import std::time::{Duration, Instant}
 
 // A timeout setting as nanoseconds for the runtime: None is 0 (no timeout);
 // a zero duration is an error, as in Rust.
@@ -43,6 +43,157 @@ fun kn_net_addr(h i64, peer i64, out &mut string) i64
 fun kn_net_udp_bind(host &str, port i64) i64
 fun kn_net_send_to(h i64, buf &[u8], host &str, port i64) i64
 fun kn_net_recv_from(h i64, buf &mut [u8], from &mut string) i64
+fun kn_net_resolve_start(host &str) i64
+fun kn_net_resolve_wait(j i64, timeout_ns i64) i64
+fun kn_net_resolve_result(j i64, out &mut string) i64
+fun kn_net_resolve_free(j i64)
+
+// ----- name lookup --------------------------------------------------------------
+
+// The IP addresses `host` resolves to ("93.184.215.14", "2606:2800::1"),
+// IPv6 and IPv4 in the system resolver's order, without duplicates. An IP
+// literal resolves to itself. The task parks while the lookup runs.
+pub fun lookup_host(host &str) result<Vec<string>, io::Error> {
+	return lookup(host, 0, None)
+}
+
+// Like `lookup_host`, but fails with `ErrorKind::TimedOut` if the answer
+// takes longer than `timeout` (the system resolver has no timeout of its
+// own; the abandoned lookup finishes in the background).
+pub fun lookup_host_timeout(host &str, timeout Duration) result<Vec<string>, io::Error> {
+	return lookup(host, timeout_ns(Some(timeout))?, None)
+}
+
+// Like `lookup_host`, but gives up when `ctx` is cancelled (as
+// `ErrorKind::Interrupted`) or its deadline passes (`TimedOut`).
+pub fun lookup_host_ctx(host &str, ctx &std::context::Context) result<Vec<string>, io::Error> {
+	return lookup(host, 0, Some(ctx))
+}
+
+fun ctx_error(ctx &std::context::Context, what &str) option<io::Error> {
+	return match ctx.err() {
+		Some(std::context::Error::DeadlineExceeded) => Some(io::Error::new(io::ErrorKind::TimedOut, "{what}: context deadline exceeded")),
+		Some(std::context::Error::Canceled) => Some(io::Error::new(io::ErrorKind::Interrupted, "{what}: context canceled")),
+		None => None,
+	}
+}
+
+fun is_ip_literal(host &str) bool {
+	if host.len() == 0 {
+		return false
+	}
+	if host.contains(":") {
+		return true
+	}
+	for c in host.as_bytes() {
+		if !((*c >= 48 && *c <= 57) || *c == 46) {
+			return false
+		}
+	}
+	return true
+}
+
+// `timeout` in ns (0: none); `ctx` is polled every 10ms while waiting.
+fun lookup(host &str, timeout i64, ctx option<&std::context::Context>) result<Vec<string>, io::Error> {
+	what := "lookup {host}"
+	if let Some(c) = ctx {
+		if let Some(e) = ctx_error(c, &what) {
+			return Err(e)
+		}
+	}
+	h := match host.strip_prefix("[") {
+		Some(x) => x.strip_suffix("]").unwrap_or(x),
+		None => host,
+	}
+	if is_ip_literal(h) {
+		out mut := Vec::new()
+		out.push(h.to_string())
+		return Ok(out)
+	}
+	if h.len() == 0 {
+		return Err(io::Error::new(io::ErrorKind::InvalidInput, "lookup: empty host name"))
+	}
+	j := with_ctx(io::check(kn_net_resolve_start(h)), "lookup", h)?
+	start := Instant::now()
+	loop {
+		slice mut := 0 as i64
+		if timeout > 0 {
+			slice = timeout - start.elapsed().as_nanos()
+			if slice <= 0 {
+				kn_net_resolve_free(j)
+				return Err(io::Error::new(io::ErrorKind::TimedOut, "{what}: i/o timeout"))
+			}
+		}
+		if let Some(c) = ctx {
+			if slice == 0 || slice > 10000000 {
+				slice = 10000000
+			}
+		}
+		r := kn_net_resolve_wait(j, slice)
+		if r < 0 {
+			kn_net_resolve_free(j)
+			return Err(io::Error::from_runtime(r).context("lookup {h}"))
+		}
+		if r == 1 {
+			break
+		}
+		if let Some(c) = ctx {
+			if let Some(e) = ctx_error(c, &what) {
+				kn_net_resolve_free(j)
+				return Err(e)
+			}
+		}
+	}
+	text mut := string::new()
+	r := kn_net_resolve_result(j, &mut text)
+	kn_net_resolve_free(j)
+	if r < 0 {
+		return Err(io::Error::from_runtime(r).context("lookup {h}"))
+	}
+	out mut := Vec::new()
+	for line in text.split("\n") {
+		if line.len() > 0 {
+			out.push(line.to_string())
+		}
+	}
+	return Ok(out)
+}
+
+// Connects to `host:port` via the addresses `lookup` found, with what is
+// left of `timeout` (ns) for each attempt.
+fun dial_resolved(addr &str, host &str, port u16, timeout i64, ctx option<&std::context::Context>) result<TcpStream, io::Error> {
+	start := Instant::now()
+	ips := with_ctx(lookup(host, timeout, ctx), "dial tcp", addr)?
+	last mut := io::Error::new(io::ErrorKind::NotFound, "dial tcp {addr}: no addresses")
+	for ip in ips.iter() {
+		left mut := 0 as i64
+		if timeout > 0 {
+			left = timeout - start.elapsed().as_nanos()
+			if left <= 0 {
+				return Err(io::Error::new(io::ErrorKind::TimedOut, "dial tcp {addr}: i/o timeout"))
+			}
+		}
+		if let Some(c) = ctx {
+			if let Some(e) = ctx_error(c, &"dial tcp {addr}") {
+				return Err(e)
+			}
+			if let Some(d) = c.remaining() {
+				if left == 0 || d.as_nanos() < left {
+					left = d.as_nanos()
+				}
+				if left <= 0 {
+					left = 1
+				}
+			}
+		}
+		r := kn_net_connect(ip, port as i64, left)
+		if r >= 0 {
+			return Ok(TcpStream { h: r })
+		}
+		last = io::Error::from_runtime(r).context("dial tcp {addr}")
+	}
+	return Err(last)
+}
 
 // Splits "host:port" into its parts ("" host means any address).
 pub fun split_host_port(addr &str) result<(&str, u16), io::Error> {
@@ -170,28 +321,34 @@ impl TcpStream {
 		return Ok(TcpStream { h: h })
 	}
 
-	// Like `connect`, but fails with `ErrorKind::TimedOut` if connecting
-	// (to all resolved addresses together) takes longer than `timeout`.
-	// Name resolution is not covered by the timeout.
+	// Like `connect`, but fails with `ErrorKind::TimedOut` if resolving the
+	// host and connecting (to each address in turn) take longer than
+	// `timeout` altogether.
 	pub fun connect_timeout(addr &str, timeout Duration) result<TcpStream, io::Error> {
 		(host, port) := split_host_port(addr)?
 		ns := timeout_ns(Some(timeout))?
-		h := with_ctx(io::check(kn_net_connect(host, port as i64, ns)), "dial tcp", addr)?
-		return Ok(TcpStream { h: h })
+		if host.len() == 0 || is_ip_literal(host) {
+			h := with_ctx(io::check(kn_net_connect(host, port as i64, ns)), "dial tcp", addr)?
+			return Ok(TcpStream { h: h })
+		}
+		return dial_resolved(addr, host, port, ns, None)
 	}
 
-	// Dials `addr` within `ctx`'s deadline; fails with the context's error
-	// (as `ErrorKind::TimedOut` or `Interrupted`) if it is already done.
+	// Dials `addr` within `ctx`: the lookup and the connection give up when
+	// it is cancelled (`ErrorKind::Interrupted`) or its deadline passes
+	// (`TimedOut`).
 	pub fun connect_ctx(addr &str, ctx &std::context::Context) result<TcpStream, io::Error> {
-		match ctx.err() {
-			Some(std::context::Error::DeadlineExceeded) => return Err(io::Error::new(io::ErrorKind::TimedOut, "dial tcp {addr}: context deadline exceeded")),
-			Some(std::context::Error::Canceled) => return Err(io::Error::new(io::ErrorKind::Interrupted, "dial tcp {addr}: context canceled")),
-			None => {},
+		if let Some(e) = ctx_error(ctx, &"dial tcp {addr}") {
+			return Err(e)
 		}
-		match ctx.remaining() {
-			Some(d) => return TcpStream::connect_timeout(addr, d),
-			None => return TcpStream::connect(addr),
+		(host, port) := split_host_port(addr)?
+		if host.len() == 0 || is_ip_literal(host) {
+			match ctx.remaining() {
+				Some(d) => return TcpStream::connect_timeout(addr, d),
+				None => return TcpStream::connect(addr),
+			}
 		}
+		return dial_resolved(addr, host, port, 0, Some(ctx))
 	}
 
 	// Makes each read that waits longer than `d` fail with

@@ -1310,6 +1310,177 @@ static void fmt_addr(const struct sockaddr *sa, KnVec *out) {
 	push_cstr(out, buf);
 }
 
+/* ----- name lookup with a deadline ------------------------------------------
+ * getaddrinfo blocks and has no timeout, so `std::net::lookup_host*` run it
+ * on a helper thread. On POSIX the thread signals a pipe that the waiting
+ * task parks on through the poller, so the wait can time out or be given up
+ * (cancelled) without holding a worker; an abandoned lookup finishes in the
+ * background and frees itself. Windows resolves synchronously in `start`. */
+
+typedef struct DnsJob {
+	char *host;
+	int rc;
+	struct addrinfo *res;
+	lock_t lock;
+	int refs; /* the waiter and the helper thread */
+	int done;
+#ifndef _WIN32
+	int wfd;
+	KnSock *rs; /* the pipe's read end */
+#endif
+} DnsJob;
+
+static void dns_unref(DnsJob *j) {
+	lk(&j->lock);
+	int left = --j->refs;
+	ulk(&j->lock);
+	if (left == 0) {
+		if (j->res)
+			freeaddrinfo(j->res);
+		free(j->host);
+		free(j);
+	}
+}
+
+static void dns_lookup(DnsJob *j) {
+	struct addrinfo hints;
+	memset(&hints, 0, sizeof hints);
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	j->rc = getaddrinfo(j->host, NULL, &hints, &j->res);
+}
+
+#ifndef _WIN32
+static void *dns_thread(void *p) {
+	DnsJob *j = (DnsJob *)p;
+	dns_lookup(j);
+	char c = 1;
+	ssize_t w = write(j->wfd, &c, 1);
+	(void)w;
+	close(j->wfd);
+	dns_unref(j);
+	return NULL;
+}
+#endif
+
+/* Starts looking up `host`; returns a job handle or an error. */
+int64_t kn_net_resolve_start(const uint8_t *host, size_t hl) {
+	net_init();
+	DnsJob *j = (DnsJob *)calloc(1, sizeof(DnsJob));
+	if (!j)
+		kn_panic_str("out of memory");
+	j->host = cstr(host, hl);
+	if (hl > 2 && j->host[0] == '[' && j->host[hl - 1] == ']') {
+		memmove(j->host, j->host + 1, hl - 2);
+		j->host[hl - 2] = 0;
+	}
+	lk_init(&j->lock);
+	j->refs = 1;
+#ifdef _WIN32
+	dns_lookup(j);
+	j->done = 1;
+#else
+	int fds[2];
+	if (pipe(fds) != 0) {
+		int64_t e = mkerr(kind_of_errno(errno), errno);
+		dns_unref(j);
+		return e;
+	}
+	fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+	fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+	set_nonblocking(fds[0]);
+	j->wfd = fds[1];
+	j->rs = sock_wrap(fds[0]);
+	j->refs = 2;
+	pthread_t th;
+	if (pthread_create(&th, NULL, dns_thread, j) != 0) {
+		/* No thread to spare: resolve here. */
+		j->refs = 1;
+		close(fds[1]);
+		dns_lookup(j);
+		j->done = 1;
+	} else {
+		pthread_detach(th);
+	}
+#endif
+	return (int64_t)(intptr_t)j;
+}
+
+/* Waits up to `timeout_ns` (0: forever) for the lookup: 1 when it is done,
+ * 0 if the time ran out first. */
+int64_t kn_net_resolve_wait(int64_t h, int64_t timeout_ns) {
+	DnsJob *j = (DnsJob *)(intptr_t)h;
+	if (j->done)
+		return 1;
+#ifndef _WIN32
+	int64_t deadline = timeout_ns > 0 ? kn_time_mono() + timeout_ns : 0;
+	for (;;) {
+		char c;
+		ssize_t n = read(j->rs->fd, &c, 1);
+		if (n >= 0) {
+			/* A byte, or EOF: the helper has finished either way. */
+			j->done = 1;
+			return 1;
+		}
+		if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+			return mkerr(kind_of_errno(errno), errno);
+		if (deadline) {
+			int64_t left = deadline - kn_time_mono();
+			if (left <= 0)
+				return 0;
+			j->rs->rto = left;
+		}
+		if (wait_io(j->rs, 0))
+			return 0;
+	}
+#else
+	(void)timeout_ns;
+	return 1;
+#endif
+}
+
+/* After the lookup is done: appends each distinct address ("ip\n") to
+ * `out`, or returns the lookup's error. */
+int64_t kn_net_resolve_result(int64_t h, KnVec *out) {
+	DnsJob *j = (DnsJob *)(intptr_t)h;
+	if (!j->done)
+		return mkerr(KN_E_OTHER, 0);
+	if (j->rc != 0)
+		return mkerr(KN_E_HOST_NOT_FOUND, j->rc);
+	char seen[64][INET6_ADDRSTRLEN + 1];
+	int nseen = 0;
+	for (struct addrinfo *p = j->res; p; p = p->ai_next) {
+		char ip[INET6_ADDRSTRLEN + 1] = {0};
+		if (p->ai_family == AF_INET6)
+			inet_ntop(AF_INET6, (void *)&((struct sockaddr_in6 *)p->ai_addr)->sin6_addr, ip, sizeof ip);
+		else if (p->ai_family == AF_INET)
+			inet_ntop(AF_INET, (void *)&((struct sockaddr_in *)p->ai_addr)->sin_addr, ip, sizeof ip);
+		else
+			continue;
+		int dup = 0;
+		for (int k = 0; k < nseen; k++)
+			if (strcmp(seen[k], ip) == 0)
+				dup = 1;
+		if (dup)
+			continue;
+		if (nseen < 64)
+			memcpy(seen[nseen++], ip, sizeof ip);
+		push_cstr(out, ip);
+		push_cstr(out, "\n");
+	}
+	return 0;
+}
+
+/* Releases the job; a lookup still running finishes on its own. */
+void kn_net_resolve_free(int64_t h) {
+	DnsJob *j = (DnsJob *)(intptr_t)h;
+#ifndef _WIN32
+	if (j->rs)
+		kn_net_close((int64_t)(intptr_t)j->rs);
+#endif
+	dns_unref(j);
+}
+
 /* Appends "ip:port" for the local (peer = 0) or remote end. */
 int64_t kn_net_addr(int64_t h, int64_t peer, KnVec *out) {
 	KnSock *s = (KnSock *)(intptr_t)h;

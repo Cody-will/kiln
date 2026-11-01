@@ -1,0 +1,54 @@
+import std::context
+import std::net
+import std::net::TcpStream
+import std::time
+
+fun main() {
+	// IP literals resolve to themselves without the resolver.
+	println(net::lookup_host("127.0.0.1").unwrap().len())
+	println(net::lookup_host("[::1]").unwrap()[0])
+	// localhost goes through the system resolver.
+	ips := net::lookup_host("localhost").unwrap()
+	println(ips.len() > 0)
+	ok mut := false
+	for ip in ips.iter() {
+		if ip == "127.0.0.1" || ip == "::1" {
+			ok = true
+		}
+	}
+	println(ok)
+	println(net::lookup_host_timeout("localhost", time::secs(5)).is_ok())
+	// Unknown names fail (some sandboxes answer every name, so accept that).
+	match net::lookup_host("no-such-host.invalid") {
+		Ok(_) => println(true),
+		Err(e) => println(e.kind() == std::io::ErrorKind::HostNotFound),
+	}
+	// A deadline that has already passed times out.
+	match net::lookup_host_timeout("example.invalid", time::secs_f64(0.000000001)) {
+		Ok(_) => println("unexpected"),
+		Err(e) => println(e.to_string()),
+	}
+	match net::lookup_host("") {
+		Ok(_) => println("unexpected"),
+		Err(e) => println(e.to_string()),
+	}
+	// A cancelled context stops before (or during) the lookup.
+	c := context::with_cancel(&context::background())
+	c.cancel()
+	match net::lookup_host_ctx("localhost", &c) {
+		Ok(_) => println("unexpected"),
+		Err(e) => println(e.to_string()),
+	}
+	match TcpStream::connect_ctx("localhost:1", &c) {
+		Ok(_) => println("unexpected"),
+		Err(e) => println(e.to_string()),
+	}
+	// Name + timeout: resolution is covered, then connecting is refused.
+	l := net::TcpListener::bind("127.0.0.1:0").unwrap()
+	port := l.local_addr().unwrap().split(":")[1].to_string()
+	s := TcpStream::connect_timeout("localhost:{port}", time::secs(5))
+	println(s.is_ok())
+	d := context::with_timeout(&context::background(), time::secs(5))
+	println(TcpStream::connect_ctx("127.0.0.1:{port}", &d).is_ok())
+	println("done")
+}

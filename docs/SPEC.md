@@ -723,6 +723,7 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 | `std::path` | string paths: `join`, `base`, `dir`, `ext`, `stem`, `clean`, `is_absolute` | ✅ |
 | `std::os` | `args`, `getenv`/`setenv`, `exit`, working directory, `Command` (run programs, capture output) | ✅ |
 | `std::net` | `TcpListener`, `TcpStream`, `UdpSocket`, `split_host_port` (DNS through the OS resolver); `connect_timeout`, per-socket read/write/accept timeouts (Rust's per-operation model: a wait longer than the timeout fails with `TimedOut`, the socket stays usable) | ✅ |
+| `std::net` DNS | `lookup_host`, `lookup_host_timeout`, `lookup_host_ctx`: getaddrinfo on a helper thread the task parks on (a timed-out or cancelled lookup finishes in the background); `connect_timeout`/`connect_ctx` cover resolution plus each address tried (Windows: resolution is synchronous) | ✅ |
 | `std::net::http` | HTTP/1.1 server (`Router`, `Server` with header/read/write/idle timeouts, keep-alive, `listen_tls`/`serve_tls`) and client (`Client` with overall and connect timeouts; `get`, `post`, `send`; `http://` and `https://`) | ✅ |
 | `std::net::tls` | `ClientConfig` (Mozilla roots, extra PEM roots), `ServerConfig` (PEM chain + key), `TlsStream` (`connect`, `client`, `server`, `Read`/`Write`, `close`) over rustls | ✅ |
 | `std::net::tls` ALPN | `with_alpn`/`set_alpn` on both configs, `TlsStream::alpn()` | ✅ |
