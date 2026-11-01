@@ -1,0 +1,188 @@
+import std::fs
+import std::io
+import std::io::{Read, Write}
+import std::net::{TcpListener, TcpStream}
+import std::net::tls
+import std::os
+
+// A test certificate authority and a "localhost" certificate it signed
+// (P-256, valid until 2126). Test use only.
+const CA &str = r"-----BEGIN CERTIFICATE-----
+MIIBhTCCASugAwIBAgIULyCVIvmQ+2CxJFLYWuU9ml7PZw8wCgYIKoZIzj0EAwIw
+FzEVMBMGA1UEAwwMS2lsbiBUZXN0IENBMCAXDTI2MTAxMDIyNTEwMVoYDzIxMjYw
+OTE2MjI1MTAxWjAXMRUwEwYDVQQDDAxLaWxuIFRlc3QgQ0EwWTATBgcqhkjOPQIB
+BggqhkjOPQMBBwNCAATI8t3Kt+ZirtD7sECnafMzxMqvSi3hFHrUU3VSD7so6H7m
+o496SLA8b+GB1a9Q7FbV+ZRuJZ1qA7298UTFZ/2eo1MwUTAdBgNVHQ4EFgQUGSWI
+XE0GBs5ufAekxmgu3YDnLzMwHwYDVR0jBBgwFoAUGSWIXE0GBs5ufAekxmgu3YDn
+LzMwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiAI+5/Tl55VTKY+
++KAUacg9Jjy34HuYABBmRwsO7XGvpQIhAKZVqPZ6H2KgB608aTLgnJyvDZNQRL+N
+BBNxWWza1aKk
+-----END CERTIFICATE-----"
+const CERT &str = r"-----BEGIN CERTIFICATE-----
+MIIBrTCCAVOgAwIBAgIUHQN4MbVrOlqORiOFhTJxbNXjQU4wCgYIKoZIzj0EAwIw
+FzEVMBMGA1UEAwwMS2lsbiBUZXN0IENBMCAXDTI2MTAxMDIyNTEwMVoYDzIxMjYw
+OTE2MjI1MTAxWjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggq
+hkjOPQMBBwNCAASxosX0bhvQt6T5CVB3mapqRQt429y5iOTxfJpxSfDL89PFK+Mi
+ymSaokUIdHdM0km1+bMr/fU7RiPmsBl5ZcDjo34wfDAaBgNVHREEEzARgglsb2Nh
+bGhvc3SHBH8AAAEwCQYDVR0TBAIwADATBgNVHSUEDDAKBggrBgEFBQcDATAdBgNV
+HQ4EFgQUBmJhmBZINO3xIHHY36iBHtBpO3EwHwYDVR0jBBgwFoAUGSWIXE0GBs5u
+fAekxmgu3YDnLzMwCgYIKoZIzj0EAwIDSAAwRQIhAJIeCYPeWquZdRDipdEekbtW
+XEgIyvPQQ5uEqtVSV+6dAiBnfL336BIFAVGKvthBhAxxL8aFP0cWK4CvpXaOe01y
+Nw==
+-----END CERTIFICATE-----"
+const KEY &str = r"-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgxBMjZh7fVtaKBzR9
+FZ/2y9hLgwiz2D/1w/k3MFAyphKhRANCAASxosX0bhvQt6T5CVB3mapqRQt429y5
+iOTxfJpxSfDL89PFK+MiymSaokUIdHdM0km1+bMr/fU7RiPmsBl5ZcDj
+-----END PRIVATE KEY-----"
+
+// A separate client CA and a "kiln-client" certificate it signed
+// (P-256, clientAuth, valid until 2126). Test use only.
+const CLIENT_CA &str = r"-----BEGIN CERTIFICATE-----
+MIIBkzCCATmgAwIBAgIUCfYuB7wn9L9ts7pC1xyjFqCHEXgwCgYIKoZIzj0EAwIw
+HjEcMBoGA1UEAwwTS2lsbiBUZXN0IENsaWVudCBDQTAgFw0yNjExMDEyMTM1MzNa
+GA8yMTI2MTAwODIxMzUzM1owHjEcMBoGA1UEAwwTS2lsbiBUZXN0IENsaWVudCBD
+QTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABD5XHML2gUwOlyXJzOfdpuMNZWbh
+xn3/7F2tU94Mhv8AG7+9zySEO/Rvp5GFgAtT/hqEpaZ9EeJBrrhYOx/uzn6jUzBR
+MB0GA1UdDgQWBBQ96sIDhhznZmPk/N8qJREfMFmBIjAfBgNVHSMEGDAWgBQ96sID
+hhznZmPk/N8qJREfMFmBIjAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gA
+MEUCIQDQtPauoIG61kslQ6rE0ZYq3s90hl3MHqBdXCnBbZY+0wIgBTVFMHboFypl
+gZL+6zFYxzBVHhC+KQLySUnvEPwtN6I=
+-----END CERTIFICATE-----"
+const CLIENT_CERT &str = r"-----BEGIN CERTIFICATE-----
+MIIBmzCCAUCgAwIBAgIUY0cXnz4zL5FqJQgd1eNZGqDFLTowCgYIKoZIzj0EAwIw
+HjEcMBoGA1UEAwwTS2lsbiBUZXN0IENsaWVudCBDQTAgFw0yNjExMDEyMTM1MzNa
+GA8yMTI2MTAwODIxMzUzM1owFjEUMBIGA1UEAwwLa2lsbi1jbGllbnQwWTATBgcq
+hkjOPQIBBggqhkjOPQMBBwNCAASWrFdP0u+6D527iF9uBS1FBTae5DQhSxRVor8P
+Z6Tk0TA13Vso4rWgVrlGJD065waezhX44wwPDdZJ0BWQ1TgXo2IwYDAJBgNVHRME
+AjAAMBMGA1UdJQQMMAoGCCsGAQUFBwMCMB0GA1UdDgQWBBTRMEOL416Skduczowt
+tjjI/D71LzAfBgNVHSMEGDAWgBQ96sIDhhznZmPk/N8qJREfMFmBIjAKBggqhkjO
+PQQDAgNJADBGAiEAjvggbTXRh7Xq8HQ1VWY7oskzOCuj7iBiSPCxrGCkQcACIQCq
+U4VNtHZqK5Ddl7/majo/oliS8QyUU3u7TtlZyhGorQ==
+-----END CERTIFICATE-----"
+const CLIENT_KEY &str = r"-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg/9zjQo5Trw4ol2YK
+RdozC4jjkXRMAUy38gpfmgvlY/ShRANCAASWrFdP0u+6D527iF9uBS1FBTae5DQh
+SxRVor8PZ6Tk0TA13Vso4rWgVrlGJD065waezhX44wwPDdZJ0BWQ1TgX
+-----END PRIVATE KEY-----"
+
+// Serves `n` connections: echoes one read back with whether the client sent a certificate.
+fun serve(l TcpListener, srv tls::ServerConfig, n i32) {
+	for _ in 0..n {
+		c := l.accept().unwrap()
+		match tls::TlsStream::server(c, &srv) {
+			Ok(s) => {
+				s mut := s
+				buf mut := [0 as u8; 64]
+				got := s.read(&mut buf).unwrap()
+				peer := match s.peer_certificate() {
+					Some(d) => "client cert ({d.len() > 100} DER)",
+					None => "no client cert".to_string(),
+				}
+				msg := "{string::from_utf8_lossy(&buf[0..got])}: {peer}"
+				s.write_all(msg.as_bytes()).unwrap()
+				s.close().unwrap()
+			},
+			Err(_) => {},
+		}
+	}
+}
+
+fun talk(port u16, cfg &tls::ClientConfig, what &str) {
+	tcp := TcpStream::connect(&"127.0.0.1:{port}").unwrap()
+	r := match tls::TlsStream::client(tcp, "localhost", cfg) {
+		Ok(s) => {
+			s mut := s
+			match s.write_all(what.as_bytes()) {
+				Ok(_) => {
+					buf mut := [0 as u8; 128]
+					match s.read(&mut buf) {
+						Ok(n) => string::from_utf8_lossy(&buf[0..n]),
+						Err(_) => "refused".to_string(),
+					}
+				},
+				Err(_) => "refused".to_string(),
+			}
+		},
+		Err(_) => "refused".to_string(),
+	}
+	println("{what} -> {r}")
+}
+
+fun main() result<void, io::Error> {
+	// Required client certificates.
+	srv := tls::ServerConfig::with_client_auth(CERT.as_bytes(), KEY.as_bytes(), CLIENT_CA.as_bytes(), true)?
+	l := TcpListener::bind("127.0.0.1:0")?
+	port := l.port()?
+	spawn move {
+		serve(l, srv, 3)
+	}
+	o mut := tls::ClientOptions::new()
+	o.roots_pem = CA.as_bytes().to_vec()
+	o.cert_pem = CLIENT_CERT.as_bytes().to_vec()
+	o.key_pem = CLIENT_KEY.as_bytes().to_vec()
+	with_cert := tls::ClientConfig::from_options(&o)?
+	talk(port, &with_cert, "required+cert")
+	plain := tls::ClientConfig::with_roots_pem(CA.as_bytes())?
+	talk(port, &plain, "required+none")
+	// A certificate from the wrong CA (the server's own) is refused too.
+	o.cert_pem = CERT.as_bytes().to_vec()
+	o.key_pem = KEY.as_bytes().to_vec()
+	wrong := tls::ClientConfig::from_options(&o)?
+	talk(port, &wrong, "required+wrong")
+
+	// Optional client certificates.
+	srv2 := tls::ServerConfig::with_client_auth(CERT.as_bytes(), KEY.as_bytes(), CLIENT_CA.as_bytes(), false)?
+	l2 := TcpListener::bind("127.0.0.1:0")?
+	port2 := l2.port()?
+	spawn move {
+		serve(l2, srv2, 2)
+	}
+	talk(port2, &with_cert, "optional+cert")
+	talk(port2, &plain, "optional+none")
+
+	// Configuration errors.
+	match tls::ServerConfig::with_client_auth(CERT.as_bytes(), KEY.as_bytes(), b"", true) {
+		Ok(_) => println("no CA: accepted?"),
+		Err(e) => println("no CA: {e}"),
+	}
+	match tls::ServerConfig::with_client_auth(CERT.as_bytes(), KEY.as_bytes(), b"junk", true) {
+		Ok(_) => println("junk CA: accepted?"),
+		Err(e) => println("junk CA: {e}"),
+	}
+	o2 mut := tls::ClientOptions::new()
+	o2.cert_pem = CLIENT_CERT.as_bytes().to_vec()
+	match tls::ClientConfig::from_options(&o2) {
+		Ok(_) => println("no key: accepted?"),
+		Err(e) => println("no key: {e}"),
+	}
+	o3 mut := tls::ClientOptions::new()
+	o3.mozilla_roots = false
+	match tls::ClientConfig::from_options(&o3) {
+		Ok(_) => println("no roots: accepted?"),
+		Err(e) => println("no roots: {e}"),
+	}
+
+	// The OS trust store: the real one has many roots; SSL_CERT_FILE overrides it.
+	match tls::system_roots_pem() {
+		Ok(p) => {
+			n := string::from_utf8_lossy(&p).split("BEGIN CERTIFICATE").len()
+			println("system roots: {n > 20}")
+		},
+		Err(e) => println("system roots: {e}"),
+	}
+	path := "/tmp/kiln_tls_ca_test.pem"
+	fs::write(path, CA.as_bytes())?
+	os::setenv("SSL_CERT_FILE", path)?
+	sys := tls::ClientConfig::system()?
+	srv3 := tls::ServerConfig::from_pem(CERT.as_bytes(), KEY.as_bytes())?
+	l3 := TcpListener::bind("127.0.0.1:0")?
+	port3 := l3.port()?
+	spawn move {
+		serve(l3, srv3, 1)
+	}
+	talk(port3, &sys, "system roots")
+	os::unsetenv("SSL_CERT_FILE")?
+	fs::remove_file(path)?
+	return Ok()
+}

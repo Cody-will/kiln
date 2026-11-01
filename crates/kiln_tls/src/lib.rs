@@ -12,6 +12,7 @@
 
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+use rustls::server::WebPkiClientVerifier;
 use rustls::{
     ClientConfig, ClientConnection, Connection, RootCertStore, ServerConfig, ServerConnection,
 };
@@ -62,6 +63,85 @@ unsafe fn put(msg: &str, out: *mut u8, cap: usize) -> usize {
     b.len()
 }
 
+/// Parses every certificate in a PEM bundle.
+fn pem_certs(pem: &[u8], what: &str) -> Result<Vec<CertificateDer<'static>>, String> {
+    let mut out = Vec::new();
+    for c in CertificateDer::pem_slice_iter(pem) {
+        match c {
+            Ok(c) => out.push(c),
+            Err(e) => return Err(format!("bad {what} PEM: {e:?}")),
+        }
+    }
+    if out.is_empty() {
+        return Err(format!("no certificates found in the {what} PEM"));
+    }
+    Ok(out)
+}
+
+/// Adds the PEM certificates in `pem` to `roots`. With `lenient` (a system
+/// bundle), certificates rustls cannot use are skipped instead of failing.
+fn add_roots(roots: &mut RootCertStore, pem: &[u8], lenient: bool) -> Result<(), String> {
+    if lenient {
+        let certs: Vec<_> = CertificateDer::pem_slice_iter(pem)
+            .filter_map(|c| c.ok())
+            .collect();
+        let (ok, _) = roots.add_parsable_certificates(certs);
+        if ok == 0 {
+            return Err("no usable certificates in the system trust store".into());
+        }
+        return Ok(());
+    }
+    for c in pem_certs(pem, "root certificate")? {
+        roots
+            .add(c)
+            .map_err(|e| format!("bad root certificate: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Bits of `kn_tls_client_config2`'s `flags`.
+const MOZILLA_ROOTS: i32 = 1;
+const INSECURE: i32 = 2;
+const LENIENT_ROOTS: i32 = 4;
+
+fn client_config(
+    roots_pem: &[u8],
+    flags: i32,
+    cert: &[u8],
+    key: &[u8],
+) -> Result<ClientConfig, String> {
+    let mut roots = RootCertStore::empty();
+    if flags & MOZILLA_ROOTS != 0 {
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    }
+    if !roots_pem.is_empty() {
+        add_roots(&mut roots, roots_pem, flags & LENIENT_ROOTS != 0)?;
+    }
+    if roots.is_empty() && flags & INSECURE == 0 {
+        return Err("no trusted root certificates".into());
+    }
+    let builder = ClientConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?
+        .with_root_certificates(roots);
+    let mut cfg = if cert.is_empty() {
+        builder.with_no_client_auth()
+    } else {
+        let chain = pem_certs(cert, "client certificate")?;
+        let key = PrivateKeyDer::from_pem_slice(key)
+            .map_err(|e| format!("bad client private key PEM: {e:?}"))?;
+        builder
+            .with_client_auth_cert(chain, key)
+            .map_err(|e| format!("client certificate and key: {e}"))?
+    };
+    if flags & INSECURE != 0 {
+        cfg.dangerous()
+            .set_certificate_verifier(Arc::new(NoVerify(provider())));
+    }
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(cfg)
+}
+
 /// A client config trusting the Mozilla roots (webpki-roots) plus any PEM
 /// certificates in `extra` (may be empty). Null on error, with the message
 /// in `err`.
@@ -73,47 +153,44 @@ pub unsafe extern "C" fn kn_tls_client_config(
     err: *mut u8,
     err_cap: usize,
 ) -> *mut Client {
-    let mut roots = RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let pem = bytes(extra, extra_len);
-    if !pem.is_empty() {
-        let mut n = 0;
-        for c in CertificateDer::pem_slice_iter(pem) {
-            match c {
-                Ok(c) => {
-                    if let Err(e) = roots.add(c) {
-                        put(&format!("bad root certificate: {e}"), err, err_cap);
-                        return std::ptr::null_mut();
-                    }
-                    n += 1;
-                }
-                Err(e) => {
-                    put(&format!("bad PEM: {e:?}"), err, err_cap);
-                    return std::ptr::null_mut();
-                }
-            }
-        }
-        if n == 0 {
-            put("no certificates found in PEM", err, err_cap);
-            return std::ptr::null_mut();
-        }
-    }
-    let builder = match ClientConfig::builder_with_provider(provider())
-        .with_safe_default_protocol_versions()
-    {
-        Ok(b) => b,
+    let flags = MOZILLA_ROOTS | if insecure != 0 { INSECURE } else { 0 };
+    match client_config(bytes(extra, extra_len), flags, &[], &[]) {
+        Ok(cfg) => Box::into_raw(Box::new(Client { cfg: Arc::new(cfg) })),
         Err(e) => {
-            put(&e.to_string(), err, err_cap);
-            return std::ptr::null_mut();
+            put(&e, err, err_cap);
+            std::ptr::null_mut()
         }
-    };
-    let mut cfg = builder.with_root_certificates(roots).with_no_client_auth();
-    if insecure != 0 {
-        cfg.dangerous()
-            .set_certificate_verifier(Arc::new(NoVerify(provider())));
     }
-    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
-    Box::into_raw(Box::new(Client { cfg: Arc::new(cfg) }))
+}
+
+/// A client config: roots from `roots` (PEM, may be empty) plus the Mozilla
+/// roots when `flags & 1`; `flags & 2` skips verification; `flags & 4`
+/// skips unusable roots (system bundles). A non-empty `cert`/`key` (PEM)
+/// is presented when the server asks for a client certificate (mTLS).
+#[no_mangle]
+pub unsafe extern "C" fn kn_tls_client_config2(
+    roots: *const u8,
+    roots_len: usize,
+    flags: i32,
+    cert: *const u8,
+    cert_len: usize,
+    key: *const u8,
+    key_len: usize,
+    err: *mut u8,
+    err_cap: usize,
+) -> *mut Client {
+    match client_config(
+        bytes(roots, roots_len),
+        flags,
+        bytes(cert, cert_len),
+        bytes(key, key_len),
+    ) {
+        Ok(cfg) => Box::into_raw(Box::new(Client { cfg: Arc::new(cfg) })),
+        Err(e) => {
+            put(&e, err, err_cap);
+            std::ptr::null_mut()
+        }
+    }
 }
 
 /// Frees a client config.
@@ -122,6 +199,38 @@ pub unsafe extern "C" fn kn_tls_client_config_free(c: *mut Client) {
     if !c.is_null() {
         drop(Box::from_raw(c));
     }
+}
+
+fn server_config(
+    cert: &[u8],
+    key: &[u8],
+    client_ca: &[u8],
+    require: bool,
+) -> Result<ServerConfig, String> {
+    let certs = pem_certs(cert, "certificate")?;
+    let key =
+        PrivateKeyDer::from_pem_slice(key).map_err(|e| format!("bad private key PEM: {e:?}"))?;
+    let builder = ServerConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?;
+    let builder = if client_ca.is_empty() {
+        builder.with_no_client_auth()
+    } else {
+        let mut roots = RootCertStore::empty();
+        add_roots(&mut roots, client_ca, false)?;
+        let v = WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider());
+        let v = if require {
+            v
+        } else {
+            v.allow_unauthenticated()
+        };
+        builder.with_client_cert_verifier(v.build().map_err(|e| e.to_string())?)
+    };
+    let mut cfg = builder
+        .with_single_cert(certs, key)
+        .map_err(|e| format!("certificate and key: {e}"))?;
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(cfg)
 }
 
 /// A server config from a PEM certificate chain and a PEM private key
@@ -135,42 +244,43 @@ pub unsafe extern "C" fn kn_tls_server_config(
     err: *mut u8,
     err_cap: usize,
 ) -> *mut Server {
-    let certs: Result<Vec<CertificateDer<'static>>, _> =
-        CertificateDer::pem_slice_iter(bytes(cert, cert_len)).collect();
-    let certs = match certs {
-        Ok(c) if !c.is_empty() => c,
-        Ok(_) => {
-            put("no certificates found in the certificate PEM", err, err_cap);
-            return std::ptr::null_mut();
-        }
+    kn_tls_server_config2(
+        cert,
+        cert_len,
+        key,
+        key_len,
+        std::ptr::null(),
+        0,
+        0,
+        err,
+        err_cap,
+    )
+}
+
+/// Like [`kn_tls_server_config`], also asking clients for a certificate
+/// signed by one of the PEM roots in `client_ca` (when non-empty): required
+/// if `require != 0`, otherwise optional (but checked when sent).
+#[no_mangle]
+pub unsafe extern "C" fn kn_tls_server_config2(
+    cert: *const u8,
+    cert_len: usize,
+    key: *const u8,
+    key_len: usize,
+    client_ca: *const u8,
+    client_ca_len: usize,
+    require: i32,
+    err: *mut u8,
+    err_cap: usize,
+) -> *mut Server {
+    match server_config(
+        bytes(cert, cert_len),
+        bytes(key, key_len),
+        bytes(client_ca, client_ca_len),
+        require != 0,
+    ) {
+        Ok(cfg) => Box::into_raw(Box::new(Server { cfg: Arc::new(cfg) })),
         Err(e) => {
-            put(&format!("bad certificate PEM: {e:?}"), err, err_cap);
-            return std::ptr::null_mut();
-        }
-    };
-    let key = match PrivateKeyDer::from_pem_slice(bytes(key, key_len)) {
-        Ok(k) => k,
-        Err(e) => {
-            put(&format!("bad private key PEM: {e:?}"), err, err_cap);
-            return std::ptr::null_mut();
-        }
-    };
-    let builder = match ServerConfig::builder_with_provider(provider())
-        .with_safe_default_protocol_versions()
-    {
-        Ok(b) => b,
-        Err(e) => {
-            put(&e.to_string(), err, err_cap);
-            return std::ptr::null_mut();
-        }
-    };
-    match builder.with_no_client_auth().with_single_cert(certs, key) {
-        Ok(mut cfg) => {
-            cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
-            Box::into_raw(Box::new(Server { cfg: Arc::new(cfg) }))
-        }
-        Err(e) => {
-            put(&format!("certificate and key: {e}"), err, err_cap);
+            put(&e, err, err_cap);
             std::ptr::null_mut()
         }
     }
@@ -376,6 +486,25 @@ pub unsafe extern "C" fn kn_tls_server_config_alpn(s: *mut Server, list: *const 
 pub unsafe extern "C" fn kn_tls_alpn(c: *const Conn, out: *mut u8, cap: usize) -> usize {
     match (*c).c.alpn_protocol() {
         Some(p) => put(&String::from_utf8_lossy(p), out, cap),
+        None => 0,
+    }
+}
+
+/// The peer's leaf certificate (DER) copied into `out`; its full length,
+/// or 0 if the peer sent none.
+#[no_mangle]
+pub unsafe extern "C" fn kn_tls_peer_cert(c: *const Conn, out: *mut u8, cap: usize) -> usize {
+    let certs = match &(*c).c {
+        Connection::Client(x) => x.peer_certificates(),
+        Connection::Server(x) => x.peer_certificates(),
+    };
+    match certs.and_then(|v| v.first()) {
+        Some(leaf) => {
+            let d = leaf.as_ref();
+            let n = d.len().min(cap);
+            bytes_mut(out, cap)[..n].copy_from_slice(&d[..n]);
+            d.len()
+        }
         None => 0,
     }
 }

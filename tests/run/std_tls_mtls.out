@@ -1,0 +1,11 @@
+required+cert -> required+cert: client cert (true DER)
+required+none -> refused
+required+wrong -> refused
+optional+cert -> optional+cert: client cert (true DER)
+optional+none -> optional+none: no client cert
+no CA: tls: client authentication needs a client CA
+junk CA: tls: no certificates found in the root certificate PEM
+no key: tls: a client certificate needs its private key
+no roots: tls: no trusted root certificates
+system roots: true
+system roots -> system roots: no client cert
