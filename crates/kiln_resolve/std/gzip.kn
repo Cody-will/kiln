@@ -9,7 +9,7 @@
 
 import std::io
 import std::io::{Read, Write}
-import super::{crc32, error, flate, Error}
+import super::{crc32, crc32_update, error, flate, Error}
 
 // The optional fields of a gzip header.
 @derive(Debug, Clone)
@@ -55,6 +55,14 @@ pub fun compress(data &[u8], level u32) Vec<u8> {
 
 // Compresses `data` into one gzip member with header `h`.
 pub fun compress_with(data &[u8], level u32, h &Header) Vec<u8> {
+	out mut := header_bytes(level, h)
+	out.extend_from_slice(&flate::compress(data, level))
+	put32(&mut out, crc32(data))
+	put32(&mut out, data.len() as u32)
+	return out
+}
+
+fun header_bytes(level u32, h &Header) Vec<u8> {
 	out mut := Vec::new()
 	out.push(31u8)
 	out.push(139u8)
@@ -82,9 +90,6 @@ pub fun compress_with(data &[u8], level u32, h &Header) Vec<u8> {
 	if let Some(c) = &h.comment {
 		push_cstr(&mut out, c)
 	}
-	out.extend_from_slice(&flate::compress(data, level))
-	put32(&mut out, crc32(data))
-	put32(&mut out, data.len() as u32)
 	return out
 }
 
@@ -261,32 +266,65 @@ impl Read for Reader {
 	}
 }
 
-// Collects what is written and, on `finish`, writes one gzip member to
-// the inner writer (the whole stream is held in memory).
+// Compresses what is written into one gzip member on the inner writer,
+// 64 KiB at a time (memory stays bounded). Set `header` before the first
+// write. `flush` pushes out everything written so far (a sync flush);
+// `finish` writes the trailer.
 pub struct Writer<W: Write> {
 	inner W,
 	buf Vec<u8>,
 	level u32,
 	pub header Header,
+	started bool,
+	crc u32,
+	size u32,
 }
+
+const CHUNK usize = 65536
 
 impl<W: Write> Writer<W> {
 	pub fun new(inner W, level u32) Writer<W> {
-		return Writer { inner: inner, buf: Vec::new(), level: level, header: Header::new() }
+		return Writer { inner: inner, buf: Vec::new(), level: level, header: Header::new(), started: false, crc: 0, size: 0 }
 	}
 
-	// Compresses and writes everything; returns the inner writer.
+	fun emit(&mut self, last bool) result<void, io::Error> {
+		if !self.started {
+			self.inner.write_all(&header_bytes(self.level, &self.header))?
+			self.started = true
+		}
+		self.crc = crc32_update(self.crc, &self.buf)
+		self.size = self.size + (self.buf.len() as u32)
+		self.inner.write_all(&flate::compress_chunk(&self.buf, self.level, last))?
+		self.buf.clear()
+		return Ok(())
+	}
+
+	// Compresses and writes the rest and the trailer; returns the inner writer.
 	pub fun finish(self) result<W, io::Error> {
-		w mut := self.inner
-		w.write_all(&compress_with(&self.buf, self.level, &self.header))?
-		w.flush()?
-		return Ok(w)
+		me mut := self
+		me.emit(true)?
+		t mut := Vec::new()
+		put32(&mut t, me.crc)
+		put32(&mut t, me.size)
+		me.inner.write_all(&t)?
+		me.inner.flush()?
+		return Ok(me.inner)
 	}
 }
 
 impl<W: Write> Write for Writer<W> {
 	fun write(&mut self, b &[u8]) result<usize, io::Error> {
 		self.buf.extend_from_slice(b)
+		if self.buf.len() >= CHUNK {
+			self.emit(false)?
+		}
 		return Ok(b.len())
+	}
+
+	fun flush(&mut self) result<void, io::Error> {
+		if self.buf.len() > 0 {
+			self.emit(false)?
+		}
+		return self.inner.flush()
 	}
 }

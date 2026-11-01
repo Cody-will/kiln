@@ -1,0 +1,5 @@
+gzip: 300000 true big.bin
+true
+hello, world
+zlib: true
+0

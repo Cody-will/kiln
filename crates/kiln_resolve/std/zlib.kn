@@ -6,7 +6,7 @@
 
 import std::io
 import std::io::{Read, Write}
-import super::{adler32, error, flate, Error}
+import super::{adler32, adler32_update, error, flate, Error}
 
 // Compresses `data` into a zlib stream.
 pub fun compress(data &[u8], level u32) Vec<u8> {
@@ -68,31 +68,61 @@ pub fun decompress_limit(data &[u8], max usize) result<Vec<u8>, Error> {
 	return Ok(out)
 }
 
-// Collects what is written and, on `finish`, writes it zlib-compressed
-// to the inner writer (the whole stream is held in memory).
+// Compresses what is written into a zlib stream on the inner writer,
+// 64 KiB at a time (memory stays bounded). `flush` pushes out everything
+// written so far (a sync flush); `finish` ends the stream.
 pub struct Writer<W: Write> {
 	inner W,
 	buf Vec<u8>,
 	level u32,
+	started bool,
+	adler u32,
 }
+
+const CHUNK usize = 65536
 
 impl<W: Write> Writer<W> {
 	pub fun new(inner W, level u32) Writer<W> {
-		return Writer { inner: inner, buf: Vec::new(), level: level }
+		return Writer { inner: inner, buf: Vec::new(), level: level, started: false, adler: 1 }
 	}
 
-	// Compresses and writes everything; returns the inner writer.
+	fun emit(&mut self, last bool) result<void, io::Error> {
+		if !self.started {
+			z := compress(&self.buf[0..0], self.level)
+			self.inner.write_all(&z[0..2])?
+			self.started = true
+		}
+		self.adler = adler32_update(self.adler, &self.buf)
+		self.inner.write_all(&flate::compress_chunk(&self.buf, self.level, last))?
+		self.buf.clear()
+		return Ok(())
+	}
+
+	// Compresses and writes the rest and the trailer; returns the inner writer.
 	pub fun finish(self) result<W, io::Error> {
-		w mut := self.inner
-		w.write_all(&compress(&self.buf, self.level))?
-		w.flush()?
-		return Ok(w)
+		me mut := self
+		me.emit(true)?
+		a := me.adler
+		t := [(a >> 24) as u8, ((a >> 16) & 255) as u8, ((a >> 8) & 255) as u8, (a & 255) as u8]
+		me.inner.write_all(&t)?
+		me.inner.flush()?
+		return Ok(me.inner)
 	}
 }
 
 impl<W: Write> Write for Writer<W> {
 	fun write(&mut self, b &[u8]) result<usize, io::Error> {
 		self.buf.extend_from_slice(b)
+		if self.buf.len() >= CHUNK {
+			self.emit(false)?
+		}
 		return Ok(b.len())
+	}
+
+	fun flush(&mut self) result<void, io::Error> {
+		if self.buf.len() > 0 {
+			self.emit(false)?
+		}
+		return self.inner.flush()
 	}
 }

@@ -577,6 +577,14 @@ fun hash3(d &[u8], i usize, hbits u32) usize {
 
 // Compresses `data` to raw DEFLATE at `level` (0-9; higher is clamped).
 pub fun compress(data &[u8], level u32) Vec<u8> {
+	return compress_chunk(data, level, true)
+}
+
+// Compresses one piece of a longer stream. With `last` false the blocks
+// are not final and end with an empty stored block (zlib's sync flush), so
+// the output is byte-aligned and the next chunk's output can follow it.
+// Each chunk is matched on its own (no back-references into earlier ones).
+pub fun compress_chunk(data &[u8], level u32, last bool) Vec<u8> {
 	o mut := Out { bytes: Vec::new(), buf: 0, n: 0 }
 	lv := if level > 9 {
 		9u32
@@ -584,7 +592,7 @@ pub fun compress(data &[u8], level u32) Vec<u8> {
 		level
 	}
 	if lv == 0 || data.len() == 0 {
-		write_stored(&mut o, data, true)
+		write_stored(&mut o, data, last)
 		return o.bytes
 	}
 	toks := tokenize(data, lv)
@@ -607,9 +615,12 @@ pub fun compress(data &[u8], level u32) Vec<u8> {
 			}
 			k += 1
 		}
-		write_block(&mut o, &toks[start..end], &data[pos..pos + raw], end == toks.len())
+		write_block(&mut o, &toks[start..end], &data[pos..pos + raw], last && end == toks.len())
 		pos += raw
 		start = end
+	}
+	if !last {
+		write_stored(&mut o, &data[0..0], false)
 	}
 	align(&mut o)
 	return o.bytes

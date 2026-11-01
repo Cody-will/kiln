@@ -1,0 +1,47 @@
+import std::compress::{gzip, zlib}
+import std::io::Write
+
+fun main() {
+	// 300 KB written in uneven pieces goes out in 64 KiB chunks.
+	data mut := Vec::new()
+	i mut := 0u32
+	while data.len() < 300000 {
+		data.push(((i * 7 + i / 13) % 251) as u8)
+		i += 1
+	}
+	g mut := gzip::Writer::new(Vec::new(), 6)
+	g.header = gzip::Header::new().with_name("big.bin")
+	pos mut := 0usize
+	step mut := 1usize
+	while pos < data.len() {
+		end := if pos + step > data.len() {
+			data.len()
+		} else {
+			pos + step
+		}
+		g.write_all(&data[pos..end]).unwrap()
+		pos = end
+		step = step * 3 + 1
+	}
+	gz := g.finish().unwrap()
+	(back, h) := gzip::decompress_header(&gz).unwrap()
+	println("gzip: {back.len()} {back == data} {h.name.unwrap()}")
+	println(gz.len() < 300000)
+
+	// flush() pushes out what was written so far.
+	w mut := zlib::Writer::new(Vec::new(), 6)
+	w.write_all("hello, ".as_bytes()).unwrap()
+	w.flush().unwrap()
+	w.write_all("world".as_bytes()).unwrap()
+	z := w.finish().unwrap()
+	println(string::from_utf8(zlib::decompress(&z).unwrap()).unwrap())
+
+	big mut := zlib::Writer::new(Vec::new(), 1)
+	big.write_all(&data).unwrap()
+	zb := big.finish().unwrap()
+	println("zlib: {zlib::decompress(&zb).unwrap() == data}")
+
+	// An empty stream is still valid.
+	e := gzip::Writer::new(Vec::new(), 9).finish().unwrap()
+	println(gzip::decompress(&e).unwrap().len())
+}
