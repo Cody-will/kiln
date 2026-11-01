@@ -1,0 +1,35 @@
+import std::encoding::json
+import std::template
+
+fun show(src &str, data &json::Value) {
+	match template::parse(src) {
+		Ok(t) => println(t.render(data)),
+		Err(e) => println("error: {e}"),
+	}
+}
+
+fun main() {
+	data := json::parse(r#"{"title": "Tools & <Toys>", "user": {"name": "ada", "admin": true}, "items": [{"name": "hammer", "price": 12.5}, {"name": "saw", "price": 30}], "tags": ["a", "b", "c"], "empty": [], "n": 0, "meta": {"x": 1, "y": 2}}"#).unwrap()
+	show(r#"<h1>{{ title }}</h1> raw={{{ title }}} amp={{& title}}"#, &data)
+	show(r#"Hi {{ user.name | upper }}{{#if user.admin}} (admin){{/if}}{{#unless n}} n is zero{{/unless}}"#, &data)
+	show(r#"{{#each items}}[{{ @index }} {{ name }} ${{ price }} first={{ @first }} last={{ @last }} in {{ ../title | raw }}]{{/each}}"#, &data)
+	show(r#"{{#each empty}}x{{else}}none{{/each}} {{#if missing}}yes{{else}}no{{/if}}"#, &data)
+	show(r#"{{ tags | join " / " }} | {{ tags | len }} | {{ missing | default "n/a" }} | {{ meta | json }}"#, &data)
+	show(r#"{{#each meta}}{{ @key }}={{ . }};{{/each}} {{ items.1.name }} {{ tags.9 }}."#, &data)
+	show(r#"<ul>
+  {{- #each tags -}}
+  <li>{{ this }}</li>
+  {{- /each }}
+</ul>{{! comment }}"#, &data)
+	show(r#"q={{ title | urlencode }} {{ "  x  " }}"#, &data)
+	match template::parse_text(r#"{{ title }} & {{ user.name | escape }}"#) {
+		Ok(t) => println(t.render(&data)),
+		Err(e) => println("error: {e}"),
+	}
+	for bad in [r#"{{#if x}}open"#, r#"{{#each x}}a{{/if}}"#, r#"{{ x | nope }}"#, r#"a
+{{ x"#, r#"{{/if}}"#, r#"{{#loop x}}{{/loop}}"#, r#"{{ }}"#].iter() {
+		show(bad, &data)
+	}
+	println(template::escape_html(r#"<a href="x">'&'</a>"#))
+	println(template::render_str(r#"{{ a }}+{{ b }}"#, &json::parse(r#"{"a": 1, "b": 2}"#).unwrap()).unwrap())
+}

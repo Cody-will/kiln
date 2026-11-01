@@ -1,0 +1,569 @@
+// A small logic-less template engine over `json::Value` data.
+//
+//	t := template::parse("<h1>{{ title }}</h1>{{#each items}}<li>{{ @index }}: {{ name | upper }}</li>{{/each}}")?
+//	html := t.render(&data)
+//
+// Tags:
+//	{{ a.b.0 }}, {{ "lit" }} value at a path or a string literal, HTML-escaped by `parse` (not by `parse_text`)
+//	{{{ x }}} / {{& x }}   value without escaping
+//	{{ x | f | g "arg" }}  filters: upper lower trim len json escape raw urlencode default "v" join ", "
+//	{{#if x}}..{{else}}..{{/if}}, {{#unless x}}..{{/unless}}
+//	{{#each xs}}..{{else}}..{{/each}}  `.` is the item; `@index`, `@first`, `@last`, `@key` inside
+//	{{! comment }}         `{{-` / `-}}` trim the whitespace next to a tag
+//	`..` climbs to the enclosing scope (`../title`).
+// Missing values render as nothing and are falsy, as are null, false, 0, "", [] and {}.
+
+import std::encoding::json
+import std::encoding::json::Value
+import std::strconv
+import std::url
+import super::super::Error as ErrorTrait
+
+// A template syntax error with the line it was found on.
+@derive(Debug, Clone)
+pub struct Error {
+	pub msg string,
+	pub line usize,
+}
+
+impl Display for Error {
+	fun to_string(&self) string {
+		return "template: line {self.line}: {self.msg}"
+	}
+}
+
+impl ErrorTrait for Error {}
+
+@derive(Debug, Clone)
+struct Filter {
+	name string,
+	arg option<string>,
+}
+
+@derive(Debug, Clone)
+struct Expr {
+	lit option<string>,
+	up usize,
+	path Vec<string>,
+	filters Vec<Filter>,
+}
+
+@derive(Debug, Clone)
+enum Node {
+	Text(string),
+	Var(Expr, bool),
+	If(Expr, bool, Vec<Node>, Vec<Node>),
+	Each(Expr, Vec<Node>, Vec<Node>),
+}
+
+// A parsed template, ready to render any number of times.
+@derive(Debug, Clone)
+pub struct Template {
+	nodes Vec<Node>,
+	escape bool,
+}
+
+@derive(Clone)
+struct Tag {
+	text string,
+	raw bool,
+	line usize,
+}
+
+@derive(Clone)
+enum Tok {
+	Text(string),
+	Tag(Tag),
+}
+
+// Parses an HTML template: `{{ x }}` output is escaped.
+pub fun parse(src &str) result<Template, Error> {
+	return build(src, true)
+}
+
+// Parses a plain-text template: nothing is escaped.
+pub fun parse_text(src &str) result<Template, Error> {
+	return build(src, false)
+}
+
+// Parses and renders in one step.
+pub fun render_str(src &str, data &Value) result<string, Error> {
+	t := parse(src)?
+	return Ok(t.render(data))
+}
+
+fun fail<T>(msg &str, line usize) result<T, Error> {
+	return Err(Error { msg: msg.to_string(), line: line })
+}
+
+fun is_space(c u8) bool {
+	return c == 32 || c == 9 || c == 10 || c == 13
+}
+
+fun trim_end_text(toks &mut Vec<Tok>) {
+	n := toks.len()
+	if n == 0 {
+		return
+	}
+	if let Tok::Text(s) = &toks[n - 1] {
+		t := s.trim_end().to_string()
+		toks[n - 1] = Tok::Text(t)
+	}
+}
+
+fun lex(src &str) result<Vec<Tok>, Error> {
+	b := src.as_bytes()
+	toks mut := Vec::new()
+	i mut := 0usize
+	start mut := 0usize
+	line mut := 1usize
+	trim_next mut := false
+	while i < b.len() {
+		if b[i] == 10 {
+			line += 1
+		}
+		if b[i] == 123 && i + 1 < b.len() && b[i + 1] == 123 {
+			text mut := src[start..i].to_string()
+			if trim_next {
+				text = text.trim_start().to_string()
+				trim_next = false
+			}
+			if text.len() > 0 {
+				toks.push(Tok::Text(text))
+			}
+			j mut := i + 2
+			triple := j < b.len() && b[j] == 123
+			if triple {
+				j += 1
+			}
+			if j < b.len() && b[j] == 45 {
+				trim_end_text(&mut toks)
+				j += 1
+			}
+			close := if triple { r"}}}" } else { r"}}" }
+			end := match src[j..].find(close) {
+				Some(e) => j + e,
+				None => return fail("unclosed tag", line),
+			}
+			inner mut := src[j..end].to_string()
+			if inner.ends_with("-") {
+				inner = inner[..inner.len() - 1].to_string()
+				trim_next = true
+			}
+			for c in src[i..end].as_bytes() {
+				if *c == 10 {
+					line += 1
+				}
+			}
+			body := inner.trim().to_string()
+			if !body.starts_with("!") {
+				toks.push(Tok::Tag(Tag { text: body, raw: triple, line: line }))
+			}
+			i = end + close.len()
+			start = i
+			continue
+		}
+		i += 1
+	}
+	text mut := src[start..].to_string()
+	if trim_next {
+		text = text.trim_start().to_string()
+	}
+	if text.len() > 0 {
+		toks.push(Tok::Text(text))
+	}
+	return Ok(toks)
+}
+
+fun parse_expr(s &str, line usize) result<Expr, Error> {
+	parts := split_pipes(s)
+	if parts.len() == 0 || parts[0].trim().len() == 0 {
+		return fail("empty expression", line)
+	}
+	p mut := parts[0].trim().to_string()
+	lit mut := None
+	if p.starts_with("\"") {
+		if p.len() < 2 || !p.ends_with("\"") {
+			return fail(&"unterminated string {p}", line)
+		}
+		lit = Some(p[1..p.len() - 1].to_string())
+		p = ".".to_string()
+	}
+	up mut := 0usize
+	while p.starts_with("../") {
+		up += 1
+		p = p[3..].to_string()
+	}
+	if p == ".." {
+		up += 1
+		p = ".".to_string()
+	}
+	path mut := Vec::new()
+	if p != "." && p != "this" {
+		for seg in p.split(".") {
+			if seg.len() == 0 {
+				return fail(&"bad path \"{p}\"", line)
+			}
+			path.push(seg.to_string())
+		}
+	}
+	filters mut := Vec::new()
+	k mut := 1usize
+	while k < parts.len() {
+		f := parts[k].trim().to_string()
+		name mut := f.clone()
+		arg mut := None
+		if let Some(sp) = f.find(" ") {
+			name = f[..sp].to_string()
+			a := f[sp + 1..].trim().to_string()
+			if a.len() < 2 || !a.starts_with("\"") || !a.ends_with("\"") {
+				return fail(&"filter argument must be a quoted string: {f}", line)
+			}
+			arg = Some(a[1..a.len() - 1].to_string())
+		}
+		known := ["upper", "lower", "trim", "len", "json", "escape", "raw", "urlencode", "default", "join"]
+		ok mut := false
+		for kn in known.iter() {
+			if *kn == name.as_str() {
+				ok = true
+			}
+		}
+		if !ok {
+			return fail(&"unknown filter \"{name}\"", line)
+		}
+		filters.push(Filter { name: name, arg: arg })
+		k += 1
+	}
+	return Ok(Expr { lit: lit, up: up, path: path, filters: filters })
+}
+
+// Splits on `|` outside double quotes.
+fun split_pipes(s &str) Vec<string> {
+	out mut := Vec::new()
+	cur mut := string::new()
+	quoted mut := false
+	for c in s.chars() {
+		if c == '"' {
+			quoted = !quoted
+		}
+		if c == '|' && !quoted {
+			out.push(cur)
+			cur = string::new()
+		} else {
+			cur.push_char(c)
+		}
+	}
+	out.push(cur)
+	return out
+}
+
+fun build(src &str, escape bool) result<Template, Error> {
+	toks := lex(src)?
+	pos mut := 0usize
+	(nodes, stop) := parse_nodes(&toks, &mut pos)?
+	if let Some(t) = stop {
+		return fail(&"unexpected {{{{{t.text}}}}}", t.line)
+	}
+	return Ok(Template { nodes: nodes, escape: escape })
+}
+
+// Parses until `{{else}}`, a `{{/...}}` close, or the end; returns the stopping tag.
+fun parse_nodes(toks &Vec<Tok>, pos &mut usize) result<(Vec<Node>, option<Tag>), Error> {
+	out mut := Vec::new()
+	while *pos < toks.len() {
+		tok := toks[*pos].clone()
+		*pos += 1
+		match tok {
+			Tok::Text(s) => out.push(Node::Text(s)),
+			Tok::Tag(t) => {
+				s := t.text.clone()
+				if s == "else" || s.starts_with("/") {
+					return Ok((out, Some(t)))
+				}
+				if s.starts_with("#") {
+					word := match s.find(" ") {
+						Some(sp) => s[1..sp].to_string(),
+						None => s[1..].to_string(),
+					}
+					rest := s[1 + word.len()..].trim().to_string()
+					if word != "if" && word != "unless" && word != "each" {
+						return fail(&"unknown block #{word}", t.line)
+					}
+					e := parse_expr(&rest, t.line)?
+					(body, stop) := parse_nodes(toks, pos)?
+					alt mut := Vec::new()
+					end mut := stop
+					if let Some(st) = &end {
+						if st.text == "else" {
+							(a, s2) := parse_nodes(toks, pos)?
+							alt = a
+							end = s2
+						}
+					}
+					want := "/{word}"
+					match end {
+						Some(st) => {
+							if st.text != want {
+								got := st.text.clone()
+								return fail(&"expected {{{{{want}}}}}, found {{{{{got}}}}}", st.line)
+							}
+						},
+						None => return fail(&"unclosed #{word}", t.line),
+					}
+					if word == "each" {
+						out.push(Node::Each(e, body, alt))
+					} else {
+						out.push(Node::If(e, word == "unless", body, alt))
+					}
+				} else if s.starts_with("&") {
+					out.push(Node::Var(parse_expr(&s[1..], t.line)?, true))
+				} else {
+					out.push(Node::Var(parse_expr(&s, t.line)?, t.raw))
+				}
+			},
+		}
+	}
+	return Ok((out, None))
+}
+
+@derive(Clone)
+struct Frame {
+	value Value,
+	index i64,
+	len usize,
+	key option<string>,
+}
+
+// Escapes `& < > " '` for HTML text and attributes.
+pub fun escape_html(s &str) string {
+	out mut := string::new()
+	for c in s.chars() {
+		match c {
+			'&' => out.push("&amp;"),
+			'<' => out.push("&lt;"),
+			'>' => out.push("&gt;"),
+			'"' => out.push("&quot;"),
+			'\'' => out.push("&#39;"),
+			_ => out.push_char(c),
+		}
+	}
+	return out
+}
+
+fun truthy(v &option<Value>) bool {
+	return match v {
+		None => false,
+		Some(Value::Null) => false,
+		Some(Value::Bool(b)) => *b,
+		Some(Value::Int(i)) => *i != 0,
+		Some(Value::Float(f)) => *f != 0.0,
+		Some(Value::String(s)) => s.len() > 0,
+		Some(Value::Array(a)) => a.len() > 0,
+		Some(Value::Object(m)) => m.len() > 0,
+	}
+}
+
+fun text_of(v &option<Value>) string {
+	return match v {
+		None => string::new(),
+		Some(Value::Null) => string::new(),
+		Some(Value::String(s)) => s.clone(),
+		Some(Value::Bool(b)) => "{b}",
+		Some(Value::Int(i)) => "{i}",
+		Some(Value::Float(f)) => "{f}",
+		Some(other) => other.encode(),
+	}
+}
+
+fun lookup(frames &Vec<Frame>, e &Expr) option<Value> {
+	if let Some(l) = &e.lit {
+		return Some(Value::String(l.clone()))
+	}
+	if e.up >= frames.len() {
+		return None
+	}
+	top := frames.len() - 1 - e.up
+	if e.path.len() > 0 && e.path[0].starts_with("@") {
+		f := &frames[top]
+		name := e.path[0].as_str()
+		return match name {
+			"@index" => if f.index >= 0 { Some(Value::Int(f.index)) } else { None },
+			"@first" => if f.index >= 0 { Some(Value::Bool(f.index == 0)) } else { None },
+			"@last" => if f.index >= 0 { Some(Value::Bool((f.index as usize) + 1 == f.len)) } else { None },
+			"@key" => match &f.key {
+				Some(k) => Some(Value::String(k.clone())),
+				None => None,
+			},
+			_ => None,
+		}
+	}
+	// A bare first segment searches outward through the scopes.
+	i mut := top + 1
+	while i > 0 {
+		i -= 1
+		if let Some(v) = walk(&frames[i].value, &e.path) {
+			return Some(v)
+		}
+		if e.up > 0 || e.path.len() == 0 {
+			return None
+		}
+	}
+	return None
+}
+
+fun walk(v &Value, path &Vec<string>) option<Value> {
+	cur mut := v.clone()
+	for seg in path.iter() {
+		next := match &cur {
+			Value::Object(m) => match m.get(seg) {
+				Some(x) => x.clone(),
+				None => return None,
+			},
+			Value::Array(a) => {
+				n := match strconv::parse_uint(seg) {
+					Ok(n) => n as usize,
+					Err(_) => return None,
+				}
+				if n >= a.len() {
+					return None
+				}
+				a[n].clone()
+			},
+			_ => return None,
+		}
+		cur = next
+	}
+	return Some(cur)
+}
+
+fun apply(v option<Value>, f &Filter, raw &mut bool) option<Value> {
+	name := f.name.as_str()
+	if name == "default" {
+		if truthy(&v) {
+			return v
+		}
+		return Some(Value::String(f.arg.clone().unwrap_or(string::new())))
+	}
+	if name == "len" {
+		n := match &v {
+			Some(Value::String(s)) => s.chars().count(),
+			Some(Value::Array(a)) => a.len(),
+			Some(Value::Object(m)) => m.len(),
+			_ => 0,
+		}
+		return Some(Value::Int(n as i64))
+	}
+	if name == "json" {
+		return match v {
+			Some(x) => Some(Value::String(x.encode())),
+			None => Some(Value::String("null".to_string())),
+		}
+	}
+	if name == "join" {
+		sep := f.arg.clone().unwrap_or(", ".to_string())
+		if let Some(Value::Array(a)) = &v {
+			out mut := string::new()
+			for (i, x) in a.iter().enumerate() {
+				if i > 0 {
+					out.push(&sep)
+				}
+				out.push(&text_of(&Some(x.clone())))
+			}
+			return Some(Value::String(out))
+		}
+		return v
+	}
+	if name == "raw" {
+		*raw = true
+		return v
+	}
+	s := text_of(&v)
+	out := match name {
+		"upper" => s.to_upper(),
+		"lower" => s.to_lower(),
+		"trim" => s.trim().to_string(),
+		"urlencode" => url::query_escape(&s),
+		_ => {
+			*raw = true
+			escape_html(&s)
+		},
+	}
+	return Some(Value::String(out))
+}
+
+impl Template {
+	// Renders the template against `data`.
+	pub fun render(&self, data &Value) string {
+		frames mut := Vec::new()
+		frames.push(Frame { value: data.clone(), index: -1, len: 0, key: None })
+		out mut := string::new()
+		self.run(&self.nodes, &mut frames, &mut out)
+		return out
+	}
+
+	fun run(&self, nodes &Vec<Node>, frames &mut Vec<Frame>, out &mut string) {
+		for n in nodes.iter() {
+			match n {
+				Node::Text(s) => out.push(s),
+				Node::Var(e, raw0) => {
+					raw mut := *raw0 || !self.escape
+					v mut := lookup(&*frames, e)
+					for f in e.filters.iter() {
+						v = apply(v, f, &mut raw)
+					}
+					s := text_of(&v)
+					if raw {
+						out.push(&s)
+					} else {
+						out.push(&escape_html(&s))
+					}
+				},
+				Node::If(e, negate, body, alt) => {
+					t := truthy(&self.value(e, &*frames))
+					if t != *negate {
+						self.run(body, &mut *frames, &mut *out)
+					} else {
+						self.run(alt, &mut *frames, &mut *out)
+					}
+				},
+				Node::Each(e, body, alt) => {
+					v := self.value(e, &*frames)
+					count mut := 0usize
+					match &v {
+						Some(Value::Array(a)) => {
+							for (i, item) in a.iter().enumerate() {
+								frames.push(Frame { value: item.clone(), index: i as i64, len: a.len(), key: None })
+								self.run(body, &mut *frames, &mut *out)
+								frames.pop()
+								count += 1
+							}
+						},
+						Some(Value::Object(m)) => {
+							i mut := 0i64
+							for (k, item) in m.iter() {
+								frames.push(Frame { value: item.clone(), index: i, len: m.len(), key: Some(k.clone()) })
+								self.run(body, &mut *frames, &mut *out)
+								frames.pop()
+								i += 1
+								count += 1
+							}
+						},
+						_ => {},
+					}
+					if count == 0 {
+						self.run(alt, &mut *frames, &mut *out)
+					}
+				},
+			}
+		}
+	}
+
+	fun value(&self, e &Expr, frames &Vec<Frame>) option<Value> {
+		v mut := lookup(&*frames, e)
+		raw mut := false
+		for f in e.filters.iter() {
+			v = apply(v, f, &mut raw)
+		}
+		return v
+	}
+}

@@ -1860,7 +1860,7 @@ fun std_modules() Vec<(string, string)> {
 	for m in ["math", "collections", "regexp", "ptr", "time", "sync", "rand", "fmt", "io", "bytes", "path", "fs", "os", "context", "net"] {
 		o.push((m.to_string(), "{m}.kn"))
 	}
-	for (m, f) in [("net::http", "http"), ("net::tls", "tls"), ("net::http2", "http2"), ("net::websocket", "websocket"), ("db::postgres", "postgres"), ("url", "url"), ("mime", "mime"), ("compress", "compress"), ("compress::flate", "flate"), ("compress::zlib", "zlib"), ("compress::gzip", "gzip"), ("log", "log"), ("panic", "panic")] {
+	for (m, f) in [("net::http", "http"), ("net::tls", "tls"), ("net::http2", "http2"), ("net::websocket", "websocket"), ("db::postgres", "postgres"), ("url", "url"), ("mime", "mime"), ("template", "template"), ("compress", "compress"), ("compress::flate", "flate"), ("compress::zlib", "zlib"), ("compress::gzip", "gzip"), ("log", "log"), ("panic", "panic")] {
 		o.push((m.to_string(), "{f}.kn"))
 	}
 	return o

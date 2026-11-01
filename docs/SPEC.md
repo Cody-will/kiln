@@ -718,6 +718,7 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 | `std::fs` | `File`, `OpenOptions`, `read_to_string`, `write`, `read_dir`, `metadata`, `create_dir_all`, `remove_dir_all`, ... | ✅ |
 | `std::url` | RFC 3986 `parse` → `Url` (scheme, userinfo, host incl. `[v6]`, port, decoded path, raw query, fragment, opaque), `to_string`, `join`/`resolve` (RFC 3986 §5.2), `request_uri`, `Values` (`get`/`get_all`/`add`/`set`/`remove`/`encode`), `parse_query`, `query_escape`/`path_escape` and their inverses | ✅ |
 | `std::compress` | `crc32`/`adler32` (+`_update`), levels `STORE`..`BEST`; `compress::flate` raw DEFLATE (`compress`, `decompress`, `decompress_limit`; LZ77 + per-block stored/fixed/dynamic Huffman), `compress::zlib` and `compress::gzip` (headers, multi-member, `decompress_header`, in-memory `Reader`/`Writer`) — pure Kiln, interoperable with zlib/gzip | ✅ |
+| `std::template` | logic-less templates over `json::Value`: `parse` (HTML-escaping) / `parse_text`, `render`, `render_str`; `{{ a.b.0 }}`, `{{{ raw }}}`, filters (`upper lower trim len json escape raw urlencode default join`), `#if`/`#unless`/`#each` with `else`, `@index @first @last @key`, `../` scopes, `{{- -}}` whitespace trimming, comments, line-numbered errors | ✅ |
 | `std::mime` | `parse` → `MediaType` (`essence`, `param`, canonical `to_string` with quoting), `type_by_extension`, `extensions_by_type`, `detect` (content sniffing: images, PDF, archives, fonts, audio/video, HTML/XML/text) | ✅ |
 | `std::path` | string paths: `join`, `base`, `dir`, `ext`, `stem`, `clean`, `is_absolute` | ✅ |
 | `std::os` | `args`, `getenv`/`setenv`, `exit`, working directory, `Command` (run programs, capture output) | ✅ |
@@ -743,7 +744,6 @@ The standard library is **written in Kiln**, on top of a **small C runtime** (`k
 | `std::crypto` | `sha256`, `sha1`, `md5` (one-shot `sum`/`hex`, streaming hashers that implement `io::Write`, digests are fixed arrays like `[u8; 32]`), `hmac` (SHA-256/SHA-1, `verify_sha256`), `constant_time_eq` | ✅ |
 | `std::regexp` | RE2-style `Regex` (Pike VM, linear time, leftmost-first): `find`/`find_all`/`captures`/`captures_all`, named groups, `replace_all` with `$1`/`${name}`, `replace_all_fn`, `split`, `quote_meta`; flags `i`, `m`, `s` | ✅ |
 | `kiln test`, `assert_eq`/`assert_ne` | test discovery and runner (see §7 tooling) | ✅ |
-| templates | | 🚧 phase 3 |
 
 ## 9. Open Questions for the User
 
