@@ -105,6 +105,7 @@ fetch() { # url dest
 install_binary() {
 	case "$(uname -s)" in
 	Linux) os=linux ;;
+	Darwin) os=macos ;;
 	*) echo "No prebuilt Kiln for $(uname -s) yet." >&2; return 1 ;;
 	esac
 	case "$(uname -m)" in

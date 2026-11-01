@@ -1,5 +1,7 @@
-# Builds the release tarballs (tools/release.sh) on x86_64 and aarch64 Linux
-# and attaches them, with install.sh, to the GitHub release for the tag.
+# Builds the release archives (tools/release.sh, tools/release.ps1) on
+# x86_64/aarch64 Linux, x86_64/arm64 macOS, and x86_64 Windows, and attaches
+# them, with install.sh and install.ps1, to the GitHub release for the tag.
+# workflow_dispatch builds and uploads artifacts only; publishing needs a tag.
 # Ubuntu 22.04 runners give the binaries a glibc 2.35 baseline.
 name: release
 on:
@@ -11,6 +13,7 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-22.04, ubuntu-22.04-arm]
     runs-on: ${{ matrix.os }}
@@ -40,8 +43,44 @@ jobs:
           path: |
             target/dist/*.tar.gz
             target/dist/*.sha256
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-13, macos-14] # x86_64, arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: clang --version
+      - name: build the tarball
+        run: tools/release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}
+          path: |
+            target/dist/*.tar.gz
+            target/dist/*.sha256
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: clang --version
+      - name: build the archive
+        shell: pwsh
+        run: tools/release.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows
+          path: |
+            target/dist/*.zip
+            target/dist/*.sha256
   publish:
-    needs: build
+    needs: [build, build-macos, build-windows]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
@@ -56,4 +95,4 @@ jobs:
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
             gh release create "$GITHUB_REF_NAME" --title "Kiln $GITHUB_REF_NAME" --generate-notes
-          gh release upload "$GITHUB_REF_NAME" dist/* install.sh --clobber
+          gh release upload "$GITHUB_REF_NAME" dist/* install.sh install.ps1 --clobber

@@ -1,6 +1,7 @@
 #!/bin/sh
 # Builds the release tarball for this machine:
-#   target/dist/kiln-<arch>-linux.tar.gz (+ .sha256)
+#   target/dist/kiln-<arch>-<os>.tar.gz (+ .sha256), os = linux or macos
+# (Windows: tools/release.ps1)
 # containing kiln-<version>/{bin/kiln, lib/kiln/{kilnc,std,runtime,editors}}.
 #
 # kiln is built without LLVM so it only needs libc; kilnc (bootstrapped
@@ -18,6 +19,11 @@ case "$(uname -m)" in
 x86_64|amd64) arch=x86_64 ;;
 aarch64|arm64) arch=aarch64 ;;
 *) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;;
+esac
+case "$(uname -s)" in
+Linux) os=linux ;;
+Darwin) os=macos ;;
+*) echo "unsupported OS $(uname -s); on Windows use tools/release.ps1" >&2; exit 1 ;;
 esac
 dist="$root/target/dist"
 name="kiln-$version"
@@ -58,7 +64,8 @@ t="$(mktemp -d)"
 	{ echo "smoke test failed" >&2; exit 1; }
 rm -rf "$t"
 
-tarball="$dist/kiln-$arch-linux.tar.gz"
+asset="kiln-$arch-$os.tar.gz"
+tarball="$dist/$asset"
 tar -czf "$tarball" -C "$dist" "$name"
-(cd "$dist" && sha256sum "kiln-$arch-linux.tar.gz" > "kiln-$arch-linux.tar.gz.sha256")
+(cd "$dist" && { sha256sum "$asset" 2>/dev/null || shasum -a 256 "$asset"; } > "$asset.sha256")
 echo "built $tarball ($(du -h "$tarball" | cut -f1))"
