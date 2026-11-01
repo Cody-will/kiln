@@ -104,6 +104,31 @@ fn publish_add_lock_offline() {
         lock.contains("version = \"0.2.0\"") && lock.contains("checksum = \"sha256:"),
         "{lock}"
     );
+    // A package only sees the dependencies it declares.
+    let app2 = t.join("app2");
+    fs::create_dir_all(app2.join("src")).unwrap();
+    fs::write(
+        app2.join("kiln.toml"),
+        "[package]\nname = \"app2\"\nversion = \"0.1.0\"\n\n[dependencies]\nshout = \"0.1\"\n",
+    )
+    .unwrap();
+    fs::write(
+        app2.join("src/main.kn"),
+        "fun main() {\n\tprintln(greet::hi(\"x\"))\n}\n",
+    )
+    .unwrap();
+    let (ok, out) = kiln(&app2, &home, &index, &["run"]);
+    assert!(!ok && out.contains("greet"), "{out}");
+    // A tampered tarball is rejected (fresh cache).
+    let tgz = index.join("dl/greet/greet-0.2.0.tar.gz");
+    let good = fs::read(&tgz).unwrap();
+    let mut bad = good.clone();
+    let n = bad.len();
+    bad[n / 2] ^= 0xff;
+    fs::write(&tgz, &bad).unwrap();
+    let (ok, out) = kiln(&app, &t.join("home2"), &index, &["build"]);
+    assert!(!ok && out.contains("checksum"), "{out}");
+    fs::write(&tgz, &good).unwrap();
     // Offline + locked works from the cache, even with the index gone.
     fs::rename(&index, t.join("gone")).unwrap();
     let (ok, out) = kiln(&app, &home, &index, &["build", "--locked", "--offline"]);

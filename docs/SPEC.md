@@ -589,7 +589,7 @@ fun main() {
 
 ## 7. Modules, Packages, Build Tool
 
-- Modules live in files as in Rust: `mod name` (no body) in `dir/file.kn` loads `dir/name.kn` or `dir/name/mod.kn`; the children of a module declared in `dir/a.kn` live in `dir/a/`. A package is a directory with `kiln.toml`; its root file is `src/main.kn` (program) or `src/lib.kn` (library). ✅ implemented, with path dependencies (`name = { path = "../x" }`), which become top-level modules named after the dependency (their tests are excluded). Compilation is whole-program: every file is parsed at its own span base and merged into one tree. `kiln build` writes `target/{debug,release}/<name>` and skips the build when a fingerprint of all sources, options, and the compiler is unchanged.
+- Modules live in files as in Rust: `mod name` (no body) in `dir/file.kn` loads `dir/name.kn` or `dir/name/mod.kn`; the children of a module declared in `dir/a.kn` live in `dir/a/`. A package is a directory with `kiln.toml`; its root file is `src/main.kn` (program) or `src/lib.kn` (library). ✅ implemented, with path dependencies (`name = { path = "../x" }`), and registry dependencies (`name = "^1.2"`, see docs/REGISTRY.md). A package sees only the dependencies it declares, by name; transitive dependencies are loaded but not nameable from packages that do not declare them (their tests are excluded). Compilation is whole-program: every file is parsed at its own span base and merged into one tree. `kiln build` writes `target/{debug,release}/<name>` and skips the build when a fingerprint of all sources, options, and the compiler is unchanged.
 - Decided: modules are declared with `mod` rather than discovered from the directory tree, so the module structure is visible in code and stray files are not compiled.
 - `import std::fs` brings in a path, and `import foo::{A, B as C}` imports specific items. Items are private unless marked `pub`. `pub(pkg)` limits visibility to the package.
 - An example manifest:
@@ -607,7 +607,7 @@ json = { git = "https://github.com/kiln-lang/json", tag = "v0.3" }
 
 - **The `kiln` CLI**:
   - Commands: `kiln new`, `build`, `run`, `test`, `bench`, `fmt`, `lint`, `doc`, `add`, and `publish`.
-  - Lockfile: `kiln.lock` (implemented for path dependencies). The first build of a package with dependencies writes it, and later builds update it when something changes. For each dependency, transitively, it records the name, version, source (`path+../util`), and a checksum of the files it contributes. Commit it. `kiln build/run/test --locked` fails instead of updating it and names what changed (for CI). Registry sources will add `registry+` entries.
+  - Lockfile: `kiln.lock` (implemented for path dependencies). The first build of a package with dependencies writes it, and later builds update it when something changes. For each dependency, transitively, it records the name, version, source (`path+../util`), and a checksum of the files it contributes. Commit it. `kiln build/run/test --locked` fails instead of updating it and names what changed (for CI). Registry dependencies are recorded as `source = "registry+<index url>"` with `checksum = "sha256:<hex>"` of the published tarball; `kiln add`, `kiln update` and `kiln publish` manage them, and `--offline` builds from `~/.kiln`.
   - Registry: `pkg.kiln-lang.dev`, using semver resolution.
   - Builds are incremental per package.
 - **Tests and benchmarks**: `@test fun ...` lives inline, and the `tests/` and `benches/` directories are recognized automatically.
@@ -837,7 +837,7 @@ kiln/
 ### Tooling
 
 - **`kiln fmt`** ✅: a single style and no options. It formats the token stream plus the comments between tokens (no CST needed): it keeps the author's line breaks, recomputes indentation from bracket nesting, normalizes spacing, commas, semicolons, blank lines, and import order, and keeps the author's spacing where tokens are ambiguous (`a<b`). It verifies its output re-lexes to the same tokens and comments and re-parses, and refuses rather than emit a changed program. Not yet done: re-breaking lists that exceed 100 columns.
-- **`kiln` package manager**: resolver (PubGrub), registry client, lockfile, and build caching.
+- **`kiln` package manager**: ✅ registry client, semver resolver (greedy, lock-preferring), lockfile and build caching; PubGrub-quality conflict explanations and an official public index remain.
 - **`kiln lsp` language server** (the rust-analyzer equivalent). ✅ First version: `kiln lsp` (in `crates/kiln_lsp`, on `lsp-server`/`lsp-types` from the rust-analyzer project) re-runs the whole front end on each change (full-document sync) and answers from the results: diagnostics, hover, go to definition, find references, rename, completion, document symbols, formatting via `kiln fmt`, and inlay type hints. Not yet: the salsa database and incremental analysis, multiple files, semantic tokens, code actions, lifetime hints. The plan:
   - Implements LSP on top of the salsa query database.
   - Features: diagnostics, go-to-definition, find references, hover types, completion, rename, inlay hints (inferred types and lifetimes), code actions such as "add `&`" or "add lifetime", and semantic tokens.

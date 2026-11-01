@@ -279,7 +279,9 @@ pub fn all_deps(m: &Manifest) -> Result<Vec<Dependency>, String> {
     let mut out: Vec<Dependency> = Vec::new();
     let mut stack = vec![m.clone()];
     let mut seen = vec![m.dir.canonicalize().unwrap_or(m.dir.clone())];
+    let mut first = true;
     while let Some(cur) = stack.pop() {
+        let direct = std::mem::take(&mut first);
         let mut deps = cur.deps.clone();
         for (name, _) in &cur.reg {
             let Some((_, v)) = locked.iter().find(|(n, _)| n == name) else {
@@ -312,6 +314,13 @@ pub fn all_deps(m: &Manifest) -> Result<Vec<Dependency>, String> {
             out.push(Dependency {
                 name: name.clone(),
                 root,
+                uses: dm
+                    .deps
+                    .iter()
+                    .map(|(n, _)| n.clone())
+                    .chain(dm.reg.iter().map(|(n, _)| n.clone()))
+                    .collect(),
+                direct,
             });
             stack.push(dm);
         }

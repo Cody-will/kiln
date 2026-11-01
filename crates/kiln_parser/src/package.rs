@@ -50,25 +50,45 @@ pub struct Dependency {
     pub name: String,
     /// Its root file (`<dir>/src/lib.kn`).
     pub root: PathBuf,
+    /// The names of the dependencies it declares itself.
+    pub uses: Vec<String>,
+    /// Whether the root package declares it (else it is only reachable from
+    /// the dependencies that declare it).
+    pub direct: bool,
 }
 
-/// Adds `import super::<dep>` to a dependency's items for every other
-/// dependency it does not shadow, so a library can name its own
-/// dependencies (which are loaded as its siblings).
-fn sibling_imports(items: &mut Vec<Item>, deps: &[Dependency], me: &str) {
+impl Dependency {
+    /// The name of the top-level module the dependency is loaded as:
+    /// undeclared (transitive-only) dependencies get a name no program can write.
+    pub fn mod_name(&self) -> String {
+        if self.direct {
+            self.name.clone()
+        } else {
+            format!("__dep_{}", self.name)
+        }
+    }
+}
+
+/// Adds `import super::<dep>` to a dependency's items for each dependency it
+/// declares and does not shadow, so a library can name its own dependencies
+/// (which are loaded as its siblings) but not undeclared ones.
+fn sibling_imports(items: &mut Vec<Item>, uses: &[String], deps: &[Dependency]) {
     let span = Span::new(0, 0);
-    for o in deps {
-        if o.name == me || items.iter().any(|i| defines(i, &o.name)) {
+    for name in uses {
+        if items.iter().any(|i| defines(i, name)) {
             continue;
         }
+        let Some(o) = deps.iter().find(|o| o.name == *name) else {
+            continue;
+        };
         let ident = |n: &str| crate::ast::Ident {
             name: n.to_string(),
             span,
         };
         items.push(Item {
             kind: ItemKind::Import(crate::ast::ImportTree::Path {
-                path: vec![ident("super"), ident(&o.name)],
-                alias: None,
+                path: vec![ident("super"), ident(&o.mod_name())],
+                alias: if o.direct { None } else { Some(ident(name)) },
             }),
             vis: Visibility::Private,
             attrs: Vec::new(),
@@ -148,13 +168,13 @@ pub fn load(
         // A dependency's tests are its own business.
         strip_tests(&mut p.file.items);
         // The other dependencies are siblings; make them visible by name.
-        sibling_imports(&mut p.file.items, deps, &d.name);
+        sibling_imports(&mut p.file.items, &d.uses, deps);
         parse.errors.extend(p.errors);
         let span = Span::new(0, 0);
         parse.file.items.push(Item {
             kind: ItemKind::Mod {
                 name: crate::ast::Ident {
-                    name: d.name.clone(),
+                    name: d.mod_name(),
                     span,
                 },
                 items: Some(p.file.items),

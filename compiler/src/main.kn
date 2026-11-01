@@ -243,28 +243,39 @@ fun strip_tests(items &mut Vec<Item>) {
 	}
 }
 
-// Adds `import super::<dep>` to a dependency's items for every other
-// dependency it does not shadow (same as crates/kiln_parser/src/package.rs).
-fun sibling_imports(items &mut Vec<Item>, deps &Vec<manifest::Dep>, me &str) {
-	for o in deps {
-		if o.name == me {
-			continue
-		}
+// Adds `import super::<dep>` to a dependency's items for each dependency it
+// declares and does not shadow (same as crates/kiln_parser/src/package.rs).
+fun sibling_imports(items &mut Vec<Item>, uses &Vec<string>, deps &Vec<manifest::Dep>) {
+	for name in uses {
 		shadowed mut := false
 		for i in &*items {
-			if defines(i, &o.name) {
+			if defines(i, name) {
 				shadowed = true
 			}
 		}
 		if shadowed {
 			continue
 		}
+		let mut found option<manifest::Dep> = None
+		for o in deps {
+			if o.name == *name {
+				found = Some(o.clone())
+			}
+		}
+		o := match found {
+			Some(x) => x,
+			None => continue,
+		}
 		span := Span::new(0, 0)
 		segs mut := Vec::new()
 		segs.push(Ident { name: "super".to_string(), span: span })
-		segs.push(Ident { name: o.name.clone(), span: span })
+		segs.push(Ident { name: o.mod_name(), span: span })
+		let mut alias option<Ident> = None
+		if !o.direct {
+			alias = Some(Ident { name: name.clone(), span: span })
+		}
 		items.push(Item {
-			kind: ItemKind::Import(ImportTree::Path { path: segs, alias: None }),
+			kind: ItemKind::Import(ImportTree::Path { path: segs, alias: alias }),
 			vis: Visibility::Private,
 			attrs: Vec::new(),
 			doc: None,
@@ -325,11 +336,11 @@ fun load_path_deps(l &mut Loader, items &mut Vec<Item>, root_file &str) result<(
 			return Err("{l.errors[0]}\n")
 		}
 		strip_tests(&mut sub)
-		sibling_imports(&mut sub, &deps, &d.name)
+		sibling_imports(&mut sub, &d.uses, &deps)
 		span := Span::new(0, 0)
 		items.push(Item {
 			kind: ItemKind::Mod {
-				name: Ident { name: d.name.clone(), span: span },
+				name: Ident { name: d.mod_name(), span: span },
 				items: Some(sub),
 			},
 			vis: Visibility::Public,

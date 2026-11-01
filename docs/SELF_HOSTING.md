@@ -310,6 +310,7 @@ runs the stage1→stage2 bootstrap and packs `kilnc` into the tarball.
 |---|---|
 | kilnc default for `build`/`run` | ✅ |
 | Path `[dependencies]` in kilnc | ✅ (`compiler/src/manifest.kn`) |
+| Registry `[dependencies]` in kilnc (from `kiln.lock`; the CLI resolves and fetches) | ✅ |
 | `--compiler=rust` deprecated warning | ✅ |
 | No silent Rust fallback | ✅ (`KILN_ALLOW_RUST_FALLBACK=1` to opt in) |
 | Pinned seed in releases | ✅ (tarball `kilnc`; see above) |

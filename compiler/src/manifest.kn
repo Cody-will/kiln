@@ -11,6 +11,18 @@ import std::path
 pub struct Dep {
 	pub name string,
 	pub root string,
+	pub uses Vec<string>,
+	pub direct bool,
+}
+
+impl Dep {
+	// Same as crates/kiln_parser/src/package.rs Dependency::mod_name.
+	pub fun mod_name(&self) string {
+		if self.direct {
+			return self.name.clone()
+		}
+		return "__dep_{self.name}"
+	}
 }
 
 @derive(Clone)
@@ -257,8 +269,11 @@ pub fun all_deps(m &Manifest) result<Vec<Dep>, string> {
 	stack.push(m.clone())
 	seen mut := Vec::new()
 	seen.push(path::clean(&m.dir))
+	first mut := true
 	while stack.len() > 0 {
 		cur := stack.pop().unwrap()
+		direct := first
+		first = false
 		deps mut := cur.deps.clone()
 		for (rname, _) in &cur.reg {
 			let mut found option<string> = None
@@ -300,7 +315,14 @@ pub fun all_deps(m &Manifest) result<Vec<Dep>, string> {
 				}
 			}
 			names.push(name.clone())
-			out.push(Dep { name: name.clone(), root: root })
+			uses mut := Vec::new()
+			for (n, _) in &dm.deps {
+				uses.push(n.clone())
+			}
+			for (n, _) in &dm.reg {
+				uses.push(n.clone())
+			}
+			out.push(Dep { name: name.clone(), root: root, uses: uses, direct: direct })
 			stack.push(dm)
 		}
 	}

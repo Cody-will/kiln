@@ -15,7 +15,7 @@ directory used as one), records exact versions and sha256 checksums in
 
 Requirements: caret (`1.2`, `^1.2`), tilde (`~1.2`), `=`, `>=`, `<`, `*`, and pre-releases.
 Dependencies are written `name = "req"`, `name = { version = "req" }` or `name = { path = "dir" }`.
-All dependencies (including transitive ones) are visible by name inside each dependency.
+Each package (the root and every dependency) can name only the dependencies it declares; transitive ones are loaded under hidden module names.
 
 ## Index layout
 
