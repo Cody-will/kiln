@@ -260,10 +260,8 @@ pub fn locked_registry_versions(dir: &Path) -> Vec<(String, String)> {
             match k.trim() {
                 "name" => name = unquote(v),
                 "version" => version = unquote(v),
-                "source" => {
-                    if !unquote(v).is_some_and(|s| s.starts_with("registry+")) {
-                        name = None;
-                    }
+                "source" if !unquote(v).is_some_and(|s| s.starts_with("registry+")) => {
+                    name = None;
                 }
                 _ => {}
             }
