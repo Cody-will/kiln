@@ -25,7 +25,6 @@ Status key: ✅ done · 🚧 in progress · ⬜ not started
 6. **Lossless CST decision:** choose whether to build a lossless syntax tree (in the rowan style) before the formatter and language server depend on the AST.
 7. **Borrow checker refinements:** lifetime variance, higher-ranked lifetimes; reading a `&'t` field through `&self` should keep lifetime `'t` (today it borrows `self`).
 8. **Self-hosting:** kilnc is the daily driver (see docs/SELF_HOSTING.md). `kiln check`, `kiln test`, native `[link]` and LSP diagnostics run on kilnc. Remaining: seed-only bootstrap docs in release notes, the LSP navigation index via kilnc, then relocate Rust crates under `bootstrap/reference/` and delete unused codegen.
-9. **Parser:** `Vec<chan<- T>>` fails to parse (the `>>` after a channel type); use a `type` alias for now.
 
 ## Known parser gaps
 

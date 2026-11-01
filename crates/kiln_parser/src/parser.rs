@@ -21,6 +21,9 @@ pub(crate) struct Parser<'s> {
     pub(crate) errors: Vec<Diagnostic>,
     /// When true, `Path {` is not parsed as a struct literal (conditions, scrutinees).
     no_struct: bool,
+    /// Number of generic `<...>` lists currently open; lets `chan<- T>`
+    /// take an optional closing `>` without stealing an enclosing one.
+    angle_depth: usize,
 }
 
 /// Binding power of binary operators (higher binds tighter).
@@ -80,6 +83,7 @@ impl<'s> Parser<'s> {
             doc_idx: 0,
             errors: Vec::new(),
             no_struct: false,
+            angle_depth: 0,
         }
     }
 
@@ -868,10 +872,17 @@ impl<'s> Parser<'s> {
     }
 
     fn parse_generics(&mut self) -> PResult<Generics> {
-        let mut g = Generics::default();
         if !self.eat(&T::Lt) {
-            return Ok(g);
+            return Ok(Generics::default());
         }
+        self.angle_depth += 1;
+        let r = self.parse_generics_rest();
+        self.angle_depth -= 1;
+        r
+    }
+
+    fn parse_generics_rest(&mut self) -> PResult<Generics> {
+        let mut g = Generics::default();
         loop {
             if self.at_gt() {
                 self.expect_gt()?;
@@ -1153,9 +1164,42 @@ impl<'s> Parser<'s> {
 
     // ----- types ----------------------------------------------------------
 
+    /// Counts the adjacent `>` characters starting at the current token.
+    fn gt_run(&self) -> usize {
+        let mut n = 0;
+        let mut i = self.pos;
+        let mut end = None;
+        while let Some(t) = self.tokens.get(i) {
+            if end.is_some_and(|e| e != t.span.start) {
+                break;
+            }
+            let (k, more) = match t.kind {
+                T::Gt => (1, true),
+                T::Shr => (2, true),
+                T::Ge => (1, false),
+                T::ShrEq => (2, false),
+                _ => (0, false),
+            };
+            n += k;
+            if !more {
+                break;
+            }
+            end = Some(t.span.end);
+            i += 1;
+        }
+        n
+    }
+
     fn parse_generic_args(&mut self) -> PResult<Vec<GenericArg>> {
         self.split_shl_arrow();
         self.expect(&T::Lt)?;
+        self.angle_depth += 1;
+        let r = self.parse_generic_args_rest();
+        self.angle_depth -= 1;
+        r
+    }
+
+    fn parse_generic_args_rest(&mut self) -> PResult<Vec<GenericArg>> {
         let mut args = Vec::new();
         loop {
             if self.at_gt() {
@@ -1310,7 +1354,13 @@ impl<'s> Parser<'s> {
             T::Keyword(Kw::Chan) if *self.nth(1) == T::LArrow => {
                 self.bump();
                 self.bump();
-                TypeKind::ChanSend(Box::new(self.parse_type()?))
+                let inner = self.parse_type()?;
+                // `chan<- T>` may close its own `<-`: accept one `>` when
+                // more are adjacent than the open generic lists need.
+                if self.gt_run() > self.angle_depth {
+                    self.expect_gt()?;
+                }
+                TypeKind::ChanSend(Box::new(inner))
             }
             T::Keyword(Kw::Chan) => {
                 let span = self.span();

@@ -1,0 +1,15 @@
+fun fill(outs Vec<chan<- i64>>, v i64) {
+	for o in outs { o <- v }
+}
+
+fun main() {
+	(a, ra) := chan::<i64>(1)
+	(b, rb) := chan::<i64>(1)
+	outs mut := Vec::<chan<- i64>>::new()
+	outs.push(a)
+	nested := Vec::<Vec<chan<- i64>>>::new()
+	old := Vec::<chan<- i64>::new()
+	outs.push(b)
+	fill(outs, 7)
+	println("{<-ra} {<-rb} {nested.len()} {old.len()}")
+}
