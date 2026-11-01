@@ -1,0 +1,186 @@
+// A small JSON REST service backed by PostgreSQL: the dogfood example that
+// CI runs end to end (examples/todo_api_test.sh).
+//
+//	DATABASE_URL=postgres://user:pw@127.0.0.1:5432/db ADDR=127.0.0.1:8080 kiln run examples/todo_api.kn
+//
+//	GET    /health          {"ok":true}
+//	GET    /todos           [{"id":1,"title":"...","done":false}, ...]
+//	POST   /todos           {"title":"..."}                -> 201 + the todo
+//	GET    /todos/{id}      the todo, or 404
+//	PUT    /todos/{id}      {"title":"...","done":true}    -> the todo
+//	DELETE /todos/{id}      204, or 404
+//
+// Each request takes its own connection; a real service would share a
+// `postgres::Pool`.
+import std::db::postgres
+import std::encoding::json
+import std::io
+import std::net::http
+import std::os
+import std::strconv
+
+@derive(Json, Debug, Clone)
+struct Todo {
+	id i64,
+	title string,
+	done bool,
+}
+
+@derive(Json, Debug)
+struct NewTodo {
+	title string,
+}
+
+@derive(Json, Debug)
+struct Update {
+	title option<string>,
+	done option<bool>,
+}
+
+@derive(Json, Debug)
+struct ErrorBody {
+	error string,
+}
+
+fun database_url() string {
+	return os::getenv("DATABASE_URL").unwrap_or("postgres://kiln:secretpw@127.0.0.1:55432/postgres".to_string())
+}
+
+fun connect() result<postgres::Conn, postgres::Error> {
+	return postgres::Conn::connect_url(&database_url())
+}
+
+fun error(status u16, msg &str) http::Response {
+	return http::Response::json(status, &json::to_string(&ErrorBody { error: msg.to_string() }))
+}
+
+fun db_error(e postgres::Error) http::Response {
+	eprintln("database error: {e.to_string()}")
+	return error(500, "database error")
+}
+
+fun row_todo(r &postgres::Row) result<Todo, postgres::Error> {
+	return Ok(Todo { id: r.get_i64(0)?, title: r.get_string(1)?, done: r.get_bool(2)? })
+}
+
+fun health(req http::Request) http::Response {
+	return http::Response::json(200, "{{\"ok\":true}}")
+}
+
+fun list(req http::Request) http::Response {
+	match list_todos() {
+		Ok(todos) => return http::Response::json(200, &json::to_string(&todos)),
+		Err(e) => return db_error(e),
+	}
+}
+
+fun list_todos() result<Vec<Todo>, postgres::Error> {
+	db mut := connect()?
+	rs := db.query("SELECT id, title, done FROM todos ORDER BY id", &[])?
+	out mut := Vec::new()
+	for r in rs.rows() {
+		out.push(row_todo(r)?)
+	}
+	return Ok(out)
+}
+
+fun create(req http::Request) http::Response {
+	let body NewTodo = match json::from_str(&req.body_text()) {
+		Ok(b) => b,
+		Err(e) => return error(400, &e.to_string()),
+	}
+	if body.title.trim().is_empty() {
+		return error(422, "title must not be empty")
+	}
+	match insert_todo(&body.title) {
+		Ok(t) => return http::Response::json(201, &json::to_string(&t)),
+		Err(e) => return db_error(e),
+	}
+}
+
+fun insert_todo(title &str) result<Todo, postgres::Error> {
+	db mut := connect()?
+	rs := db.query("INSERT INTO todos (title) VALUES ($1) RETURNING id, title, done", &[postgres::text(title)])?
+	return row_todo(&rs.rows()[0])
+}
+
+// /todos/{id}: GET, PUT, DELETE.
+fun one(req http::Request) http::Response {
+	id := match strconv::parse_int(&req.path()["/todos/".len()..]) {
+		Ok(n) => n,
+		Err(_) => return error(404, "no such todo"),
+	}
+	result := if req.method == "GET" || req.method == "HEAD" {
+		get_todo(id)
+	} else if req.method == "PUT" {
+		let u Update = match json::from_str(&req.body_text()) {
+			Ok(b) => b,
+			Err(e) => return error(400, &e.to_string()),
+		}
+		update_todo(id, &u)
+	} else if req.method == "DELETE" {
+		match delete_todo(id) {
+			Ok(true) => return http::Response::new(204),
+			Ok(false) => return error(404, "no such todo"),
+			Err(e) => return db_error(e),
+		}
+	} else {
+		return error(405, "method not allowed")
+	}
+	match result {
+		Ok(Some(t)) => return http::Response::json(200, &json::to_string(&t)),
+		Ok(None) => return error(404, "no such todo"),
+		Err(e) => return db_error(e),
+	}
+}
+
+fun get_todo(id i64) result<option<Todo>, postgres::Error> {
+	db mut := connect()?
+	rs := db.query("SELECT id, title, done FROM todos WHERE id = $1", &[postgres::int(id)])?
+	if rs.len() == 0 {
+		return Ok(None)
+	}
+	return Ok(Some(row_todo(&rs.rows()[0])?))
+}
+
+fun update_todo(id i64, u &Update) result<option<Todo>, postgres::Error> {
+	db mut := connect()?
+	title := match &u.title {
+		Some(t) => postgres::text(t),
+		None => postgres::null(),
+	}
+	done := match u.done {
+		Some(d) => postgres::boolean(d),
+		None => postgres::null(),
+	}
+	rs := db.query("UPDATE todos SET title = COALESCE($2, title), done = COALESCE($3, done) WHERE id = $1 RETURNING id, title, done", &[postgres::int(id), title, done])?
+	if rs.len() == 0 {
+		return Ok(None)
+	}
+	return Ok(Some(row_todo(&rs.rows()[0])?))
+}
+
+fun delete_todo(id i64) result<bool, postgres::Error> {
+	db mut := connect()?
+	return Ok(db.execute("DELETE FROM todos WHERE id = $1", &[postgres::int(id)])? > 0)
+}
+
+fun migrate() result<void, postgres::Error> {
+	db mut := connect()?
+	return db.batch_execute("CREATE TABLE IF NOT EXISTS todos (id bigserial PRIMARY KEY, title text NOT NULL, done bool NOT NULL DEFAULT false)")
+}
+
+fun main() result<void, io::Error> {
+	if let Err(e) = migrate() {
+		eprintln("cannot prepare the database: {e.to_string()}")
+		os::exit(1)
+	}
+	addr := os::getenv("ADDR").unwrap_or("127.0.0.1:8080".to_string())
+	router mut := http::Router::new()
+	router.get("/health", health)
+	router.get("/todos", list)
+	router.post("/todos", create)
+	router.handle("/todos/", one)
+	println("listening on {addr}")
+	return router.listen(&addr)
+}

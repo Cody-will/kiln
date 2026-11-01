@@ -50,6 +50,36 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo run --release -p kiln_fuzz -- --iters 2000 --seed 1
 
+  dogfood:
+    name: dogfood (todo_api + live PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: kiln
+          POSTGRES_PASSWORD: secretpw
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgres://kiln:secretpw@127.0.0.1:5432/postgres
+      KILN_TEST_PG_URL: postgres://kiln:secretpw@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p kiln_cli
+      - name: build kilnc
+        working-directory: compiler
+        run: ../target/release/kiln build --release
+      - name: todo_api end to end
+        env:
+          KILNC: ${{ github.workspace }}/compiler/target/release/kilnc
+        run: examples/todo_api_test.sh "$PWD/target/release/kiln"
+      - name: std::db::postgres against the live server
+        run: cargo test --release -p kiln_cli --test run postgres_live
+
   editors:
     name: editor grammars
     runs-on: ubuntu-latest
