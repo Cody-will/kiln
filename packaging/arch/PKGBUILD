@@ -2,10 +2,9 @@
 #
 # Prebuilt Kiln from GitHub Releases (for the AUR as kiln-bin). After
 # tagging a release: bump pkgver, run `updpkgsums`, then
-# `makepkg --printsrcinfo > .SRCINFO`. The release assets are only
-# downloadable once the repository is public.
+# `makepkg --printsrcinfo > .SRCINFO`. Publish: copy PKGBUILD and .SRCINFO into the AUR kiln-bin repo.
 pkgname=kiln-bin
-pkgver=0.1.1
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="The Kiln programming language: compiler, standard library, formatter, test runner and language server"
 arch=('x86_64' 'aarch64')
@@ -20,8 +19,8 @@ conflicts=('kiln' 'kiln-git')
 options=('!strip' '!debug')
 source_x86_64=("kiln-x86_64-linux-$pkgver.tar.gz::$url/releases/download/v$pkgver/kiln-x86_64-linux.tar.gz")
 source_aarch64=("kiln-aarch64-linux-$pkgver.tar.gz::$url/releases/download/v$pkgver/kiln-aarch64-linux.tar.gz")
-sha256sums_x86_64=('SKIP')
-sha256sums_aarch64=('SKIP')
+sha256sums_x86_64=('b0b31b2e2578917167320633fc897c2b74ff75f075a072a804f5cc82abd77113')
+sha256sums_aarch64=('7bdccb4d976c03a22e000c7fcaa820427510d3d8ddee94c40fe439dbc4b86675')
 
 package() {
 	cd "kiln-$pkgver"

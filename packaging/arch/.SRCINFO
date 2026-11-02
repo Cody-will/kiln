@@ -1,0 +1,25 @@
+pkgbase = kiln-bin
+	pkgdesc = The Kiln programming language: compiler, standard library, formatter, test runner and language server
+	pkgver = 0.2.0
+	pkgrel = 1
+	url = https://github.com/Cody-will/kiln
+	arch = x86_64
+	arch = aarch64
+	license = MIT OR Apache-2.0
+	depends = glibc
+	depends = gcc-libs
+	depends = clang
+	optdepends = lld: faster linking (used automatically when present)
+	optdepends = neovim: editor support (kiln editor install nvim)
+	optdepends = tree-sitter-cli: build the tree-sitter parser for nvim-treesitter
+	provides = kiln
+	conflicts = kiln
+	conflicts = kiln-git
+	options = !strip
+	options = !debug
+	source_x86_64 = kiln-x86_64-linux-0.2.0.tar.gz::https://github.com/Cody-will/kiln/releases/download/v0.2.0/kiln-x86_64-linux.tar.gz
+	sha256sums_x86_64 = b0b31b2e2578917167320633fc897c2b74ff75f075a072a804f5cc82abd77113
+	source_aarch64 = kiln-aarch64-linux-0.2.0.tar.gz::https://github.com/Cody-will/kiln/releases/download/v0.2.0/kiln-aarch64-linux.tar.gz
+	sha256sums_aarch64 = 7bdccb4d976c03a22e000c7fcaa820427510d3d8ddee94c40fe439dbc4b86675
+
+pkgname = kiln-bin
