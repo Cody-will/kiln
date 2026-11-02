@@ -50,6 +50,35 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo run --release -p kiln_fuzz -- --iters 2000 --seed 1
 
+  portable:
+    name: portable (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Tier 2 (docs/STABILITY.md): reported but not yet gating.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    env:
+      CC: ${{ matrix.os == 'windows-latest' && 'clang-cl' || 'cc' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p kiln_cli
+      - name: hello (built-in code generator)
+        shell: bash
+        run: target/release/kiln run examples/hello.kn
+      - name: kilnc build + hello (experimental)
+        shell: bash
+        working-directory: compiler
+        run: |
+          ../target/release/kiln build --release
+          ../target/release/kiln run ../examples/hello.kn
+      - name: cargo test
+        if: matrix.os == 'macos-latest'
+        run: cargo test --workspace
+
   dogfood:
     name: dogfood (todo_api + live PostgreSQL)
     runs-on: ubuntu-latest
