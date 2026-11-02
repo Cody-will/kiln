@@ -173,6 +173,11 @@ fn linker_command(
         .arg("vcruntime.lib")
         .arg("legacy_stdio_definitions.lib")
         .arg("kernel32.lib");
+    // The runtime's 128-bit arithmetic needs compiler-rt's builtins
+    // (`__udivti3`, ...), which MSVC does not provide; clang ships them.
+    if let Some(b) = clang_builtins(target) {
+        cmd.arg(b);
+    }
     if let Some(tls) = tls {
         cmd.arg(tls).args([
             "advapi32.lib",
@@ -184,4 +189,18 @@ fn linker_command(
         ]);
     }
     Ok(cmd)
+}
+
+/// Path of clang's compiler-rt builtins library for `target`, if clang
+/// (`$KILN_CLANG`, default `clang`) is installed.
+#[cfg(windows)]
+fn clang_builtins(target: &str) -> Option<std::path::PathBuf> {
+    let clang = std::env::var("KILN_CLANG").unwrap_or_else(|_| "clang".into());
+    let o = Command::new(clang)
+        .arg(format!("--target={target}"))
+        .args(["-rtlib=compiler-rt", "-print-libgcc-file-name"])
+        .output()
+        .ok()?;
+    let p = std::path::PathBuf::from(String::from_utf8_lossy(&o.stdout).trim());
+    p.is_file().then_some(p)
 }
