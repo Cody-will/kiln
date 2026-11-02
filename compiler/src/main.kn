@@ -357,7 +357,7 @@ fun dir_of(path &str) string {
 	b := path.as_bytes()
 	i mut := b.len()
 	while i > 0 {
-		if b[i - 1] == 47 {
+		if b[i - 1] == 47 || b[i - 1] == 92 {
 			return path[..i - 1].to_string()
 		}
 		i -= 1
@@ -693,14 +693,80 @@ fun jobs() usize {
 	}
 }
 
-fun sh_quote(s &str) string {
-	return "'{s.replace("'", "'\\''")}'"
+// One external command: program and arguments (no shell is involved, so
+// kilnc runs the same way on Windows).
+fun run_cmd(argv &Vec<string>) i32 {
+	c mut := os::Command::new(&argv[0])
+	for a in argv[1..].iter() {
+		c = c.arg(a)
+	}
+	match c.status() {
+		Ok(code) => return code,
+		Err(e) => {
+			eprintln("kilnc: cannot run {argv[0]}: {e}")
+			return 1
+		},
+	}
+}
+
+// Runs the commands it receives until the channel closes; how many failed.
+fun cmd_worker(rx <-chan Vec<string>) i32 {
+	bad mut := 0
+	for c in rx {
+		if run_cmd(&c) != 0 {
+			bad += 1
+		}
+	}
+	return bad
+}
+
+// Runs `cmds` on a pool of `nj` tasks (not batches, where each batch waits
+// for its slowest command); false if any failed.
+fun run_pool(cmds Vec<Vec<string>>, nj usize) bool {
+	if cmds.len() == 0 {
+		return true
+	}
+	(tx, rx) := chan::<Vec<string>>(cmds.len())
+	tasks mut := Vec::new()
+	w mut := 0
+	while w < nj && w < cmds.len() {
+		tasks.push(spawn cmd_worker(rx.clone()))
+		w += 1
+	}
+	feed(tx, cmds)
+	ok mut := true
+	while tasks.len() > 0 {
+		match tasks.pop().unwrap().join() {
+			Ok(n) => {
+				if n > 0 {
+					ok = false
+				}
+			},
+			Err(_) => ok = false,
+		}
+	}
+	return ok
+}
+
+// Sends `cmds`; the channel closes when `tx` is dropped on return.
+fun feed(tx chan<- Vec<string>, cmds Vec<Vec<string>>) {
+	for c in cmds {
+		tx <- c
+	}
+}
+
+fun strs(list &[&str]) Vec<string> {
+	v mut := Vec::new()
+	for x in list {
+		v.push(x.to_string())
+	}
+	return v
 }
 
 // `kilnc --build <file.kn> -o <out>`. A debug build splits the program into
 // one LLVM module per job and compiles them at `-O0` in parallel; a release
 // build compiles it as one module at `-O3`. The IR goes next to `out`.
-fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string>, native &string, tests_out &str) {
+fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string>, native &Vec<string>, tests_out &str) {
 	cc0 := match os::getenv("KILN_CLANG") {
 		Some(c) => c,
 		None => "clang".to_string(),
@@ -727,35 +793,64 @@ fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string
 		Some(c) => c,
 		None => "clang".to_string(),
 	}
-	libs mut := " {sh_quote(&rt)}"
+	win := os::is_windows()
+	// Libraries, after Kiln's objects.
+	libs mut := Vec::new()
+	libs.push(rt.clone())
 	if m.decls.contains("@kn_tls_") {
 		// The TLS library sits next to the runtime library.
-		dir_end := match rt.find("libkiln_rt.a") {
-			Some(i) => i,
-			None => 0,
+		if win {
+			libs.push("{dir_of(&rt)}/kiln_tls.lib")
+			for l in ["-ladvapi32", "-lntdll", "-luserenv", "-lws2_32", "-lbcrypt", "-lsynchronization"] {
+				libs.push(l.to_string())
+			}
+		} else {
+			libs.push("{dir_of(&rt)}/libkiln_tls.a")
+			for l in ["-lpthread", "-ldl", "-lrt", "-lutil", "-lgcc_s"] {
+				libs.push(l.to_string())
+			}
 		}
-		libs.push(" {sh_quote("{&rt[..dir_end]}libkiln_tls.a")} -lpthread -ldl -lrt -lutil -lgcc_s")
 	}
-	libs.push(" -lm -lpthread")
-	// `[link]` search paths and libraries (`-L`/`-l`), after Kiln's objects.
-	libs.push(native.as_str())
+	if win {
+		libs.push("-lws2_32".to_string())
+		// The runtime's 128-bit arithmetic needs compiler-rt's builtins.
+		if let Ok(o) = os::Command::new(&cc).args(&["-rtlib=compiler-rt", "-print-libgcc-file-name"]).output() {
+			b := o.stdout_text().trim().to_string()
+			if fs::is_file(&b) {
+				libs.push(b)
+			}
+		}
+	} else {
+		libs.push("-lm".to_string())
+		libs.push("-lpthread".to_string())
+	}
+	// `[link]` search paths and libraries (`-L`/`-l`).
+	for n in native {
+		libs.push(n.clone())
+	}
 	// `--c-source` files: compiled at -O2 and linked in (kilnc's own allocator).
-	cobjs mut := string::new()
+	cobjs mut := Vec::new()
+	pre mut := Vec::new()
 	ci mut := 0
 	for c in csrc {
 		co := "{out}.c{ci}.o"
-		cobjs.push("{sh_quote(&cc)} -O2 -w -c {sh_quote(c)} -o {sh_quote(&co)}\n")
-		libs = " {sh_quote(&co)}{libs}"
+		pre.push(strs(&[cc.as_str(), "-O2", "-w", "-c", c.as_str(), "-o", co.as_str()]))
+		cobjs.push(co)
 		ci += 1
 	}
-	script mut := "set -e\n{cobjs}"
 	// Release: ThinLTO over parallel shards when lld is installed (cross-shard
 	// inlining is kept), else one module at -O3.
-	lld := match os::Command::new(&cc).arg("-print-prog-name=ld.lld").output() {
-		Ok(o) => fs::is_file(o.stdout_text().trim()),
-		Err(_) => false,
+	lld := if win {
+		false
+	} else {
+		match os::Command::new(&cc).arg("-print-prog-name=ld.lld").output() {
+			Ok(o) => fs::is_file(o.stdout_text().trim()),
+			Err(_) => false,
+		}
 	}
 	thin := release && lld
+	link mut := strs(&[cc.as_str()])
+	compiles mut := Vec::new()
 
 	if m.objs.len() > 0 {
 		// Streamed: the shards are already compiling.
@@ -775,33 +870,33 @@ fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string
 			fail("clang failed".to_string())
 		}
 		pass_done(tp, &mut t, "shard-compile")
-		objs mut := string::new()
-		for o in &m.objs {
-			objs.push(" {sh_quote(o)}")
+		if lld {
+			link.push("-fuse-ld=lld".to_string())
 		}
-		ld := if lld { " -fuse-ld=lld" } else { "" }
-		script.push("{sh_quote(&cc)}{ld}{objs}{libs} -o {sh_quote(out)}\n")
+		for o in &m.objs {
+			link.push(o.clone())
+		}
 	} else if release && !thin {
 		ll := "{out}.ll"
 		write_file(&ll, &m.single())
-		script.push("{sh_quote(&cc)} -O3 -w {sh_quote(&ll)}{libs} -o {sh_quote(out)}\n")
+		link.push("-O3".to_string())
+		link.push("-w".to_string())
+		link.push(ll)
 	} else {
 		// Several shards per job, so an edit recompiles little; a shard whose
 		// IR is unchanged since the last build keeps its object.
-		(opt, ext) := if thin { ("-O3 -flto=thin", "bc") } else { ("-O0", "o") }
+		ext := if thin { "bc" } else { "o" }
 		// One `nproc` run per build (it forks this large process).
 		nj := jobs()
 		n0 := nj * 4
 		n := if m.funcs.len() / 64 + 1 < n0 { m.funcs.len() / 64 + 1 } else { n0 }
-		objs mut := string::new()
-		cmds mut := string::new()
-		ncmds mut := 0
+		objs mut := Vec::new()
 		texts := m.shards(n)
 		pass_done(tp, &mut t, "shard-text")
 		for (k, text) in texts.iter().enumerate() {
 			ll := "{out}.{k}.ll"
 			o := "{out}.{k}.{ext}"
-			objs.push(" {sh_quote(&o)}")
+			objs.push(o.clone())
 			same := match fs::read_to_string(&ll) {
 				Ok(old) => old == *text && fs::is_file(&o),
 				Err(_) => false,
@@ -810,32 +905,44 @@ fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string
 				continue
 			}
 			// Remove a stale object first, so a failed build can't reuse it.
-			script.push("rm -f {sh_quote(&o)}\n")
+			fs::remove_file(&o)
 			write_file(&ll, text)
-			cmds.push("{sh_quote(&cc)} {opt} -w -c {sh_quote(&ll)} -o {sh_quote(&o)}\n")
-			ncmds += 1
+			c mut := strs(&[cc.as_str()])
+			if thin {
+				c.push("-O3".to_string())
+				c.push("-flto=thin".to_string())
+			} else {
+				c.push("-O0".to_string())
+			}
+			for x in ["-w", "-c", ll.as_str(), "-o", o.as_str()] {
+				c.push(x.to_string())
+			}
+			compiles.push(c)
 		}
 		pass_done(tp, &mut t, "shard-files")
-		// A pool of `nj` compiles (not batches of `nj`, where each batch
-		// waits for its slowest shard). xargs fails if any command does.
-		if ncmds > 0 {
-			cpath := "{out}.cmds"
-			write_file(&cpath, &cmds)
-			script.push("xargs -d '\\n' -P {nj} -I CMD sh -c CMD < {sh_quote(&cpath)}\n")
-		}
-		lto := if thin { " -O3 -flto=thin -fuse-ld=lld -Wl,--thinlto-jobs={nj}".to_string() } else if lld { " -fuse-ld=lld".to_string() } else { string::new() }
-		script.push("{sh_quote(&cc)}{lto}{objs}{libs} -o {sh_quote(out)}\n")
-	}
-	sh_path := "{out}.build.sh"
-	write_file(&sh_path, &script)
-	pass_done(tp, &mut t, "write-ir")
-	match os::Command::new("sh").arg(&sh_path).status() {
-		Ok(code) => {
-			if code != 0 {
-				fail("clang failed".to_string())
+		if thin {
+			for x in ["-O3", "-flto=thin", "-fuse-ld=lld", "-Wl,--thinlto-jobs={nj}"] {
+				link.push(x.to_string())
 			}
-		},
-		Err(e) => fail("cannot run sh: {e}"),
+		} else if lld {
+			link.push("-fuse-ld=lld".to_string())
+		}
+		for o in objs {
+			link.push(o)
+		}
+	}
+	for o in cobjs {
+		link.push(o)
+	}
+	for l in libs {
+		link.push(l)
+	}
+	link.push("-o".to_string())
+	link.push(out.to_string())
+	pass_done(tp, &mut t, "write-ir")
+	pj := if pre.len() + compiles.len() > 1 { jobs() } else { 1 }
+	if !run_pool(pre, pj) || !run_pool(compiles, pj) || run_cmd(&link) != 0 {
+		fail("clang failed".to_string())
 	}
 	pass_done(tp, &mut t, "clang")
 }
@@ -857,7 +964,7 @@ fun main() {
 			out mut := "a.out".to_string()
 			file mut := string::new()
 			csrc mut := Vec::new()
-			native mut := string::new()
+			native mut := Vec::new()
 			tests_out mut := string::new()
 			j mut := 2
 			while j < args.len() {
@@ -875,7 +982,7 @@ fun main() {
 					tests_out = args[j + 1].clone()
 					j += 1
 				} else if args[j].starts_with("-l") || args[j].starts_with("-L") {
-					native.push(" {sh_quote(&args[j])}")
+					native.push(args[j].clone())
 				} else {
 					file = args[j].clone()
 				}
