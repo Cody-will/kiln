@@ -25,23 +25,9 @@ Copy-Item (Join-Path $env:CARGO_TARGET_DIR 'release\kiln.exe') $kiln
 & $kiln __install-lib (Join-Path $stage 'lib\kiln')
 if ($LASTEXITCODE) { throw 'kiln __install-lib failed' }
 
-Write-Host '== kilnc (stage1 by the Rust compiler, stage2 by stage1)'
-$boot = Join-Path $dist 'boot'
-if (Test-Path $boot) { Remove-Item -Recurse -Force $boot }
-New-Item -ItemType Directory -Force $boot | Out-Null
-Push-Location compiler
-$env:KILN_COMPILER = 'rust'; $env:KILN_RUN_FLAGS = ''
-& $kiln build --release -o (Join-Path $boot 'stage1.exe')
-$code = $LASTEXITCODE
-Remove-Item Env:KILN_COMPILER
-Pop-Location
-if ($code) { throw 'building kilnc stage1 failed' }
-$env:KILN_RT = Join-Path $stage 'lib\kiln\runtime\kiln_rt.lib'
-if (-not (Test-Path $env:KILN_RT)) { $env:KILN_RT = Join-Path $stage 'lib\kiln\runtime\libkiln_rt.a' }
-$env:KILNC_RESOLVE_DIR = Join-Path $root 'crates\kiln_resolve'
-& (Join-Path $boot 'stage1.exe') --build --release --c-source compiler/native/arena.c compiler/src/main.kn -o (Join-Path $boot 'kilnc.exe')
-if ($LASTEXITCODE) { throw 'building kilnc stage2 failed' }
-Copy-Item (Join-Path $boot 'kilnc.exe') (Join-Path $stage 'lib\kiln\kilnc.exe')
+# kilnc drives clang through POSIX shell scripts, so it is not shipped on
+# Windows yet: `kiln` uses its built-in code generator there (tier 2, see
+# docs/STABILITY.md).
 
 Write-Host '== editors'
 New-Item -ItemType Directory -Force (Join-Path $stage 'lib\kiln\editors') | Out-Null

@@ -6,12 +6,17 @@
  * free lists carved from bump-allocated 4 MiB chunks; memory is never
  * returned to the OS (the process exits soon). Blocks larger than
  * ARENA_MAX go to glibc. Every block has a 16-byte header recording its
- * class so free/realloc need no size. */
+ * class so free/realloc need no size.
+ *
+ * glibc only (it forwards to __libc_malloc); elsewhere (macOS, Windows,
+ * musl) this file is empty and kilnc uses the system allocator. */
 #define _GNU_SOURCE
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+
+#if defined(__GLIBC__)
 #include <sys/mman.h>
 
 extern void *__libc_malloc(size_t);
@@ -163,3 +168,7 @@ void *aligned_alloc(size_t al, size_t n) { return memalign(al, n); }
 void *valloc(size_t n) { return memalign(4096, n); }
 void *pvalloc(size_t n) { return memalign(4096, (n + 4095) & ~(size_t)4095); }
 size_t malloc_usable_size(void *p) { return p ? usable(p) : 0; }
+
+#else
+typedef int kiln_arena_unused; /* not glibc: system allocator */
+#endif

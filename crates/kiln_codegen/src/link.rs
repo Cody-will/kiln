@@ -48,7 +48,7 @@ pub fn link_with(object: &Path, out: &Path, native: &NativeLink) -> Result<(), S
             .map_err(|e| format!("could not write {}: {e}", tls.display()))?;
     }
     let mut cmd = linker_command(object, &rt, uses_tls.then_some(tls.as_path()), out)?;
-    add_native(&mut cmd, native)?;
+    add_native(&mut cmd, native, out)?;
     let output = cmd
         .output()
         .map_err(|e| format!("could not run the linker ({cmd:?}): {e}"))?;
@@ -97,7 +97,7 @@ fn linker_command(
 /// Native inputs go after Kiln's objects: C sources (the `cc` driver
 /// compiles them), then search paths and libraries.
 #[cfg(not(windows))]
-fn add_native(cmd: &mut Command, n: &NativeLink) -> Result<(), String> {
+fn add_native(cmd: &mut Command, n: &NativeLink, _out: &Path) -> Result<(), String> {
     for c in &n.c_sources {
         if !c.is_file() {
             return Err(format!("[link] c-sources: {} not found", c.display()));
@@ -113,13 +113,31 @@ fn add_native(cmd: &mut Command, n: &NativeLink) -> Result<(), String> {
     Ok(())
 }
 
+/// Windows: C sources are compiled to objects with clang (`$KILN_CLANG`,
+/// default `clang`) for the MSVC target, then passed to `link.exe`.
 #[cfg(windows)]
-fn add_native(cmd: &mut Command, n: &NativeLink) -> Result<(), String> {
-    if !n.c_sources.is_empty() {
-        return Err(
-            "[link] c-sources are not supported on Windows yet; build a .lib and list it in `libs`"
-                .into(),
-        );
+fn add_native(cmd: &mut Command, n: &NativeLink, out: &Path) -> Result<(), String> {
+    let clang = std::env::var("KILN_CLANG").unwrap_or_else(|_| "clang".into());
+    for (i, c) in n.c_sources.iter().enumerate() {
+        if !c.is_file() {
+            return Err(format!("[link] c-sources: {} not found", c.display()));
+        }
+        let obj = out.with_extension(format!("c{i}.obj"));
+        let o = Command::new(&clang)
+            .args(["-O2", "-w", "-c"])
+            .arg(c)
+            .arg("-o")
+            .arg(&obj)
+            .output()
+            .map_err(|e| format!("could not run {clang} for [link] c-sources: {e}"))?;
+        if !o.status.success() {
+            return Err(format!(
+                "compiling {} failed:\n{}",
+                c.display(),
+                String::from_utf8_lossy(&o.stderr)
+            ));
+        }
+        cmd.arg(obj);
     }
     for d in &n.search {
         cmd.arg(format!("/LIBPATH:{}", d.display()));

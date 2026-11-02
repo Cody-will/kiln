@@ -40,9 +40,11 @@ fun main() {
 
 ## Talking to PostgreSQL
 
+(The snippets below are excerpts; the full program is `examples/todo_api.kn`.)
+
 `std::db::postgres` speaks the PostgreSQL wire protocol directly; no C library is needed. Parameters are passed separately from the SQL (`$1`, `$2`, ...), so values are never spliced into the query text:
 
-```kiln
+```text
 import std::db::postgres
 
 fun insert_todo(title &str) result<Todo, postgres::Error> {
@@ -59,7 +61,7 @@ fun insert_todo(title &str) result<Todo, postgres::Error> {
 
 An `http::Router` maps paths to handler functions. A pattern ending in `/` matches every path under it, which is how `/todos/{id}` is handled:
 
-```kiln
+```text
 fun main() result<void, io::Error> {
 	router mut := http::Router::new()
 	router.get("/health", health)
@@ -72,7 +74,7 @@ fun main() result<void, io::Error> {
 
 Handlers take an `http::Request` and return an `http::Response`. Errors from the database become a `500` with a JSON body, bad input a `400` or `422`:
 
-```kiln
+```text
 fun create(req http::Request) http::Response {
 	let body NewTodo = match json::from_str(&req.body_text()) {
 		Ok(b) => b,

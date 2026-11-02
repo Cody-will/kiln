@@ -90,6 +90,6 @@ Structs are passed by pointer, never by value.
 |---|---|
 | `libs` | libraries to link (`-lname`; `name.lib` on Windows) |
 | `search` | directories to search for them, relative to the package |
-| `c-sources` | C files to compile and link (not yet on Windows) |
+| `c-sources` | C files to compile and link (with clang on Windows) |
 
 Dependencies' `[link]` sections are merged into the program's, so a package that wraps a C library brings its linking setup with it.

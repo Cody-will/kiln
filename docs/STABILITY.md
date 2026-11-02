@@ -57,7 +57,7 @@ Kiln follows [Semantic Versioning](https://semver.org/) for the toolchain
 | Tier | Targets | Promise |
 |---|---|---|
 | 1 | x86_64/aarch64 Linux (glibc) | Built and fully tested in CI on every commit; release binaries. |
-| 2 | x86_64/arm64 macOS, x86_64 Windows | Release binaries built in CI; test suite run when CI capacity allows. |
+| 2 | x86_64/arm64 macOS, x86_64 Windows | Release binaries built in CI; test suite run when CI capacity allows. On Windows, kilnc is not shipped yet and `kiln` uses its built-in code generator. |
 | 3 | Others (musl, BSDs) | Expected to build from source; no guarantees. |
 
 ## Deprecation
