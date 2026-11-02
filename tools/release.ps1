@@ -25,9 +25,44 @@ Copy-Item (Join-Path $env:CARGO_TARGET_DIR 'release\kiln.exe') $kiln
 & $kiln __install-lib (Join-Path $stage 'lib\kiln')
 if ($LASTEXITCODE) { throw 'kiln __install-lib failed' }
 
-# kilnc drives clang through POSIX shell scripts, so it is not shipped on
-# Windows yet: `kiln` uses its built-in code generator there (tier 2, see
+# kilnc on Windows (experimental): stage1 by the built-in compiler, stage2
+# by stage1, then a smoke build with it. It is shipped only if all of that
+# works; otherwise `kiln` uses its built-in code generator (tier 2, see
 # docs/STABILITY.md).
+Write-Host '== kilnc (experimental on Windows)'
+$boot = Join-Path $dist 'boot'
+if (Test-Path $boot) { Remove-Item -Recurse -Force $boot }
+New-Item -ItemType Directory $boot | Out-Null
+$kilnc_ok = $false
+try {
+	Push-Location compiler
+	$env:KILN_COMPILER = 'rust'
+	& $kiln build --release -o (Join-Path $boot 'stage1.exe')
+	$c1 = $LASTEXITCODE
+	Remove-Item Env:KILN_COMPILER
+	Pop-Location
+	if (-not $c1) {
+		$env:KILN_RT = Join-Path $stage 'lib\kiln\runtime\kiln_rt.lib'
+		$env:KILNC_RESOLVE_DIR = Join-Path $root 'crates\kiln_resolve'
+		& (Join-Path $boot 'stage1.exe') --build --release --c-source compiler\native\arena.c compiler\src\main.kn -o (Join-Path $boot 'kilnc.exe')
+		if (-not $LASTEXITCODE) {
+			& (Join-Path $boot 'kilnc.exe') --build examples\hello.kn -o (Join-Path $boot 'hello.exe')
+			if (-not $LASTEXITCODE) {
+				$h = & (Join-Path $boot 'hello.exe')
+				if (-not $LASTEXITCODE -and $h) { $kilnc_ok = $true }
+			}
+		}
+		Remove-Item Env:KILN_RT, Env:KILNC_RESOLVE_DIR
+	}
+} catch {
+	Write-Host "kilnc: $_"
+}
+if ($kilnc_ok) {
+	Copy-Item (Join-Path $boot 'kilnc.exe') (Join-Path $stage 'lib\kiln\kilnc.exe')
+	Write-Host 'kilnc: shipped'
+} else {
+	Write-Host '::warning::kilnc did not build or run on Windows; shipping kiln with the built-in code generator only'
+}
 
 Write-Host '== editors'
 New-Item -ItemType Directory -Force (Join-Path $stage 'lib\kiln\editors') | Out-Null
