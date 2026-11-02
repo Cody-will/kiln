@@ -1315,7 +1315,8 @@ static void fmt_addr(const struct sockaddr *sa, KnVec *out) {
  * on a helper thread. On POSIX the thread signals a pipe that the waiting
  * task parks on through the poller, so the wait can time out or be given up
  * (cancelled) without holding a worker; an abandoned lookup finishes in the
- * background and frees itself. Windows resolves synchronously in `start`. */
+ * background and frees itself. On Windows the waiting task polls the job's
+ * `done` flag with short task-aware sleeps, which also honours the deadline. */
 
 typedef struct DnsJob {
 	char *host;
@@ -1361,6 +1362,14 @@ static void *dns_thread(void *p) {
 	dns_unref(j);
 	return NULL;
 }
+#else
+static DWORD WINAPI dns_thread(LPVOID p) {
+	DnsJob *j = (DnsJob *)p;
+	dns_lookup(j);
+	__atomic_store_n(&j->done, 1, __ATOMIC_RELEASE);
+	dns_unref(j);
+	return 0;
+}
 #endif
 
 /* Starts looking up `host`; returns a job handle or an error. */
@@ -1377,8 +1386,15 @@ int64_t kn_net_resolve_start(const uint8_t *host, size_t hl) {
 	lk_init(&j->lock);
 	j->refs = 1;
 #ifdef _WIN32
-	dns_lookup(j);
-	j->done = 1;
+	j->refs = 2;
+	HANDLE th = CreateThread(NULL, 0, dns_thread, j, 0, NULL);
+	if (!th) {
+		j->refs = 1;
+		dns_lookup(j);
+		j->done = 1;
+	} else {
+		CloseHandle(th);
+	}
 #else
 	int fds[2];
 	if (pipe(fds) != 0) {
@@ -1410,7 +1426,7 @@ int64_t kn_net_resolve_start(const uint8_t *host, size_t hl) {
  * 0 if the time ran out first. */
 int64_t kn_net_resolve_wait(int64_t h, int64_t timeout_ns) {
 	DnsJob *j = (DnsJob *)(intptr_t)h;
-	if (j->done)
+	if (__atomic_load_n(&j->done, __ATOMIC_ACQUIRE))
 		return 1;
 #ifndef _WIN32
 	int64_t deadline = timeout_ns > 0 ? kn_time_mono() + timeout_ns : 0;
@@ -1434,7 +1450,20 @@ int64_t kn_net_resolve_wait(int64_t h, int64_t timeout_ns) {
 			return 0;
 	}
 #else
-	(void)timeout_ns;
+	int64_t deadline = timeout_ns > 0 ? kn_time_mono() + timeout_ns : 0;
+	int64_t step = 1000000; /* 1ms, backing off to 20ms */
+	while (!__atomic_load_n(&j->done, __ATOMIC_ACQUIRE)) {
+		if (deadline) {
+			int64_t left = deadline - kn_time_mono();
+			if (left <= 0)
+				return 0;
+			if (step > left)
+				step = left;
+		}
+		kn_time_sleep(step);
+		if (step < 20000000)
+			step *= 2;
+	}
 	return 1;
 #endif
 }

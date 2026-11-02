@@ -18,6 +18,10 @@ fn kiln(args: &[&str], env: &[(&str, &Path)]) -> (i32, String, String) {
     )
 }
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn sh(cmd: &str, dir: &Path) {
     let st = Command::new("sh")
         .arg("-c")

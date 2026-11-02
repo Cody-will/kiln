@@ -813,6 +813,10 @@ fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string
 	}
 	if win {
 		libs.push("-lws2_32".to_string())
+		// The runtime is built against the DLL C runtime (/MD), like link.rs.
+		for l in ["-Wl,/nodefaultlib:libcmt", "-lmsvcrt", "-lucrt", "-lvcruntime", "-llegacy_stdio_definitions", "-lkernel32"] {
+			libs.push(l.to_string())
+		}
 		// The runtime's 128-bit arithmetic needs compiler-rt's builtins.
 		if let Ok(o) = os::Command::new(&cc).args(&["-rtlib=compiler-rt", "-print-libgcc-file-name"]).output() {
 			b := o.stdout_text().trim().to_string()
