@@ -75,6 +75,13 @@ jobs:
         run: |
           ../target/release/kiln build --release
           ../target/release/kiln run ../examples/hello.kn
+      - name: DNS timeout, recover (vs expected output)
+        shell: bash
+        run: |
+          for t in std_net_lookup recover; do
+            target/release/kiln run tests/run/$t.kn > $t.got 2>&1 || true
+            diff --strip-trailing-cr tests/run/$t.out $t.got
+          done
       - name: cargo test
         if: matrix.os == 'macos-latest'
         run: cargo test --workspace
