@@ -185,8 +185,8 @@ __declspec(noreturn) void longjmp(void *jb, int v);
 typedef struct {
 	_Alignas(16) unsigned char b[256];
 } kn_jmp_buf;
-#define KN_SETJMP(jb) _setjmp((jb), NULL)
-#define KN_LONGJMP(jb) longjmp((jb), 1)
+#define KN_SETJMP(jb) _setjmp((jb).b, NULL)
+#define KN_LONGJMP(jb) longjmp((jb).b, 1)
 #elif !defined(_WIN32)
 #define KN_SJLJ 1
 #include <setjmp.h>
