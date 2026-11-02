@@ -366,7 +366,7 @@ fun runtime_sig(name &str) option<(Vec<string>, string)> {
 		"kn_black_box" => "i64:",
 		"kn_frame_enter" => "i64:i64",
 		"kn_frame_leave" => "i64:",
-		"_setjmp" => "i64:i32",
+		"_setjmp" => if os::is_windows() { "i64,i64:i32" } else { "i64:i32" },
 		"kn_round" => "double:double",
 		"kn_powi" => "double,i32:double",
 		"kn_fmod" => "double,double:double",
@@ -2616,7 +2616,12 @@ impl Cg {
 					s := self.slot(16 + 512, 16)
 					self.panic_frame = Some(s.clone())
 					jb := self.call_rt("kn_frame_enter", &one(s)).unwrap()
-					r := self.call_rt("_setjmp", &one(jb)).unwrap()
+					// Windows: a null frame makes longjmp restore without SEH unwinding.
+					sj mut := one(jb)
+					if os::is_windows() {
+						sj.push(val("0".to_string(), "i64"))
+					}
+					r := self.call_rt("_setjmp", &sj).unwrap()
 					land := self.blocks[ex]
 					self.brif(&r, land, first)
 				} else {

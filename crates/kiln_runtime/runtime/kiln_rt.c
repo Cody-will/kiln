@@ -175,14 +175,33 @@ void *kn_sched_panic_state(void); /* kiln_sched.c: per task */
 
 static KnPanicState *panic_state(void) { return (KnPanicState *)kn_sched_panic_state(); }
 
-#if !defined(_WIN32)
+#if defined(_WIN32) && defined(_M_X64)
+/* The UCRT's _setjmp(buf, frame): with a null frame, longjmp restores the
+ * registers without SEH unwinding, like _longjmp on POSIX. Generated code
+ * calls it the same way. */
+#define KN_SJLJ 1
+int _setjmp(void *jb, void *frame) __attribute__((returns_twice));
+__declspec(noreturn) void longjmp(void *jb, int v);
+typedef struct {
+	_Alignas(16) unsigned char b[256];
+} kn_jmp_buf;
+#define KN_SETJMP(jb) _setjmp((jb), NULL)
+#define KN_LONGJMP(jb) longjmp((jb), 1)
+#elif !defined(_WIN32)
+#define KN_SJLJ 1
 #include <setjmp.h>
+typedef jmp_buf kn_jmp_buf;
+#define KN_SETJMP(jb) _setjmp(jb)
+#define KN_LONGJMP(jb) _longjmp((jb), 1)
+#endif
+
+#ifdef KN_SJLJ
 static KN_NORETURN void unwind_next(KnPanicState *ps) {
 	KnPanicFrame *f = ps->head;
 	if (f) {
 		ps->head = f->prev;
 		ps->landed = f;
-		_longjmp(*(jmp_buf *)((char *)f + sizeof(KnPanicFrame)), 1);
+		KN_LONGJMP(*(kn_jmp_buf *)((char *)f + sizeof(KnPanicFrame)));
 	}
 	panic_die(ps->msg, ps->len);
 }
@@ -199,7 +218,7 @@ void *kn_frame_enter(KnPanicFrame *f) {
 /* The function's defers are done: unlink `f`, or keep panicking. */
 void kn_frame_leave(KnPanicFrame *f) {
 	KnPanicState *ps = panic_state();
-#if !defined(_WIN32)
+#ifdef KN_SJLJ
 	if (ps->unwinding && ps->landed == f)
 		unwind_next(ps);
 #endif
@@ -207,7 +226,7 @@ void kn_frame_leave(KnPanicFrame *f) {
 }
 
 KN_NORETURN void kn_panic(const uint8_t *msg, size_t len) {
-#if !defined(_WIN32)
+#ifdef KN_SJLJ
 	KnPanicState *ps = panic_state();
 	if (ps && ps->head) {
 		if (!ps->unwinding) {
@@ -239,20 +258,20 @@ KN_NORETURN void kn_panic(const uint8_t *msg, size_t len) {
 typedef void (*KnCatchCode)(void *ret, void *env);
 void kn_string_push(KnVec *s, const uint8_t *p, size_t len);
 
-#if !defined(_WIN32)
+#ifdef KN_SJLJ
 typedef struct {
 	KnPanicFrame f;
-	jmp_buf jb;
+	kn_jmp_buf jb;
 } KnCatchFrame;
 _Static_assert(offsetof(KnCatchFrame, jb) == sizeof(KnPanicFrame), "jmp_buf follows the frame");
 #endif
 
 int32_t kn_catch_call(KnCatchCode code, void *ret, void *env) {
-#if !defined(_WIN32)
+#ifdef KN_SJLJ
 	KnPanicState *ps = panic_state();
 	KnCatchFrame fr;
 	kn_frame_enter(&fr.f);
-	if (_setjmp(fr.jb)) {
+	if (KN_SETJMP(fr.jb)) {
 		ps = panic_state();
 		ps->head = fr.f.prev;
 		ps->landed = NULL;

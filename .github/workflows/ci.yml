@@ -78,6 +78,8 @@ jobs:
       - name: DNS timeout, recover (vs expected output)
         shell: bash
         run: |
+          # With the kilnc built above (the code generator that runs defers on panic).
+          export KILNC="$PWD/compiler/target/release/kilnc$([ "$RUNNER_OS" = Windows ] && echo .exe)"
           for t in std_net_lookup recover; do
             target/release/kiln run tests/run/$t.kn > $t.got 2>&1 || true
             diff --strip-trailing-cr tests/run/$t.out $t.got
