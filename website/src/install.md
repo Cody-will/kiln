@@ -1,12 +1,12 @@
 # Installation
 
-## Quick install (Linux)
+## Quick install (Linux, macOS)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Cody-will/kiln/main/install.sh | sh
 ```
 
-This downloads the prebuilt release for your machine (x86_64 or aarch64 Linux) from GitHub Releases, checks its SHA-256, installs it into `~/.kiln`, adds `~/.kiln/bin` to `PATH`, and runs `kiln doctor`. If there is no release for your machine, it clones the repository and builds from source instead (see below).
+This downloads the prebuilt release for your machine (x86_64 or aarch64 Linux or macOS) from GitHub Releases, checks its SHA-256, installs it into `~/.kiln`, adds `~/.kiln/bin` to `PATH`, and runs `kiln doctor`. If there is no release for your machine, it clones the repository and builds from source instead (see below).
 
 Options go after `sh -s --`, for example `curl -fsSL .../install.sh | sh -s -- --prefix /opt/kiln`:
 
@@ -17,6 +17,16 @@ Options go after `sh -s --`, for example `curl -fsSL .../install.sh | sh -s -- -
 | `--from-source` | build from source instead of downloading |
 | `--no-modify-path` | leave shell startup files alone |
 | `--uninstall` | remove the installation |
+
+## Windows
+
+In PowerShell:
+
+```text
+irm https://raw.githubusercontent.com/Cody-will/kiln/main/install.ps1 | iex
+```
+
+This installs the x86_64 Windows release into `%USERPROFILE%\.kiln` (set `KILN_PREFIX` to change it, `KILN_VERSION` for a given tag), checks its SHA-256 and adds `bin` to your user `PATH`. You need clang (LLVM) and the Visual Studio C++ build tools. On Windows, `kiln` currently uses its built-in code generator instead of kilnc.
 
 ### Requirements
 

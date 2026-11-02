@@ -316,7 +316,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "kiln_borrowck"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "kiln_lexer",
  "kiln_mir",
@@ -327,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "kiln_cli"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "kiln_borrowck",
  "kiln_codegen",
@@ -343,7 +343,7 @@ dependencies = [
 
 [[package]]
 name = "kiln_codegen"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "cc",
  "cranelift-codegen",
@@ -365,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "kiln_fmt"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "kiln_lexer",
  "kiln_parser",
@@ -373,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "kiln_fuzz"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "kiln_borrowck",
  "kiln_fmt",
@@ -383,11 +383,11 @@ dependencies = [
 
 [[package]]
 name = "kiln_lexer"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "kiln_llvm"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "cranelift-codegen",
  "cranelift-module",
@@ -396,7 +396,7 @@ dependencies = [
 
 [[package]]
 name = "kiln_lsp"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "crossbeam-channel",
  "kiln_borrowck",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "kiln_mir"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "kiln_lexer",
  "kiln_parser",
@@ -423,14 +423,14 @@ dependencies = [
 
 [[package]]
 name = "kiln_parser"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "kiln_lexer",
 ]
 
 [[package]]
 name = "kiln_resolve"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "kiln_lexer",
  "kiln_parser",
@@ -438,14 +438,14 @@ dependencies = [
 
 [[package]]
 name = "kiln_runtime"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "kiln_typeck"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "kiln_lexer",
  "kiln_parser",
