@@ -804,6 +804,10 @@ fun build(path &str, out &str, dir &str, release bool, tp bool, csrc &Vec<string
 			for l in ["-ladvapi32", "-lntdll", "-luserenv", "-lws2_32", "-lbcrypt", "-lsynchronization"] {
 				libs.push(l.to_string())
 			}
+		} else if os::name() == "macos" {
+			libs.push("{dir_of(&rt)}/libkiln_tls.a")
+			libs.push("-lSystem".to_string())
+			libs.push("-liconv".to_string())
 		} else {
 			libs.push("{dir_of(&rt)}/libkiln_tls.a")
 			for l in ["-lpthread", "-ldl", "-lrt", "-lutil", "-lgcc_s"] {
