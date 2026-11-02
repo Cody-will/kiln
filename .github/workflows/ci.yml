@@ -53,8 +53,6 @@ jobs:
   portable:
     name: portable (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Tier 2 (docs/STABILITY.md): reported but not yet gating.
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
