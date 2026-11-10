@@ -9,7 +9,7 @@ Kiln's standard library covers the ground of Go's: time, concurrency, files, pro
 
 The standard library is written in Kiln, on top of a small C runtime for system calls, timers, and the network poller. You can read its source in `crates/kiln_resolve/std/`.
 
-Phase 2 added text and data modules: `strings`, `strconv`, `bytes`, `collections`, `math`, `rand`, `errors`, `flag`, `encoding` (JSON, base64, hex, CSV), `crypto` (SHA-256, SHA-1, MD5, HMAC), `regexp`, and `context`, plus `kiln test` and network timeouts. 🚧 Next: `compress`, `mime`, `url`, and templates.
+Phase 2 added text and data modules: `strings`, `strconv`, `bytes`, `collections`, `math`, `rand`, `errors`, `flag`, `encoding` (JSON, base64, hex, CSV), `crypto` (SHA-256, SHA-1, MD5, HMAC), `regexp`, and `context`, plus `kiln test` and network timeouts. Phase 3 adds `compress` (DEFLATE/zlib/gzip), `mime`, `url`, and `template`.
 
 | Module | What it is for |
 |---|---|
@@ -41,6 +41,10 @@ Phase 2 added text and data modules: `strings`, `strconv`, `bytes`, `collections
 | [`std::encoding::json`](#stdencodingjson) | JSON values and `@derive(Json)` |
 | [`std::encoding::base64`, `hex`](#stdencodingbase64-and-stdencodinghex) | base64 and hex |
 | [`std::collections`](#stdcollections) | `HashMap`, `HashSet`, `BTreeMap`, `BTreeSet`, `VecDeque` |
+| `std::compress` | DEFLATE, zlib, gzip (including streaming writers) |
+| `std::mime` | media types, extension table, content sniffing |
+| `std::url` | RFC 3986 parse/resolve, query values, escaping |
+| `std::template` | logic-less templates over `json::Value` |
 | [`std::mem`, `std::ptr`](#stdmem-and-stdptr) | low-level memory operations |
 
 ## std::time

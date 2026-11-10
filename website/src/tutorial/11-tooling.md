@@ -76,9 +76,9 @@ Each test runs in its own process, in parallel, so a panic fails only that test.
 
 | Command | Description |
 |---|---|
-| 🚧 `kiln new <name>` | Create a package with `kiln.toml` and `src/main.kn` |
+| ✅ `kiln new <name>` | Create a package with `kiln.toml` and `src/main.kn` |
 | 🚧 `kiln lint`, `kiln doc`, `kiln bench` | Linting, documentation, benchmarks |
-| 🚧 `kiln add`, `kiln publish` | Dependency management and the package registry |
+| ✅ `kiln add`, `kiln update`, `kiln publish` | Dependency management and the package registry |
 
 ## Formatting: `kiln fmt`
 

@@ -113,7 +113,7 @@ fun main() {
 ```
 
 <div class="status">
-Exhaustiveness checking looks inside patterns: <code>Some(true)</code>, <code>Some(false)</code>, and <code>None</code> together cover an <code>Option&lt;bool&gt;</code>. 🚧 Integer ranges are not counted yet, so matches on integers need a <code>_</code> arm.
+Exhaustiveness checking looks inside patterns: <code>Some(true)</code>, <code>Some(false)</code>, and <code>None</code> together cover an <code>Option&lt;bool&gt;</code>. Integer ranges are counted too, and non-exhaustive errors name a missing case.
 </div>
 
 ## Printing values

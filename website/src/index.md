@@ -19,7 +19,7 @@ fun greet(out chan<- string) {
 ```
 
 <div class="status">
-<strong>Kiln is early and not usable for real programs yet.</strong> Today the compiler type-checks and borrow-checks Kiln programs (<code>kiln check</code>) and compiles single-file programs to native executables (<code>kiln build</code>, <code>kiln run</code>). Tasks, channels, and <code>select</code> run on a work-stealing scheduler. The first part of the standard library is in: time, sync, io, fs, path, os, net, and an HTTP server and client. See <a href="status.html">Implementation status</a>. Throughout this book, 🚧 marks features that are specified but not implemented yet.
+<strong>Kiln is pre-1.0 and self-hosted.</strong> <code>kilnc</code> is the daily-driver compiler for <code>kiln build</code> / <code>kiln run</code> / <code>kiln check</code> / <code>kiln test</code> and LSP diagnostics. Ownership and borrowing, <code>result</code>/<code>?</code>, traits and generics (including <code>dyn</code>), closures, <code>defer</code>/<code>Drop</code>, fixed-size arrays, and Go-style concurrency (<code>spawn</code>, channels, <code>select</code>) all work. The standard library covers io, fs, net (HTTP/2, TLS, WebSockets), JSON, postgres, compress, and more. Install with one line, then <code>kiln new hello &amp;&amp; cd hello &amp;&amp; kiln run</code>. See <a href="status.html">Implementation status</a>. Throughout this book, 🚧 marks features that are specified but not finished yet.
 </div>
 
 ## Goals

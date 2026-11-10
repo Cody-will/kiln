@@ -118,5 +118,5 @@ fun show(x &dyn Describe) {
 ```
 
 <div class="status">
-🚧 Generics are type-checked and monomorphized: each use with new types gets its own compiled copy, and <code>dyn Trait</code> calls go through vtables. Associated types (<code>type Item</code> in traits) parse but are not checked yet, and <code>impl Trait</code> in argument position is treated like <code>dyn Trait</code>. <code>#[derive]</code> is trusted by the checker; nothing is generated yet.
+✅ Generics are type-checked and monomorphized: each use with new types gets its own compiled copy, and <code>dyn Trait</code> calls go through vtables. Associated types (<code>type Item</code>, <code>Self::Item</code>, <code>Item = X</code> bounds) and return-position <code>impl Trait</code> work. 🚧 <code>impl Trait</code> in argument position is still treated like <code>dyn Trait</code> in places. <code>@derive</code> is trusted by the checker for the supported derives.
 </div>

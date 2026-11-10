@@ -89,7 +89,7 @@ A **dependency** is a library package. It becomes a top-level module named after
 The standard library is imported the same way as before: `import std::fs`, `import std::net::TcpListener`.
 
 <div class="status">
-🚧 <strong>Not implemented yet:</strong> the package registry and version requirements (<code>http = "1.2"</code>), git dependencies, the lockfile, and <code>pub(pkg)</code> visibility. Compilation is whole-program: an unchanged package isn't rebuilt, but any change rebuilds all of it.
+✅ Path and registry dependencies, semver requirements (<code>http = "1.2"</code>), <code>kiln add</code>/<code>update</code>/<code>publish</code>, and a sha256 <code>kiln.lock</code> with an offline cache are in. An official public index is still pending. 🚧 Git dependencies in <code>kiln.toml</code> and full <code>pub(pkg)</code> enforcement still need polish.
 </div>
 
 ## The lockfile
