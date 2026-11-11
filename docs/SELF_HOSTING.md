@@ -318,7 +318,7 @@ runs the stage1→stage2 bootstrap and packs `kilnc` into the tarball.
 | Differential tests still on Rust crates | ✅ keep `crates/kiln_*` as the reference |
 | `kiln check` / `kiln test` on kilnc | ✅ |
 | LSP diagnostics on kilnc | ✅ |
-| LSP navigation index on kilnc | ⬜ needs resolve/typeck dumps from kilnc |
+| LSP navigation index on kilnc | ✅ (`kilnc --index`; Rust front end only as fallback) |
 | Move Rust crates under `bootstrap/reference/` | ⬜ after check/LSP no longer need them |
 | Delete Rust codegen crates | ⬜ last |
 
