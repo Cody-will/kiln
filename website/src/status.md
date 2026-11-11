@@ -18,9 +18,9 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 | Patterns | ✅ Nested enum/struct/tuple patterns, slice patterns (`[a, .., b]` on arrays, slices, `Vec`), `|` patterns with bindings; exhaustiveness checks all of them |
 | Debug info | ✅ DWARF line tables in debug builds on Linux (`gdb`, `addr2line`, `perf` show `file.kn:line`); 🚧 no variable info, none for LLVM release builds yet |
 | Integer overflow | ✅ Panics in debug builds, wraps with `--release` |
-| Panics | ✅ Pending `defer` calls run (innermost first, as in Go), then the message is printed and the process exits with status 101; `std::panic::recover` stops a panic and returns `Err(message)`. Destructors don't run on panic (no unwinding; locals leak). `defer` on panic and `recover` are Unix-only so far |
+| Panics | ✅ Pending `defer` calls run (innermost first, as in Go), then the message is printed and the process exits with status 101; `std::panic::recover` stops a panic and returns `Err(message)`. Destructors don't run on panic (no unwinding; locals leak). `defer` on panic and `recover` work on Linux, macOS, and Windows x64 |
 | Concurrency: `spawn` and `Task<T>`, channels, `select`, `scope`/`spawn`, M:N work-stealing scheduler, deadlock detection | ✅ Implemented on Linux, macOS, and Windows |
-| A panic inside a task | ✅ `join` returns `Err(Panic)` with the message (Unix); a detached task's panic ends the program |
+| A panic inside a task | ✅ `join` returns `Err(Panic)` with the message (Linux, macOS, Windows x64); a detached task's panic ends the program |
 | Preemption | ✅ Loops yield after a task has run 10 ms while others wait; tasks also switch at channels, `select`, `join`, locks, timers, and I/O |
 | Standard library phase 1: `time`, `sync`, `io`, `fs`, `path`, `os`, `net` (TCP/UDP on the netpoller), `net::http` (server and client), `log`, `fmt`, `mem`, `ptr` | ✅ Implemented on Linux, macOS, and Windows; written in Kiln on the C runtime ([reference](stdlib.md)) |
 | Standard library phase 2: `strings`, `strconv`, `bytes`, `collections`, `math`, `rand`, `errors`, `flag`, `encoding` (JSON with `@derive(Json)`, base64, hex, CSV), `crypto`, `regexp`, `context`, net timeouts | ✅ Implemented |
@@ -28,7 +28,7 @@ Kiln is specified in the [language specification](spec.md); the compiler is bein
 | `static` items | ✅ Implemented |
 | Multi-file packages, `kiln.toml` | ✅ `mod name` files, `kiln new`, path dependencies, build caching |
 | FFI: `extern "C"`, `@repr(C)`, `[link]` in `kiln.toml` | ✅ C functions (including variadic), C function pointers and callbacks, `@export extern "C" fun`, C-layout structs, system libraries and C sources (C sources not on Windows yet) |
-| Package registry, lockfile | ✅ git/file index, `kiln add`/`update`/`publish`, semver, sha256 `kiln.lock`, offline cache (official public index still pending) |
+| Package registry, lockfile | ✅ git/file index, `kiln add`/`update`/`publish`, semver, sha256 `kiln.lock`, offline cache; default index is [Cody-will/kiln-index](https://github.com/Cody-will/kiln-index) (publish via PR) |
 | `kiln build`, `kiln run` | ✅ Single files and multi-file packages (`kiln.toml`, `mod`, path and registry deps) |
 | `kiln test` (`@test`, `@should_panic`, `@ignore`, process-per-test, parallel) | ✅ Implemented (single files and directories) |
 | `kiln fmt` | ✅ canonical formatter with `--check` and `--stdin` |

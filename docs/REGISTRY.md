@@ -32,15 +32,14 @@ Git indexes are cloned to `~/.kiln/registry/index/` and pulled unless offline;
 remote tarballs are fetched with `curl` into `~/.kiln/registry/cache/` and
 verified against the index checksum before unpacking to `~/.kiln/registry/src/<name>-<ver>`.
 
-## Standing up the official index (needs owner approval)
+## Official index
 
-The default URL above is a **placeholder; that repository does not exist**.
-To make it real, the owner must approve:
+The default URL above is the public repo
+[`Cody-will/kiln-index`](https://github.com/Cody-will/kiln-index)
+(initialized; packages land as they are published).
 
-1. Creating the public repo `Cody-will/kiln-index` (or another name; then change
-   `DEFAULT_INDEX` in `crates/kiln_cli/src/registry.rs`).
-2. Initialising it: `kiln publish --init-index ./kiln-index`, commit, push.
-3. Tarball hosting: either keep tarballs in the repo (`dl = "dl"`, simplest) or
-   point `dl` at release assets / a static host.
-4. A publishing policy: publishers run `kiln publish --index ./kiln-index`
-   in a checkout and open a pull request; maintainers merge.
+Tarball hosting: keep tarballs in the repo (`dl = "dl"`, current setup) or
+point `dl` at release assets / a static host.
+
+Publishing policy: publishers run `kiln publish --index ./kiln-index`
+in a checkout and open a pull request; maintainers merge.
