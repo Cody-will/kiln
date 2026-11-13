@@ -104,7 +104,7 @@ fn report(name: &str, src: &str, e: &kiln_fmt::Error) {
     match e {
         kiln_fmt::Error::Syntax(diags) => {
             eprintln!("{name}: not formatted: the file has syntax errors");
-            crate::report(name, src, diags);
+            let _ = crate::report(name, src, diags);
         }
         kiln_fmt::Error::Internal(m) => {
             eprintln!("{name}: not formatted: {m} (this is a bug in kiln fmt; please report it)")

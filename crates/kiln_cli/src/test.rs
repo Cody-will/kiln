@@ -144,7 +144,7 @@ pub fn run(o: TestOpts) -> ExitCode {
         let tests = match built {
             Ok(t) => t,
             Err(kiln_codegen::BuildError::Diagnostics(errs)) => {
-                crate::report(&shown, &src, &errs);
+                let _ = crate::report(&shown, &src, &errs);
                 failed += 1;
                 failures.push(format!("{shown} (does not compile)"));
                 continue;
